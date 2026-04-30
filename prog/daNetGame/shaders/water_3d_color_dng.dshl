@@ -16,6 +16,10 @@ assume chop_water_enabled = no;
 float water_refraction_base_mip = 1;
 float angle_to_roughness_scale = 0.1;
 
+hlsl {
+  #define USE_NOFOG_REFLECTION_ON_DISTANCE 1
+}
+
 macro INIT_WATER_3D_DEFERRED_COLOR_DNG()
   (ps) {
     water_flowmap_debug@f1 = water_flowmap_debug;

@@ -259,7 +259,7 @@ struct Parser
     ExprType type;
   };
 
-  bool isConst(int idx) { return idx >= 0 && (*ir)[idx].tag == hash_name("const"); }
+  bool isConst(int idx) { return idx >= 0 && idx < (int)ir->size() && (*ir)[idx].tag == hash_name("const"); }
   float constVal(int idx) { return (*ir)[idx].constVal; }
 
   int addConst(float v)
@@ -547,6 +547,8 @@ struct Parser
         return {0, TYPE_FLOAT};
       TNode n = parseUnary();
       leaveDepth();
+      if (failed)
+        return {0, TYPE_FLOAT};
       int f = tryFold(hash_name("neg"), 1, n.idx);
       return f >= 0 ? TNode{f, TYPE_FLOAT} : TNode{addIR(hash_name("neg"), 1, n.idx), TYPE_FLOAT};
     }
@@ -557,6 +559,8 @@ struct Parser
         return {0, TYPE_FLOAT};
       TNode n = parseUnary();
       leaveDepth();
+      if (failed)
+        return {0, TYPE_FLOAT};
       requireBool(n, "! requires bool");
       int f = tryFold(hash_name("not"), 1, n.idx);
       return f >= 0 ? TNode{f, TYPE_BOOL} : TNode{addIR(hash_name("not"), 1, n.idx), TYPE_BOOL};
