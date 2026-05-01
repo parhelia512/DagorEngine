@@ -118,7 +118,18 @@ static bool read_shdump_file(IGenLoad &crd, int size, bool mmaped_load, F cb)
     G_ASSERT(crd.tell() == 0);
     int flen = -1;
     auto fdata = (const uint8_t *)df_mmap(static_cast<FullFileLoadCB &>(crd).fileHandle, &flen);
-    if (!fdata || flen != size || !cb(fdata, size))
+    if (!fdata)
+    {
+      debug("[SH] Failed to map bindump file");
+      return false;
+    }
+    if (flen != size)
+    {
+      debug("[SH] Bindump file mapped size doesn't match required size");
+      df_unmap(fdata, flen);
+      return false;
+    }
+    if (!cb(fdata, size))
     {
       df_unmap(fdata, flen);
       return false;
@@ -128,8 +139,15 @@ static bool read_shdump_file(IGenLoad &crd, int size, bool mmaped_load, F cb)
   else // generic path with memcopy
   {
     Tab<uint8_t> dump(size);
-    if (crd.tryRead(dump.data(), size) != size || !cb(dump.data(), size))
+    if (crd.tryRead(dump.data(), size) != size)
+    {
+      debug("[SH] Failed to fread bindump file contents");
       return false;
+    }
+    if (!cb(dump.data(), size))
+    {
+      return false;
+    }
   }
   return true;
 }
@@ -157,13 +175,17 @@ bool ScriptedShadersBinDumpOwner::loadFromData(uint8_t const *dump, int size, ch
 
   auto mappedDump = bindump::map<shader_layout::ScriptedShadersBinDumpCompressed>(dump);
   if (!mappedDump)
+  {
+    debug("[SH] Failed to map bindump compressed structure");
     return false;
+  }
 
   const auto &header = mappedDump->header;
 
   if (header.magicPart1 != _MAKE4C('VSPS') || header.magicPart2 != _MAKE4C('dump') || header.version != SHADER_BINDUMP_VER)
   {
     // @TODO: should this be a fatal too? seems like sign maybe should cause a fatal, but version -- allow to look for other dumps.
+    debug("[SH] Invalid bindump magic=%x|%x version=%d", header.magicPart1, header.magicPart2, header.version);
     return false;
   }
 
@@ -197,7 +219,10 @@ bool ScriptedShadersBinDumpOwner::loadFromData(uint8_t const *dump, int size, ch
 
   mShaderDump = mappedDump->scriptedShadersBindumpCompressed.decompress(mSelfData, bindump::BehaviorOnUncompressed::Copy);
   if (!mShaderDump)
+  {
+    debug("[SH] Failed to map bindump main structure");
     return false;
+  }
 
   mShaderDumpV2 = bindump::map<shader_layout::ScriptedShadersBinDumpV2>(mSelfData.data());
   mShaderDumpV3 = bindump::map<shader_layout::ScriptedShadersBinDumpV3>(mSelfData.data());

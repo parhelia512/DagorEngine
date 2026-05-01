@@ -12,10 +12,10 @@ namespace smooth_noise
 // visible at landscape scale). Runtime detail-noise still uses the LUT path so
 // game-side visuals are unchanged.
 
-alignas(16) static const vec4f_const V_C_6_0 = {6.0f, 6.0f, 0, 0};
-alignas(16) static const vec4f_const V_C_m15_30 = {-15.0f, -15.0f, 30.f, 30.f};
-alignas(16) static const vec4f_const V_C_10_m60 = {10.0f, 10.0f, -60.f, -60.f};
-alignas(16) static const vec4f_const V_C_0_30 = {0.0f, 0.0f, 30.f, 30.f};
+alignas(16) static const vec4f_const V_C_6_0 = DECL_VECFLOAT4(6.0f, 6.0f, 0, 0);
+alignas(16) static const vec4f_const V_C_m15_30 = DECL_VECFLOAT4(-15.0f, -15.0f, 30.f, 30.f);
+alignas(16) static const vec4f_const V_C_10_m60 = DECL_VECFLOAT4(10.0f, 10.0f, -60.f, -60.f);
+alignas(16) static const vec4f_const V_C_0_30 = DECL_VECFLOAT4(0.0f, 0.0f, 30.f, 30.f);
 
 static inline vec4f v_frac(vec4f p) { return v_sub(p, sse4_floor(p)); }
 
