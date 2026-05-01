@@ -27,18 +27,18 @@ If the script is not run as an administrator, installers of certain programs may
 
 After the script completes its work, the X:\develop\devtools folder will be configured with the following SDKs and tools:
 
-* Agility.SDK.1.614.1 - DirectX 12 Agility SDK
+* Agility.SDK.1.619.0 - DirectX 12 Agility SDK
 * astcenc-4.6.1 - Adaptive Scalable Texture Compression (ASTC) Encoder
 * DXC-1.8.2505.1 - DirectX Compiler
 * FidelityFX_SC - a library for image quality enhancement
 * fmod-studio-2.xx.xx [optional] - FMOD sound library
 * ispc-v1.23.0-windows - Implicit SPMD Program Compiler
-* LLVM-15.0.7 - C/C++ compiler and libraries (Clang)
-* max2024.sdk - 3ds Max 2024 SDK
+* LLVM-21.1.8 - C/C++ compiler and libraries (Clang)
+* max2026.sdk - 3ds Max 2026 SDK
 * nasm - netwide assembler ver 2.x
 * openxr-1.0.27 - library for AR/VR
 * vc2019_16.11.34 - C/C++ compiler and libraries (MSVC)
-* vc2022_17.9.5 - C/C++ compiler and libraries (MSVC)
+* vc2022_17.14.4 - C/C++ compiler and libraries (MSVC)
 * win.sdk.100 - Windows 10 SDK
 * win.sdk.81 - Windows 8.1 SDK
 * ducible.exe - a tool to make builds of Portable Executables (PEs) and PDBs reproducible
