@@ -9,6 +9,7 @@
 #include <3d/dag_resPtr.h>
 #include <shaders/dag_computeShaders.h>
 #include <render/voxelClip.h>
+#include <daGI2/daGI2.h>
 
 struct DaGIMediaScene
 {
@@ -16,7 +17,7 @@ struct DaGIMediaScene
 
   void setTemporalSpeedFromGbuf(float speed) { temporalSpeed = clamp(speed, 0.f, 1.f); } // 0 - off, 1 - max
   void updateFromGbuf();
-  void updatePos(const Point3 &pos, bool update_all = false);
+  void updatePos(const Point3 &pos, bool update_all, const prepare_initial_media_cb &prepare_media_cb);
   void rbNone();
   void rbFinish();
   void debugRender();
@@ -28,7 +29,7 @@ struct DaGIMediaScene
 protected:
   void initHistory();
   void initVars();
-  bool updateClip(uint32_t clip_no, const Point3 &world_pos);
+  bool updateClip(uint32_t clip_no, const Point3 &world_pos, const prepare_initial_media_cb &prepare_media_cb);
   float get_voxel_size(uint32_t i) const { return (1 << i) * voxelSize0; }
   void setClipVars(int clip_no, float voxel_size) const;
 

@@ -80,8 +80,8 @@ static ecs::EntitySystemDesc hud_tiled_map_fog_of_war_es_es_desc
 static void tiled_map_fog_of_war_after_reset_es_all_events(const ecs::Event &__restrict evt, const ecs::QueryView &__restrict components)
 {
   G_UNUSED(components);
-  G_FAST_ASSERT(evt.is<AfterDeviceReset>());
-  tiled_map_fog_of_war_after_reset_es(static_cast<const AfterDeviceReset&>(evt)
+  G_FAST_ASSERT(evt.is<EventAfterDeviceReset>());
+  tiled_map_fog_of_war_after_reset_es(static_cast<const EventAfterDeviceReset&>(evt)
         );
 }
 static ecs::EntitySystemDesc tiled_map_fog_of_war_after_reset_es_es_desc
@@ -93,7 +93,7 @@ static ecs::EntitySystemDesc tiled_map_fog_of_war_after_reset_es_es_desc
   empty_span(),
   empty_span(),
   empty_span(),
-  ecs::EventSetBuilder<AfterDeviceReset>::build(),
+  ecs::EventSetBuilder<EventAfterDeviceReset>::build(),
   0
 ,"render");
 static constexpr ecs::ComponentDesc tiled_map_fog_of_war_get_data_ecs_query_comps[] =

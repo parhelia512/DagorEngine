@@ -4,7 +4,7 @@
 #include "dynamicMirrorRenderer.h"
 
 #include <ecs/render/renderPasses.h>
-#include <render/world/cameraParams.h>
+#include <render/cameraParams.h>
 #include <render/daFrameGraph/daFG.h>
 #include <3d/dag_texStreamingContext.h>
 
@@ -13,7 +13,7 @@ dafg::NodeHandle create_dynamic_mirror_resolve_node(DynamicMirrorRenderer &mirro
   return get_dynamic_mirrors_namespace().registerNode("resolve", DAFG_PP_NODE_SRC, [&mirror_renderer](dafg::Registry registry) {
     registry.readTexture("mirror_texture").atStage(dafg::Stage::PS).bindToShaderVar("dynamic_mirror_tex");
 
-    auto cameraHndl = registry.readBlob<CameraParams>("current_camera").handle();
+    auto cameraHndl = registry.readBlob<CameraParams>("current_camera").bindAsProj<&CameraParams::jitterProjTm>().handle();
     auto mirrorActiveHndl = registry.readBlob<bool>("is_mirror_active").handle();
 
     shaders::OverrideState overrideState = {};

@@ -109,7 +109,7 @@ enum
 #define VSTREAMSRC_INSTANCE_DATA (2 << 30)
 
 
-enum
+enum : uint32_t
 {
   // These bits are still free for use
   SBCF_UNUSED_BIT_1 = 0x0100,
@@ -122,7 +122,8 @@ enum
   SBCF_UNUSED_BIT_7 = 0x200000,
   SBCF_UNUSED_BIT_8 = 0x400000,
   // <- overlaps with SBCF_BIND_MASK
-  SBCF_UNUSED_BIT_9 = 0x40000000,
+  // locks use persistent internal staging
+  SBCF_PERSISTENT_STAGING = 0x40000000,
   // Disable state tracking in the driver. Use enhanced barriers.
   SBCF_NO_STATE_TRACKING = 0x80000000,
   /// Buffer can be used as a shader binding table.
@@ -414,8 +415,12 @@ enum class VariableRateShadingCombiner
   VRS_MIN,
   /// selects max of previous and this stage
   VRS_MAX,
-  /// adds values of previous and this stage and clamps it to max possible value
-  VRS_SUM
+  /// adds the log2 rates of previous and this stage, so the effect is a product of the
+  /// rates clamped to the coarsest supported one: 1x1 with 1x1 stays 1x1, 2x2 with 2x2
+  /// gives 4x4. Not a sum of the rate values themselves.
+  VRS_SUM,
+
+  MAX_VAL = VRS_SUM,
 };
 
 // Resource barriers
@@ -597,13 +602,15 @@ enum RenderPassTargetAction : int
 
   /// \brief Target contents will be readed by subpass
   /// \note This corresponds to SubpassInput with SubpassLoad inside shader
-  /// \warning Generic implementation uses T register with \b subpassBindingOffset instead of SubpassInput,
-  /// this must be handled properly in shader code
+  /// \warning Generic (emulated) implementation binds a color slot as a PS SRV at (T register count - 1 - slot),
+  /// anchored at the top so a slot keeps its register whatever else the pass reads; the reading shader must declare it there.
+  /// On \b RP_SLOT_DEPTH_STENCIL it is a read-only depth bind and takes no T register
   RP_TA_SUBPASS_READ = 1u << 3,
   /// \brief Target will be used as MSAA resolve destination of MSAA target bound in same slot
   /// \note MSAA Depth resolve is optional feature if non generic implementation is used
-  /// \warning Must supply MSAA target in same slot in another binding
-  /// otherwise creation on render pass will fail
+  /// \warning Must supply the source in the same slot and the same subpass in another binding: the MSAA
+  /// target written there, or, on \b RP_SLOT_DEPTH_STENCIL, a read-only depth bind.
+  /// Otherwise creation on render pass will fail
   RP_TA_SUBPASS_RESOLVE = 1u << 4,
   /// \brief Target contents will be written by subpass
   RP_TA_SUBPASS_WRITE = 1u << 5,
@@ -613,6 +620,8 @@ enum RenderPassTargetAction : int
   RP_TA_SUBPASS_VRS_READ = 1u << 13,
   /// \brief Bitmask of any subpass operation
   RP_TA_SUBPASS_MASK = RP_TA_SUBPASS_READ | RP_TA_SUBPASS_RESOLVE | RP_TA_SUBPASS_WRITE | RP_TA_SUBPASS_KEEP | RP_TA_SUBPASS_VRS_READ,
+  /// \brief Bitmask of the subpass operations that access target contents, RP_TA_SUBPASS_KEEP excluded
+  RP_TA_SUBPASS_ACCESS_MASK = RP_TA_SUBPASS_READ | RP_TA_SUBPASS_RESOLVE | RP_TA_SUBPASS_WRITE | RP_TA_SUBPASS_VRS_READ,
 
   /// \brief Contents of framebuffer will be written to target memory
   RP_TA_STORE_WRITE = 1u << 7,

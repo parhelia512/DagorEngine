@@ -16,9 +16,10 @@
 #include <math.h>
 #include <ctype.h>
 
-#define malloc  memalloc_default
-#define free    memfree_default
-#define realloc memrealloc_default
+// route nanosvg allocations through the engine allocator
+#define malloc  memalloc_default   //-V1059
+#define free    memfree_default    //-V1059
+#define realloc memrealloc_default //-V1059
 #define NANOSVG_IMPLEMENTATION
 #define NANOSVG_ALL_COLOR_KEYWORDS
 #include <nanosvg/nanosvg.h>

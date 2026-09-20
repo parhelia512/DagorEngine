@@ -63,6 +63,7 @@ void ToolbarToggleButtonPropertyControl::toolbarToggleButtonUpdateImgui(ImDrawFl
   const ImGuiID buttonId = ImGui::GetCurrentWindow()->GetID("ib"); // "ib" stands for ImageButton. It could be anything.
   const bool clicked = ImguiHelper::imageButtonWithRoundingOptions(buttonId, icon, ImVec2(size, size), ImVec2(0, 0), ImVec2(1, 1),
     ImVec4(0, 0, 0, 0), ImVec4(1, 1, 1, 1), ImGuiButtonFlags_MouseButtonLeft | ImGuiButtonFlags_MouseButtonRight, frame_draw_flags);
+  setImguiTestItemInfo();
   const bool rightClicked = clicked && ImGui::IsItemHovered() && ImGui::IsMouseReleased(ImGuiMouseButton_Right, ImGui::GetItemID());
 
   if (button_id)

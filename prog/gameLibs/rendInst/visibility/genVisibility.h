@@ -75,6 +75,7 @@ struct RiGenVisibility
   carray<int, rendinst::render::MAX_LOD_COUNT_WITH_ALPHA + 1> instNumberCounter;
 
   int forcedLod = -1;
+  bool forcedLodRangeCull = false;
   enum
   {
     SKIP_NO_ATEST = 0,

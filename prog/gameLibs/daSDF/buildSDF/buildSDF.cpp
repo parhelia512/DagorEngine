@@ -9,8 +9,6 @@
 #include <ioSys/dag_fileIo.h>
 #include <math/dag_math3d.h>
 #include <util/dag_globDef.h>
-#include <EASTL/unique_ptr.h>
-#include <sceneRay/dag_sceneRayBuildable.h>
 #include <util/dag_threadPool.h>
 #include <debug/dag_logSys.h>
 #include <daSDF/generate_sdf.h>
@@ -20,14 +18,12 @@ static void show_usage();
 
 struct Mesh
 {
-  dag::Vector<uint32_t> indices; // widened on read: addmesh takes uint32 either way, so both record forms land here
+  dag::Vector<uint32_t> indices;
   dag::Vector<Point3> vertices;
   dag::Vector<mat43f> instances;
-  BBox3 box;
-  eastl::unique_ptr<BuildableStaticSceneRayTracer> tr;
+  MeshBLAS blas;
 };
 
-#include <render/primitiveObjects.h>
 #include <rendInst/riCollisionDump.h>
 
 // Fills Mesh storage straight from the shared dump walk. Narrow (16-bit) records go through a
@@ -71,106 +67,11 @@ struct DumpReadHandler
       for (int i = 0; i < index_count; ++i)
         mesh.indices[i] = indices16[i];
     }
-    for (auto &v : mesh.vertices)
-      mesh.box += v;
   }
 };
 
 static bool loadObjects(IGenLoad &cb, dag::Vector<Mesh> &meshes)
 {
-  if (0)
-  {
-    Mesh &mesh = meshes.push_back();
-    mesh.vertices.resize(8);
-    BBox3 box;
-    box[0] = -Point3(16, 16, 16);
-    box[1] = Point3(16, 16, 16);
-    for (int vertNo = 0; vertNo < 8; ++vertNo)
-      mesh.vertices[vertNo] = box.point(vertNo);
-    uint16_t cubeIdx[36];
-    create_cubic_indices(dag::Span<uint8_t>((uint8_t *)cubeIdx, sizeof(cubeIdx)), 36, false);
-    mesh.indices.assign(cubeIdx, cubeIdx + 36);
-    for (auto &v : mesh.vertices)
-      mesh.box += v;
-  }
-  if (0)
-  {
-    Mesh &mesh = meshes.push_back();
-    mesh.vertices.resize(16);
-    BBox3 box;
-    box[0] = Point3(-16, -16, -16);
-    box[1] = Point3(16, 16, 16);
-    for (int vertNo = 0; vertNo < 8; ++vertNo)
-      mesh.vertices[vertNo] = box.point(vertNo);
-    box[0] = Point3(-12, -12, -12);
-    box[1] = Point3(12, 12, 12);
-    for (int vertNo = 0; vertNo < 8; ++vertNo)
-      mesh.vertices[8 + vertNo] = box.point(7 - vertNo);
-    uint16_t cubeIdx[36];
-    create_cubic_indices(dag::Span<uint8_t>((uint8_t *)cubeIdx, sizeof(cubeIdx)), 36, false);
-    mesh.indices.resize(36 * 2);
-    for (int i = 0; i < 36; ++i)
-    {
-      mesh.indices[i] = cubeIdx[i];
-      mesh.indices[36 + i] = cubeIdx[i] + 8;
-    }
-    for (auto &v : mesh.vertices)
-      mesh.box += v;
-  }
-#if 0
-  {
-    Mesh &mesh = meshes.push_back();
-    mesh.vertices.resize(8);
-    BBox3 box;box[0] = -Point3(1,16,16);box[1] = Point3(1,16,16);
-    for (int vertNo = 0; vertNo < 8; ++vertNo)
-      mesh.vertices[vertNo] = box.point(7-vertNo);
-    mesh.indices.resize(36);
-	create_cubic_indices(dag::Span<uint8_t>((uint8_t*)mesh.indices.data(), 36*sizeof(uint16_t)), 36, false);
-    for (auto &v:mesh.vertices)
-      mesh.box += v;
-  }
-  {
-    Mesh &mesh = meshes.push_back();
-    mesh.vertices.resize(8);
-    BBox3 box;box[0] = -Point3(16,16,16);box[1] = Point3(16,16,16);
-    for (int vertNo = 0; vertNo < 8; ++vertNo)
-      mesh.vertices[vertNo] = box.point(7-vertNo);
-    mesh.indices.resize(36);
-	create_cubic_indices(dag::Span<uint8_t>((uint8_t*)mesh.indices.data(), 36*sizeof(uint16_t)), 36, false);
-    for (auto &v:mesh.vertices)
-      mesh.box += v;
-  }
-  {
-    Mesh &mesh = meshes.push_back();
-    mesh.vertices.resize(16);
-    BBox3 box;
-    box[0] = Point3(-16,-16,-16);box[1] = Point3(-14,16,16);
-    for (int vertNo = 0; vertNo < 8; ++vertNo)
-      mesh.vertices[vertNo] = box.point(7-vertNo);
-    box[0] = Point3(14,-16,-16);box[1] = Point3(16,16,16);
-    for (int vertNo = 0; vertNo < 8; ++vertNo)
-      mesh.vertices[8 + vertNo] = box.point(7-vertNo);
-    mesh.indices.resize(36*2);
-	create_cubic_indices(dag::Span<uint8_t>((uint8_t*)mesh.indices.data(), 36*sizeof(uint16_t)), 36, false);
-	create_cubic_indices(dag::Span<uint8_t>((uint8_t*)(mesh.indices.data()+36), 36*sizeof(uint16_t)), 36, false);
-    for (int i = 36; i < 72; ++i)
-      mesh.indices[i] += 8;
-    for (auto &v:mesh.vertices)
-      mesh.box += v;
-  }
-  {
-    Mesh &mesh = meshes.push_back();
-    uint32_t vc, fc;
-    calc_sphere_vertex_face_count(32, 32, false, vc, fc);
-    mesh.indices.resize(fc*3);
-    mesh.vertices.resize(vc);
-    create_sphere_mesh(dag::Span<uint8_t>((uint8_t*)mesh.vertices.data(), vc*sizeof(Point3)),
-                       dag::Span<uint8_t>((uint8_t*)mesh.indices.data(), fc*3*sizeof(uint16_t)),
-                       8.0f, 32, 32, sizeof(Point3), false, false, false, false);
-    for (auto &v:mesh.vertices)
-      mesh.box += v;
-  }
-#endif
   DumpReadHandler h{meshes};
   return read_ri_collision_dump(cb, h);
 }
@@ -185,23 +86,14 @@ static void generateSDF(dag::Vector<Mesh> &meshes, IGenSave &scb, float density)
     inst += m.instances.size();
   }
   printf("total %d meshes, %d vertices, %d tri, %d instances\n", (int)meshes.size(), verts, inds / 3, inst);
+  int noGeom = 0;
   for (auto &m : meshes)
-  {
-    Point3 sz = m.box.width();
-    float vol = max(sz.x, 1.0f) * max(sz.y, 1.0f) * max(sz.z, 1.0f);
-    int facesCount = m.indices.size() / 3;
-    float faceDensity = facesCount / vol;
-    G_UNUSED(faceDensity);
-    float maxSz = max(max(sz.x, sz.y), sz.z);
-    float maxLeaf = min(1.0f, maxSz / 4.0f); // if object in max dimension is smaller than 4 meters, than use it max axis/4 as biggest
-    sz = Point3(max(sz.x / 8.0f, maxLeaf), max(sz.y / 3.0f, maxLeaf), max(sz.z / 8.0f, maxLeaf));
-    sz = max(sz, Point3(0.25f, 0.25f, 0.25f)); // there is no much sense in leaf size less than 0.25 cm. Even for raytracing it is too
-                                               // detailed
-    m.tr.reset(new BuildableStaticSceneRayTracer(sz, 3));
-    m.tr->addmesh(m.vertices.data(), m.vertices.size(), m.indices.data(), sizeof(uint32_t) * 3, m.indices.size() / 3, nullptr, false);
-    m.tr->setCullFlags(StaticSceneRayTracer::CULL_BOTH);
-    m.tr->rebuild(true);
-  }
+    if (!build_mesh_blas(m.blas, make_span_const(m.vertices), make_span_const(m.indices)))
+      noGeom++;
+  if (noGeom)
+    printf("%d of %d meshes were refused and bake empty: an index past the vertex count, no buildable triangle, a non-finite "
+           "vertex, or a vertex span past the leaf base range\n",
+      noGeom, (int)meshes.size());
   size_t cnt = 0, maxCnt = 64 << 10;
   // scb.writeInt(meshes.size());
   scb.writeInt(min<size_t>(maxCnt, meshes.size()));
@@ -211,7 +103,7 @@ static void generateSDF(dag::Vector<Mesh> &meshes, IGenSave &scb, float density)
     // if (c != 1263)
     //   continue;
     MippedMeshSDF meshSDF;
-    generate_sdf(*m.tr, meshSDF, density, 512);
+    generate_sdf(m.blas, meshSDF, density, 512);
     if (c >= maxCnt)
       break;
     scb.write(&meshSDF.mipCountTwoSided, sizeof(meshSDF.mipCountTwoSided));

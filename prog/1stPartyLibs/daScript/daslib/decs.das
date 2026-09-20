@@ -974,6 +974,9 @@ def public create_entities(count : int; blk : block<(eid : EntityId; i : int; va
     delete cmp
 }
 
+// Block-literal auto-inline would splice this into callers; ensure_capacity
+// (generic from privately required builtin) then fails privacy outside decs.
+[never_inline]
 def public create_entities_from_cmp(count : int; var cmp : ComponentMap;
                                     fill_blk : block<(var arch : Archetype; eidx : int; eid : EntityId; i : int) : void>) {
     //! Creates `count` entities in bulk with maximum performance. Takes a pre-built ComponentMap (used once to establish the archetype shape), then calls `fill_blk` for each entity to write directly into archetype storage, bypassing ComponentMap.

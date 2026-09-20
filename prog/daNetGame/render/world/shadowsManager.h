@@ -17,9 +17,10 @@
 
 #include <shaders/dag_postFxRenderer.h>
 
-#include "cameraParams.h"
+#include <render/cameraParams.h>
 #include "rendinstShadowCullBboxesLoader.h"
 #include <rendInst/visibilityDecl.h>
+#include <rendInst/rendInstRenderJob.h>
 #include <render/variance.h>
 
 
@@ -88,7 +89,6 @@ public:
 
   void staticShadowsSetWorldSize();
   void markWorldBBoxDirty();
-  void restoreShadowSampler();
 
   void initVisibilityNode();
   void initShadowsDownsampleNode();
@@ -218,6 +218,7 @@ private:
   bool staticShadowUniformUpdate = false;
   bool worldBBoxDirty = false;
   eastl::unique_ptr<ToroidalStaticShadows> staticShadows;
+  eastl::unique_ptr<rendinst::render::RiExtraRendererBuilder> staticShadowsRiexBuilder;
   dafg::NodeHandle staticShadowRenderNode;
   bool staticShadowsSetShaderVars = false;
   shaders::UniqueOverrideStateId staticShadowsOverride;

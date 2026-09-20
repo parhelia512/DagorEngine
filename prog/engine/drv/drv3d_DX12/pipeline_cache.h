@@ -16,6 +16,7 @@
 
 
 inline const char CACHE_FILE_NAME[] = "cache/dx12.cache";
+inline const char BUILD_IN_CACHE_FILE_NAME[] = "cache/dx12_build_in.cache";
 
 namespace drv3d_dx12
 {
@@ -586,107 +587,79 @@ public:
 #endif
     bool generateBlks;
     bool alwaysGenerateBlks;
+#if _TARGET_PC_WIN
+    const char *buildInCacheFileName;
+    ShaderHashValue blitByteCodeHash;
+    ShaderHashValue clearByteCodeHash;
+#endif
   };
 
   struct SetupParameters : ShutdownParameters
   {
     ID3D12Device1 *device;
     D3D12_SHADER_CACHE_SUPPORT_FLAGS allowedModes;
+#if _TARGET_PC_WIN
+    bool recordBuildInCache;
+#endif
   };
 
   void init(const SetupParameters &params);
   void shutdown(const ShutdownParameters &params);
 
   GraphicsPipelineBaseCacheId getGraphicsPipeline(const BasePipelineIdentifier &ident);
-  size_t getGraphicsPipelineVariantCount(GraphicsPipelineBaseCacheId base_id);
   size_t addGraphicsPipelineVariant(GraphicsPipelineBaseCacheId base_id, D3D12_PRIMITIVE_TOPOLOGY_TYPE topology,
     const InputLayout &input_layout, bool is_wire_frame, const RenderStateSystem::StaticState &static_state,
     const FramebufferLayout &fb_layout, ID3D12PipelineState *pipeline);
   size_t addGraphicsMeshPipelineVariant(GraphicsPipelineBaseCacheId base_id, bool is_wire_frame,
     const RenderStateSystem::StaticState &static_state, const FramebufferLayout &fb_layout, ID3D12PipelineState *pipeline);
-  // Returns new count (eg getGraphicsPipelineVariantCount)
-  size_t removeGraphicsPipelineVariant(GraphicsPipelineBaseCacheId base_id, size_t index);
   ComPtr<ID3D12PipelineState> loadGraphicsPipelineVariant(GraphicsPipelineBaseCacheId base_id, D3D12_PRIMITIVE_TOPOLOGY_TYPE topology,
     const InputLayout &input_layout, bool is_wire_frame, const RenderStateSystem::StaticState &static_state,
     const FramebufferLayout &fb_layout, D3D12_PIPELINE_STATE_STREAM_DESC desc, D3D12_CACHED_PIPELINE_STATE &blob_target);
   ComPtr<ID3D12PipelineState> loadGraphicsMeshPipelineVariant(GraphicsPipelineBaseCacheId base_id, bool is_wire_frame,
     const RenderStateSystem::StaticState &static_state, const FramebufferLayout &fb_layout, D3D12_PIPELINE_STATE_STREAM_DESC desc,
     D3D12_CACHED_PIPELINE_STATE &blob_target);
-  D3D12_PRIMITIVE_TOPOLOGY_TYPE
-  getGraphicsPipelineVariantDesc(GraphicsPipelineBaseCacheId base_id, size_t index, InputLayout &input_layout, bool &is_wire_frame,
-    RenderStateSystem::StaticState &static_state, FramebufferLayout &fb_layout);
-  ComPtr<ID3D12PipelineState> loadGraphicsPipelineVariantFromIndex(GraphicsPipelineBaseCacheId base_id, size_t index,
-    D3D12_PIPELINE_STATE_STREAM_DESC desc, D3D12_CACHED_PIPELINE_STATE &blob_target);
   bool containsGraphicsPipeline(const BasePipelineIdentifier &ident);
 
   void addCompute(const dxil::HashValue &shader, ID3D12PipelineState *pipeline);
   ComPtr<ID3D12PipelineState> loadCompute(const dxil::HashValue &shader, D3D12_PIPELINE_STATE_STREAM_DESC desc,
     D3D12_CACHED_PIPELINE_STATE &blob_target);
 
-  void addSignature(const auto &def, ID3DBlob *blob, auto &signature)
-  {
-    auto from = static_cast<const uint8_t *>(blob->GetBufferPointer());
-    new (signature.push_back_uninitialized()) eastl::decay_t<decltype(signature)>::value_type{
-      .def = def,
-      .blob = {from, from + blob->GetBufferSize()},
-    };
-    hasChanged = true;
-  }
-
-  // NOTE: no checks for duplicates are performed
-  void addComputeSignature(const ComputePipelineSignature::Definition &def, ID3DBlob *blob)
-  {
-    addSignature(def, blob, computeSignatures);
-  }
-  template <typename T>
-  void enumrateComputeSignatures(T clb)
-  {
-    for (auto &&sig : computeSignatures)
-      clb(sig.def, sig.blob);
-  }
-
-  // NOTE: no checks for duplicates are performed
-  void addGraphicsSignature(const GraphicsPipelineSignature::Definition &def, ID3DBlob *blob)
-  {
-    addSignature(def, blob, graphicsSignatures);
-  }
-  template <typename T>
-  void enumerateGraphicsSignatures(T clb)
-  {
-    for (auto &&sig : graphicsSignatures)
-      clb(sig.def, sig.blob);
-  }
-
-  void addGraphicsMeshSignature(const GraphicsPipelineSignature::Definition &def, ID3DBlob *blob)
-  {
-    addSignature(def, blob, graphicsMeshSignatures);
-  }
-  template <typename T>
-  void enumerateGraphicsMeshSignatures(T clb)
-  {
-    for (auto &&sig : graphicsMeshSignatures)
-      clb(sig.def, sig.blob);
-  }
-
   void preRecovery();
   void recover(ID3D12Device1 *device, D3D12_SHADER_CACHE_SUPPORT_FLAGS allowed_modes);
 
-  template <typename T>
-  void enumerateStaticRenderStates(T clb)
-  {
-    for (auto &&srs : staticRenderStates)
-      clb(srs);
-  }
-
-  template <typename T>
-  void enumerateInputLayouts(T clb)
-  {
-    for (auto &&il : inputLayouts)
-      clb(il);
-  }
-
   /// \returns True when the cache matches the hashes, otherwise false and the cache data is reset.
   bool onBindumpLoad(ID3D12Device1 *device, eastl::span<const dxil::HashValue> all_shader_hashes);
+
+  // Format based build in pipelines are pipelines with "build in" (eg byte code is part of the executable) shaders that only
+  // differ in their output format of a single render target.
+  enum class FormatBasedBuildInPipelineType
+  {
+    Blit,
+    Clear,
+  };
+#if _TARGET_PC_WIN
+  // Attempts to load the specified format based pipeline for the given output format, on success a valid pipeline object
+  // is returned and on failure a return code is returned.
+  // When the requested pipeline is not in the library, dx12 validation layer may complain.
+  // This is not thread safe, call from single thread only!
+  dag::Expected<ComPtr<ID3D12PipelineState>, HRESULT> loadPipeline(FormatBasedBuildInPipelineType type,
+    const D3D12_PIPELINE_STATE_STREAM_DESC &desc, DXGI_FORMAT out_format);
+  // Adds a new format based pipeline to the cache set. May return an error code on failure to add a new entry.
+  // This is not thread safe, call from single thread only!
+  dag::Expected<void, HRESULT> storePipeline(FormatBasedBuildInPipelineType type, ID3D12PipelineState *pipeline,
+    DXGI_FORMAT out_format);
+  // Returns a list of all formats where we have seen for format based pipelines in the past. This can include values that may
+  // return an error when passed to loadPipeline. May return nullptr when type is a invalid value.
+  // This is not thread safe, call from single thread only!
+  const dag::Vector<DXGI_FORMAT> *getKnownPipelineFormats(FormatBasedBuildInPipelineType type);
+  // Returns true when the cache system has a pipeline library available to store pipeline cache blobs, returns false
+  // when not and may only has format lists of previous uses.
+  bool hasFormatBasedBuildInLibrary();
+  // Returns true when the cache system has restored the current pipeline library from disk cache from a previous run,
+  // returns false when the pipeline library, should it be available, is a new and empty one.
+  // After a device reset and a library was restored from that reset device, this may also return true.
+  bool hasExistingFormatBasedBuildInLibrary();
+#endif
 
 private:
   bool loadFromFile(const SetupParameters &params);
@@ -849,5 +822,43 @@ private:
   dxil::HashValue shaderInDumpHash{};
   D3D12_SHADER_CACHE_SUPPORT_FLAGS deviceFeatures = D3D12_SHADER_CACHE_SUPPORT_NONE;
   bool hasChanged = false;
+
+#if _TARGET_PC_WIN
+  struct BuildInPipelineLibraryFileHeader
+  {
+    static constexpr uint32_t magic_value = 'BIPL';
+    // Versions:
+    // 1: Initial version
+    //    - Support for blit pipelines and format table
+    //    - Support for clear pipelines and format table
+    //    - Support for pipeline library to store blit and clear pipeline caches
+    //    - integrity of each stored part is validated with a ShaderHashValue
+    //    - layout is header, header hash as ShaderHashValue, blit format array, clear format array, shader library blob
+    static constexpr uint32_t version_value = 1;
+    uint32_t magic;
+    uint32_t version;
+    ShaderHashValue blitHash;
+    ShaderHashValue clearHash;
+    ShaderHashValue blitFormatsHash;
+    ShaderHashValue clearFormatsHash;
+    uint32_t blitCount;
+    uint32_t clearCount;
+    uint32_t librarySize;
+  };
+
+  dag::Vector<DXGI_FORMAT> blitOutputFormats;
+  dag::Vector<DXGI_FORMAT> clearOutputFormats;
+  DynamicArray<uint8_t> loadedBuildInPipelineLibraryBlob;
+  ComPtr<ID3D12PipelineLibrary1> buildInPipelineLibrary;
+  bool buildInUpdated : 1 = false;
+  bool buildInShouldRecord : 1 = false;
+
+  void setupBuildInPipelineLibrary(const SetupParameters &params, const D3D12_SHADER_CACHE_SUPPORT_FLAGS cache_support);
+  void loadBuildInPipelineLibraryFile(const SetupParameters &params);
+  void storeBuildInPipelineLibraryFile(const ShutdownParameters &params);
+  void preRecoveryBuildInPipelineLibrary();
+  void recoverBuildInPipelineLibrary(ID3D12Device1 *device, D3D12_SHADER_CACHE_SUPPORT_FLAGS allowed_modes);
+  void shutdownBuildInPipelineLibrary();
+#endif
 };
 } // namespace drv3d_dx12

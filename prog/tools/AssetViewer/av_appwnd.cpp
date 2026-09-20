@@ -503,6 +503,55 @@ void AssetViewerApp::onEditorCommandKeyChordChanged()
     editor_command_system.updateToolbarButtons(*mPluginTool);
 }
 
+// Compatibility with older commands, can be removed later or reused for migrations
+static void migrate_legacy_export_hotkey_ids(DataBlock &hotkeys_blk)
+{
+  struct LegacyIdPair
+  {
+    const char *legacyId;
+    const char *newId;
+  };
+  static constexpr LegacyIdPair legacyToNewId[] = {
+    {"Main.Export.GameRes.PC", EditorCommandIds::BUILD_RESOURCES},
+    {"Main.Export.TexPack.PC", EditorCommandIds::BUILD_TEXTURES},
+    {"Main.Export.All.PC", EditorCommandIds::BUILD_ALL},
+    {"Main.Export.GameResForAllPlatforms", EditorCommandIds::BUILD_ALL_PLATFORM_RES},
+    {"Main.Export.TexPackForAllPlatforms", EditorCommandIds::BUILD_ALL_PLATFORM_TEX},
+    {"Main.Export.AllForAllPlatforms", EditorCommandIds::BUILD_ALL_PLATFORM},
+  };
+
+  DataBlock *commands = hotkeys_blk.getBlockByName("commands");
+  if (!commands)
+    return;
+
+  const int commandNid = commands->getNameId("command");
+  if (commandNid < 0)
+    return;
+
+  for (const LegacyIdPair &idPair : legacyToNewId)
+  {
+    const char *legacyId = idPair.legacyId;
+    const char *newId = idPair.newId;
+
+    bool newIdPresent = false;
+    for (int i = 0; i < commands->blockCount() && !newIdPresent; ++i)
+    {
+      const DataBlock *command = commands->getBlock(i);
+      if (command->getBlockNameId() == commandNid && strcmp(command->getStr("id", ""), newId) == 0)
+        newIdPresent = true;
+    }
+    if (newIdPresent)
+      continue;
+
+    for (int i = 0; i < commands->blockCount(); ++i)
+    {
+      DataBlock *command = commands->getBlock(i);
+      if (command->getBlockNameId() == commandNid && strcmp(command->getStr("id", ""), legacyId) == 0)
+        command->setStr("id", newId);
+    }
+  }
+}
+
 void AssetViewerApp::registerEditorCommands()
 {
   registerCommonEditorCommands(editor_command_system);
@@ -585,7 +634,8 @@ void AssetViewerApp::registerEditorCommands()
   const String hotkeySettingsPath = get_global_av_hotkey_settings_file_path();
   if (dd_file_exists(hotkeySettingsPath))
   {
-    const DataBlock hotkeysBlk(hotkeySettingsPath);
+    DataBlock hotkeysBlk(hotkeySettingsPath);
+    migrate_legacy_export_hotkey_ids(hotkeysBlk);
     editor_command_system.loadChangedHotkeys(hotkeysBlk);
   }
 }
@@ -1327,8 +1377,8 @@ void AssetViewerApp::fillMenu(PropPanel::IMenu *menu)
   menu->addSeparator(CM_FILE_MENU);
   menu->addItem(CM_FILE_MENU, CM_EXIT, "Exit\tAlt+F4");
 
-  // fill export menu
-  menu->addSubMenu(ROOT_MENU_ITEM, CM_EXPORT, "Export");
+  // fill build menu
+  menu->addSubMenu(ROOT_MENU_ITEM, CM_BUILD_MENU, "Build");
 
   // fill settings
   menu->addSubMenu(ROOT_MENU_ITEM, CM_SETTINGS, "Settings");
@@ -1405,57 +1455,59 @@ void AssetViewerApp::fillMenu(PropPanel::IMenu *menu)
 
 void AssetViewerApp::updateMenu(PropPanel::IMenu *menu)
 {
-  // fill export menu
+  // fill build menu
   if (impostorApp)
   {
-    editor_command_system.addMenuItem(*menu, CM_EXPORT, CM_EXPORT_CURRENT_IMPOSTOR, EditorCommandIds::EXPORT_CURRENT_IMPOSTOR,
+    editor_command_system.addMenuItem(*menu, CM_BUILD_MENU, CM_EXPORT_CURRENT_IMPOSTOR, EditorCommandIds::EXPORT_CURRENT_IMPOSTOR,
       "Generate current impostor");
-    editor_command_system.addMenuItem(*menu, CM_EXPORT, CM_EXPORT_IMPOSTORS_CURRENT_PACK,
+    editor_command_system.addMenuItem(*menu, CM_BUILD_MENU, CM_EXPORT_IMPOSTORS_CURRENT_PACK,
       EditorCommandIds::EXPORT_IMPOSTORS_CURRENT_PACK, "Generate impostors from current pack");
-    editor_command_system.addMenuItem(*menu, CM_EXPORT, CM_EXPORT_ALL_IMPOSTORS, EditorCommandIds::EXPORT_ALL_IMPOSTORS,
+    editor_command_system.addMenuItem(*menu, CM_BUILD_MENU, CM_EXPORT_ALL_IMPOSTORS, EditorCommandIds::EXPORT_ALL_IMPOSTORS,
       "Generate all impostors");
-    editor_command_system.addMenuItem(*menu, CM_EXPORT, CM_CLEAR_UNUSED_IMPOSTORS, EditorCommandIds::CLEAR_UNUSED_IMPOSTORS,
+    editor_command_system.addMenuItem(*menu, CM_BUILD_MENU, CM_CLEAR_UNUSED_IMPOSTORS, EditorCommandIds::CLEAR_UNUSED_IMPOSTORS,
       "Clear unused impostors");
+    menu->addSeparator(CM_BUILD_MENU);
   }
   if (pointCloudGen)
-    editor_command_system.addMenuItem(*menu, CM_EXPORT, CM_EXPORT_CURRENT_POINT_CLOUD, EditorCommandIds::EXPORT_CURRENT_POINT_CLOUD,
-      "Generate current point cloud");
+    editor_command_system.addMenuItem(*menu, CM_BUILD_MENU, CM_EXPORT_CURRENT_POINT_CLOUD,
+      EditorCommandIds::EXPORT_CURRENT_POINT_CLOUD, "Generate current point cloud");
 
-  editor_command_system.addMenuItem(*menu, CM_EXPORT, CM_BUILD_RESOURCES, EditorCommandIds::BUILD_RESOURCES, "Export gameRes [pc]");
-  editor_command_system.addMenuItem(*menu, CM_EXPORT, CM_BUILD_TEXTURES, EditorCommandIds::BUILD_TEXTURES, "Export texPack [pc]");
-  menu->addSeparator(CM_EXPORT);
-  editor_command_system.addMenuItem(*menu, CM_EXPORT, CM_BUILD_ALL, EditorCommandIds::BUILD_ALL, "Export all [pc]");
-  menu->addSeparator(CM_EXPORT);
-  editor_command_system.addMenuItem(*menu, CM_EXPORT, CM_BUILD_CLEAR_CACHE, EditorCommandIds::BUILD_CLEAR_CACHE, "Clear cache [pc]");
+  editor_command_system.addMenuItem(*menu, CM_BUILD_MENU, CM_BUILD_RESOURCES, EditorCommandIds::BUILD_RESOURCES, "Build gameRes [pc]");
+  editor_command_system.addMenuItem(*menu, CM_BUILD_MENU, CM_BUILD_TEXTURES, EditorCommandIds::BUILD_TEXTURES, "Build texPack [pc]");
+  editor_command_system.addMenuItem(*menu, CM_BUILD_MENU, CM_BUILD_ALL, EditorCommandIds::BUILD_ALL, "Build All [pc]");
+  menu->addSeparator(CM_BUILD_MENU);
+  editor_command_system.addMenuItem(*menu, CM_BUILD_MENU, CM_BUILD_CLEAR_CACHE, EditorCommandIds::BUILD_CLEAR_CACHE,
+    "Clear cache [pc]");
 
   int platformCnt = getWorkspace().getAdditionalPlatforms().size();
   if (platformCnt)
   {
+    menu->addSeparator(CM_BUILD_MENU);
+
     for (int i = 0; i < platformCnt; i++)
     {
-      menu->addSubMenu(CM_EXPORT, CM_PLATFORM_SUBMENU + i,
+      menu->addSubMenu(CM_BUILD_MENU, CM_PLATFORM_SUBMENU + i,
         String(256, "%c%c%c%c", _DUMP4C(getWorkspace().getAdditionalPlatforms()[i])));
 
       int m_index = 1 + i;
 
-      menu->addItem(CM_PLATFORM_SUBMENU + i, CM_BUILD_RESOURCES + m_index, "Export gameRes");
-      menu->addItem(CM_PLATFORM_SUBMENU + i, CM_BUILD_TEXTURES + m_index, "Export texPack");
-      menu->addSeparator(CM_PLATFORM_SUBMENU + i);
-      menu->addItem(CM_PLATFORM_SUBMENU + i, CM_BUILD_ALL + m_index, "Export all");
+      menu->addItem(CM_PLATFORM_SUBMENU + i, CM_BUILD_RESOURCES + m_index, "Build gameRes");
+      menu->addItem(CM_PLATFORM_SUBMENU + i, CM_BUILD_TEXTURES + m_index, "Build texPack");
+      menu->addItem(CM_PLATFORM_SUBMENU + i, CM_BUILD_ALL + m_index, "Build All");
       menu->addSeparator(CM_PLATFORM_SUBMENU + i);
       menu->addItem(CM_PLATFORM_SUBMENU + i, CM_BUILD_CLEAR_CACHE + m_index, "Clear cache");
     }
 
-    menu->addSeparator(CM_EXPORT);
-    editor_command_system.addMenuItem(*menu, CM_EXPORT, CM_BUILD_ALL_PLATFORM_RES, EditorCommandIds::BUILD_ALL_PLATFORM_RES,
-      "Export gameRes for All platform");
-    editor_command_system.addMenuItem(*menu, CM_EXPORT, CM_BUILD_ALL_PLATFORM_TEX, EditorCommandIds::BUILD_ALL_PLATFORM_TEX,
-      "Export texPack for All platform");
-    editor_command_system.addMenuItem(*menu, CM_EXPORT, CM_BUILD_ALL_PLATFORM, EditorCommandIds::BUILD_ALL_PLATFORM,
-      "Export All for All platform");
-    menu->addSeparator(CM_EXPORT);
-    editor_command_system.addMenuItem(*menu, CM_EXPORT, CM_BUILD_CLEAR_CACHE_ALL, EditorCommandIds::BUILD_CLEAR_CACHE_ALL,
-      "Clear cache for All platform");
+    menu->addSubMenu(CM_BUILD_MENU, CM_ALL_PLATFORMS_SUBMENU, "All platforms");
+    editor_command_system.addMenuItem(*menu, CM_ALL_PLATFORMS_SUBMENU, CM_BUILD_ALL_PLATFORM_RES,
+      EditorCommandIds::BUILD_ALL_PLATFORM_RES, "Build gameRes");
+    editor_command_system.addMenuItem(*menu, CM_ALL_PLATFORMS_SUBMENU, CM_BUILD_ALL_PLATFORM_TEX,
+      EditorCommandIds::BUILD_ALL_PLATFORM_TEX, "Build texPack");
+    editor_command_system.addMenuItem(*menu, CM_ALL_PLATFORMS_SUBMENU, CM_BUILD_ALL_PLATFORM, EditorCommandIds::BUILD_ALL_PLATFORM,
+      "Build All");
+    menu->addSeparator(CM_ALL_PLATFORMS_SUBMENU);
+    editor_command_system.addMenuItem(*menu, CM_ALL_PLATFORMS_SUBMENU, CM_BUILD_CLEAR_CACHE_ALL,
+      EditorCommandIds::BUILD_CLEAR_CACHE_ALL, "Clear cache");
   }
 }
 
@@ -2257,8 +2309,6 @@ bool AssetViewerApp::loadProject(const char *)
   matParamsPath = make_eff_app_relative_path(appblk.getBlockByNameEx("game")->getStr("mat_params", ""));
   appblk.setStr("appDir", app_dir);
   useDngBasedSceneRender = appblk.getBlockByNameEx("game")->getBool("daNetGameRender", false);
-  if (useDngBasedSceneRender)
-    appblk.setBool("initUiFonts", false);
 
   appblk.setStr("shadersAbs", tools3d::get_shaders_path(appblk, useDngBasedSceneRender));
 
@@ -2589,7 +2639,7 @@ bool AssetViewerApp::loadProject(const char *)
   if (pc < 0)
     console->addMessage(console->ERROR, "cannot init daBuild");
   else if (pc == 0)
-    console->addMessage(console->WARNING, "daBuild inited but is useless, due to there are no asset types for export");
+    console->addMessage(console->WARNING, "daBuild inited but is useless, due to there are no asset types for build");
 
   makeDefaultLayout(/*for_initial_layout = */ true);
   ::dagor_idle_cycle();
@@ -3024,56 +3074,38 @@ void AssetViewerApp::onClick(int pcb_id, [[maybe_unused]] PropPanel::ContainerPr
   }
 }
 
-static void build_currently_assets(AllAssetsTree *tree, dag::ConstSpan<unsigned> tc)
-{
-  PropPanel::TLeafHandle sel = tree->getSelectedItem();
-
-  void *data = tree->getItemData(sel);
-  if (!get_dagor_asset_folder(data))
-    ::build_assets(tc, make_span_const((DagorAsset **)&data, 1));
-}
-
-
-static void build_currently_assets(AllAssetsTree *tree)
+static void build_asset_all_platforms(DagorAsset *asset)
 {
   Tab<unsigned> tc(get_app().getWorkspace().getAdditionalPlatforms(), tmpmem);
   tc.push_back(_MAKE4C('PC'));
-
-  ::build_currently_assets(tree, tc);
+  ::build_assets(tc, make_span_const(&asset, 1));
 }
 
 
-static inline void make_hierarchical_list(AllAssetsTree *tree, PropPanel::TLeafHandle item, Tab<PropPanel::TLeafHandle> &items)
+static void add_folder_indices(const DagorAssetMgr &asset_mgr, int folder_idx, bool hierarchical, Tab<int> &folder_indices)
 {
-  int count = tree->getChildrenCount(item);
-  for (int i = 0; i < count; ++i)
-  {
-    PropPanel::TLeafHandle child = tree->getChild(item, i);
-    items.push_back(child);
-    ::make_hierarchical_list(tree, child, items);
-  }
+  const DagorAssetFolder *folder = asset_mgr.getFolderPtr(folder_idx);
+  if (!folder)
+    return;
+
+  folder_indices.push_back(folder_idx);
+
+  if (!hierarchical)
+    return;
+
+  for (int sub_folder_idx : folder->subFolderIdx)
+    add_folder_indices(asset_mgr, sub_folder_idx, true, folder_indices);
 }
 
-
-static void create_folder_idx_list(AllAssetsTree *tree, bool /*hierarchical*/, Tab<int> &fld_idx)
+static void create_folder_idx_list(const DagorAssetFolder &folder, bool hierarchical, Tab<int> &folder_indices)
 {
-  PropPanel::TLeafHandle selItem = tree->getSelectedItem();
+  const DagorAssetMgr &asset_mgr = get_app().getAssetMgr();
 
-  Tab<PropPanel::TLeafHandle> sel(tmpmem);
+  const int folder_idx = asset_mgr.getFolderIndex(folder);
+  if (folder_idx < 0)
+    return;
 
-  sel.push_back(selItem);
-  ::make_hierarchical_list(tree, selItem, sel);
-
-  int selCnt = sel.size();
-  for (int i = 0; i < selCnt; i++) // O(N*M)
-  {
-    if (const DagorAssetFolder *folder = get_dagor_asset_folder(tree->getItemData(sel[i])))
-    {
-      int idx = get_app().getAssetMgr().getFolderIndex(*folder);
-      if (idx >= 0)
-        fld_idx.push_back(idx);
-    }
-  }
+  add_folder_indices(asset_mgr, folder_idx, hierarchical, folder_indices);
 }
 
 void AssetViewerApp::generate_impostors(const ImpostorOptions &options)
@@ -3113,22 +3145,28 @@ void AssetViewerApp::generate_point_cloud(DagorAsset *asset)
   ::post_base_update_notify_dabuild();
 }
 
-static void build_folder_for_platform(AllAssetsTree *tree, bool hierarchical, bool tex, bool res, unsigned platform)
+static void build_folder_for_platform(const DagorAssetFolder *folder, bool hierarchical, bool tex, bool res, unsigned platform)
 {
+  if (!folder)
+    return;
+
   Tab<int> fldIdx;
-  ::create_folder_idx_list(tree, hierarchical, fldIdx);
+  ::create_folder_idx_list(*folder, hierarchical, fldIdx);
 
   ::rebuild_assets_in_folders(make_span_const(&platform, 1), fldIdx, tex, res);
 }
 
 
-static void build_folder_all_platform(AllAssetsTree *tree, bool hierarchical, bool tex, bool res)
+static void build_folder_all_platform(const DagorAssetFolder *folder, bool hierarchical, bool tex, bool res)
 {
+  if (!folder)
+    return;
+
   Tab<unsigned> p(get_app().getWorkspace().getAdditionalPlatforms());
   p.push_back(_MAKE4C('PC'));
 
   Tab<int> fldIdx;
-  ::create_folder_idx_list(tree, hierarchical, fldIdx);
+  ::create_folder_idx_list(*folder, hierarchical, fldIdx);
 
   ::rebuild_assets_in_folders(p, fldIdx, tex, res);
 }
@@ -3324,6 +3362,94 @@ static void exportCompositToEcs(const DagorAsset &asset, DataBlock &out, const D
   exportCompositNodes(asset.props, tpl->addNewBlock("nodes:shared:array"), out, mgr);
 }
 
+// the packs one context-menu action works on: a texture's quality parts, or any other asset's one pack
+struct AssetPacks
+{
+  static constexpr int MAX_PACKS = 4; // base plus the three variant suffixes below
+  uint64_t ids[MAX_PACKS] = {};
+  const char *parts[MAX_PACKS] = {};
+  int count = 0;
+
+  dag::ConstSpan<uint64_t> span() const { return make_span_const(ids, count); }
+  bool hasParts() const { return count > 0 && parts[0] != nullptr; }
+  const char *noun() const { return count > 1 ? "packs" : "pack"; }
+
+  // an id that resolves to no pack is not actionable, and count decides the item wording
+  void add(uint64_t id, const char *part)
+  {
+    if (id == INVALID_PACK_ID || count >= MAX_PACKS)
+      return;
+    parts[count] = part;
+    ids[count++] = id;
+  }
+};
+
+static const struct
+{
+  const char *suffix, *part;
+} TEX_VARIANTS[] = {{"$hq", "HQ"}, {"$uhq", "UHQ"}, {"$tq", "TQ"}};
+
+static bool is_base_tex_asset(const DagorAsset *a)
+{
+  return a && a->getType() == a->getMgr().getTexAssetTypeId() && !strchr(a->getName(), '$');
+}
+
+// "UHQ" for a <name>$uhq asset, null when the asset is not a texture quality variant
+static const char *tex_variant_part(const DagorAsset *a)
+{
+  if (!a || a->getType() != a->getMgr().getTexAssetTypeId())
+    return nullptr;
+  for (const auto &v : TEX_VARIANTS)
+    if (trail_strcmp(a->getName(), v.suffix))
+      return v.part;
+  return nullptr;
+}
+
+static AssetPacks collect_asset_packs(DagorAsset &asset)
+{
+  AssetPacks out;
+  const uint64_t ownId = ::make_pack_id(::get_asset_pkg_name(&asset), ::get_asset_pack_name(&asset));
+
+  // a variant asset is selectable on its own, so name its quality too
+  if (!is_base_tex_asset(&asset))
+  {
+    out.add(ownId, tex_variant_part(&asset));
+    return out;
+  }
+
+  out.add(ownId, "BQ");
+
+  DagorAssetMgr &mgr = asset.getMgr();
+  for (const auto &v : TEX_VARIANTS)
+    if (DagorAsset *variant = mgr.findAsset(String(0, "%s%s", asset.getName(), v.suffix), asset.getType()))
+      // the split can give the variant its own forcePackage, so its package can differ from the base asset's
+      out.add(::make_pack_id(::get_asset_pkg_name(variant), ::get_asset_pack_name(variant)), v.part);
+
+  return out;
+}
+
+// " (HQ, TQ)": the subset this item acts on
+static String packs_parts_suffix(const AssetPacks &packs, dag::ConstSpan<unsigned> tcs, bool want_missing)
+{
+  if (!packs.hasParts())
+    return String();
+
+  String parts;
+  for (int i = 0; i < packs.count; ++i)
+  {
+    bool all = true, any = false;
+    for (unsigned tc : tcs)
+    {
+      const bool queued = ::is_queued(packs.ids[i], tc);
+      all &= queued;
+      any |= queued;
+    }
+    if (want_missing ? !all : any)
+      parts.aprintf(0, parts.empty() ? "%s" : ", %s", packs.parts[i]);
+  }
+  return parts.empty() ? String() : String(0, " (%s)", parts);
+}
+
 int AssetViewerApp::onMenuItemClick(unsigned id)
 {
   int ind = -1;
@@ -3383,6 +3509,16 @@ int AssetViewerApp::onMenuItemClick(unsigned id)
   {
     ind = id - CM_BUILD_FROM_QUEUE_GROUP_PACK;
     id = CM_BUILD_FROM_QUEUE_CUR_PACK;
+  }
+  else if ((id >= CM_REMOVE_FROM_QUEUE_CUR_PACK) && (id < CM_REMOVE_FROM_QUEUE_CUR_PACK + CM_PLATFORM_COUNT))
+  {
+    ind = id - CM_REMOVE_FROM_QUEUE_CUR_PACK;
+    id = CM_REMOVE_FROM_QUEUE_CUR_PACK;
+  }
+  else if ((id >= CM_REMOVE_FROM_QUEUE_GROUP_PACK) && (id < CM_REMOVE_FROM_QUEUE_GROUP_PACK + CM_PLATFORM_COUNT))
+  {
+    ind = id - CM_REMOVE_FROM_QUEUE_GROUP_PACK;
+    id = CM_REMOVE_FROM_QUEUE_CUR_PACK;
   }
 
   // main menu
@@ -3489,10 +3625,11 @@ int AssetViewerApp::onMenuItemClick(unsigned id)
     }
     case CM_EXPORT_CURRENT_IMPOSTOR:
     {
-      if (curAsset && impostorApp && impostorApp->getImpostorBaker()->getSupported(curAsset))
+      DagorAsset *asset = getAssetSelectorSelectedAsset();
+      if (asset && impostorApp && impostorApp->getImpostorBaker()->getSupported(asset))
       {
         ImpostorOptions options;
-        options.assetsToBuild.push_back(eastl::string{curAsset->getName()});
+        options.assetsToBuild.push_back(eastl::string{asset->getName()});
         options.forceRebake = true;
         generate_impostors(options);
       }
@@ -3500,10 +3637,11 @@ int AssetViewerApp::onMenuItemClick(unsigned id)
     }
     case CM_EXPORT_IMPOSTORS_CURRENT_PACK:
     {
-      if (curAsset)
+      DagorAsset *asset = getAssetSelectorSelectedAsset();
+      if (asset)
       {
         ImpostorOptions options;
-        options.packsToBuild.push_back(eastl::string{curAsset->getDestPackName()});
+        options.packsToBuild.push_back(eastl::string{asset->getDestPackName()});
         options.forceRebake = true;
         generate_impostors(options);
       }
@@ -3511,8 +3649,9 @@ int AssetViewerApp::onMenuItemClick(unsigned id)
     }
     case CM_EXPORT_CURRENT_POINT_CLOUD:
     {
-      if (curAsset && pointCloudGen)
-        generate_point_cloud(curAsset);
+      DagorAsset *asset = getAssetSelectorSelectedAsset();
+      if (asset && pointCloudGen)
+        generate_point_cloud(asset);
       return 1;
     }
     case CM_BUILD_CLEAR_CACHE_ALL:
@@ -3525,19 +3664,41 @@ int AssetViewerApp::onMenuItemClick(unsigned id)
 
       // tree context menu
 
-    case CM_INC_BUILD_RESOURCES: ::build_folder_for_platform(&mTreeView->getAllAssetsTab().getTree(), false, false, true, p); return 1;
+    case CM_INC_BUILD_RESOURCES:
+    {
+      ::build_folder_for_platform(getAssetSelectorSelectedAssetFolder(), false, false, true, p);
+      return 1;
+    }
 
-    case CM_INC_BUILD_TEXTURES: ::build_folder_for_platform(&mTreeView->getAllAssetsTab().getTree(), false, true, false, p); return 1;
+    case CM_INC_BUILD_TEXTURES:
+    {
+      ::build_folder_for_platform(getAssetSelectorSelectedAssetFolder(), false, true, false, p);
+      return 1;
+    }
 
     case CM_INC_BUILD_RESOURCES_H:
-      ::build_folder_for_platform(&mTreeView->getAllAssetsTab().getTree(), true, false, true, p);
+    {
+      ::build_folder_for_platform(getAssetSelectorSelectedAssetFolder(), true, false, true, p);
       return 1;
+    }
 
-    case CM_INC_BUILD_TEXTURES_H: ::build_folder_for_platform(&mTreeView->getAllAssetsTab().getTree(), true, true, false, p); return 1;
+    case CM_INC_BUILD_TEXTURES_H:
+    {
+      ::build_folder_for_platform(getAssetSelectorSelectedAssetFolder(), true, true, false, p);
+      return 1;
+    }
 
-    case CM_INC_BUILD_ALL: ::build_folder_for_platform(&mTreeView->getAllAssetsTab().getTree(), false, true, true, p); return 1;
+    case CM_INC_BUILD_ALL:
+    {
+      ::build_folder_for_platform(getAssetSelectorSelectedAssetFolder(), false, true, true, p);
+      return 1;
+    }
 
-    case CM_INC_BUILD_ALL_H: ::build_folder_for_platform(&mTreeView->getAllAssetsTab().getTree(), true, true, true, p); return 1;
+    case CM_INC_BUILD_ALL_H:
+    {
+      ::build_folder_for_platform(getAssetSelectorSelectedAssetFolder(), true, true, true, p);
+      return 1;
+    }
 
     case CM_INC_BUILD_ALL_PLATFORM_TEX:
     case CM_INC_BUILD_ALL_PLATFORM_RES:
@@ -3552,7 +3713,7 @@ int AssetViewerApp::onMenuItemClick(unsigned id)
         res = (id == CM_INC_BUILD_ALL_PLATFORM_RES);
       }
 
-      ::build_folder_all_platform(&mTreeView->getAllAssetsTab().getTree(), false, tex, res);
+      ::build_folder_all_platform(getAssetSelectorSelectedAssetFolder(), false, tex, res);
       return 1;
     }
     case CM_INC_BUILD_ALL_PLATFORM_TEX_H:
@@ -3568,20 +3729,21 @@ int AssetViewerApp::onMenuItemClick(unsigned id)
         res = (id == CM_INC_BUILD_ALL_PLATFORM_RES_H);
       }
 
-      ::build_folder_all_platform(&mTreeView->getAllAssetsTab().getTree(), true, tex, res);
+      ::build_folder_all_platform(getAssetSelectorSelectedAssetFolder(), true, tex, res);
       return 1;
     }
     case CM_INC_BUILD_CUR_PACK:
     {
-      Tab<unsigned> tc(tmpmem);
-      tc.push_back(p);
+      DagorAsset *asset = getAssetSelectorSelectedAsset();
+      if (!asset)
+        return 1;
 
-      ::build_currently_assets(&mTreeView->getAllAssetsTab().getTree(), tc);
+      ::build_assets(make_span_const(&p, 1), make_span_const(&asset, 1));
       return 1;
     }
 
     case CM_INC_BUILD_CUR_PACK_BQ_HQ_UHQ_PC:
-      if (DagorAsset *asset = mTreeView->getAllAssetsTab().getSelectedAsset())
+      if (DagorAsset *asset = getAssetSelectorSelectedAsset())
       {
         unsigned tc = _MAKE4C('PC');
         StaticTab<DagorAsset *, 3> a;
@@ -3595,7 +3757,7 @@ int AssetViewerApp::onMenuItemClick(unsigned id)
       }
       return 1;
     case CM_INC_BUILD_CUR_PACK_TQ_PC:
-      if (DagorAsset *a = mTreeView->getAllAssetsTab().getSelectedAsset())
+      if (DagorAsset *a = getAssetSelectorSelectedAsset())
       {
         unsigned tc = _MAKE4C('PC');
         DagorAssetMgr &mgr = a->getMgr();
@@ -3605,67 +3767,63 @@ int AssetViewerApp::onMenuItemClick(unsigned id)
       return 1;
 
 
-    case CM_INC_BUILD_ALL_PLATFORM_CUR_PACK: ::build_currently_assets(&mTreeView->getAllAssetsTab().getTree()); return 1;
+    case CM_INC_BUILD_ALL_PLATFORM_CUR_PACK:
+    {
+      DagorAsset *asset = getAssetSelectorSelectedAsset();
+      if (!asset)
+        return 1;
+
+      ::build_asset_all_platforms(asset);
+      return 1;
+    }
 
     case CM_ADD_TO_QUEUE_CUR_PACK:
-      if (DagorAsset *asset = mTreeView->getAllAssetsTab().getSelectedAsset())
+      if (DagorAsset *asset = getAssetSelectorSelectedAsset())
       {
-        String packName = ::get_asset_pack_name(asset);
-        String pkgName = ::get_asset_pkg_name(asset);
-        if (!packName.empty())
-          ::queue_toggle_pack(::make_pack_id(pkgName.c_str(), packName.c_str()), p == 0 ? _MAKE4C('PC') : p);
+        const AssetPacks packs = collect_asset_packs(*asset);
+        ::queue_add_missing_packs(packs.span(), p == 0 ? _MAKE4C('PC') : p);
+      }
+      return 1;
+
+    case CM_REMOVE_FROM_QUEUE_CUR_PACK:
+      if (DagorAsset *asset = getAssetSelectorSelectedAsset())
+      {
+        const AssetPacks packs = collect_asset_packs(*asset);
+        ::queue_remove_packs(packs.span(), p == 0 ? _MAKE4C('PC') : p);
       }
       return 1;
 
     case CM_ADD_TO_QUEUE_CUR_PACK_ALL_PLATFORM:
-      if (DagorAsset *asset = mTreeView->getAllAssetsTab().getSelectedAsset())
+      if (DagorAsset *asset = getAssetSelectorSelectedAsset())
       {
-        String packName = ::get_asset_pack_name(asset);
-        String pkgName = ::get_asset_pkg_name(asset);
-        if (!packName.empty())
-          ::queue_toggle_all_platforms(::make_pack_id(pkgName.c_str(), packName.c_str()));
+        const AssetPacks packs = collect_asset_packs(*asset);
+        ::queue_add_missing_packs_all_platforms(packs.span());
+      }
+      return 1;
+
+    case CM_REMOVE_FROM_QUEUE_ALL_PLATFORM:
+      if (DagorAsset *asset = getAssetSelectorSelectedAsset())
+      {
+        const AssetPacks packs = collect_asset_packs(*asset);
+        ::queue_remove_packs_all_platforms(packs.span());
       }
       return 1;
 
     case CM_BUILD_FROM_QUEUE_CUR_PACK:
-      if (DagorAsset *asset = mTreeView->getAllAssetsTab().getSelectedAsset())
+      if (DagorAsset *asset = getAssetSelectorSelectedAsset())
       {
-        String packName = ::get_asset_pack_name(asset);
-        String pkgName = ::get_asset_pkg_name(asset);
-        if (!packName.empty())
-        {
-          uint64_t packId = ::make_pack_id(pkgName.c_str(), packName.c_str());
-          unsigned tc = (p == 0 ? _MAKE4C('PC') : p);
-          dag::ConstSpan<unsigned> queued = ::queue_get_pack_tcs(packId);
-          bool tcInQueue = false;
-          for (unsigned q : queued)
-            if (q == tc)
-            {
-              tcInQueue = true;
-              break;
-            }
-          if (!tcInQueue)
-            ::queue_add_pack(packId, tc);
-          ::export_queue();
-        }
+        const AssetPacks packs = collect_asset_packs(*asset);
+        ::queue_add_missing_packs(packs.span(), p == 0 ? _MAKE4C('PC') : p);
+        ::export_queue();
       }
       return 1;
 
     case CM_BUILD_FROM_QUEUE_ALL_PLATFORM:
-      if (DagorAsset *asset = mTreeView->getAllAssetsTab().getSelectedAsset())
+      if (DagorAsset *asset = getAssetSelectorSelectedAsset())
       {
-        String packName = ::get_asset_pack_name(asset);
-        String pkgName = ::get_asset_pkg_name(asset);
-        if (!packName.empty())
-        {
-          uint64_t packId = ::make_pack_id(pkgName.c_str(), packName.c_str());
-          dag::ConstSpan<unsigned> allPlatforms = getWorkspace().getAdditionalPlatforms();
-          dag::ConstSpan<unsigned> queued = ::queue_get_pack_tcs(packId);
-          bool allIn = queued.size() == (allPlatforms.size() + 1);
-          if (!allIn)
-            ::queue_add_pack_all_platforms(packId);
-          ::export_queue();
-        }
+        const AssetPacks packs = collect_asset_packs(*asset);
+        ::queue_add_missing_packs_all_platforms(packs.span());
+        ::export_queue();
       }
       return 1;
 
@@ -3950,68 +4108,71 @@ int AssetViewerApp::onMenuItemClick(unsigned id)
     case CM_ZOOM_AND_CENTER: zoomAndCenter(); return 1;
 
     case CM_COPY_ASSET_FILEPATH:
-      if (curAsset)
+      if (DagorAsset *asset = getAssetSelectorSelectedAsset())
       {
-        String path(curAsset->isVirtual() ? curAsset->getTargetFilePath() : curAsset->getSrcFilePath());
+        String path(asset->isVirtual() ? asset->getTargetFilePath() : asset->getSrcFilePath());
         clipboard::set_clipboard_ansi_text(make_ms_slashes(path));
       }
       return 1;
 
     case CM_COPY_ASSET_NAME:
-      if (curAsset)
+      if (DagorAsset *asset = getAssetSelectorSelectedAsset())
       {
-        clipboard::set_clipboard_ansi_text(curAsset->getName());
+        clipboard::set_clipboard_ansi_text(asset->getName());
       }
       return 1;
 
     case CM_COPY_ASSET_TAGS:
-      if (curAsset)
+      if (DagorAsset *asset = getAssetSelectorSelectedAsset())
       {
-        AssetSelectorCommon::copyAssetTagsToClipboard(*curAsset);
+        AssetSelectorCommon::copyAssetTagsToClipboard(*asset);
       }
       return 1;
 
     case CM_COPY_ASSET_PROPS_BLK:
-      if (curAsset)
+      if (DagorAsset *asset = getAssetSelectorSelectedAsset())
       {
         DynamicMemGeneralSaveCB cwr(tmpmem, 0, 4 << 10);
-        copy_asset_props_to_stream(curAsset, cwr, false);
+        copy_asset_props_to_stream(asset, cwr, false);
         cwr.write("\0", 1);
         clipboard::set_clipboard_ansi_text((const char *)cwr.data());
       }
       return 1;
     case CM_COPY_LOD_ASSET_PROPS_BLK:
-      if (curAsset && curAsset->props.getBlockByName("lod"))
+    {
+      DagorAsset *asset = getAssetSelectorSelectedAsset();
+      if (asset && asset->props.getBlockByName("lod"))
       {
         DynamicMemGeneralSaveCB cwr(tmpmem, 0, 4 << 10);
-        copy_terse_lod_asset_props_to_stream(curAsset, cwr);
+        copy_terse_lod_asset_props_to_stream(asset, cwr);
         cwr.write("\0", 1);
         clipboard::set_clipboard_ansi_text((const char *)cwr.data());
       }
       return 1;
+    }
     case CM_SHOW_ASSET_DEPS:
-      if (curAsset)
-        showAssetDeps(*curAsset, getConsole());
+      if (DagorAsset *asset = getAssetSelectorSelectedAsset())
+        showAssetDeps(*asset, getConsole());
       return 1;
     case CM_SHOW_ASSET_REFS:
-      if (curAsset)
+      if (DagorAsset *asset = getAssetSelectorSelectedAsset())
       {
         asset_reference_viewer_dialog.reset(new AssetReferenceViewer());
-        asset_reference_viewer_dialog->setAsset(curAsset);
+        asset_reference_viewer_dialog->setAsset(asset);
         asset_reference_viewer_dialog->show();
       }
       return 1;
     case CM_SHOW_ASSET_BACK_REFS:
-      if (curAsset)
+      if (DagorAsset *asset = getAssetSelectorSelectedAsset())
       {
         asset_back_reference_viewer_dialog.reset(new AssetBackReferenceViewer());
-        asset_back_reference_viewer_dialog->setAsset(curAsset);
+        asset_back_reference_viewer_dialog->setAsset(asset);
         asset_back_reference_viewer_dialog->show();
       }
       return 1;
     case CM_COPY_FOLDER_ASSETS_PROPS_BLK:
     case CM_COPY_FOLDER_LOD_ASSETS_PROPS_BLK:
-      if (!curAsset)
+      if (!getAssetSelectorSelectedAsset())
       {
         if (const DagorAssetFolder *f = mTreeView->getAllAssetsTab().getSelectedAssetFolder())
         {
@@ -4043,14 +4204,14 @@ int AssetViewerApp::onMenuItemClick(unsigned id)
       return 1;
 
     case CM_COPY_FOLDERPATH:
-      if (const DagorAsset *asset = mTreeView->getAllAssetsTab().getSelectedAsset())
+      if (const DagorAsset *asset = getAssetSelectorSelectedAsset())
         AssetSelectorCommon::copyAssetFolderPathToClipboard(*asset);
       else if (const DagorAssetFolder *f = mTreeView->getAllAssetsTab().getSelectedAssetFolder())
         AssetSelectorCommon::copyAssetFolderPathToClipboard(*f);
       return 1;
 
     case CM_REVEAL_IN_EXPLORER:
-      if (const DagorAsset *asset = mTreeView->getAllAssetsTab().getSelectedAsset())
+      if (const DagorAsset *asset = getAssetSelectorSelectedAsset())
         AssetSelectorCommon::revealInExplorer(*asset);
       else if (const DagorAssetFolder *f = mTreeView->getAllAssetsTab().getSelectedAssetFolder())
         AssetSelectorCommon::revealInExplorer(*f);
@@ -4067,8 +4228,18 @@ int AssetViewerApp::onMenuItemClick(unsigned id)
       return 1;
 
     case CM_ADD_ASSET_TO_FAVORITES:
-      if (const DagorAsset *asset = mTreeView->getAllAssetsTab().getSelectedAsset())
+      if (const DagorAsset *asset = getAssetSelectorSelectedAsset())
         mTreeView->addAssetToFavorites(*asset);
+      return 1;
+
+    case CM_REMOVE_ASSET_FROM_FAVORITES:
+      if (const DagorAsset *asset = getAssetSelectorSelectedAsset())
+        mTreeView->removeAssetFromFavorites(*asset);
+      return 1;
+
+    case CM_GO_TO_ASSET:
+      if (const DagorAsset *asset = getAssetSelectorSelectedAsset())
+        mTreeView->goToAsset(*asset);
       return 1;
 
     case CM_CREATE_SCREENSHOT: createScreenshot(); return 1;
@@ -4145,7 +4316,9 @@ int AssetViewerApp::onMenuItemClick(unsigned id)
 
     case CM_EXPORT_AS_COMPOSITE_ENTITY:
     {
-      if (!curAsset)
+      DagorAsset *asset = getAssetSelectorSelectedAsset();
+
+      if (!asset)
         break;
 
       DataBlock appBlk(getWorkspace().getAppBlkPath());
@@ -4161,19 +4334,19 @@ int AssetViewerApp::onMenuItemClick(unsigned id)
             exportFolder.str());
           break;
         }
-        outPath.printf(0, "%s/%s.entities.blk", exportFolder.str(), curAsset->getName());
+        outPath.printf(0, "%s/%s.entities.blk", exportFolder.str(), asset->getName());
       }
       else
       {
-        String defaultName(0, "%s.entities.blk", curAsset->getName());
+        String defaultName(0, "%s.entities.blk", asset->getName());
         outPath = wingw::file_save_dlg(mManager->getMainWindow(), "Export as ECS composite template", "BLK|*.blk", "blk",
-          curAsset->getFolderPath(), defaultName);
+          asset->getFolderPath(), defaultName);
         if (outPath.empty())
           break;
       }
 
       DataBlock outBlk;
-      exportCompositToEcs(*curAsset, outBlk, assetMgr);
+      exportCompositToEcs(*asset, outBlk, assetMgr);
 
       if (!outBlk.saveToTextFile(outPath))
         wingw::message_box(wingw::MBS_EXCL | wingw::MBS_OK, "Export error", "Failed to write to '%s'.", outPath.str());
@@ -4283,15 +4456,15 @@ static void create_aditional_platform_popup_menu(PropPanel::IMenu &menu, unsigne
 {
   if (exported)
   {
-    menu.addItem(pid, CM_INC_BUILD_RESOURCES + menu_inc_idx, "Export gameRes");
-    menu.addItem(pid, CM_INC_BUILD_TEXTURES + menu_inc_idx, "Export texPack");
-    menu.addItem(pid, CM_INC_BUILD_ALL + menu_inc_idx, "Export All");
+    menu.addItem(pid, CM_INC_BUILD_RESOURCES + menu_inc_idx, "Build gameRes");
+    menu.addItem(pid, CM_INC_BUILD_TEXTURES + menu_inc_idx, "Build texPack");
+    menu.addItem(pid, CM_INC_BUILD_ALL + menu_inc_idx, "Build All");
     menu.addSeparator(pid);
   }
 
-  menu.addItem(pid, CM_INC_BUILD_RESOURCES_H + menu_inc_idx, "Export gameRes with sub folders");
-  menu.addItem(pid, CM_INC_BUILD_TEXTURES_H + menu_inc_idx, "Export texPack with sub folders");
-  menu.addItem(pid, CM_INC_BUILD_ALL_H + menu_inc_idx, "Export All with sub folders");
+  menu.addItem(pid, CM_INC_BUILD_RESOURCES_H + menu_inc_idx, "Build gameRes with sub folders");
+  menu.addItem(pid, CM_INC_BUILD_TEXTURES_H + menu_inc_idx, "Build texPack with sub folders");
+  menu.addItem(pid, CM_INC_BUILD_ALL_H + menu_inc_idx, "Build All with sub folders");
 }
 
 
@@ -4299,15 +4472,15 @@ static inline void create_popup_build_menu(PropPanel::IMenu &menu, bool exported
 {
   if (exported)
   {
-    menu.addItem(ROOT_MENU_ITEM, CM_INC_BUILD_RESOURCES, "Export gameRes [PC]");
-    menu.addItem(ROOT_MENU_ITEM, CM_INC_BUILD_TEXTURES, "Export texPack [PC]");
-    menu.addItem(ROOT_MENU_ITEM, CM_INC_BUILD_ALL, "Export All [PC]");
+    menu.addItem(ROOT_MENU_ITEM, CM_INC_BUILD_RESOURCES, "Build gameRes [PC]");
+    menu.addItem(ROOT_MENU_ITEM, CM_INC_BUILD_TEXTURES, "Build texPack [PC]");
+    menu.addItem(ROOT_MENU_ITEM, CM_INC_BUILD_ALL, "Build All [PC]");
     menu.addSeparator(ROOT_MENU_ITEM);
   }
 
-  menu.addItem(ROOT_MENU_ITEM, CM_INC_BUILD_RESOURCES_H, "Export gameRes with sub folders [PC]");
-  menu.addItem(ROOT_MENU_ITEM, CM_INC_BUILD_TEXTURES_H, "Export texPack with sub folders [PC]");
-  menu.addItem(ROOT_MENU_ITEM, CM_INC_BUILD_ALL_H, "Export All with sub folders [PC]");
+  menu.addItem(ROOT_MENU_ITEM, CM_INC_BUILD_RESOURCES_H, "Build gameRes with sub folders [PC]");
+  menu.addItem(ROOT_MENU_ITEM, CM_INC_BUILD_TEXTURES_H, "Build texPack with sub folders [PC]");
+  menu.addItem(ROOT_MENU_ITEM, CM_INC_BUILD_ALL_H, "Build All with sub folders [PC]");
 
   int platformCnt = get_app().getWorkspace().getAdditionalPlatforms().size();
 
@@ -4325,43 +4498,57 @@ static inline void create_popup_build_menu(PropPanel::IMenu &menu, bool exported
     ::create_aditional_platform_popup_menu(menu, CM_INC_BUILD_GROUP_ADDITIONAL + (i + 1), i + 1, exported);
   }
 
-  menu.addSeparator(ROOT_MENU_ITEM);
+  menu.addSubMenu(ROOT_MENU_ITEM, CM_ALL_PLATFORMS_SUBMENU, "All platforms");
 
   if (exported)
   {
-    menu.addItem(ROOT_MENU_ITEM, CM_INC_BUILD_ALL_PLATFORM_TEX, "Export texPack for All platform");
-    menu.addItem(ROOT_MENU_ITEM, CM_INC_BUILD_ALL_PLATFORM_RES, "Export gameRes for All platform");
-    menu.addItem(ROOT_MENU_ITEM, CM_INC_BUILD_ALL_PLATFORM, "Export All for All platform");
+    menu.addItem(CM_ALL_PLATFORMS_SUBMENU, CM_INC_BUILD_ALL_PLATFORM_RES, "Build gameRes");
+    menu.addItem(CM_ALL_PLATFORMS_SUBMENU, CM_INC_BUILD_ALL_PLATFORM_TEX, "Build texPack");
+    menu.addItem(CM_ALL_PLATFORMS_SUBMENU, CM_INC_BUILD_ALL_PLATFORM, "Build All");
 
-    menu.addSeparator(ROOT_MENU_ITEM);
+    menu.addSeparator(CM_ALL_PLATFORMS_SUBMENU);
   }
 
-  menu.addItem(ROOT_MENU_ITEM, CM_INC_BUILD_ALL_PLATFORM_TEX_H, "Export texPack for All platform with sub folders");
-  menu.addItem(ROOT_MENU_ITEM, CM_INC_BUILD_ALL_PLATFORM_RES_H, "Export gameRes for All platform with sub folders");
-  menu.addItem(ROOT_MENU_ITEM, CM_INC_BUILD_ALL_PLATFORM_H, "Export All for All platform with sub folders");
+  menu.addItem(CM_ALL_PLATFORMS_SUBMENU, CM_INC_BUILD_ALL_PLATFORM_RES_H, "Build gameRes with sub folders");
+  menu.addItem(CM_ALL_PLATFORMS_SUBMENU, CM_INC_BUILD_ALL_PLATFORM_TEX_H, "Build texPack with sub folders");
+  menu.addItem(CM_ALL_PLATFORMS_SUBMENU, CM_INC_BUILD_ALL_PLATFORM_H, "Build All with sub folders");
 }
 
 
 static inline void create_popup_build_assets_menu(PropPanel::IMenu &menu, DagorAsset *e)
 {
   String pack_name = ::get_asset_pack_name(e);
-  String pkg_name = ::get_asset_pkg_name(e);
-  uint64_t pack_id = ::make_pack_id(pkg_name.c_str(), pack_name.c_str());
-  dag::ConstSpan<unsigned> queued = ::queue_get_pack_tcs(pack_id);
 
-  auto isPcQueued = [&]() {
-    for (unsigned tc : queued)
-      if (tc == _MAKE4C('PC'))
-        return true;
-    return false;
+  // only is_asset_exportable() assets reach this menu, and that rejects null
+  const AssetPacks packs = collect_asset_packs(*e);
+
+  // a partly queued set gets both items, so the user picks the direction instead of guessing it
+  auto addQueueItems = [&](int parent, PacksQueueState state, dag::ConstSpan<unsigned> tcs, int add_id, int remove_id, int build_id,
+                         const char *platform) {
+    const char *noun = packs.noun();
+    // "all" only reads right for a set, and the whole set is one pack for every asset but a base texture
+    const bool many = packs.count > 1;
+    const String missing = packs_parts_suffix(packs, tcs, true);
+    if (state != PacksQueueState::All)
+      menu.addItem(parent, add_id,
+        String(256, "%s %s to build queue%s%s", state == PacksQueueState::Partial ? "Add missing" : "Add", noun, platform, missing));
+    if (state != PacksQueueState::None)
+      menu.addItem(parent, remove_id,
+        String(256, "%s %s from build queue%s%s", state == PacksQueueState::Partial && many ? "Remove all" : "Remove", noun, platform,
+          packs_parts_suffix(packs, tcs, false)));
+    menu.addItem(parent, build_id,
+      state == PacksQueueState::All ? String(256, "Build with queue%s", platform)
+                                    : String(256, "Add %s & build with queue%s%s", noun, platform, missing));
   };
 
-  menu.addItem(ROOT_MENU_ITEM, CM_INC_BUILD_CUR_PACK, String(256, "Export pack '%s' [PC]", pack_name));
-  menu.addItem(ROOT_MENU_ITEM, CM_ADD_TO_QUEUE_CUR_PACK, isPcQueued() ? "Remove pack from queue [PC]" : "Add pack to queue [PC]");
-  menu.addItem(ROOT_MENU_ITEM, CM_BUILD_FROM_QUEUE_CUR_PACK,
-    isPcQueued() ? "Build with queue [PC]" : "Add pack & build with queue [PC]");
+  const unsigned pcTc = _MAKE4C('PC');
+  const PacksQueueState pcState = ::queue_get_packs_state(packs.span(), pcTc);
 
-  if (e && e->getType() == e->getMgr().getTexAssetTypeId() && !strchr(e->getName(), '$'))
+  menu.addItem(ROOT_MENU_ITEM, CM_INC_BUILD_CUR_PACK, String(256, "Build pack '%s' [PC]", pack_name));
+  addQueueItems(ROOT_MENU_ITEM, pcState, make_span_const(&pcTc, 1), CM_ADD_TO_QUEUE_CUR_PACK, CM_REMOVE_FROM_QUEUE_CUR_PACK,
+    CM_BUILD_FROM_QUEUE_CUR_PACK, " [PC]");
+
+  if (is_base_tex_asset(e))
   {
     DagorAsset *e_hq = e->getMgr().findAsset(String(0, "%s$hq", e->getName()), e->getType());
     DagorAsset *e_uhq = e->getMgr().findAsset(String(0, "%s$uhq", e->getName()), e->getType());
@@ -4372,11 +4559,11 @@ static inline void create_popup_build_assets_menu(PropPanel::IMenu &menu, DagorA
         pack_names.aprintf(0, ", '%s'", ::get_asset_pack_name(e_hq));
       if (e_uhq)
         pack_names.aprintf(0, ", '%s'", ::get_asset_pack_name(e_uhq));
-      menu.addItem(ROOT_MENU_ITEM, CM_INC_BUILD_CUR_PACK_BQ_HQ_UHQ_PC, String(256, "Export HQ/UHQ packs %s [PC]", pack_names));
+      menu.addItem(ROOT_MENU_ITEM, CM_INC_BUILD_CUR_PACK_BQ_HQ_UHQ_PC, String(256, "Build HQ/UHQ packs %s [PC]", pack_names));
     }
 
     if (DagorAsset *e_tq = e->getMgr().findAsset(String(0, "%s$tq", e->getName()), e->getType()))
-      menu.addItem(ROOT_MENU_ITEM, CM_INC_BUILD_CUR_PACK_TQ_PC, String(256, "Export TQ pack %s [PC]", ::get_asset_pack_name(e_tq)));
+      menu.addItem(ROOT_MENU_ITEM, CM_INC_BUILD_CUR_PACK_TQ_PC, String(256, "Build TQ pack %s [PC]", ::get_asset_pack_name(e_tq)));
   }
 
   dag::ConstSpan<unsigned> additionalPlatforms = get_app().getWorkspace().getAdditionalPlatforms();
@@ -4385,37 +4572,27 @@ static inline void create_popup_build_assets_menu(PropPanel::IMenu &menu, DagorA
 
   menu.addSeparator(ROOT_MENU_ITEM);
 
-  String menuStr(256, "Export pack '%s'", pack_name);
+  String menuStr(256, "Build pack '%s'", pack_name);
   for (int i = 0; i < (int)additionalPlatforms.size(); i++)
   {
     unsigned ptc = additionalPlatforms[i];
     String group(256, "%c%c%c%c", _DUMP4C(ptc));
-    bool tcQueued = false;
-    for (unsigned tc : queued)
-      if (tc == ptc)
-      {
-        tcQueued = true;
-        break;
-      }
+    const PacksQueueState tcState = ::queue_get_packs_state(packs.span(), ptc);
 
     menu.addSubMenu(ROOT_MENU_ITEM, CM_INC_BUILD_GROUP_PACK + (i + 1), group);
     menu.addItem(CM_INC_BUILD_GROUP_PACK + (i + 1), CM_INC_BUILD_CUR_PACK + (i + 1), menuStr);
-    menu.addItem(CM_INC_BUILD_GROUP_PACK + (i + 1), CM_ADD_TO_QUEUE_GROUP_PACK + (i + 1),
-      tcQueued ? "Remove pack from queue" : "Add pack to queue");
-    menu.addItem(CM_INC_BUILD_GROUP_PACK + (i + 1), CM_BUILD_FROM_QUEUE_GROUP_PACK + (i + 1),
-      tcQueued ? "Build with queue" : "Add pack & build with queue");
+    addQueueItems(CM_INC_BUILD_GROUP_PACK + (i + 1), tcState, make_span_const(&ptc, 1), CM_ADD_TO_QUEUE_GROUP_PACK + (i + 1),
+      CM_REMOVE_FROM_QUEUE_GROUP_PACK + (i + 1), CM_BUILD_FROM_QUEUE_GROUP_PACK + (i + 1), "");
   }
 
-  menu.addSeparator(ROOT_MENU_ITEM);
+  Tab<unsigned> allTcs;
+  ::queue_get_all_platform_tcs(allTcs);
+  const PacksQueueState allState = ::queue_get_packs_state_all_platforms(packs.span());
 
-  bool anyQueued = !queued.empty();
-  bool allQueued = queued.size() == additionalPlatforms.size() + 1;
-
-  menu.addItem(ROOT_MENU_ITEM, CM_INC_BUILD_ALL_PLATFORM_CUR_PACK, "Export pack for All platform");
-  menu.addItem(ROOT_MENU_ITEM, CM_ADD_TO_QUEUE_CUR_PACK_ALL_PLATFORM,
-    anyQueued ? "Remove pack from queue for All platform" : "Add pack to queue for All platform");
-  menu.addItem(ROOT_MENU_ITEM, CM_BUILD_FROM_QUEUE_ALL_PLATFORM,
-    allQueued ? "Build with queue [All platform]" : "Add pack & build with queue [All platform]");
+  menu.addSubMenu(ROOT_MENU_ITEM, CM_ALL_PLATFORMS_SUBMENU, "All platforms");
+  menu.addItem(CM_ALL_PLATFORMS_SUBMENU, CM_INC_BUILD_ALL_PLATFORM_CUR_PACK, menuStr);
+  addQueueItems(CM_ALL_PLATFORMS_SUBMENU, allState, allTcs, CM_ADD_TO_QUEUE_CUR_PACK_ALL_PLATFORM, CM_REMOVE_FROM_QUEUE_ALL_PLATFORM,
+    CM_BUILD_FROM_QUEUE_ALL_PLATFORM, "");
 }
 
 
@@ -4429,9 +4606,6 @@ bool AssetViewerApp::onAssetSelectorContextMenu(PropPanel::IMenu &menu, DagorAss
   if (!asset_folder)
   {
     const bool hasTags = (asset != nullptr && assettags::getTagIds(*asset).size() > 0);
-
-    menu.addItem(ROOT_MENU_ITEM, CM_ADD_ASSET_TO_FAVORITES, "Add to favorites");
-    menu.addSeparator(ROOT_MENU_ITEM);
 
     // curAssetPackName
     const int oldMenuItemCount = menu.getItemCount(ROOT_MENU_ITEM);
@@ -4868,8 +5042,9 @@ void AssetViewerApp::updateImgui()
   // renderUI (that calls ImGui's NewFrame that updates ImGui's key states), and onMenuItemClick could fire more than
   // once.
 
+  const ViewportWindow *activeViewport = ged.getActiveViewport();
   bool viewportAccelerator = false;
-  unsigned commandId = mManager->processImguiAccelerator(ged.getActiveViewport() != nullptr, viewportAccelerator);
+  unsigned commandId = mManager->processImguiAccelerator(activeViewport ? activeViewport->getImguiCanvasId() : 0, viewportAccelerator);
   if (commandId != 0)
   {
     G_ASSERT((commandId & DELAYED_CALLBACK_VIEWPORT_COMMAND_BIT) == 0);
@@ -4907,3 +5082,10 @@ void AssetViewerApp::updateImgui()
 }
 
 const char *daeditor3_get_appblk_fname() { return ::get_app().getWorkspace().getAppBlkPath(); }
+
+DagorAsset *AssetViewerApp::getAssetSelectorSelectedAsset() const { return mTreeView ? mTreeView->getSelectedAsset() : nullptr; }
+
+DagorAssetFolder *AssetViewerApp::getAssetSelectorSelectedAssetFolder() const
+{
+  return mTreeView ? mTreeView->getSelectedAssetFolder() : nullptr;
+}

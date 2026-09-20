@@ -227,6 +227,14 @@ def check_files_with_configs(files, cmdchecks = [], **kwargs):
         sys.exit(1)
 
 
+UNCHECKED_PREFIXES = (
+    "prog/1stPartyLibs/quirrel/quirrel/testData",
+    "prog/1stPartyLibs/quirrel/quirrel/doc/examples",
+    "prog/commonFx/",
+    "skyquake/prog/scripts",
+)
+
+
 def getNameWarningMap():
     findre = re.compile(r"w(\d+)\s*\((.*)\)")
     out = shell("{0} --warnings-list".format(csq_path)).decode('utf-8')
@@ -278,8 +286,7 @@ if __name__ == "__main__":
         use_configs = True
         gerrit_files = gerrit.list_files(args.changeid, args.revisionid, branch=args.branch, project=args.project)
         gerrit_files = [f[0] for f in gerrit_files.items() if f[1].get("status")!="D" and f[0].lower().endswith(".nut")]
-        gerrit_files = [f for f in gerrit_files if not f.startswith("prog/1stPartyLibs/quirrel/quirrel/testData") and not f.startswith("prog/commonFx/")]
-        gerrit_files = [f for f in gerrit_files if not f.startswith("skyquake/prog/scripts")]
+        gerrit_files = [f for f in gerrit_files if not f.startswith(UNCHECKED_PREFIXES)]
         files = gather_files(gerrit_files, args.exclude, use_configs)
     elif len(args.paths)>0:
         files = gather_files(args.paths, args.exclude, use_configs)

@@ -68,9 +68,10 @@ ColorOverride colors[ColorOverride::COUNT] = {
   ColorOverride("AssetBrowserItemBackgroundHovered", ImGuiCol_COUNT + 1),
   ColorOverride("AssetBrowserItemBackgroundSelected", ImGuiCol_COUNT + 1),
   ColorOverride("KeyboardShortcutsItemNonDefault", ImGuiCol_COUNT + 1),
-  ColorOverride("BlinkHighlightAnimationColor", ImGuiCol_COUNT + 1)};
+  ColorOverride("BlinkHighlightAnimationColor", ImGuiCol_COUNT + 1),
+  ColorOverride("DaBuildPanelCurrentlyBuilding", ImGuiCol_COUNT + 1)};
 // clang-format on
-G_STATIC_ASSERT(ColorOverride::COUNT == 61);
+G_STATIC_ASSERT(ColorOverride::COUNT == 62);
 
 void applyClassicOverrides()
 {
@@ -131,6 +132,7 @@ void applyClassicOverrides()
   colors[ColorOverride::ASSET_BROWSER_ITEM_BACKGROUND_SELECTED].setColorU32(IM_COL32(179, 209, 255, 255));
   colors[ColorOverride::KEYBOARD_SHORTCUTS_ITEM_NON_DEFAULT].setColorU32(IM_COL32(236, 189, 131, 255));
   colors[ColorOverride::BLINK_HIGHTLIGHT_ANIMATION_COLOR].setColorU32(IM_COL32(236, 189, 131, 255));
+  colors[ColorOverride::DABUILD_PANEL_CURRENTLY_BUILDING].setColorU32(IM_COL32(217, 140, 26, 255));
 }
 
 static float debugFlashColorOverrideTime = 0.0f;

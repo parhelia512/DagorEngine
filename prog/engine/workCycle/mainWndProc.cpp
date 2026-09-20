@@ -17,7 +17,6 @@
 #include "drv/3d/dag_resetDevice.h"
 #include <util/dag_globDef.h>
 #include <supp/_platform.h>
-#include <supp/dag_cpuControl.h>
 #include <debug/dag_logSys.h>
 #include <util/dag_watchdog.h>
 
@@ -69,14 +68,14 @@ eastl::pair<bool, intptr_t> main_wnd_proc(void *hwnd, unsigned message, uintptr_
         {
           set_priority(true);
           dgs_app_active = true;
-          if (!is_float_exceptions_enabled())
-            _fpreset();
+          debug("app activated (WM_ACTIVATE)");
         }
         else if (::dgs_app_active && (fActive == WA_INACTIVE) && !is_any_window_active())
         {
           if (interlocked_relaxed_load(enable_idle_priority))
             set_priority(false);
           dgs_app_active = false;
+          debug("app deactivated (WM_ACTIVATE, iconic=%d)", (int)IsIconic((HWND)hwnd));
           debug_flush(false);
         }
       }
@@ -93,14 +92,15 @@ eastl::pair<bool, intptr_t> main_wnd_proc(void *hwnd, unsigned message, uintptr_
           if (::global_cls_drv_pnt && ::global_cls_drv_pnt->isMouseCursorHidden())
             SetCursor((HCURSOR)win32_empty_mouse_cursor);
           dgs_app_active = true;
-          if (!is_float_exceptions_enabled())
-            _fpreset();
+          debug("app activated (WM_ACTIVATEAPP)");
         }
         else if (::dgs_app_active && !n_app_active && !is_any_window_active())
         {
           if (interlocked_relaxed_load(enable_idle_priority))
             set_priority(false);
           dgs_app_active = false;
+          debug("app deactivated (WM_ACTIVATEAPP, iconic=%d)", (int)IsIconic((HWND)hwnd));
+          debug_flush(false);
         }
       }
       break;
@@ -217,6 +217,8 @@ eastl::pair<bool, intptr_t> default_wnd_proc(void *hwnd, unsigned message, uintp
 
     case WM_SIZE:
     {
+      if (wParam == SIZE_MINIMIZED || wParam == SIZE_RESTORED || wParam == SIZE_MAXIMIZED)
+        debug("window size event %d (%dx%d)", (int)wParam, (int)LOWORD(lParam), (int)HIWORD(lParam));
       notify_window_resized(LOWORD(lParam), HIWORD(lParam));
       return {true, 0};
     }
@@ -256,8 +258,6 @@ static intptr_t wnd_proc([[maybe_unused]] void *hwnd, unsigned message, uintptr_
           set_priority(true);
           dgs_app_active = true;
           debug("activate");
-          // if (!is_float_exceptions_enabled())
-          //   _fpreset();
         }
         else if (::dgs_app_active && (fActive == GPCMP1_Inactivate))
         {

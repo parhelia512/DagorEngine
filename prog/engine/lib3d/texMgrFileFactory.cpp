@@ -88,15 +88,12 @@ BaseTexture *FileTextureFactory::createTexture(TEXTUREID id)
 
     logmessage(df_is_fname_url_like(textureName.c_str()) ? LOGLEVEL_WARN : LOGLEVEL_ERR, "missing texture '%s'", textureName.c_str());
 
+    // acquire returns the shared d3dRes; the ref is released in releaseTexture()
     BaseTexture *t = ::acquire_managed_tex(missingTexId);
     texmgr_internal::acquire_texmgr_lock();
     if (!missingTex)
-    {
       missingTex = t;
-      t = NULL;
-    }
     texmgr_internal::release_texmgr_lock();
-    del_d3dres(t);
     return missingTex;
   }
 

@@ -16,6 +16,7 @@ FastStrMap dainput::actionNameIdx;
 Tab<const char *> dainput::actionNameBackMap[3];
 FastNameMapEx dainput::actionSetNameIdx;
 FastNameMap dainput::tagNames;
+int dainput::exclusiveSetLinks = 0;
 DataBlock dainput::customPropsScheme;
 int dainput::configVer = 0;
 unsigned dainput::colActiveMask = 0xFFFFFFFFu;
@@ -57,6 +58,11 @@ dainput::action_handle_t dainput::get_action_handle_by_ord(int ord_idx) { return
 
 int dainput::get_action_sets_count() { return actionSetNameIdx.nameCount(); }
 dainput::action_set_handle_t dainput::get_action_set_handle_by_ord(int ord_idx) { return action_set_handle_t(ord_idx); }
+int dainput::get_action_set_priority(action_set_handle_t set) { return set < actionSets.size() ? actionSets[set].ordPriority : 0; }
+bool dainput::are_action_sets_exclusive(action_set_handle_t a, action_set_handle_t b)
+{
+  return a < actionSets.size() && find_value_idx(actionSets[a].exclusiveWith, b) >= 0;
+}
 
 
 dainput::action_handle_t dainput::get_action_handle(const char *action_name, uint16_t required_type_grp)
@@ -279,6 +285,46 @@ void dainput::activate_action_set(action_set_handle_t set, bool activate)
   else
     activate_action_set_immediate(set, activate);
 }
+#if DAGOR_DBGLEVEL > 0
+static Tab<unsigned> reported_excl_set_pairs;     // one report per pair, and a handle in it dies with the config
+static volatile int action_set_stack_changed = 0; // the stack decides the answer, and a worker can change it
+#endif
+void dainput::reset_exclusive_sets_reports()
+{
+#if DAGOR_DBGLEVEL > 0
+  clear_and_shrink(reported_excl_set_pairs);
+  interlocked_release_store(action_set_stack_changed, 0);
+#endif
+}
+// input is processed against the stack a tick reads, and a set on its way off it carries a pending count,
+// which is the window a switch between two exclusive sets opens
+void dainput::check_exclusive_sets_on_stack()
+{
+#if DAGOR_DBGLEVEL > 0
+  if (!exclusiveSetLinks || !interlocked_exchange(action_set_stack_changed, 0))
+    return; // no config declares the relation, or the stack is the one the last look answered for
+  for (int i = 0; i < actionSetStack.size(); i++)
+    for (int j = i + 1; j < actionSetStack.size(); j++)
+    {
+      const action_set_handle_t a = actionSetStack[i], b = actionSetStack[j];
+      if (!are_action_sets_exclusive(a, b))
+        continue;
+      if (interlocked_acquire_load(actionSets[a].pendingCnt) || interlocked_acquire_load(actionSets[b].pendingCnt))
+      {
+        // one of them is leaving, so this is a stack mid-change; ask for another look once the change lands
+        interlocked_release_store(action_set_stack_changed, 1);
+        continue;
+      }
+      const unsigned pair = a < b ? (unsigned(a) << 16) | b : (unsigned(b) << 16) | a;
+      if (find_value_idx(reported_excl_set_pairs, pair) < 0)
+      {
+        reported_excl_set_pairs.push_back(pair);
+        logerr("dainput: action sets <%s> and <%s> are declared exclusive but both active", //
+          get_action_set_name(a), get_action_set_name(b));
+      }
+    }
+#endif
+}
 void dainput::activate_action_set_immediate(action_set_handle_t set, bool activate)
 {
   if (activate && actionSetStack.size() && actionSetStack.back() == set)
@@ -301,6 +347,9 @@ void dainput::activate_action_set_immediate(action_set_handle_t set, bool activa
           break;
         }
   }
+#if DAGOR_DBGLEVEL > 0
+  interlocked_release_store(action_set_stack_changed, 1);
+#endif
   if (dainput::actionset_logs && dainput::logscreen)
     dainput::logscreen(String(0, "dainput::activate_action_set(%s, %s), stack_len=%d (@%d, prio=%d)", get_action_set_name(set),
       activate ? "TRUE" : "false", actionSetStack.size(), find_value_idx(actionSetStack, set), actionSets[set].ordPriority));

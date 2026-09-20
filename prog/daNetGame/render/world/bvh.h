@@ -11,11 +11,18 @@ namespace dafg
 class NodeHandle;
 }
 
-void bvh_update_instances(
-  const Point3 &cameraPos, const Point3 &lightDirection, const TMatrix &itm, const TMatrix4 &projTm, const Frustum &viewFrustum);
+void bvh_update_instances(const Point3 &cameraPos,
+  const Point3 &lightDirection,
+  const TMatrix &itm,
+  const TMatrix4 &viewRotTm,
+  const TMatrix4 &projTm,
+  const TMatrix4 &prevViewRotTm,
+  const TMatrix4 &prevProjTm,
+  const Frustum &viewFrustum);
 void prepareFXForBVH(const Point3 &cameraPos);
 bool is_bvh_enabled();
 bool is_bvh_usable();
+bool is_bvh_dyn_models_enabled();
 bool is_rtsm_enabled();
 bool is_rtsm_dynamic_enabled();
 bool is_rtr_enabled();
@@ -31,6 +38,7 @@ void draw_rtr_validation();
 void draw_ptgi_validation();
 void bvh_cables_changed();
 bool is_rt_supported();
+bool is_rt_supported_on_disk();
 int rt_support_error_code();
 void bvh_release_bindlessly_held_textures();
 bool should_delay_pufd_until_bvh_jobs_done();
@@ -40,6 +48,7 @@ BVHInstanceMapper *get_bvh_dagdp_instance_mapper();
 void bvh_bind_resources(int render_width);
 void bvh_unbind_resources();
 dafg::NodeHandle make_rtsm_dynamic_node();
+void recreate_water_rt_node();
 void toggle_rtsm_dynamic(bool enable);
 bool bvh_do_early_occlusion_culling();
 float get_bvh_animchar_lod_dist_mul();

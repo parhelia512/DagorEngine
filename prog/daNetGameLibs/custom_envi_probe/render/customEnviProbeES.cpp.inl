@@ -113,7 +113,7 @@ static void custom_cube_texture_before_render_es(const UpdateStageInfoBeforeRend
   }
 }
 
-static void custom_envi_probe_after_reset_es(const AfterDeviceReset &, bool &custom_envi_probe__needs_render)
+static void custom_envi_probe_after_reset_es(const EventAfterDeviceReset &, bool &custom_envi_probe__needs_render)
 {
   custom_envi_probe__needs_render = true;
 }

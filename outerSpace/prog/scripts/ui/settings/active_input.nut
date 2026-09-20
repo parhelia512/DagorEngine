@@ -1,11 +1,11 @@
+from "console" import register_command as console_register_command
+from "dainput2" import set_actions_binding_column_active
+from "eventbus" import eventbus_send, eventbus_subscribe
+from "settings" import get_setting_by_blk_path
 from "%scripts/ui/ui_library.nut" import gui_scene, mkWatched, Computed, Watched, log
+import "%dngscripts/platform.nut" as platform
+import "%scripts/ui/settings/input_types.nut" as controlsTypes
 
-let console_register_command = require("console").register_command
-let {set_actions_binding_column_active} = require("dainput2")
-let { eventbus_send, eventbus_subscribe } = require("eventbus")
-let platform = require("%dngscripts/platform.nut")
-let controlsTypes = require("%scripts/ui/settings/input_types.nut")
-let {get_setting_by_blk_path} = require("settings")
 let forcedControlsType = mkWatched(persist, "forcedControlsType")
 let defRaw = platform.is_pc ? 0 : 1
 let lastActiveControlsTypeRaw = mkWatched(persist, "lastActiveControlsTypeRaw", defRaw)

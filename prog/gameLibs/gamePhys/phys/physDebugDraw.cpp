@@ -1,7 +1,7 @@
 // Copyright (C) Gaijin Games KFT.  All rights reserved.
 
 #include <gamePhys/phys/physDebugDraw.h>
-#include <gameMath/traceUtils.h>
+#include <rendInst/traceUtils.h>
 #include <debug/dag_textMarks.h>
 #include <util/dag_string.h>
 #include <math/dag_Point4.h>

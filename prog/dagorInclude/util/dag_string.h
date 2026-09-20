@@ -21,6 +21,7 @@
 #ifdef __cplusplus
 
 #include <generic/dag_tab.h>
+#include <util/dag_compilerDefs.h>
 #include <util/dag_safeArg.h>
 #include <supp/dag_define_KRNLIMP.h>
 #include <debug/dag_assert.h>
@@ -34,7 +35,7 @@ extern "C" KRNLIMP void dd_simplify_fname_c(char *fn);
   these methods take @b est_sz argument, set it to
   "expected" string size
 */
-class String : public Tab<char>
+class DAGOR_WARN_IF_UNUSED String : public Tab<char>
 {
 public:
   typedef char value_type;

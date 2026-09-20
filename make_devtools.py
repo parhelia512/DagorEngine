@@ -736,6 +736,24 @@ else:
           target.close()
   print('+++ AGS v6.3.0 installed at {0}'.format(ags_sdk_dest_folder))
 
+# Streamline SDK 2.14.1
+streamline_ver = '2.14.1'
+streamline_dest_folder = dest_dir+'/streamline-'+streamline_ver
+# x64 and aarch64 ship as separate archives that share the same include/ and unpack into one
+# folder, so each is tested on the bin/<arch> only it carries - a run that dies between the
+# two leaves the other arch missing, and the folder alone would look like a finished install
+for streamline_arch, streamline_zip in [('x64', 'streamline-sdk-v'+streamline_ver+'.zip'),
+                                        ('arm64', 'streamline-sdk-v'+streamline_ver+'-aarch64.zip')]:
+  if pathlib.Path(streamline_dest_folder+'/bin/'+streamline_arch).exists():
+    print('=== Streamline SDK {1} {2} found at {0}, skipping setup'.format(streamline_dest_folder, streamline_ver, streamline_arch))
+  else:
+    download_url2('https://github.com/NVIDIA-RTX/Streamline/releases/download/v'+streamline_ver+'/'+streamline_zip,
+                  streamline_zip)
+    with zipfile.ZipFile(os.path.normpath(dest_dir+'/.packages/'+streamline_zip), 'r') as zip_file:
+      members = [m for m in zip_file.namelist() if m.startswith(('include/', 'bin/', 'lib/'))]
+      zip_file.extractall(streamline_dest_folder, members)
+    print('+++ Streamline SDK {1} {2} installed at {0}'.format(streamline_dest_folder, streamline_ver, streamline_arch))
+
 # install 3ds Max SDKs
 install_3ds_Max_SDK('2026',
   'https://autodesk-adn-transfer.s3.us-west-2.amazonaws.com/ADN+Extranet/M%26E/Max/Autodesk+3ds+Max+2026/SDK_3dsMax2026.msi')

@@ -23,7 +23,8 @@ static ecs::EntitySystemDesc reset_replication_es_event_handler_es_desc
   empty_span(),
   empty_span(),
   empty_span(),
-  ecs::EventSetBuilder<ecs::EventEntityManagerBeforeClear,
+  ecs::EventSetBuilder<EventOnNetworkDestroyed,
+                       ecs::EventEntityManagerBeforeClear,
                        ecs::EventEntityManagerEsOrderSet>::build(),
   0
 ,"net,server");

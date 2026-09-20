@@ -90,6 +90,8 @@ static bool capturing_gui = false;
 static String comments;
 static int sequence_num = -1;
 static eastl::unique_ptr<Video360> video360;
+static bool hdr_screenshot_scheduled = false;
+static String hdr_screenshot_name;
 
 void screencap::set_comments(const char *set_comments) { comments = set_comments; }
 
@@ -115,6 +117,18 @@ static bool save_exr_triplanar_shot(const char *fn, TexPixel32 *im, int wd, int 
   ht /= eastl::size(planeNames);
   uint8_t *planePixels[] = {(uint8_t *)im + 2 * stride * ht, (uint8_t *)im + stride * ht, (uint8_t *)im};
   return ::save_exr(fn, planePixels, wd, ht, eastl::size(planePixels), stride, planeNames, comments.empty() ? NULL : comments.str());
+}
+
+static bool is_compressed(Format format)
+{
+  switch (format)
+  {
+    case Format::JPEG:
+    case Format::TGA: return true;
+    case Format::EXR:
+    case Format::PNG: return false;
+    default: G_ASSERT(false); return false; // unreachable
+  }
 }
 
 static const char *to_extension(Format format)
@@ -244,7 +258,7 @@ void screencap::make_screenshot(
   Format format = settings.format;
   if (force_tga)
     format = Format::TGA;
-  else if (uncompressed_screenshots.get())
+  else if (uncompressed_screenshots.get() && is_compressed(format))
     format = Format::PNG;
 
   const char *ext = to_extension(format);
@@ -311,6 +325,27 @@ bool screencap::is_screenshot_scheduled()
   if (capture360::is_360_capturing_in_progress() || capture_gbuffer::is_gbuffer_capturing_in_progress())
     return true;
   return screenshot_scheduled;
+}
+
+void screencap::schedule_hdr_screenshot(const char *name_override)
+{
+  hdr_screenshot_name.setStr(name_override);
+  hdr_screenshot_scheduled = true;
+}
+
+bool screencap::is_hdr_screenshot_scheduled() { return hdr_screenshot_scheduled; }
+
+void screencap::make_hdr_screenshot(const ManagedTex &linear_frame)
+{
+  hdr_screenshot_scheduled = false;
+  // linear EXR is the point of this capture - the split_planes EXR path is
+  // only reachable through the format setting, so force it for this shot
+  Format prevFormat = settings.format;
+  settings.format = Format::EXR;
+  make_screenshot(linear_frame, hdr_screenshot_name.empty() ? nullptr : hdr_screenshot_name.str(), false, ColorSpace::Linear,
+    hdr_screenshot_name.empty() ? "_hdr" : nullptr);
+  settings.format = prevFormat;
+  hdr_screenshot_name.clear();
 }
 
 void screencap::schedule_screenshot(bool with_gui, int sequence_number, const char *name_override)
@@ -459,6 +494,10 @@ static bool screencap_console_handler(const char *argv[], int argc)
   int found = 0;
   CONSOLE_CHECK_NAME("screencap", "take_screenshot", 1, 1) { screencap::schedule_screenshot(true); }
   CONSOLE_CHECK_NAME("screencap", "take_screenshot_nogui", 1, 1) { screencap::schedule_screenshot(false); }
+  CONSOLE_CHECK_NAME_EX("screencap", "take_screenshot_hdr", 1, 2, "save pre-tonemap linear frame as EXR", "[name]")
+  {
+    screencap::schedule_hdr_screenshot(argc > 1 ? argv[1] : nullptr);
+  }
   CONSOLE_CHECK_NAME("screencap", "take_screenshot_ext", 4, 4)
   {
     screencap::schedule_screenshot(console::to_bool(argv[1]), console::to_int(argv[2]), argv[3]);

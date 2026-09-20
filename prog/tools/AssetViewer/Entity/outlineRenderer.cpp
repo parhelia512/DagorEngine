@@ -17,7 +17,6 @@
 #include <math/dag_vecMathCompatibility.h>
 
 int OutlineRenderer::simple_outline_colorVarId = -1;
-int OutlineRenderer::simple_outline_color_rtVarId = -1;
 int OutlineRenderer::simple_outline_widthVarId = -1;
 int OutlineRenderer::global_frame_block_id = -1;
 int OutlineRenderer::rendinst_scene_block_id = -1;
@@ -43,7 +42,6 @@ void OutlineRenderer::init()
     DAEDITOR3.conError("Shader \"%s\" cannot be found. Outline rendering won't work!", shaderName);
 
   simple_outline_colorVarId = get_shader_variable_id("simple_outline_color", true);
-  simple_outline_color_rtVarId = get_shader_variable_id("simple_outline_color_rt", true);
   simple_outline_widthVarId = get_shader_variable_id("simple_outline_width", true);
   global_frame_block_id = ShaderGlobal::getBlockId("global_frame");
   rendinst_scene_block_id = ShaderGlobal::getBlockId("rendinst_scene");
@@ -54,12 +52,8 @@ void OutlineRenderer::initResolution(int width_, int height_)
   width = width_;
   height = height_;
 
-  colorRt.close();
-  colorRt.set(d3d::create_tex(NULL, width, height, TEXCF_RTARGET | TEXFMT_DEFAULT, 1, "simple_outline_color_rt"),
-    "simple_outline_color_rt");
-
-  depthRt.close();
-  depthRt.set(d3d::create_tex(NULL, width, height, TEXFMT_DEPTH16 | TEXCF_RTARGET, 1));
+  colorRt = dag::create_tex(NULL, width, height, TEXCF_RTARGET | TEXFMT_DEFAULT, 1, "simple_outline_color_rt");
+  depthRt = dag::create_tex(NULL, width, height, TEXFMT_DEPTH16 | TEXCF_RTARGET, 1, "simple_outline_depth_rt");
 }
 
 void OutlineRenderer::render(IGenViewportWnd &wnd, const RIElementsCache &riElements,
@@ -112,7 +106,7 @@ void OutlineRenderer::render(IGenViewportWnd &wnd, const RIElementsCache &riElem
   {
     SCENE_LAYER_GUARD(rendinst_scene_block_id);
     rendinst::render::renderRIGen(rendinst::RenderPass::Normal, filteredVisibility, cameraTm,
-      rendinst::LayerFlag::Opaque | rendinst::LayerFlag::NotExtra, rendinst::OptimizeDepthPass::Yes);
+      rendinst::LayerFlag::Opaque | rendinst::LayerFlag::NotExtra, rendinst::OptimizeDepthPass::No);
   }
 
   // dynmodel
@@ -125,6 +119,6 @@ void OutlineRenderer::render(IGenViewportWnd &wnd, const RIElementsCache &riElem
   ShaderGlobal::setBlock(lastFrameBlockId, ShaderGlobal::LAYER_FRAME);
 
   d3d::set_render_target(prevRT);
-  ShaderGlobal::set_texture(simple_outline_color_rtVarId, colorRt.getId());
+  colorRt.setVar();
   finalRender.render();
 }

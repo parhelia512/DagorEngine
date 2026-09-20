@@ -12,7 +12,9 @@
 #include <drv/3d/dag_sampler.h>
 #include <generic/dag_DObject.h>
 #include <generic/dag_tab.h>
+#include <util/dag_string.h>
 #include <shaders/dag_computeShaders.h>
+#include <EASTL/array.h>
 
 #include <cstdint>
 
@@ -26,6 +28,8 @@ inline constexpr uint32_t MAX_TRANSIENT_POOL_BUFFERS = 8;
 inline constexpr uint32_t MAX_PIPELINES = 32;
 inline constexpr uint32_t MAX_STATIC_SAMPLERS = 8;
 inline constexpr uint32_t MAX_PENDING_BAKES = 8;
+inline constexpr uint32_t MAX_RECYCLED_BUFFERS = 16;
+inline constexpr uint32_t MAX_RESOURCES_PER_PIPELINE = 8;
 
 enum class AlphaMode : uint32_t
 {
@@ -219,6 +223,27 @@ enum class ConsumeBakeResult : uint32_t
   Ready
 };
 
+// Buffers that never leave their bake slot: they survive the slot close, so the next bake in the slot
+// reuses them. Not shared between slots, or two bakes recorded in one frame would alias the scratch.
+struct BakeBufferPool
+{
+  UniqueBuf outOmmDescArrayHistogram;
+  UniqueBuf outOmmIndexHistogram;
+  UniqueBuf outPostDispatchInfo;
+  UniqueBuf readbackOmmDescArrayHistogram;
+  UniqueBuf readbackOmmIndexHistogram;
+  UniqueBuf readbackPostDispatchInfo;
+  UniqueBuf transientPoolBuffers[MAX_TRANSIENT_POOL_BUFFERS];
+};
+
+// Bake output buffers waiting for the next bake: a d3d buffer create is costly and every bake makes
+// three. One store per creation-flag class: a buffer must never be reused with different flags.
+struct BufferRecycleStore
+{
+  UniqueBuf buffers[MAX_RECYCLED_BUFFERS];
+  uint32_t count = 0;
+};
+
 struct PendingBake
 {
   PendingBakeState state = PendingBakeState::Free;
@@ -235,18 +260,20 @@ struct PendingBake
   uint32_t transientPoolBufferSizeInBytes[MAX_TRANSIENT_POOL_BUFFERS] = {};
   uint32_t numTransientPoolBuffers = 0;
 
+  // consume_bake moves these out to the caller, so they cannot be pooled.
   UniqueBuf outOmmArrayData;
   UniqueBuf outOmmDescArray;
-  UniqueBuf outOmmDescArrayHistogram;
   UniqueBuf outOmmIndexBuffer;
-  UniqueBuf outOmmIndexHistogram;
-  UniqueBuf outPostDispatchInfo;
-  UniqueBuf readbackOmmDescArrayHistogram;
-  UniqueBuf readbackOmmIndexHistogram;
-  UniqueBuf readbackPostDispatchInfo;
-  UniqueBuf transientPoolBuffers[MAX_TRANSIENT_POOL_BUFFERS];
-  dag::Vector<UniqueBuf> constantBuffers;
+  BakeBufferPool pool;
   EventQueryHolder readbackQuery;
+};
+
+// The shader var ids of one SDK pipeline's resources, in the order the pipeline binds them. Resolved at
+// init, or every dispatch of a bake would redo the name lookups.
+struct PipelineResourceVars
+{
+  eastl::array<int, MAX_RESOURCES_PER_PIPELINE> varIds = {};
+  uint32_t varCount = 0;
 };
 
 struct Context
@@ -257,12 +284,23 @@ struct Context
   int lastSdkResult = 0;
 
   ComputeShader computeShaders[MAX_PIPELINES];
+  PipelineResourceVars pipelineResourceVars[MAX_PIPELINES];
   uint32_t programCount = 0;
   d3d::SamplerHandle staticSamplers[MAX_STATIC_SAMPLERS] = {};
   uint32_t staticSamplerRegisters[MAX_STATIC_SAMPLERS] = {};
   uint32_t staticSamplerCount = 0;
 
+  // Shared by all dispatches of all bakes. Each discard update takes a fresh framemem range, so a
+  // dispatch keeps the data that was written for it.
+  UniqueBuf globalConstantBuffer;
+  UniqueBuf localConstantBuffer;
+
   PendingBake pendingBakes[MAX_PENDING_BAKES];
+
+  // Shared by all slots, unlike BakeBufferPool: a recycled output is only reused by a later bake, and
+  // never while the bake that produced it is still recorded.
+  BufferRecycleStore recycledArrayDataBuffers;
+  BufferRecycleStore recycledOutputBuffers;
 };
 
 bool init(Context &ctx);
@@ -275,6 +313,9 @@ ConsumeBakeResult consume_bake(Context &ctx, BakeHandle handle, BakeResult &out_
 bool wait_bake(Context &ctx, BakeHandle handle, BakeResult &out_result, BakeStats *out_stats = nullptr);
 void discard_bake(Context &ctx, BakeHandle handle);
 void clear_result(BakeResult &result);
+// clear_result, but the buffers go to the context store for the next bake to take. keep_index_buffer
+// leaves the index buffer with the result, for a caller that still links it to a BLAS.
+void recycle_result(Context &ctx, BakeResult &result, bool keep_index_buffer);
 // Registers a result whose owner is still the producer. clear_result() removes the registration.
 void debug_register_bake_result(const BakeResult &result, const DebugBakeResultInfo &info);
 // Moves the buffers to the viewer, thus the entry outlives the producer. Only for a bake that made no
@@ -283,6 +324,27 @@ void debug_register_bake_result(const BakeResult &result, const DebugBakeResultI
 void debug_adopt_bake_result(BakeResult &&result, const DebugBakeResultInfo &info);
 void debug_unregister_bake_result(const BakeResult &result);
 void debug_shutdown();
+
+struct CpuContext
+{
+  void *baker = nullptr;
+  void *texture = nullptr;
+  String textureKey;
+};
+
+struct CpuBakeStats
+{
+  uint32_t triangles = 0;
+  uint32_t descCount = 0;
+  uint32_t totalFullyOpaqueCount = 0;
+  uint32_t totalFullyTransparentCount = 0;
+  uint32_t totalFullyUnknownCount = 0;
+};
+
+bool init_cpu(CpuContext &ctx);
+void shutdown_cpu(CpuContext &ctx);
+bool cpu_bake_alpha_stats(CpuContext &ctx, const char *tex_key, uint32_t w, uint32_t h, const uint8_t *alpha,
+  const float *texcoords_uv, const uint32_t *indices, uint32_t index_count, CpuBakeStats &stats);
 
 raytrace::OpacityMicroMapTriangleArrayBuildInfo make_array_build_info(const BakeResult &result, Sbuffer *scratch,
   uint32_t scratch_offset, uint32_t scratch_size, RaytraceBuildFlags flags = RaytraceBuildFlags::NONE);

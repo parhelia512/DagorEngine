@@ -17,7 +17,7 @@ if $(PlatformArch) = x86_64 {
 }
 include $(Root)/prog/_jBuild/_vc/win_sdk.jam ;
 
-local _DEF_C_CMDLINE = -X /c /nologo /Zc:wchar_t /Zp8 /J -D_USING_V110_SDK71_ ;
+local _DEF_C_CMDLINE = -X /c /nologo /Zc:wchar_t /Zp8 /J ;
 switch $(PlatformArch) {
   case x86 :    _DEF_C_CMDLINE += -DWIN32 ;
   case x86_64 : _DEF_C_CMDLINE += -DWIN64 ;
@@ -37,7 +37,7 @@ if $(BuildDagorEngineIndependentCode) != yes {
 } else {
   _DEF_C_CMDLINE += /FS ;
 }
-if $(Analyze) = yes { _DEF_C_CMDLINE = [ StripStrings $(_DEF_C_CMDLINE) : -D_USING_V110_SDK71_ ] -analyze -WX ; }
+if $(Analyze) = yes { _DEF_C_CMDLINE += -analyze -WX ; }
 
 if $(UseWholeOpt) = yes {
   UseLLDLink = no ;

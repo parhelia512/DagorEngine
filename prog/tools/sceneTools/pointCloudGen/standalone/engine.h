@@ -131,8 +131,8 @@ public:
 
   ConsoleLogWriter *getConsoleLogWriter() { return &console; }
 
-  void imguiBegin(const char *name, bool *open, unsigned window_flags) override {}
-  void imguiBegin(PropPanel::PanelWindowPropertyControl &panel_window, bool *open, unsigned window_flags) override {}
+  bool imguiBegin(const char *name, bool *open, unsigned window_flags) override { return false; }
+  bool imguiBegin(PropPanel::PanelWindowPropertyControl &panel_window, bool *open, unsigned window_flags) override { return false; }
   void imguiEnd() override {}
   PropPanel::IPropPanelService *getPropPanelService() override { return nullptr; }
 

@@ -66,8 +66,9 @@ static ecs::EntitySystemDesc update_world_bbox_es_es_desc
 ,nullptr,nullptr,nullptr,"rendinst_move_es,rendinst_with_handle_move_es");
 static constexpr ecs::ComponentDesc init_shadows_es_comps[] =
 {
-//start of 3 rq components at [0]
+//start of 4 rq components at [0]
   {ECS_HASH("render_settings__bare_minimum"), ecs::ComponentTypeInfo<bool>()},
+  {ECS_HASH("render_settings__bvhDynModels"), ecs::ComponentTypeInfo<bool>()},
   {ECS_HASH("render_settings__enableRTSM"), ecs::ComponentTypeInfo<ecs::string>()},
   {ECS_HASH("render_settings__shadowsQuality"), ecs::ComponentTypeInfo<ecs::string>()}
 };
@@ -84,11 +85,11 @@ static ecs::EntitySystemDesc init_shadows_es_es_desc
   ecs::EntitySystemOps(nullptr, init_shadows_es_all_events),
   empty_span(),
   empty_span(),
-  make_span(init_shadows_es_comps+0, 3)/*rq*/,
+  make_span(init_shadows_es_comps+0, 4)/*rq*/,
   empty_span(),
   ecs::EventSetBuilder<OnRenderSettingsReady>::build(),
   0
-,"render","render_settings__bare_minimum,render_settings__enableRTSM,render_settings__shadowsQuality",nullptr,"bvh_render_settings_changed_es");
+,"render","render_settings__bare_minimum,render_settings__bvhDynModels,render_settings__enableRTSM,render_settings__shadowsQuality",nullptr,"bvh_render_settings_changed_es");
 static constexpr ecs::ComponentDesc init_vsm_es_comps[] =
 {
 //start of 1 rq components at [0]

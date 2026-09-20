@@ -159,7 +159,7 @@ static ecs::EntitySystemDesc force_dome_after_reset_es_es_desc
   empty_span(),
   empty_span(),
   empty_span(),
-  ecs::EventSetBuilder<AfterDeviceReset>::build(),
+  ecs::EventSetBuilder<EventAfterDeviceReset>::build(),
   0
 );
 static constexpr ecs::ComponentDesc force_dome_render_ecs_query_comps[] =

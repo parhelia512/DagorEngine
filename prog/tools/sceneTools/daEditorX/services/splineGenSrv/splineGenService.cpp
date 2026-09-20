@@ -522,29 +522,6 @@ struct SplineAndPolygonGenService : public ISplineGenService
       }
     return hit;
   }
-  bool shadowRayFoundationLoftGeomHitTest(int layer, const Point3 &p, const Point3 &dir, real &maxt) const override
-  {
-    for (SplineGenEntity *e : splMgr->getEntities())
-      if (e && (layer < 0 || e->layerOrder == layer) && e->loftGeom && e->mayHaveFoundationGeom())
-        if (e->loftGeom->shadowRayHitTest(p, dir, maxt))
-          return true;
-    return false;
-  }
-  bool shadowRayFoundationPolyGeomHitTest(int layer, const Point3 &p, const Point3 &dir, real &maxt) const override
-  {
-    for (PolygonGenEntity *e : polyMgr->getEntities())
-      if (e && (layer < 0 || e->layerOrder == layer) && e->mayHaveFoundationGeom())
-      {
-        if (auto *go = e->geom.mainMesh)
-          if (go->shadowRayHitTest(p, dir, maxt))
-            return true;
-        if (auto *go = e->geom.borderMesh)
-          if (go->shadowRayHitTest(p, dir, maxt))
-            return true;
-      }
-    return false;
-  }
-
   static void copyMask(objgenerator::WorldHugeBitmask &dest_bm, const objgenerator::WorldHugeBitmask &src_bm)
   {
     dest_bm.bm = nullptr;

@@ -21,6 +21,7 @@
 #include <ecs/anim/animchar_visbits.h>
 #include <drv/3d/dag_matricesAndPerspective.h>
 #include <drv/3d/dag_buffers.h>
+#include <generic/dag_relocatableFixedVector.h>
 
 struct SemiTransRenderManager
 {
@@ -101,13 +102,16 @@ static __forceinline void animchar_render_semi_trans_es_event_handler(const Rend
 
   const Point4 params(semi_transparent__placingColor.x, semi_transparent__placingColor.y, semi_transparent__placingColor.z,
     semi_transparent__placingColorAlpha);
-  auto additionalData = animchar_additional_data::prepare_fixed_space<AAD_RAW_PLACING_COLOR>(make_span_const(&params, 1));
+  const auto additionalData =
+    animchar_additional_data::prepare_fixed_space<AAD_RAW_PLACING_COLOR, dag::RelocatableFixedVector<Point4, 1 + 2>>(
+      make_span_const(&params, 1));
 
   TMatrix vtm = event.viewTm;
   vtm.setcol(3, 0, 0, 0);
   d3d::settm(TM_VIEW, vtm);
 
-  add_animchar(ctx, 0, semi_transparent__endStage, animchar_render.getSceneInstance(), additionalData, NeedPreviousMatrices::No,
+  add_animchar(ctx, 0, semi_transparent__endStage, animchar_render.getSceneInstance(),
+    animchar_additional_data::AnimcharAdditionalDataView::get_optional_data(&additionalData), NeedPreviousMatrices::No,
     {semiTransMgr->dynamicObjectsRenderer.shader, semiTransMgr->dynamicSkinnedObjectsRenderer.shader}, PathFilterView::NULL_FILTER, 0,
     RenderPriority::HIGH, nullptr, event.texCtx);
 

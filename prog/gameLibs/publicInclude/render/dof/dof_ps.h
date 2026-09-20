@@ -46,11 +46,14 @@ public:
   void setOn(bool on_);
   bool isOn() const { return on; }
   void setSimplifiedRendering(bool sr) { useSimplifiedRendering = sr; }
+  bool isSimplifiedRendering() const { return useSimplifiedRendering; }
   void setCocAccumulation(bool acc) { useCoCAccumulation = acc; }
+  bool isCocAccumulationEnabled() const { return useCoCAccumulation; }
   void setLinearBlend(bool use_linear_blend) { useLinearBlend = use_linear_blend; }
   int getWidth() const { return width; }
   int getHeight() const { return height; }
   void releaseRTs();
+  void closeTextures();
 
 protected:
   void initNear();
@@ -59,12 +62,12 @@ protected:
   void closeFar();
   void changeNearResolution();
   void changeFarResolution();
+  void resetOutputVars();
 
   bool useLinearBlend;
   bool useSimplifiedRendering = false;
   bool useCoCAccumulation = false;
-  bool useNearDof = false;
-  bool useFarDof = false;
+  bool historyValid = false;
   PostFxRenderer dofGather, dofComposite, dofDownscale, dofTile;
   int width, height;
   int originalWidth = 0, originalHeight = 0;

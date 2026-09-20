@@ -31,7 +31,7 @@ bool FsrWrapper::isFrameGenerationSuppressed() const { return false; }
 void FsrWrapper::enableFrameGeneration(bool) {}
 void FsrWrapper::suppressFrameGeneration(bool) {}
 void FsrWrapper::doScheduleGeneratedFrames(const amd::FSR::FrameGenPlatformArgs &, void *) {}
-int FsrWrapper::getPresentedFrameCount() { return 0; }
+int FsrWrapper::getPresentedFrameCount() { return 1; }
 uint64_t FsrWrapper::getMemoryUsage() const { return 0; }
 
 #if _TARGET_PC_WIN

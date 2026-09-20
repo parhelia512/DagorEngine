@@ -70,7 +70,7 @@ AndroidUseSignalHandler ?= yes ;
 
 local _DEF_COM_CMDLINE =
   -MD -c
-  -resource-dir "$(_A_NDK_DIR)/toolchains/llvm/prebuilt/$(_A_NDK_PREBUILT_SUFFIX)/$(_AndroidClangLibFolder)/clang/$(_AndroidClangVer)"
+  "-resource-dir=$(_A_NDK_DIR)/toolchains/llvm/prebuilt/$(_A_NDK_PREBUILT_SUFFIX)/$(_AndroidClangLibFolder)/clang/$(_AndroidClangVer)"
   -isystem $(_A_NDK_DIR)/sources/cxx-stl/llvm-libc++/include
   -isystem $(_A_NDK_DIR)/sources/cxx-stl/llvm-libc++abi/include
   -Werror -Wno-trigraphs -Wno-multichar -Wno-pointer-sign -Wno-varargs
@@ -78,7 +78,6 @@ local _DEF_COM_CMDLINE =
   -Wno-constant-conversion -Wno-pointer-bool-conversion -Wno-nullability-completeness
   -Wno-inconsistent-missing-override -Wno-c++17-compat-mangling
   -Wno-nonportable-include-path
-  -fno-strict-aliasing #-fno-omit-frame-pointer -fno-short-enums
   -fpic -fstack-protector
   -ffunction-sections -fno-data-sections
   -ffast-math -ffinite-math-only -mrecip=none
@@ -89,6 +88,8 @@ local _DEF_COM_CMDLINE =
 if $(AndroidNdkVer) != r29 {
   _DEF_COM_CMDLINE += -D__ANDROID_API__=$(AndroidApiMinVer) ;
 }
+
+if $(StrictAliasing) = no { _DEF_COM_CMDLINE += -fno-strict-aliasing ; }
 
 if $(ClangThreadSafety) = yes {
   _DEF_COM_CMDLINE += -Wthread-safety ;
@@ -170,9 +171,9 @@ if $(OS) = NT {
     _LIB          = $(_A_GCC_BIN)ar.exe $(_A_GCC_BIN)ranlib ;
     _A_STRIP_EXE   = $(_A_GCC_BIN)strip.exe ;
   }
-  _C_COMPILER   = $(_A_TC_PREFIX)clang.exe $(_DEF_COM_CMDLINE) $(_DEF_C_CMDLINE) -x c ;
-  _CPP_COMPILER = $(_A_TC_PREFIX)clang++.exe $(_DEF_COM_CMDLINE) $(_DEF_CPP_CMDLINE) -x c++ -D__STDC_INT64__ ;
-  _GAS_COMPILER = $(_A_TC_PREFIX)clang.exe -g -c --sysroot=$(_A_NDK_SYSROOT) ;
+  _C_COMPILER   = $(CompilerWrapper) $(_A_TC_PREFIX)clang.exe $(_DEF_COM_CMDLINE) $(_DEF_C_CMDLINE) -x c ;
+  _CPP_COMPILER = $(CompilerWrapper) $(_A_TC_PREFIX)clang++.exe $(_DEF_COM_CMDLINE) $(_DEF_CPP_CMDLINE) -x c++ -D__STDC_INT64__ ;
+  _GAS_COMPILER = $(CompilerWrapper) $(_A_TC_PREFIX)clang.exe -g -c --sysroot=$(_A_NDK_SYSROOT) ;
 } else {
   if $(AndroidNdkVer) = r29 {
     _LINK         = $(_A_TC_PREFIX)clang++ -pipe -fuse-ld=lld --sysroot=$(_A_NDK_SYSROOT) -target aarch64-none-linux-android$(AndroidApiMinVer) -no-canonical-prefixes ;
@@ -190,9 +191,9 @@ if $(OS) = NT {
     _LIB          = $(_A_GCC_BIN)ar $(_A_GCC_BIN)ranlib ;
     _A_STRIP_EXE  = $(_A_GCC_BIN)strip ;
   }
-  _C_COMPILER   = $(_A_TC_PREFIX)clang $(_DEF_COM_CMDLINE) $(_DEF_C_CMDLINE) -x c ;
-  _CPP_COMPILER = $(_A_TC_PREFIX)clang++ $(_DEF_COM_CMDLINE) $(_DEF_CPP_CMDLINE) -x c++ -D__STDC_INT64__ ;
-  _GAS_COMPILER = $(_A_TC_PREFIX)clang -g -c --sysroot=$(_A_NDK_SYSROOT) ;
+  _C_COMPILER   = $(CompilerWrapper) $(_A_TC_PREFIX)clang $(_DEF_COM_CMDLINE) $(_DEF_C_CMDLINE) -x c ;
+  _CPP_COMPILER = $(CompilerWrapper) $(_A_TC_PREFIX)clang++ $(_DEF_COM_CMDLINE) $(_DEF_CPP_CMDLINE) -x c++ -D__STDC_INT64__ ;
+  _GAS_COMPILER = $(CompilerWrapper) $(_A_TC_PREFIX)clang -g -c --sysroot=$(_A_NDK_SYSROOT) ;
 }
 
 if $(Sanitize) != disabled {

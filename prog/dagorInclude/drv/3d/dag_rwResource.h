@@ -4,12 +4,13 @@
 //
 #pragma once
 
+#include <drv/3d/dag_multi_interface.h>
 #include <util/dag_inttypes.h>
 
 class BaseTexture;
 class Sbuffer;
 
-namespace d3d
+namespace d3d _MULTI_INTERFACE
 {
 /**
  * @brief Set the read/write (UAV) texture to slot
@@ -55,7 +56,7 @@ bool clear_rwtexf(BaseTexture *tex, const float val[4], uint32_t face, uint32_t 
  */
 bool zero_rwbufi(Sbuffer *buf);
 
-} // namespace d3d
+} // namespace d3d _MULTI_INTERFACE
 
 #if _TARGET_D3D_MULTI
 #include <drv/3d/dag_interface_table.h>

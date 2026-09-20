@@ -10,6 +10,7 @@
 #include <daECS/core/entityId.h>
 #include <daECS/core/entityComponent.h>
 #include <memory/dag_framemem.h>
+#include <perfMon/dag_statDrv.h>
 #include <ecs/render/updateStageRender.h>
 #include <drv/3d/dag_resetDevice.h>
 #include <frustumCulling/frustumPlanes.h>
@@ -139,61 +140,60 @@ static void spline_gen_geometry_decode_used_shapes_es(const UpdateStageInfoBefor
   spline_gen_geometry__used_shapes_changed = false;
 }
 
+
+template <typename Callable>
+void spline_gen_update_instancing_ecs_query(ecs::EntityManager &manager, Callable ECS_CAN_PARALLEL_FOR(c, 1));
+
 ECS_TAG(render)
 ECS_AFTER(spline_gen_geometry_decode_used_shapes_es)
-ECS_REQUIRE(eastl::true_type spline_gen_geometry__is_rendered)
-ECS_REQUIRE(eastl::true_type spline_gen_geometry__renderer_active)
-static void spline_gen_geometry_update_instancing_data_es(const UpdateStageInfoBeforeRender & /*stg*/,
-  SplineGenGeometry &spline_gen_geometry_renderer,
-  const ecs::List<Point2> &spline_gen_geometry__radii,
-  const ecs::List<Point3> &spline_gen_geometry__emissive_points,
-  const Point4 &spline_gen_geometry__emissive_color,
-  float spline_gen_geometry__displacement_strength,
-  int spline_gen_geometry__tiles_around,
-  float spline_gen_geometry__tile_size_meters,
-  const ecs::List<Point3> &spline_gen_geometry__points,
-  float spline_gen_geometry__obj_size_mul,
-  float spline_gen_geometry__meter_between_objs,
-  const ecs::List<IPoint2> &spline_gen_geometry__cached_shape_ofs_data,
-  const ecs::List<Point2> &spline_gen_geometry__shape_positions,
-  float spline_gen_geometry__cylinder_start_offset,
-  float spline_gen_geometry__index_of_refraction,
-  Point3 spline_gen_geometry__first_normal,
-  Point3 spline_gen_geometry__first_bitangent,
-  bool spline_gen_geometry__use_last_point_to_orient_spline,
-  const Point4 &spline_gen_geometry__uv_scroll_first_offset_and_scale,
-  const Point4 &spline_gen_geometry__uv_scroll_second_offset_and_scale,
-  float spline_gen_geometry__uv_scroll_interpolation_value,
-  float spline_gen_geometry__surface_opaqueness,
-  Point2 spline_gen_geometry__additional_thickness_bounds,
-  Point3 spline_gen_geometry__medium_tint,
-  float spline_gen_geometry__is_shell)
+static void spline_gen_geometry_update_instancing_data_es(
+  const UpdateStageInfoBeforeRender & /*stg*/, ecs::EntityManager &manager, SplineGenGeometryRepository &spline_gen_repository)
 {
-  int stripes = spline_gen_geometry_renderer.getManager().stripes;
-  G_ASSERT(abs(spline_gen_geometry__displacement_strength) < 1);
-  G_ASSERT(spline_gen_geometry__tiles_around >= 1);
-  G_ASSERT(spline_gen_geometry__tile_size_meters > 0);
-  G_ASSERT(spline_gen_geometry__points.size() >= 2);
-  G_ASSERT(spline_gen_geometry__radii.size() >= 2);
-  G_ASSERT(spline_gen_geometry_renderer.getManager().getType() == SplineGenGeometryManager::SplineGenType::REGULAR_SPLINE_GEN &&
-             spline_gen_geometry__emissive_points.size() == 0 ||
-           spline_gen_geometry_renderer.getManager().getType() == SplineGenGeometryManager::SplineGenType::EMISSIVE_SPLINE_GEN ||
-           spline_gen_geometry_renderer.getManager().getType() == SplineGenGeometryManager::SplineGenType::REFRACTIVE_SPLINE_GEN ||
-           spline_gen_geometry_renderer.getManager().getType() == SplineGenGeometryManager::SplineGenType::SKIN_SPLINE_GEN &&
-             spline_gen_geometry__emissive_points.size() == 0);
-  float maxRadius = get_max_radius(spline_gen_geometry__radii);
-  eastl::vector<SplineGenSpline, framemem_allocator> splineVec =
-    interpolate_points(spline_gen_geometry__points, spline_gen_geometry__radii, spline_gen_geometry__emissive_points,
-      spline_gen_geometry__shape_positions, spline_gen_geometry__cached_shape_ofs_data, spline_gen_geometry__first_normal,
-      spline_gen_geometry__first_bitangent, spline_gen_geometry__use_last_point_to_orient_spline, stripes);
+  G_UNUSED(spline_gen_repository);
+  spline_gen_update_instancing_ecs_query(manager,
+    [](ECS_REQUIRE(eastl::true_type spline_gen_geometry__is_rendered)
+         ECS_REQUIRE(eastl::true_type spline_gen_geometry__renderer_active) SplineGenGeometry &spline_gen_geometry_renderer,
+      const ecs::List<Point2> &spline_gen_geometry__radii, const ecs::List<Point3> &spline_gen_geometry__emissive_points,
+      const Point4 &spline_gen_geometry__emissive_color, float spline_gen_geometry__displacement_strength,
+      int spline_gen_geometry__tiles_around, float spline_gen_geometry__tile_size_meters,
+      const ecs::List<Point3> &spline_gen_geometry__points, float spline_gen_geometry__obj_size_mul,
+      float spline_gen_geometry__meter_between_objs, const ecs::List<IPoint2> &spline_gen_geometry__cached_shape_ofs_data,
+      const ecs::List<Point2> &spline_gen_geometry__shape_positions, float spline_gen_geometry__cylinder_start_offset,
+      float spline_gen_geometry__index_of_refraction, Point3 spline_gen_geometry__first_normal,
+      Point3 spline_gen_geometry__first_bitangent, bool spline_gen_geometry__use_last_point_to_orient_spline,
+      const Point4 &spline_gen_geometry__uv_scroll_first_offset_and_scale,
+      const Point4 &spline_gen_geometry__uv_scroll_second_offset_and_scale, float spline_gen_geometry__uv_scroll_interpolation_value,
+      float spline_gen_geometry__surface_opaqueness, Point2 spline_gen_geometry__additional_thickness_bounds,
+      Point3 spline_gen_geometry__medium_tint, float spline_gen_geometry__is_shell) {
+      FRAMEMEM_REGION;
 
-  spline_gen_geometry_renderer.updateInstancingData(splineVec, maxRadius, spline_gen_geometry__displacement_strength,
-    spline_gen_geometry__tiles_around, spline_gen_geometry__tile_size_meters, spline_gen_geometry__obj_size_mul,
-    spline_gen_geometry__meter_between_objs, spline_gen_geometry__emissive_color, spline_gen_geometry__cylinder_start_offset,
-    spline_gen_geometry__index_of_refraction, spline_gen_geometry__uv_scroll_first_offset_and_scale,
-    spline_gen_geometry__uv_scroll_second_offset_and_scale, spline_gen_geometry__uv_scroll_interpolation_value,
-    spline_gen_geometry__surface_opaqueness, spline_gen_geometry__additional_thickness_bounds, spline_gen_geometry__medium_tint,
-    spline_gen_geometry__is_shell);
+      TIME_PROFILE(spline_gen_update_instancing_data);
+      int stripes = spline_gen_geometry_renderer.getManager().stripes;
+      G_ASSERT(abs(spline_gen_geometry__displacement_strength) < 1);
+      G_ASSERT(spline_gen_geometry__tiles_around >= 1);
+      G_ASSERT(spline_gen_geometry__tile_size_meters > 0);
+      G_ASSERT(spline_gen_geometry__points.size() >= 2);
+      G_ASSERT(spline_gen_geometry__radii.size() >= 2);
+      G_ASSERT(spline_gen_geometry_renderer.getManager().getType() == SplineGenGeometryManager::SplineGenType::REGULAR_SPLINE_GEN &&
+                 spline_gen_geometry__emissive_points.size() == 0 ||
+               spline_gen_geometry_renderer.getManager().getType() == SplineGenGeometryManager::SplineGenType::EMISSIVE_SPLINE_GEN ||
+               spline_gen_geometry_renderer.getManager().getType() == SplineGenGeometryManager::SplineGenType::REFRACTIVE_SPLINE_GEN ||
+               spline_gen_geometry_renderer.getManager().getType() == SplineGenGeometryManager::SplineGenType::SKIN_SPLINE_GEN &&
+                 spline_gen_geometry__emissive_points.size() == 0);
+      float maxRadius = get_max_radius(spline_gen_geometry__radii);
+      eastl::vector<SplineGenSpline, framemem_allocator> splineVec =
+        interpolate_points(spline_gen_geometry__points, spline_gen_geometry__radii, spline_gen_geometry__emissive_points,
+          spline_gen_geometry__shape_positions, spline_gen_geometry__cached_shape_ofs_data, spline_gen_geometry__first_normal,
+          spline_gen_geometry__first_bitangent, spline_gen_geometry__use_last_point_to_orient_spline, stripes);
+
+      spline_gen_geometry_renderer.updateInstancingData(splineVec, maxRadius, spline_gen_geometry__displacement_strength,
+        spline_gen_geometry__tiles_around, spline_gen_geometry__tile_size_meters, spline_gen_geometry__obj_size_mul,
+        spline_gen_geometry__meter_between_objs, spline_gen_geometry__emissive_color, spline_gen_geometry__cylinder_start_offset,
+        spline_gen_geometry__index_of_refraction, spline_gen_geometry__uv_scroll_first_offset_and_scale,
+        spline_gen_geometry__uv_scroll_second_offset_and_scale, spline_gen_geometry__uv_scroll_interpolation_value,
+        spline_gen_geometry__surface_opaqueness, spline_gen_geometry__additional_thickness_bounds, spline_gen_geometry__medium_tint,
+        spline_gen_geometry__is_shell);
+    });
 }
 
 ECS_TAG(render)

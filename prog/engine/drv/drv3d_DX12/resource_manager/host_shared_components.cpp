@@ -50,13 +50,7 @@ TemporaryUploadMemoryProvider::HostDeviceSharedMemoryRegionAllocationResult Temp
     })
     .transform([&, this](auto value) {
       recordTempBufferUsed(value.range.size());
-
-      // Record for automatic cleanup on frame completion, as push memory callers do not free explicitly.
-      accessRecodingPendingFrameCompletion<PendingForCompletedFrameData>(
-        [buffer = value.buffer, range = value.range, allocSize = value.range.size()](auto &data) {
-          data.uploadBufferFrees.push_back({buffer, range});
-          data.tempUsage += allocSize;
-        });
+      recordPushFallbackFree(value.buffer, value.range);
       return value;
     })
     .or_else([&, this](auto error) -> HostDeviceSharedMemoryRegionAllocationResult {
@@ -95,25 +89,7 @@ TemporaryUploadMemoryProvider::HostDeviceSharedMemoryRegionAllocationResult Temp
   tryAllocateTempUploadForUploadBuffer(DXGIAdapter *adapter, ID3D12Device *device, size_t size, size_t alignment)
 {
   auto tempBufferAccess = tempBuffer.access();
-  if (tempBufferAccess->uploadBufferUsage > tempBufferAccess->uploadBufferUsageLimit)
-  {
-    ByteUnits currentUsage{tempBufferAccess->uploadBufferUsage};
-    ByteUnits usageLimit{tempBufferAccess->uploadBufferUsageLimit};
-    ByteUnits reqSize{size};
-    // Out of budget, return empty region
-    logdbg("DX12: Out of upload buffer pool, usage %.2f %s of %.2f %s, while trying to allocate "
-           "%.2f %s",
-      currentUsage.units(), currentUsage.name(), usageLimit.units(), usageLimit.name(), reqSize.units(), reqSize.name());
-    return unexpected_memory_allocation_error(E_OUTOFMEMORY);
-  }
-
-  auto allocationResult = tempBufferAccess->allocate(this, adapter, device, size, alignment);
-  if (!allocationResult)
-  {
-    return allocationResult;
-  }
-  tempBufferAccess->uploadBufferUsage += allocationResult->range.size();
-  return allocationResult;
+  return tempBufferAccess->allocate(this, adapter, device, size, alignment, true);
 }
 
 TemporaryUploadMemoryProvider::HostDeviceSharedMemoryRegionAllocationResult TemporaryUploadMemoryProvider::
@@ -134,8 +110,10 @@ TemporaryUploadMemoryProvider::HostDeviceSharedMemoryRegionAllocationResult Temp
     // have to resort to use or_else instead of transform_error as some VC compiler versions just fail to lookup the constructor from
     // value
     .or_else([&, this](auto error) -> HostDeviceSharedMemoryRegionAllocationResult {
+      // not fatal: the only caller is the ResUpdateBuffer allocation, which handles an empty result
       checkForOOM(adapter, error,
-        OomReportData{"allocateTempUploadForUploadBuffer", nullptr, size, AllocationFlags{}.toUlong(), properties.raw});
+        OomReportData{"allocateTempUploadForUploadBuffer", nullptr, size, AllocationFlags{}.toUlong(), properties.raw},
+        /*fatal*/ false);
       return dag::Unexpected{error};
     });
 }

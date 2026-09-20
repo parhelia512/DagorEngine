@@ -20,6 +20,7 @@ Sources =
   bvhTraversalQuadOOL.cpp
   quadBLASBuilder.cpp
   soa4Convert.cpp
+  soa4EdgeFlags.cpp
   soa4TraversalOOL.cpp
   swTLAS.cpp
 ;

@@ -9,7 +9,6 @@
 #define VARS_LIST                  \
   VAR(jitter_offset_uv)            \
   VAR(uvz_to_prev_frame_uvz)       \
-  VAR(prev_frame_uvz_to_uvz)       \
   VAR(uvz_to_prev_frame_hero_bbox) \
   VAR(uvz_to_prev_frame_hero_uvz)  \
   VAR(zn_zfar_current_prev)        \
@@ -42,8 +41,14 @@ static void set_identity_hero_matrix_params()
   uvz_to_prev_frame_hero_uvzVarId.set_float4x4(TMatrix4::IDENT);
 }
 
-static void set_reprojection_params(const CameraParams &currentCamera, const CameraParams &previousCamera,
-  const eastl::optional<HeroMatrixParams> &heroMatrixParams)
+struct ReprojectionTms
+{
+  TMatrix4 uvzToWorldRel;
+  TMatrix4 prevWorldToUvzRel;
+  TMatrix4 uvzToPrevFrameUvz;
+};
+
+static ReprojectionTms calc_reprojection_tms(const CameraParams &currentCamera, const CameraParams &previousCamera)
 {
   // Doing calculations around view.viewPos increase precision robustness.
   Point3 posDiff = currentCamera.position - previousCamera.position;
@@ -70,13 +75,20 @@ static void set_reprojection_params(const CameraParams &currentCamera, const Cam
 
   TMatrix4 uvzToWorldRel = uvz_to_clip * invProjTmNoJitter * viewItm_rel;
   TMatrix4 prevWorldToUvzRel = TMatrix4(prevViewTm_rel) * previousCamera.projectionNoJitter * clip_to_uvz;
-  TMatrix4 uvzToPrevFrameUvz = uvzToWorldRel * prevWorldToUvzRel;
 
-  uvz_to_prev_frame_uvzVarId.set_float4x4(uvzToPrevFrameUvz);
+  return {uvzToWorldRel, prevWorldToUvzRel, uvzToWorldRel * prevWorldToUvzRel};
+}
+
+static void set_reprojection_params(const CameraParams &currentCamera, const CameraParams &previousCamera,
+  const eastl::optional<HeroMatrixParams> &heroMatrixParams)
+{
+  const ReprojectionTms tms = calc_reprojection_tms(currentCamera, previousCamera);
+
+  uvz_to_prev_frame_uvzVarId.set_float4x4(tms.uvzToPrevFrameUvz);
   zn_zfar_current_prevVarId.set_float4(currentCamera.znear, currentCamera.zfar, previousCamera.znear, previousCamera.zfar);
 
   if (heroMatrixParams)
-    set_hero_matrix_params(*heroMatrixParams, uvzToWorldRel, prevWorldToUvzRel);
+    set_hero_matrix_params(*heroMatrixParams, tms.uvzToWorldRel, tms.prevWorldToUvzRel);
   else
     set_identity_hero_matrix_params();
 }
@@ -86,12 +98,9 @@ static void set_jitter_params(const Point2 &currentJitter, const Point2 &previou
   jitter_offset_uvVarId.set_float4(currentJitter.x, currentJitter.y, previousJitter.x, previousJitter.y);
 }
 
-void set_reprojection_params_prev_to_curr(const CameraParams &currentCamera, const CameraParams &previousCamera)
+TMatrix4 calc_prev_frame_uvz_to_uvz(const CameraParams &currentCamera, const CameraParams &previousCamera)
 {
-  set_reprojection_params(currentCamera, previousCamera, eastl::nullopt);
-  TMatrix4 tm = uvz_to_prev_frame_uvzVarId.get_float4x4();
-  TMatrix4 itm = inverse44(tm);
-  prev_frame_uvz_to_uvzVarId.set_float4x4(itm);
+  return inverse44(calc_reprojection_tms(currentCamera, previousCamera).uvzToPrevFrameUvz);
 }
 
 void set_params(const CameraParams &currentCamera, const CameraParams &previousCamera, const Point2 &currentJitter,

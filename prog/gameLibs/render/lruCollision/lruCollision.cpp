@@ -35,6 +35,10 @@ static inline bool is_transparent(uint32_t phys_mat_id)
   return uint32_t(phys_mat_id) < PhysMat::physMatCount() && PhysMat::getMaterial(phys_mat_id).lightTransparent;
 }
 
+// Which faces reach the voxel scene: glass and the like must not occlude light, so their geometry is dropped.
+// Asked per FACE, since one collision node can carry several materials.
+static inline bool is_voxelized_material(int phys_mat_id) { return !is_transparent(phys_mat_id); }
+
 CONSOLE_BOOL_VAL("render", gi_voxelize_md, true);
 
 #define GLOBAL_VARS_LIST           \
@@ -88,30 +92,47 @@ LRURendinstCollision::LRURendinstCollision() :
   }
 }
 
-// getRiData (size) and updateLRU (fill) must agree byte-for-byte or the updateData G_ASSERTF fires;
-// sharing the classify keeps the two passes in sync by construction. 32-bit index buffer (SBCF_INDEX32):
-// faces add the running vert offset with no 16-bit ceiling, so a per-node BLAS chunk (heavy QUAD_O1
-// over-spread dup) of any size still voxelizes.
-bool LRURendinstCollision::voxelization_node_size(const CollisionResource *coll_res, int ni, const CollisionNode *node,
-  uint32_t &ib_size, uint32_t &vb_size)
+// The material-independent half of voxelization_node_size -- node kind, geometry presence and the vert byte size (the header states
+// what "material-independent" excludes for a BOX).
+// Split out because the fill pass runs per node per LRU miss and must not walk faces there.
+bool LRURendinstCollision::voxelization_node_verts(const CollisionResource *coll_res, int ni, const CollisionNode *node,
+  uint32_t &vb_size)
 {
   if (!node || !node->checkBehaviorFlags(CollisionNode::TRACEABLE))
     return false;
-  if (is_transparent(node->physMatId))
-    return false;
   if (node->type == COLLISION_NODE_TYPE_BOX)
   {
-    ib_size = COLLISION_BOX_INDICES_NUM * sizeof(uint32_t);
+    if (!is_voxelized_material(coll_res->getNodePhysMatId(node->nodeIndex, 0)))
+      return false;
     vb_size = COLLISION_BOX_VERTICES_NUM * sizeof(CollisionVertex);
     return true;
   }
   if (coll_res->getNodeFaceCount(ni) > 0 && (node->type == COLLISION_NODE_TYPE_MESH || node->type == COLLISION_NODE_TYPE_CONVEX))
   {
-    ib_size = coll_res->getNodeFaceCount(ni) * 3 * sizeof(uint32_t);
+    // Every vert is kept, even one no surviving face references: indices are 32-bit and rebased per node, so an unindexed vert only
+    // sits unused in the buffer.
     vb_size = coll_res->getNodeVertCount(ni) * sizeof(CollisionVertex);
     return true;
   }
   return false;
+}
+
+// getRiData (size) and updateLRU (fill) must agree byte-for-byte or updateData's G_ASSERTF fires; one shared classify keeps the passes
+// in sync. 32-bit indices, so a chunk of any size voxelizes.
+bool LRURendinstCollision::voxelization_node_size(const CollisionResource *coll_res, int ni, const CollisionNode *node,
+  uint32_t &ib_size, uint32_t &vb_size)
+{
+  if (!voxelization_node_verts(coll_res, ni, node, vb_size))
+    return false;
+  if (node->type == COLLISION_NODE_TYPE_BOX)
+  {
+    ib_size = COLLISION_BOX_INDICES_NUM * sizeof(uint32_t);
+    return true;
+  }
+  ib_size = coll_res->countNodeFacesByMaterial(ni, is_voxelized_material) * 3 * sizeof(uint32_t);
+  // No face survived the filter: the node contributes nothing at all, and saying otherwise would size a zero-index entry the fill pass
+  // then refuses to emit.
+  return ib_size != 0;
 }
 
 LRURendinstCollision::RiDataInfo LRURendinstCollision::getRiData(uint32_t type)
@@ -345,10 +366,11 @@ bool LRURendinstCollision::updateLRU(dag::ConstSpan<rendinst::riex_handle_t> ri)
     {
       const CollisionNode *node = collRes->getNode(ni);
       uint32_t nodeIbSize, nodeVbSize;
-      if (!voxelization_node_size(collRes, ni, node, nodeIbSize, nodeVbSize))
+      if (!voxelization_node_verts(collRes, ni, node, nodeVbSize))
         continue;
       if (node->type == COLLISION_NODE_TYPE_BOX)
       {
+        nodeIbSize = COLLISION_BOX_INDICES_NUM * sizeof(uint32_t);
         Point3_vec4 boxVertices[COLLISION_BOX_VERTICES_NUM];
         BBox3 nodeBBox = collRes->getNodeBBox(node->nodeIndex);
         for (int vertNo = 0; vertNo < COLLISION_BOX_VERTICES_NUM; ++vertNo)
@@ -366,6 +388,34 @@ bool LRURendinstCollision::updateLRU(dag::ConstSpan<rendinst::riex_handle_t> ri)
       }
       else
       {
+        // What the size pass reserved IS the layout, so advance by that and keep the fill inside it.
+        // The cached face count and the BLAS walk can only disagree in a release build (a dev build
+        // logerrs and cures it at load), and a shorter walk would otherwise shift the index block of
+        // every later node and leave the vert cursor behind. countNodeFacesByMaterial reads the cached
+        // count for a single-material node, so the per-LRU-miss path pays no face walk there; a fused (set-holding) node walks its
+        // leaves per face, here and in the fill below.
+        const uint32_t sizedFaces = collRes->countNodeFacesByMaterial(ni, is_voxelized_material);
+        if (sizedFaces == 0)
+          continue; // the filter emptied this node, so the size pass gave it neither ib nor vb bytes
+        nodeIbSize = sizedFaces * 3 * sizeof(uint32_t);
+        uint32_t *ind = (uint32_t *)indices;
+        const uint32_t *indEnd = (const uint32_t *)(indices + nodeIbSize);
+        uint32_t walkedFaces = 0;
+        collRes->iterateNodeFacesByMaterial(ni, is_voxelized_material, [&](int, uint32_t i0, uint32_t i1, uint32_t i2) {
+          if (++walkedFaces > sizedFaces)
+            return;
+          *ind++ = i0 + firstVertex;
+          *ind++ = i1 + firstVertex;
+          *ind++ = i2 + firstVertex;
+        });
+        if (walkedFaces != sizedFaces)
+        {
+          LOGERR_ONCE("lru voxelization: collres %u node <%s>#%d walked %u faces, sized for %u", type, collRes->getNodeNameStr(*node),
+            ni, walkedFaces, sizedFaces);
+          while (ind < indEnd) // degenerate tris, so a short walk leaves no uninitialized index behind
+            *ind++ = firstVertex;
+        }
+
         CollisionVertex *__restrict vertsDest = (CollisionVertex *)vertices;
         if (collRes->isIdentNode(ni))
         {
@@ -378,13 +428,6 @@ bool LRURendinstCollision::updateLRU(dag::ConstSpan<rendinst::riex_handle_t> ri)
           collRes->iterateNodeVerts(ni, [&](int, vec4f v) { v_float_to_half(&(vertsDest++)->x, v_mat44_mul_vec3p(nodeTm, v)); });
         }
         G_FAST_ASSERT((uint8_t *)vertsDest <= verticesRes.end());
-
-        uint32_t *ind = (uint32_t *)indices;
-        collRes->iterateNodeFaces(ni, [&](int, uint32_t i0, uint32_t i1, uint32_t i2) {
-          *ind++ = i0 + firstVertex;
-          *ind++ = i1 + firstVertex;
-          *ind++ = i2 + firstVertex;
-        });
       }
 
       G_ASSERT(nodeIbSize > 0 && nodeVbSize > 0);

@@ -151,9 +151,6 @@ public:
     ShaderGlobal::set_float4(skyColGvId, skyColor.r, skyColor.g, skyColor.b, 0.f);
     ShaderGlobal::set_float4(sunCol0GvId, sunColor0.r, sunColor0.g, sunColor0.b, 0.f);
     ShaderGlobal::set_float4(sunCol1GvId, sunColor1.r, sunColor1.g, sunColor1.b, 0.f);
-
-    static int global_frame_const_blockid = ShaderGlobal::getBlockId("global_const_block");
-    ShaderGlobal::setBlock(global_frame_const_blockid, ShaderGlobal::LAYER_GLOBAL_CONST);
   }
 
   void updateShaderVars() override

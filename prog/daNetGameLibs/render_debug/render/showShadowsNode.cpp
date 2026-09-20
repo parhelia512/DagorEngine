@@ -5,7 +5,7 @@
 #include <render/viewportTiles.h>
 #include <shaders/dag_postFxRenderer.h>
 #include <render/viewVecs.h>
-#include <render/world/cameraParams.h>
+#include <render/cameraParams.h>
 #include <debug/dag_textMarks.h>
 #include <EASTL/array.h>
 #include <EASTL/string_view.h>

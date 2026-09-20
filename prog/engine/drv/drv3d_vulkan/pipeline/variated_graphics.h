@@ -107,7 +107,9 @@ public:
 
   bool pendingCompilation();
 
-  InputLayoutID getBaseInputLayout() { return inputLayout; }
+  InputLayoutID getBaseInputLayout() const { return inputLayout; }
+
+  ProgramID getProgram() const { return program; }
 
 private:
   GraphicsPipelineShaderSet<const ShaderModule *> modules;

@@ -166,12 +166,14 @@ void set_master_state(const OverrideState &s_)
   G_ASSERT(!overrideMaster);
   overrideMaster = s_;
   masterToCurrent.clear();
+  ShaderElement::invalidate_cached_state_block();
 }
 
 void reset_master_state()
 {
   overrideMaster.reset();
   masterToCurrent.clear();
+  ShaderElement::invalidate_cached_state_block();
 }
 
 void destroy_all_managed_master_states() DAG_TS_NO_THREAD_SAFETY_ANALYSIS

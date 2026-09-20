@@ -218,7 +218,11 @@ shader projective_decal_decals
   PROJECTIVE_DECALS_PS_COMMON()
 
   (ps) {
-    spray_diff_tex@smpArray = spray_diff_tex;
+    spray_diff_tex@texArray = spray_diff_tex;
+  }
+  INIT_GLOBAL_LINEAR_WRAP_SAMPLER(ps)
+  hlsl(ps) {
+    #define spray_diff_tex_samplerstate global_linear_wrap_sampler
   }
 
   hlsl(ps) {

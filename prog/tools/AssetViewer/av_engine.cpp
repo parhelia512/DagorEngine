@@ -1,6 +1,7 @@
 // Copyright (C) Gaijin Games KFT.  All rights reserved.
 
 #include "av_appwnd.h"
+#include "av_environment.h"
 #include "av_mainAssetSelector.h"
 #include "av_plugin.h"
 #include "assetBuildCache.h"
@@ -591,6 +592,8 @@ void AssetViewerApp::beforeRenderObjects()
     worldViewPosVarId = ::get_shader_variable_id("world_view_pos");
   if (worldViewPosVarId >= 0)
     ShaderGlobal::set_float4(worldViewPosVarId, Color4(cameraPos.x, cameraPos.y, cameraPos.z, 1.f));
+
+  environment::before_render_objects();
 
   plugin[0]->beforeRenderObjects();
   if (curPlug)

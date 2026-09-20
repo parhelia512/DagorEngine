@@ -32,7 +32,7 @@ function profile(tname,cnt,testFn) {
 
 function performance_tests() {
 	profile("exp loop",20,function(){
-		expLoop(1000000);
+		expLoop(10000000);
 	});
 	timeStamp();
 }

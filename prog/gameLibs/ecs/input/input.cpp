@@ -26,10 +26,6 @@
 DAINPUT_ECS_EVENTS
 #undef DAINPUT_ECS_EVENT
 
-#if _TARGET_XBOX
-extern void enable_xbox_hw_mouse(bool);
-#endif
-
 namespace ecs
 {
 class DaInputMgr;
@@ -228,8 +224,7 @@ void ecs::init_hid_drivers(int poll_thread_interval_msec, int init_dev_type)
   if (init_dev_type & InitDeviceType::Pointing)
   {
     if (!::global_cls_drv_pnt)
-      ::global_cls_drv_pnt = HumanInput::createMouseEmuClassDriver();
-    enable_xbox_hw_mouse(true);
+      ::global_cls_drv_pnt = HumanInput::createGameInputPointingClassDriver(false, true);
   }
 #elif _TARGET_C1 | _TARGET_C2
 

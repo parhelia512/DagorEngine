@@ -196,6 +196,9 @@ public:
   // Last error usually contains SEP_AUTHENTICATION_ERROR (-29502) when authentication error occurred.
   bool isAuthenticationError() const { return authenticationFailed; }
 
+  // The server announced that it terminates this connection soon. The connection still serves requests until then.
+  bool isServerGoingToShutdown() const { return serverIsGoingToShutdown; }
+
 private:
   using WebSocketClientPtr = eastl::unique_ptr<websocket::WebSocketClient>;
 
@@ -328,6 +331,7 @@ private:
   TickCount onCloseTimeTick = 0;
   websocket::Error lastError;
   bool authenticationFailed = false;
+  bool serverIsGoingToShutdown = false;
 };
 
 

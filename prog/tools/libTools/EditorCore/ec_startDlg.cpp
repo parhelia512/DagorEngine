@@ -271,9 +271,9 @@ void EditorStartDialog::onImguiDelayedCallback(void *user_data)
 }
 
 
-void EditorStartDialog::updateImguiDialog()
+void EditorStartDialog::updateImguiDialog(const PropPanel::DialogWindow::DialogFrameSizing &sizing)
 {
-  DialogWindow::updateImguiDialog();
+  DialogWindow::updateImguiDialog(sizing);
 
   if (!showAddWorkspaceDialog)
     return;
@@ -426,24 +426,9 @@ void WorkspaceDialog::onChange(int pcb_id, PropPanel::ContainerPropertyControl *
 
       if (!wspName.length())
       {
-        const char *begin;
-        const char *end;
-
-        for (end = appPath.str() + strlen(appPath.str()); end > appPath.str(); --end)
-          if (*end == '/' || *end == '\\')
-            break;
-
-        if (end > appPath.str())
-        {
-          for (begin = end - 1; begin > appPath.str(); --begin)
-            if (*begin == '/' || *begin == '\\')
-              break;
-
-          debug("begin = %s, end = %s", begin, end);
-
-          if (begin + 1 < end)
-            panel->setText(PID_WSP_NAME, String::mk_sub_str(begin + 1, end));
-        }
+        const String nameForPath = get_workspace_name_from_application_blk_path(appPath);
+        if (!nameForPath.empty())
+          panel->setText(PID_WSP_NAME, nameForPath);
       }
     }
   }

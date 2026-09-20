@@ -809,6 +809,9 @@ class GenericHeightMapService : public IHmapService
       String compressedPath = buildR32ZstPath();
       if (dd_file_exist(compressedPath))
         dd_erase(compressedPath);
+      String oldCompressedPath(0, "%s.old", compressedPath.c_str());
+      if (dd_file_exist(oldCompressedPath))
+        dd_erase(oldCompressedPath);
       if (!path.empty() && dd_dir_exists(path))
         dag::remove_dirtree(path);
       // Preserve the stored rect (don't fall back to full-extent alloc), so a
@@ -2303,7 +2306,12 @@ public:
     p->setGrassMaskBlk(grassBlk);
     biome_query::init();
     if (p->loadDump(crd))
+    {
+      // the load logs the cause; the viewport shows one landclass per cell until it is fixed
+      if (!p->getWeightAtlas() && !d3d::is_stub_driver())
+        DAEDITOR3.conError("land weight atlas: not created, the terrain renders one landclass per cell (see the log)");
       return p;
+    }
     delete p;
     return NULL;
   }
@@ -2787,16 +2795,23 @@ public:
     const LandWeightAtlas *a = p.getWeightAtlas();
     return a ? a->getCellTexSize() : 0;
   }
-  void setLandWeights(LandMeshManager &p, int cell_idx, const uint32_t *argb4, const uint32_t *rg8, int num_tex) const override
+  void setLandWeights(LandMeshManager &p, int cell_idx, const uint8_t *const *planes, int num_tex) const override
   {
     LandWeightAtlas *a = p.getWeightAtlasForEdit();
     if (a && uint32_t(cell_idx) < uint32_t(p.getDetailMap().cells.size()))
-      a->setCellFromDetailTexels(cell_idx, argb4, rg8, p.getDetailMap().cells[cell_idx].detTexIds.data(), num_tex);
+      a->setCellWeights(cell_idx, planes, p.getDetailMap().cells[cell_idx].detTexIds.data(), num_tex);
   }
   void uploadLandWeights(LandMeshManager &p) const override
   {
     LandWeightAtlas *a = p.getWeightAtlasForEdit();
-    if (a && !a->upload()) // records are already written, so a failure means stale pages render
+    if (!a)
+      return;
+    // taken here so upload() does not log the batch again: the console line is the editor's report
+    if (const int n = a->takeCellsPastBudget())
+      DAEDITOR3.conError("land weight atlas: %d cells blend more than the atlas holds and render as a single landclass; "
+                         "blend fewer landclasses per cell, or the export refuses the map",
+        n);
+    if (!a->upload()) // records are already written, so a failure means stale pages render
       logerr("land weight atlas: upload failed, the painted weights are not on the GPU");
   }
 

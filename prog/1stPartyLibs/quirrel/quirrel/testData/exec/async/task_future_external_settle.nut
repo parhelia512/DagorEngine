@@ -16,13 +16,13 @@ async function section_inflight() {
     task.resolve(99)
     print("BUG: resolve no throw\n")
   } catch (e) {
-    print("resolve threw: " + e + "\n")
+    println($"resolve threw: {e}")
   }
   let bare = Future()
   bare.resolve("ok")
-  print("bare: " + bare.getState() + "\n")
+  println($"bare: {bare.getState()}")
   let r = await task
-  print("consumer got: " + r + "\n")
+  println($"consumer got: {r}")
 }
 
 async function section_returns_future() {
@@ -38,13 +38,13 @@ async function section_returns_future() {
     task.resolve(99)
     print("BUG: resolve no longer throws\n")
   } catch (e) {
-    print("resolve still throws: " + e + "\n")
+    println($"resolve still throws: {e}")
   }
   inner.resolve("real")
   // No adoption: `await task` yields the inner Future (one level); await again for the value.
   let innerFut = await task
   let r = await innerFut
-  print("consumer got: " + r + "\n")
+  println($"consumer got: {r}")
 }
 
 async function section_after_done() {
@@ -56,10 +56,10 @@ async function section_after_done() {
     task.resolve(99)
     print("BUG: resolve no longer throws\n")
   } catch (e) {
-    print("resolve throws: " + e + "\n")
+    println($"resolve throws: {e}")
   }
   let r2 = await task
-  print("after probe, task awaits to: " + r2 + "\n")
+  println($"after probe, task awaits to: {r2}")
 }
 
 async function runAll() {

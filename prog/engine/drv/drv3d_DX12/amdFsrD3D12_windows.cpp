@@ -12,6 +12,7 @@
 #include <drv/3d/dag_driverDesc.h>
 #include <drv/3d/dag_info.h>
 #include <drv/3d/dag_resetDevice.h>
+#include <osApiWrappers/dag_atomic.h>
 #include <osApiWrappers/dag_dynLib.h>
 #include <osApiWrappers/dag_versionQuery.h>
 #include <drv_log_defs.h>
@@ -342,13 +343,29 @@ public:
 
     d3d::driver_command(Drv3dCommand::D3D_FLUSH);
     isFrameGenEnabled = enable;
+
+    if (!enable)
+    {
+      ComPtr<DXGISwapChain> dxgiSwapchain = get_fg_swapchain();
+      ffxConfigureDescFrameGeneration disableConfig{
+        .header{
+          .type = FFX_API_CONFIGURE_DESC_TYPE_FRAMEGENERATION,
+        },
+        .swapChain = dxgiSwapchain.Get(),
+        .frameGenerationEnabled = false,
+      };
+      [[maybe_unused]] auto retCode = configure(&framegenContext, &disableConfig.header);
+      G_ASSERT(retCode == FFX_API_RETURN_OK);
+    }
   }
 
-  void suppressFrameGeneration(bool suppress) { isFrameGenSuppressed = suppress; }
+  void suppressFrameGeneration(bool suppress) { interlocked_relaxed_store(isFrameGenSuppressed, suppress); }
 
   void doScheduleGeneratedFrames(const FrameGenPlatformArgs &args, void *command_list)
   {
     G_ASSERT_RETURN(framegenContext && swapchainContext, );
+
+    const bool suppressed = interlocked_relaxed_load(isFrameGenSuppressed);
 
     ComPtr<DXGISwapChain> dxgiSwapchain = get_fg_swapchain();
 
@@ -375,7 +392,7 @@ public:
         .type = FFX_API_CONFIGURE_DESC_TYPE_FRAMEGENERATION,
       },
       .swapChain = dxgiSwapchain.Get(),
-      .frameGenerationEnabled = isFrameGenEnabled && !isFrameGenSuppressed,
+      .frameGenerationEnabled = isFrameGenEnabled && !suppressed,
       .allowAsyncWorkloads = true,
       .flags = 0, // FfxApiDispatchFrameGenerationFlags
       .generationRect{
@@ -429,7 +446,7 @@ public:
     retCode = configure(&swapchainContext, &uiConfig.header);
     G_ASSERT(retCode == FFX_API_RETURN_OK);
 
-    if (!isFrameGenSuppressed)
+    if (!suppressed)
     {
       ffxDispatchDescFrameGeneration dispatchFg{
         .header{
@@ -468,11 +485,14 @@ public:
     }
   }
 
-  int getPresentedFrameCount() { return (framegenContext && isFrameGenEnabled && !isFrameGenSuppressed) ? 2 : 1; }
+  int getPresentedFrameCount()
+  {
+    return (framegenContext && isFrameGenEnabled && !interlocked_relaxed_load(isFrameGenSuppressed)) ? 2 : 1;
+  }
 
   bool isFrameGenerationActive() const { return isFrameGenEnabled; }
 
-  bool isFrameGenerationSuppressed() const { return isFrameGenSuppressed; }
+  bool isFrameGenerationSuppressed() const { return interlocked_relaxed_load(isFrameGenSuppressed); }
 
   void preRecover()
   {

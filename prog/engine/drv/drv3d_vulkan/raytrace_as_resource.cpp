@@ -59,7 +59,7 @@ VkGeometryFlagsKHR toGeometryFlagsKHR(RaytraceGeometryDescription::Flags flags)
 VkAccelerationStructureGeometryKHR RaytraceGeometryDescriptionToVkAccelerationStructureGeometryKHRAABBs(
   const RaytraceGeometryDescription::AABBsInfo &info)
 {
-  auto buf = (GenericBufferInterface *)info.buffer;
+  auto buf = static_cast<GenericBufferInterface *>(info.buffer);
   BufferRef devBuf = buf->getBufferRef();
   VkAccelerationStructureGeometryKHR result = {VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_GEOMETRY_KHR};
   result.pNext = nullptr;
@@ -74,7 +74,7 @@ VkAccelerationStructureGeometryKHR RaytraceGeometryDescriptionToVkAccelerationSt
 VkAccelerationStructureGeometryKHR RaytraceGeometryDescriptionToVkAccelerationStructureGeometryKHRTriangles(
   const RaytraceGeometryDescription::TrianglesInfo &info)
 {
-  const BufferRef &devVbuf = ((GenericBufferInterface *)info.vertexBuffer)->getBufferRef();
+  const BufferRef &devVbuf = static_cast<GenericBufferInterface *>(info.vertexBuffer)->getBufferRef();
 
   VkAccelerationStructureGeometryKHR result = {VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_GEOMETRY_KHR};
   result.pNext = nullptr;
@@ -88,7 +88,7 @@ VkAccelerationStructureGeometryKHR RaytraceGeometryDescriptionToVkAccelerationSt
   result.geometry.triangles.vertexFormat = VSDTToVulkanFormat(info.vertexFormat);
   if (info.indexBuffer)
   {
-    auto ibuf = (GenericBufferInterface *)info.indexBuffer;
+    auto ibuf = static_cast<GenericBufferInterface *>(info.indexBuffer);
     const BufferRef &devIbuf = ibuf->getBufferRef();
     result.geometry.triangles.indexData.deviceAddress = devIbuf.devOffset(0);
     result.geometry.triangles.indexType =
@@ -100,7 +100,7 @@ VkAccelerationStructureGeometryKHR RaytraceGeometryDescriptionToVkAccelerationSt
     result.geometry.triangles.indexType = VK_INDEX_TYPE_NONE_KHR;
   if (info.transformBuffer)
   {
-    auto tbuf = (GenericBufferInterface *)info.transformBuffer;
+    auto tbuf = static_cast<GenericBufferInterface *>(info.transformBuffer);
     const BufferRef &devTbuf = tbuf->getBufferRef();
     result.geometry.triangles.transformData.deviceAddress = devTbuf.devOffset(info.transformOffset * sizeof(float) * 3 * 4);
   }
@@ -122,7 +122,7 @@ uint32_t omm_index_unit_size(Sbuffer *ib, RaytraceGeometryDescription::IndexForm
     case RaytraceGeometryDescription::IndexFormat::U16: return 2;
     case RaytraceGeometryDescription::IndexFormat::U32: return 4;
     case RaytraceGeometryDescription::IndexFormat::UseBuffer:
-      return ((GenericBufferInterface *)ib)->getIndexType() == VK_INDEX_TYPE_UINT16 ? 2 : 4;
+      return static_cast<GenericBufferInterface *>(ib)->getIndexType() == VK_INDEX_TYPE_UINT16 ? 2 : 4;
   }
   return 4;
 }
@@ -134,7 +134,7 @@ VkIndexType omm_index_type(Sbuffer *ib, RaytraceGeometryDescription::IndexFormat
     case RaytraceGeometryDescription::IndexFormat::U8: return VK_INDEX_TYPE_UINT8;
     case RaytraceGeometryDescription::IndexFormat::U16: return VK_INDEX_TYPE_UINT16;
     case RaytraceGeometryDescription::IndexFormat::U32: return VK_INDEX_TYPE_UINT32;
-    case RaytraceGeometryDescription::IndexFormat::UseBuffer: return ((GenericBufferInterface *)ib)->getIndexType();
+    case RaytraceGeometryDescription::IndexFormat::UseBuffer: return static_cast<GenericBufferInterface *>(ib)->getIndexType();
   }
   return VK_INDEX_TYPE_UINT32;
 }
@@ -154,7 +154,7 @@ void drv3d_vulkan::fillTrianglesOmmDesc(VkAccelerationStructureTrianglesOpacityM
     const uint32_t unitSize = omm_index_unit_size(src.indexBuffer, src.indexFormat);
     dst.indexType = omm_index_type(src.indexBuffer, src.indexFormat);
     dst.indexBuffer.deviceAddress =
-      ((GenericBufferInterface *)src.indexBuffer)->getBufferRef().devOffset(unitSize * src.indexBufferOffsetInIndexUnits);
+      static_cast<GenericBufferInterface *>(src.indexBuffer)->getBufferRef().devOffset(unitSize * src.indexBufferOffsetInIndexUnits);
     dst.indexStride = unitSize * src.indexBufferStrideInIndexUnits;
   }
   else
@@ -284,7 +284,7 @@ void RaytraceAccelerationStructure::createVulkanObject()
 
   if (Globals::cfg.debugLevel)
     Globals::Dbg::naming.setAccelerationStructureName(this,
-      String(64, "RTAS %s from %s", desc.isTopLevel ? "top" : "bottom", backtrace::get_stack()));
+      String(64, "%s-%s", desc.isTopLevel ? "TLAS" : "BLAS", Globals::cfg.debugLevel > 1 ? backtrace::get_stack() : "<unknown>"));
 
   reportToTQL(true);
 }

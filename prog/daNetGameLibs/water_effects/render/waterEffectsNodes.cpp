@@ -5,7 +5,7 @@
 #include <3d/dag_render.h>
 #include <render/dag_cur_view.h>
 
-#include <render/world/cameraParams.h>
+#include <render/cameraParams.h>
 #include <render/world/frameGraphHelpers.h>
 #include <render/world/wrDispatcher.h>
 #include <render/lights/clusteredLights.h>

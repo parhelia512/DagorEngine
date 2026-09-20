@@ -30,11 +30,10 @@ static const float min_downgraded_quality = 0.125f;  // 1/8 for each side = 1/64
 static const float max_upgraded_quality = 2.0f;      // 2 for each side = 4x
 static const unsigned frames_to_change_quality = 31; // do not upgrade quality more often than each second
 
-#define SHADOW_SYSTEM_SHADER_VARS         \
-  VAR(octahedral_texture_size)            \
-  VAR(octahedral_shadow_zn_zfar)          \
-  VAR(dynamic_light_shadows)              \
-  VAR(dynamic_light_shadows_samplerstate) \
+#define SHADOW_SYSTEM_SHADER_VARS \
+  VAR(octahedral_texture_size)    \
+  VAR(octahedral_shadow_zn_zfar)  \
+  VAR(dynamic_light_shadows)      \
   VAR(octahedral_temp_shadow)
 
 #define VAR(a) static int a##VarId = -1;
@@ -103,7 +102,6 @@ void ShadowSystem::changeResolution(int atlasW, int max_shadow_size, int min_sha
     dynamic_light_shadows = dag::create_tex(NULL, atlasWidth, atlasHeight, textureFormat | TEXCF_RTARGET, 1,
       getResName("dynamic_light_shadows").c_str(), RESTAG_SHADOW);
     ShaderGlobal::set_texture(dynamic_light_shadowsVarId, dynamic_light_shadows);
-    ShaderGlobal::set_sampler(dynamic_light_shadows_samplerstateVarId, shadowSampler);
     d3d::resource_barrier({dynamic_light_shadows.getTex2D(), RB_RO_SRV | RB_STAGE_PIXEL | RB_STAGE_COMPUTE, 0, 0});
     invalidateAllVolumes();
   }
@@ -391,6 +389,8 @@ void ShadowSystem::invalidateStaticObjects(bbox3f_cref box)
       continue;
     if (!v_bbox3_test_box_intersect(volumesBox[i], box))
       continue;
+    if (!volumes[i].isOctahedral() && !volumesFrustum[i].testBoxB(box.bmin, box.bmax))
+      continue;
     volumes[i].lastFrameChanged = volumes[i].lastFrameUpdated + 1;
   }
 }
@@ -457,9 +457,10 @@ struct TraceLightInfo
   float viewHor[4], viewVer[4];
 };
 
-void ShadowSystem::startRenderVolumes(const dag::ConstSpan<uint16_t> &volumesToRender)
+void ShadowSystem::startRenderVolumes(const dynamic_shadow_render::FrameVolumeData &volume_data)
 {
-  if (!volumesToRender.size())
+  const auto &volumesToRender = volume_data.volumes;
+  if (volumesToRender.empty())
     return;
   if (trace_shadow_depth_region.getElem())
   {
@@ -470,7 +471,7 @@ void ShadowSystem::startRenderVolumes(const dag::ConstSpan<uint16_t> &volumesToR
     eastl::fixed_vector<TraceLightInfo, 8, true, framemem_allocator> traceAreas; // we are usually not updating all volumes at once
     for (auto i = volumesToRender.end() - 1, e = volumesToRender.begin() - 1; i > e; --i)
     {
-      auto id = *i;
+      auto id = i->id;
       const Volume &volume = volumes[id];
       if (!volume.isApproximatelyTracedStaticCasters())
         continue;
@@ -491,8 +492,7 @@ void ShadowSystem::startRenderVolumes(const dag::ConstSpan<uint16_t> &volumesToR
       shaders::overrides::set(cmpfAlwaysNoBiasStateId);
       d3d::set_render_target({dynamic_light_shadows.getTex2D(), 0, 0}, DepthAccess::RW, {});
       const int sizeInRegs = sizeof(TraceLightInfo) / 16;
-      const int quant = d3d::set_vs_constbuffer_register_count(51 * sizeInRegs) / sizeInRegs + 1; // 51 must match shader
-      G_ASSERT(quant > 0);
+      const int quant = min<int>(50, (d3d::get_driver_desc().maxvpconsts - 1) / sizeInRegs);
       ShaderGlobal::set_float4(octahedral_texture_sizeVarId, tinfo.w, tinfo.h, 1. / tinfo.w, 1. / tinfo.h);
 
       d3d::setvsrc(0, 0, 0);
@@ -506,15 +506,14 @@ void ShadowSystem::startRenderVolumes(const dag::ConstSpan<uint16_t> &volumesToR
       }
       shaders::overrides::set(originalState);
       d3d::resource_barrier({dynamic_light_shadows.getTex2D(), RB_RO_SRV | RB_STAGE_PIXEL | RB_STAGE_COMPUTE, 0, 0});
-      d3d::set_vs_constbuffer_register_count(0);
       ShaderGlobal::setBlock(oldBlock, ShaderGlobal::LAYER_FRAME);
     }
   }
   {
     TIME_D3D_PROFILE(copy_depth);
-    for (auto id : volumesToRender)
+    for (const auto &vol : volumesToRender)
     {
-      Volume &volume = volumes[id];
+      Volume &volume = volumes[vol.id];
       // todo: make condition more clear
       if (!volume.isValidContent() || !volume.isStaticLightWithDynamicContent(currentFrame) || volume.dynamicShadow.isEmpty())
         continue;
@@ -544,8 +543,8 @@ void ShadowSystem::copyAtlasRegion(int src_x, int src_y, int dst_x, int dst_y, i
     driver.is(d3d::dx11 || d3d::dx12) || (driver.is(d3d::vulkan) && d3d::get_driver_desc().info.vendor == GpuVendor::AMD);
   if (!useShaderCopy)
   {
-    tempCopy.getTex2D()->updateSubRegion(dynamic_light_shadows.getTex2D(), 0, src_x, src_y, 0, w, h, 1, 0, 0, 0, 0);
-    dynamic_light_shadows.getTex2D()->updateSubRegion(tempCopy.getTex2D(), 0, 0, 0, 0, w, h, 1, 0, dst_x, dst_y, 0);
+    d3d::update_sub_region(dynamic_light_shadows.getTex2D(), 0, src_x, src_y, 0, w, h, 1, tempCopy.getTex2D(), 0, 0, 0, 0);
+    d3d::update_sub_region(tempCopy.getTex2D(), 0, 0, 0, 0, w, h, 1, dynamic_light_shadows.getTex2D(), 0, dst_x, dst_y, 0);
     d3d::setview(dst_x, dst_y, w, h, 0, 1);
   }
   else
@@ -577,6 +576,8 @@ void ShadowSystem::endRenderVolumes()
 {
   d3d::resource_barrier({dynamic_light_shadows.getTex2D(), RB_RO_SRV | RB_STAGE_PIXEL | RB_STAGE_COMPUTE, 0, 0});
 }
+
+void ShadowSystem::setTextureToShader() { ShaderGlobal::set_texture(dynamic_light_shadowsVarId, dynamic_light_shadows); }
 
 void ShadowSystem::startRenderTempShadow()
 {
@@ -1013,11 +1014,12 @@ static float projected_sphere_area_look_center(float z2, float r2, float fl) // 
   return area;
 }
 
-void ShadowSystem::endPrepareShadows(dynamic_shadow_render::VolumesVector &volumesToRender, int max_shadow_volumes_to_update,
+void ShadowSystem::endPrepareShadows(dynamic_shadow_render::FrameVolumeData &volume_data, int max_shadow_volumes_to_update,
   int max_static_views_to_update, float max_area_part_to_update, const Point3 &viewPos, float cameraFocal, mat44f_cref clip)
 {
   G_ASSERTF(currentState == UPDATE_STARTED, "start without end has been called");
-  volumesToRender.clear();
+  auto &volumesToRender = volume_data.volumes;
+  volume_data.clear();
   if (!volumesToUpdate.size())
   {
     currentState = UPDATE_ENDED;
@@ -1154,7 +1156,7 @@ void ShadowSystem::endPrepareShadows(dynamic_shadow_render::VolumesVector &volum
         if (volume.shouldBeRendered(currentFrame))
         {
           const int staticViews = (getVolumeRenderFlags(id) & RENDER_STATIC) ? (int)volume.getNumViews() : 0;
-          volumesToRender.push_back(id);
+          volumesToRender.emplace_back().id = id;
           staticViewsLeft -= staticViews;
           totalUpdateArea -= volume.shadow.width * volume.shadow.width;
           if (volumesToRender.size() >= max_shadow_volumes_to_update || staticViewsLeft <= 0 || totalUpdateArea < 0)
@@ -1205,8 +1207,6 @@ void ShadowSystem::endPrepareShadows(dynamic_shadow_render::VolumesVector &volum
     upgradeQuality(predictedUpgradedArea / float(atlasWidth * atlasHeight));
   }
   currentState = UPDATE_ENDED;
-
-  ShaderGlobal::set_texture(dynamic_light_shadowsVarId, dynamic_light_shadows);
 }
 
 void ShadowSystem::debugValidate()

@@ -37,7 +37,7 @@ shader beam_tracers_tail
   IMPORT_ON_TOP_CAMERA_IN_CAMERA(ps)
 
   supports global_frame;
-  supports global_const_block;
+  GLOBAL_CONSTS(vs)
   //cull_mode = none;
   z_write = false;
   blend_src =1; blend_dst = sa;

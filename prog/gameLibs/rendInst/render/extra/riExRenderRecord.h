@@ -13,14 +13,9 @@
 struct RIExRenderRecord
 {
   const ShaderElement *curShader;
-  uint32_t prog;
   uint32_t voxelSurfaceId;
   uint32_t voxelDataOffset;
-  shaders::RenderStateId rstate;
-  ShaderStateBlockId state;
-  shaders::TexStateIdx tstate;
-  shaders::ConstStateIdx cstate;
-  uint16_t cv;
+  shaders::CombinedDynVariantState dvState;
   uint16_t poolOrder;
   uint16_t vstride;
   uint8_t vbIdx;
@@ -32,19 +27,13 @@ struct RIExRenderRecord
   uint16_t texLevel;
   uint8_t isTree : 1, isTessellated : 1, isSWVertexFetch : 1, disableOptimization : 1;
   uint8_t lod;
-  RIExRenderRecord(const ShaderElement *curShader, int cv, uint32_t prog, ShaderStateBlockId state_, shaders::RenderStateId rstate,
-    shaders::TexStateIdx tstate, shaders::ConstStateIdx cstate, uint16_t poolOrder, uint16_t vstride, uint8_t vbIdx,
-    PackedDrawOrder drawOrder_stage, uint8_t elem_order, uint8_t primitive, IPoint2 ofsAndCnt, int si, int sv, int numv, int numf,
-    int bv, int texLevel, int isTree, int isTessellated, bool disable_optimization, uint8_t lod) :
+  RIExRenderRecord(const ShaderElement *curShader, const shaders::CombinedDynVariantState &dv_state, uint16_t poolOrder,
+    uint16_t vstride, uint8_t vbIdx, PackedDrawOrder drawOrder_stage, uint8_t elem_order, uint8_t primitive, IPoint2 ofsAndCnt, int si,
+    int sv, int numv, int numf, int bv, int texLevel, int isTree, int isTessellated, bool disable_optimization, uint8_t lod) :
     curShader(curShader),
-    cv(cv < 0 ? ~0 : cv),
-    prog(prog),
     voxelSurfaceId(~0u),
     voxelDataOffset(0),
-    state(state_),
-    rstate(rstate),
-    tstate(tstate),
-    cstate(cstate),
+    dvState(dv_state),
     poolOrder(poolOrder),
     vstride(vstride),
     vbIdx(vbIdx),

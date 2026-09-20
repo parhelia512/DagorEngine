@@ -18,6 +18,9 @@ AddIncludes =
 
 local AllSources = [ GLOB $(Root)/$(Location) : *.cpp ] ;
 Sources = $(AllSources:D=) ;
+
+# selects policies.jit_enabled, so the host hashes the same program the .o was emitted from
+if $(NeedDasLLVMAotCompile) = yes { CPPopt += -DDAS_LLVM_AOT ; }
 SourceDAS =
   ecs.das
 ;

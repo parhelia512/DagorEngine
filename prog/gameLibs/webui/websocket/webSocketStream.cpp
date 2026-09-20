@@ -375,10 +375,7 @@ public:
 
 static InitOnDemand<WebSocketStream> websocket_stream;
 
-void MessageListener::addCommand(const char *name, const Method &method)
-{
-  commands.insert(CommandMap::value_type(SimpleString(name), method));
-}
+void MessageListener::addCommand(const char *name, const Method &method) { commands.emplace(name, method); }
 
 bool MessageListener::processCommand(const char *name, const DataBlock &blk)
 {
@@ -477,7 +474,7 @@ public:
   }
 };
 
-static DefaultMessageListener websocket_listener;
+static InitOnDemand<DefaultMessageListener> websocket_listener;
 static bool started = false;
 
 int get_port() { return websocket_stream ? websocket_stream->port : -1; }
@@ -501,7 +498,7 @@ bool start(int port)
 
   if (websocket_stream->start())
   {
-    websocket_stream->addMessageListener(&websocket_listener);
+    websocket_stream->addMessageListener(websocket_listener.demandInit());
     started = true;
     return true;
   }

@@ -1,0 +1,52 @@
+macro INIT_OPTIONAL_CLOTH_SIM_SKINNING()
+  static int cloth_skinning = 0;
+  interval cloth_skinning : off < 1, on;
+
+  if (cloth_skinning == on)
+  {
+    hlsl {
+      #define HAS_CLOTH_SKINNING 1
+    }
+  }
+endmacro
+
+
+// Cloth channels must be declared AFTER the shader's base vertex channels: skinProxyLod patches the vertex tail.
+macro USE_CLOTH_SIM_SKINNING()
+  if (cloth_skinning == on)
+  {
+    // Must be consistent with CLOTH_SKINNING_INDEX/WEIGHT_EXTRA_CHANNEL (dag_clothSimChannels.h).
+    channel float4 tc[6] = extra[58];
+    channel color8 tc[7] = extra[59];
+  }
+endmacro
+
+// Only the cloth variant takes the prevPos form of vs_post_function: the off variant must keep the
+// signature it had before cloth sim, since these shaders are used by non-cloth models too.
+macro USE_CLOTH_SIM_SKINNING_VS_POST_FUNCTION(body_fn)
+  USE_CLOTH_SIM_SKINNING()
+
+  if (cloth_skinning == on)
+  {
+    hlsl {
+      #define POST_FUNCTION_MODIFIES_POSITION 1
+    }
+
+    hlsl(vs) {
+      void vs_post_function(VsInput input, inout VsOutput output, inout float4 prevPos)
+      {
+        body_fn(input, output);
+        // TODO: apply the cloth sim skinning here
+      }
+    }
+  }
+  else
+  {
+    hlsl(vs) {
+      void vs_post_function(VsInput input, inout VsOutput output)
+      {
+        body_fn(input, output);
+      }
+    }
+  }
+endmacro

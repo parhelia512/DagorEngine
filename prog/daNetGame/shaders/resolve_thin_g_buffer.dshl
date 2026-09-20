@@ -92,6 +92,10 @@ shader thin_g_resolve, deferred_shadow_bare_minimum
   else if (shader == deferred_shadow_bare_minimum)
   {
     PACK_UNPACK_GBUFFER_BASE(ps)
+    INIT_GLOBAL_LINEAR_WRAP_SAMPLER(ps)
+    hlsl(ps) {
+      #define gbuffer_envi_probe_specular_samplerstate global_linear_wrap_sampler
+    }
     WRITE_GBUFFER_THIN()
     INIT_LOAD_DEPTH_GBUFFER()
     USE_LOAD_DEPTH_GBUFFER()
@@ -112,7 +116,7 @@ shader thin_g_resolve, deferred_shadow_bare_minimum
       gbuffer_enviSPH0 @f4 = (enviSPH0*skylight_params.y);
       gbuffer_enviSPH1 @f4 = (enviSPH1*skylight_params.y);
       gbuffer_enviSPH2 @f4 = (enviSPH2*skylight_params.y);
-      gbuffer_envi_probe_specular@smpCube = envi_probe_specular;
+      gbuffer_envi_probe_specular@texCube = envi_probe_specular;
     }
   }
   INIT_STATIC_SHADOW()

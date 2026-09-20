@@ -4,19 +4,18 @@ from "types" import Table, Array, String, Function
 
 function WatchedImmediate(...) {
   let w = Watched.acall([this].extend(vargv))
-  w.setDeferred(false)
+  w.setImmediate(true)
   return w
 }
 
 function ComputedImmediate(...) {
   let c = Computed.acall([this].extend(vargv))
-  c.setDeferred(false)
+  c.setImmediate(true)
   return c
 }
 
 let isComputed = @(v) v instanceof Computed
-let isWatched = @(v) v instanceof Watched
-let isObservable = @(v) isWatched(v) || isComputed(v)
+let isObservable = @(v) v instanceof Watched // also matches Computed, as inherited from Watched
 
 function watchedTable2TableOfWatched(state, fieldsList = null) {
   assert(isObservable(state), "state has to be Watched")
@@ -240,6 +239,5 @@ return freeze({
   WatchedRo
   isObservable
   isComputed
-  isWatched
   getWatcheds
 })

@@ -53,8 +53,13 @@ public:
   virtual ContainerPropertyControl *createMultiSelectTree(int id, const char caption[], hdpi::Px height, bool new_line = true);
   virtual ContainerPropertyControl *createMultiSelectTreeCheckbox(int id, const char caption[], hdpi::Px height, bool new_line = true);
 
+  // wrap_width_in_chars: the parameter is only used if word_wrap is set.
+  //   If this parameter's value <= 0 then the text will be wrapped at the window's right edge.
+  //   If this parameter's value > 0 then the value behaves like CSS's "ch" unit. 1ch means the width of the '0' character
+  //   in the current font and font size. The text will be wrapped at (wrap_width_in_chars * the width of '0') pixels or
+  //   at the window's right edge if the requested width would go beyond that.
   virtual void createStatic(int id, const char caption[], bool new_line = true, bool use_text_width = false, bool word_wrap = false,
-    bool monospace = false);
+    bool monospace = false, int wrap_width_in_chars = 0);
 
   // You can also use Constants::EDITBOX_MULTILINE_8_LINES_HEIGHT and Constants::EDITBOX_MULTILINE_FULL_HEIGHT for height.
   virtual void createEditBox(int id, const char caption[], const char text[] = "", bool enabled = true, bool new_line = true,
@@ -149,6 +154,9 @@ public:
   virtual void setGradient(int id, PGradient value);
   virtual void setTextGradient(int id, const TextGradient &source);
   virtual void setControlPoints(int id, Tab<Point2> &points);
+
+  // Sets the test automation name of the child control identified by id. See PropertyControlBase::setAutomationName().
+  virtual void setControlAutomationName(int id, const char automation_name[]);
 
   virtual void setTooltipId(int id, const char text[]);
   virtual void setShowTooltipAlwaysById(int id, bool show);
@@ -440,6 +448,7 @@ public:
   int getVerticalSpaceBetweenControls() const { return verticalSpaceBetweenControls; }
 
   virtual void setTreeDragHandler([[maybe_unused]] ITreeDragHandler *handler) {}
+  virtual void setTreeDragDropFlags([[maybe_unused]] ImGuiDragDropFlags flags) {}
   virtual void setTreeDropHandler([[maybe_unused]] ITreeDropHandler *handler) {}
   virtual void setTreeEventHandler([[maybe_unused]] ITreeControlEventHandler *event_handler) {}
   virtual void setTreeCheckboxIcons([[maybe_unused]] const char *checked, [[maybe_unused]] const char *unchecked) {}
@@ -454,6 +463,12 @@ public:
   void applyDefaultValue() override;
 
   void updateImgui() override;
+
+  // Aggregates the children's getPreferredSize().
+  // Controls sharing a line (see the new_line parameter of the various create functions) contribute their widths side
+  // by side, lines stack vertically.
+  // A child that returns (0, 0) contributes nothing, so the result is a best-effort minimum, not an exact size.
+  Point2 getPreferredSize(float max_width_px) const override;
 
 protected:
   virtual void resizeControl(unsigned w, unsigned h)
@@ -476,6 +491,8 @@ protected:
   void addVerticalSpaceAfterControl();
 
   void handleDragAndDropForControl(PropertyControlBase &control);
+
+  void setAutomationNameFromCaption(PropertyControlBase *control, const char caption[]);
 
   Tab<PropertyControlBase *> mControlArray;
   Tab<bool> mControlsNewLine;

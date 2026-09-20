@@ -24,7 +24,11 @@ shader deferred_simple, portal_render_resolve, satellite_render_resolve
   else if (shader == portal_render_resolve)
   {
     (ps) {
-      envi_probe_specular@smpCube = envi_probe_specular;
+      envi_probe_specular@texCube = envi_probe_specular;
+    }
+    INIT_GLOBAL_LINEAR_WRAP_SAMPLER(ps)
+    hlsl(ps) {
+      #define envi_probe_specular_samplerstate global_linear_wrap_sampler
     }
   }
 
@@ -33,7 +37,6 @@ shader deferred_simple, portal_render_resolve, satellite_render_resolve
     dont_render;
   }
   supports global_frame;
-  supports global_const_block;
   hlsl {
     #define SPECULAR_DISABLED 1 // fixme; should we use specular anyway?
     //#define BRDF_DIFFUSE DIFFUSE_LAMBERT

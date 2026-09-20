@@ -16,35 +16,6 @@ static const int LOGMESSAGE_LEVEL = LOGLEVEL_ERR;
 static const int LOGMESSAGE_LEVEL = LOGLEVEL_WARN;
 #endif
 
-float rendinst::get_riextra_destr_time_to_live(rendinst::riex_handle_t handle)
-{
-  G_ASSERT_RETURN(handle != RIEX_HANDLE_NULL, -1.0f);
-  return rendinst::riExtra[rendinst::handle_to_ri_type(handle)].destrTimeToLive;
-}
-float rendinst::get_riextra_destr_default_time_to_live(rendinst::riex_handle_t handle)
-{
-  G_ASSERT_RETURN(handle != RIEX_HANDLE_NULL, -1.0f);
-  return rendinst::riExtra[rendinst::handle_to_ri_type(handle)].destrDefaultTimeToLive;
-}
-float rendinst::get_riextra_destr_time_to_kinematic(rendinst::riex_handle_t handle)
-{
-  G_ASSERT_RETURN(handle != RIEX_HANDLE_NULL, -1.0f);
-  return rendinst::riExtra[rendinst::handle_to_ri_type(handle)].destrTimeToKinematic;
-}
-float rendinst::get_riextra_destr_time_to_sink_underground(rendinst::riex_handle_t handle)
-{
-  G_ASSERT_RETURN(handle != RIEX_HANDLE_NULL, -1.0f);
-  return rendinst::riExtra[rendinst::handle_to_ri_type(handle)].destrTimeToSinkUnderground;
-}
-
-Point3 rendinst::get_riextra_destr_disintegration_params(rendinst::riex_handle_t handle)
-{
-  G_ASSERT_RETURN(handle != RIEX_HANDLE_NULL, Point3(-1.0f, 0, 1));
-  return Point3(rendinst::riExtra[rendinst::handle_to_ri_type(handle)].destrTimeToStartDisintegration,
-    rendinst::riExtra[rendinst::handle_to_ri_type(handle)].destrDisintegrationDuration,
-    rendinst::riExtra[rendinst::handle_to_ri_type(handle)].destrDisintegrationScale);
-}
-
 bool rendinst::get_riextra_immortality(rendinst::riex_handle_t handle)
 {
   return rendinst::riExtra[rendinst::handle_to_ri_type(handle)].immortal;
@@ -314,12 +285,12 @@ int rendinst::getRIGenExtraDestroyedRiIdx(uint32_t pool)
   return -1;
 }
 
-bool rendinst::isRIGenExtraRendinstClipmap(uint32_t pool)
+bool rendinst::isRIGenExtraRendinstClipmapOrLandclass(uint32_t pool)
 {
   if (riExtra.isValid(pool))
-    return riExtra[pool].isRendinstClipmap;
+    return riExtra[pool].isRendinstClipmap || !riExtra[pool].riLandclassCachedData.empty();
 
-  logerr("failed to get 'isRendinstClipmap' property of invalid pool '%u'", pool);
+  logerr("failed to get 'isRendinstClipmap' or 'riLandclassCachedData' property of invalid pool '%u'", pool);
   return false;
 }
 

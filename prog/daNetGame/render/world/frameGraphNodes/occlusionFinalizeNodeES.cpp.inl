@@ -24,8 +24,7 @@ extern ConVarT<bool, false> stop_occlusion;
 dafg::NodeHandle makeOcclusionFinalizeNode()
 {
   return dafg::register_node("occlusion_finalize_node", DAFG_PP_NODE_SRC, [](dafg::Registry registry) {
-    registry.orderMeAfter("water_early_after_envi_node");
-    registry.orderMeBefore("water_late_node");
+    registry.executionHas(dafg::SideEffects::External);
     auto cameraHndl = registry.readBlob<CameraParams>("current_camera").handle();
     return [cameraHndl] {
       Occlusion *occlusion = cameraHndl.ref().jobsMgr->getOcclusion();

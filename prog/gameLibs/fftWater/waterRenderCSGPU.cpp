@@ -162,7 +162,10 @@ bool CSGPUData::initDispArray(const NVWaveWorks_FFT_CPU_Simulation *fft, bool r_
 
   const int N0 = 1 << fft[0].getParams().fft_resolution_bits;
   int numCascades = cascades.size();
-  int fmt = d3d::get_driver_desc().issues.hasBrokenComputeFormattedOutput ? TEXFMT_A32B32G32R32F : TEXFMT_A16B16G16R16F;
+  const bool isFp16UndorderedSupported =
+    (d3d::get_texformat_usage(TEXFMT_A16B16G16R16F) & d3d::USAGE_UNORDERED) == d3d::USAGE_UNORDERED;
+  int fmt = (d3d::get_driver_desc().issues.hasBrokenComputeFormattedOutput || !isFp16UndorderedSupported) ? TEXFMT_A32B32G32R32F
+                                                                                                          : TEXFMT_A16B16G16R16F;
 
   dispArray.close();
   dispArray = dag::create_array_tex(N0, N0, numCascades,

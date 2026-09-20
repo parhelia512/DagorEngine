@@ -3,6 +3,7 @@
 #include "das_ecs.h"
 #include <util/dag_string.h>
 #include <dasModules/dasEvent.h>
+#include <dasModules/dasAotErrorsLog.h>
 #include <dasModules/dasScriptsLoader.h>
 #include <dasModules/dasCreatingTemplate.h>
 #include <dasModules/aotEcs.h>
@@ -105,6 +106,15 @@ ESModuleGroupData *getGroupData(das::ModuleGroup &group)
 }
 
 struct LoadedScript;
+
+// The LLVM object driver compiles several inputs in one process, so a file another input requires
+// is compiled twice and the second pass meets its own systems. C++ AOT reports that through
+// das::is_in_aot().
+static bool is_emitting_aot_object()
+{
+  const das::daScriptEnvironment *env = das::daScriptEnvironment::getBound();
+  return env && env->g_Program && env->g_Program->policies.jit_emit_object;
+}
 
 static das::daScriptEnvironment *mainThreadBound = nullptr;
 static das::daScriptEnvironment *debuggerEnvironment = nullptr;
@@ -595,7 +605,6 @@ bool build_components_table(const char *name, BaseEsDesc &desc, Container &comps
   uint8_t *__restrict flags = (uint8_t *)alloca(arguments.size() * sizeof(uint8_t));       // more than enough
   uint32_t optCount = 0;
   das::string typeName;
-  das::string cerr;
   for (auto argI = arguments.begin() + start_arg, argE = arguments.end(); argI != argE; ++argI)
   {
     const auto &arg = *argI;
@@ -830,16 +839,17 @@ uint32_t ESModuleGroupData::es_resolve_function_ptrs(EsContext *ctx, dag::Vector
     // ctor puts system to the list
     const bool isDasEvent = i.first->typeInfo != nullptr;
     totalSystems++;
-    aotSystems += i.first->functionPtr->aot ? 1 : 0;
+    const bool isCompiled = i.first->functionPtr->aot || i.first->functionPtr->jit;
+    aotSystems += isCompiled ? 1 : 0;
 #if DAGOR_DBGLEVEL > 1 || DAECS_EXTENSIVE_CHECKS // we can't get logs from consoles in release
     // Only complain about a missing AOT entry when this binary was built with AOT
     // codegen linked in (per jamfile's $(NeedDasAotCompile) selecting aot.cpp vs
     // aotstub.cpp); otherwise every non-debug ES would log a line per reload.
-    if (!i.first->functionPtr->aot && aot_mode_is_required == AotModeIsRequired::YES && ::NEED_DAS_AOT_COMPILE)
+    if (!isCompiled && aot_mode_is_required == AotModeIsRequired::YES && ::NEED_DAS_AOT_COMPILE)
       debug("daScript: register_es %s<%s>%s, with 0x%X update mask and %d%s events before<%s> after<%s> tags=<%s> , tracked "
             "components=<%s> "
             "%d components",
-        i.first->functionPtr->aot ? "AOT:" : "INTERPRET:", i.second.c_str(), fn ? fn : "", i.first->stageMask, i.first->evtMask.size(),
+        isCompiled ? "AOT:" : "INTERPRET:", i.second.c_str(), fn ? fn : "", i.first->stageMask, i.first->evtMask.size(),
         isDasEvent ? " scripted" : " core", i.first->beforeList.c_str(), i.first->afterList.c_str(), i.first->tagsList.c_str(),
         i.first->trackedList.c_str(), i.first->base.components.size());
 #endif
@@ -885,9 +895,9 @@ static bool build_es(BaseEsDesc &esDesc, const char *debug_name, const das::vect
   if (!err.empty())
     return false;
   components_from_list(args, "REQUIRE", components, argStrings);
-  esDesc.ends[BaseEsDesc::RQ_END] = components.size();
+  esDesc.ends[BaseEsDesc::RQ_END] = (uint16_t)components.size();
   components_from_list(args, "REQUIRE_NOT", components, argStrings);
-  esDesc.ends[BaseEsDesc::NO_END] = components.size();
+  esDesc.ends[BaseEsDesc::NO_END] = (uint16_t)components.size();
   esDesc.components.assign(components.begin(), components.end());
   return true;
 };
@@ -1026,7 +1036,7 @@ struct EsFunctionAnnotation final : das::FunctionAnnotation
         // If we mix AOT and regular script launch (using das_scripts.cpp)
         // we get different `mg.hashedScriptName`.
         if (!entity_system_is_das(desc) || (((EsDesc *)desc->getUserData())->hashedScriptName != mg.hashedScriptName &&
-                                             (mg.hashedScriptName != 0 || !das::is_in_aot())))
+                                             (mg.hashedScriptName != 0 || !(das::is_in_aot() || is_emitting_aot_object()))))
         {
           err = "es <" + func->name + "> is already registered in other file";
           if (desc->getModuleName())
@@ -1090,7 +1100,6 @@ struct EsFunctionAnnotation final : das::FunctionAnnotation
 
 #if ES_TO_QUERY
     get_underlying_ecs_type(*func->arguments[0]->type, stageName, dasType);
-    das::string typeName;
     const bool hasManager = func->arguments.size() > start_arg && is_entity_manager(*func->arguments[start_arg]->type);
     // if (valid_stage_name(stageName))
     if (func->arguments.size() > (hasManager ? 2 : 1)) //!!
@@ -1143,10 +1152,10 @@ struct EsFunctionAnnotation final : das::FunctionAnnotation
 
       cle->arguments.push_back(vinfo);
       cle->arguments.push_back(mkb);
-      cle->arguments.push_back(new das::ExprConstUInt64(das::hash_blockz64((const uint8_t *)tw.str().c_str())));
+      cle->arguments.push_back(new das::ExprConstUInt64(func->at, das::hash_blockz64((const uint8_t *)tw.str().c_str())));
       auto cleb = new das::ExprBlock();
       cleb->generated = true;
-      cleb->at = func->body ? func->body->at : func->at;
+      cleb->at = func->body->at;
       cleb->list.push_back(cle);
       func->body = cleb;
       func->arguments.resize(1);
@@ -2300,7 +2309,7 @@ static inline void run_es_query_lambda(const ecs::QueryView &qv, const EsDesc *e
       result = context->runWithCatch(ctxLambda);
 #if DAGOR_DBGLEVEL > 0 && TIME_PROFILER_ENABLED
   };
-  if (get_globally_enabled_aot() && !esData->functionPtr->aot)
+  if (get_globally_enabled_aot() && !esData->functionPtr->aot && !esData->functionPtr->jit)
   {
     TIME_PROFILE_DEV(das_interpret);
     runLambdaWithCatch();
@@ -3205,8 +3214,9 @@ void dump_statistics()
     scripts.statistics.aotSystemsCount, scripts.statistics.loadTimeMs, globally_load_threads_num,
     scripts.statistics.memoryUsage / 1024);
   if (globally_aot_mode == AotMode::AOT && scripts.linkAotErrorsCount > 0u)
-    logwarn("daScript: failed to link cpp aot. Errors count %d. To see errors add -config:debug/das_log_aot_errors:b=yes",
-      scripts.linkAotErrorsCount);
+    logwarn("daScript: failed to link cpp aot. Errors count %d. To get the reports into %s add "
+            "-config:debug/das_log_aot_errors:b=yes",
+      scripts.linkAotErrorsCount, das_aot_errors_file_name);
 }
 
 void init_sandbox(const char *pak)

@@ -42,6 +42,8 @@ hlsl(ps)
     #endif
   #ifdef VOXELIZE_DISCARD_PRIM
     VOXELIZE_DISCARD_PRIM
+  #else
+    VOXEL_BAKER_PRE_DISCARD
   #endif
   #ifndef IS_DYNAMIC
     #define IS_DYNAMIC 0
@@ -151,7 +153,7 @@ hlsl(ps)
       const half3 coloringMul = 0;
     ##endif
 
-    const float depth = voxel_baker_depth(worldPos, GET_SCREEN_POS(input.pos).xy);
+    VOXEL_BAKER_DEPTH(worldPos, GET_SCREEN_POS(input.pos).xy);
     const uint palRow = 0;
     const uint palIndex = 1;
     return baker_output_from_gbuffer(gbuffer, depth, alpha,

@@ -203,7 +203,7 @@ public:
 #if VK_KHR_ray_tracing_pipeline || VK_KHR_ray_query
   void accumulateRaytraceBuildAccesses(const RaytraceStructureBuildData &build_data);
   void accumulateAssumedRaytraceStructureReads(const RaytraceStructureBuildData &build_data);
-  void buildAccelerationStructure(const RaytraceStructureBuildData &build_data);
+  void addAccelerationStructureBuild(const RaytraceStructureBuildData &build_data, ExecutionScratch::RaytraceBuildBatch &batch);
   void queryAccelerationStructureCompationSizes(const RaytraceStructureBuildData &build_data);
 #if VK_EXT_opacity_micromap
   void accumulateMicromapBuildAccesses(const RaytraceMicromapBuildData &build_data);

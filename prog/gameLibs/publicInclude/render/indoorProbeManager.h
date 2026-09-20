@@ -60,6 +60,7 @@ private:
   LightProbeSpecularCubesContainer *cubesContainer;
   UniqueBufWithShaderVar indoorActiveProbesData;
   UniqueBufWithShaderVar indoorVisibleProbesData;
+  UniqueBuf indoorVisibleProbesDataSecondary;
   UniqueBufWithShaderVar cellClusters;
   BufPtr indoorActiveProbesStaging;
   eastl::vector<uint32_t> probeIdxToNodeIdx;
@@ -115,6 +116,9 @@ public:
 
   void setVisibleBoxesData(dag::ConstSpan<uint32_t> probe_indices, dag::ConstSpan<mat44f> matrices,
     dag::ConstSpan<uint32_t> shapeTypes);
+  void bindSecondaryVisibleBoxesData(dag::ConstSpan<uint32_t> probe_indices, dag::ConstSpan<mat44f> matrices,
+    dag::ConstSpan<uint32_t> shapeTypes);
+  void bindMainVisibleBoxesData();
   eastl::tuple<CpuMatrices, CpuIndices, CpuIndices, bool> cpuCheck(Occlusion *occlusion, const Point3 &view_pos,
     const TMatrix4 &view_mat, const Driver3dPerspective &persp);
   void completeCullingReadback(dag::ConstSpan<uint32_t> force_probe_indices = dag::ConstSpan<uint32_t>());

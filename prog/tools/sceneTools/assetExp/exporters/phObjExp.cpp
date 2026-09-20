@@ -9,6 +9,7 @@
 #include <libTools/util/makeBindump.h>
 #include <libTools/util/iLogWriter.h>
 #include <libTools/dagFileRW/dagFileNode.h>
+#include <libTools/util/appDirRelativePath.h>
 #include <libTools/util/strUtil.h>
 #include <ioSys/dag_memIo.h>
 #include <ioSys/dag_dataBlockUtils.h>
@@ -27,7 +28,7 @@ enum
 
 static const char *curDagFname = NULL;
 static DataBlock defRagdollBlk;
-static SimpleString appBlkFname;
+static SimpleString ragdollBlkFname;
 
 class PhysObjExporter : public IDagorAssetExporter
 {
@@ -46,7 +47,7 @@ public:
     files.clear();
     files.push_back() = a.getTargetFilePath();
     if (a.props.getBool("ragdoll", false))
-      files.push_back() = appBlkFname;
+      files.push_back() = ragdollBlkFname;
   }
 
   bool __stdcall isExportableAsset(DagorAsset &a) override { return true; }
@@ -781,10 +782,27 @@ class PhysObjExporterPlugin : public IDaBuildPlugin
 public:
   bool __stdcall init(const DataBlock &appblk) override
   {
-    defRagdollBlk =
-      *appblk.getBlockByNameEx("assets")->getBlockByNameEx("build")->getBlockByNameEx("physObj")->getBlockByNameEx("ragdoll");
-    if (!defRagdollBlk.isEmpty())
-      appBlkFname = appblk.resolveFilename();
+    const DataBlock &physObjBlk = *appblk.getBlockByNameEx("assets")->getBlockByNameEx("build")->getBlockByNameEx("physObj");
+    const DataBlock *ragdollBlk = physObjBlk.getBlockByName("ragdoll");
+    const char *ragdollFname = physObjBlk.getStr("ragdoll", nullptr);
+
+    if (ragdollBlk && ragdollFname)
+      logerr("physObj: ragdoll setup is given both as a block and as ragdoll:t=\"%s\" in %s; using the file", ragdollFname,
+        appblk.resolveFilename());
+
+    // the setup file replaces application.blk as the tracked dependency, so an edit elsewhere in
+    // application.blk no longer rebuilds every pack that holds a ragdoll physObj
+    if (ragdollFname)
+    {
+      ragdollBlkFname = make_eff_app_relative_path(ragdollFname).str();
+      if (!dblk::load(defRagdollBlk, ragdollBlkFname, dblk::ReadFlags()))
+        logerr("physObj: cannot load ragdoll setup <%s>", ragdollBlkFname);
+    }
+    else if (ragdollBlk && !ragdollBlk->isEmpty())
+    {
+      defRagdollBlk = *ragdollBlk;
+      ragdollBlkFname = appblk.resolveFilename();
+    }
     return true;
   }
   void __stdcall destroy() override { delete this; }

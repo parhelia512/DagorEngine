@@ -102,6 +102,31 @@ bool stretch_rect(BaseTexture *src, BaseTexture *dst, const RectInt *rsrc, const
 }
 bool copy_from_current_render_target(BaseTexture *to_tex) { return d3di.copy_from_current_render_target(to_tex); }
 
+int update_sub_region(BaseTexture *src, int src_subres_idx, int src_x, int src_y, int src_z, int src_w, int src_h, int src_d,
+  BaseTexture *dst, int dst_subres_idx, int dst_x, int dst_y, int dst_z)
+{
+  return d3di.update_sub_region(src, src_subres_idx, src_x, src_y, src_z, src_w, src_h, src_d, dst, dst_subres_idx, dst_x, dst_y,
+    dst_z);
+}
+
+int update_sub_region_no_order(BaseTexture *src, int src_subres_idx, int src_x, int src_y, int src_z, int src_w, int src_h, int src_d,
+  BaseTexture *dst, int dst_subres_idx, int dst_x, int dst_y, int dst_z)
+{
+  return d3di.update_sub_region_no_order(src, src_subres_idx, src_x, src_y, src_z, src_w, src_h, src_d, dst, dst_subres_idx, dst_x,
+    dst_y, dst_z);
+}
+
+BaseTexture *down_size_tex(BaseTexture *tex, int width, int height, int depth, int mips, unsigned start_src_level,
+  unsigned level_offset)
+{
+  return d3di.down_size_tex(tex, width, height, depth, mips, start_src_level, level_offset);
+}
+
+BaseTexture *up_size_tex(BaseTexture *tex, int width, int height, int depth, int mips, unsigned start_src_level, unsigned level_offset)
+{
+  return d3di.up_size_tex(tex, width, height, depth, mips, start_src_level, level_offset);
+}
+
 void get_texture_statistics(uint32_t *num_textures, uint64_t *total_mem, String *out_dump)
 {
   d3di.get_texture_statistics(num_textures, total_mem, out_dump);
@@ -112,7 +137,7 @@ PROGRAM create_program(VPROG vprog, FSHADER fsh, VDECL vdecl, unsigned *strides,
   return d3di.create_program_0(vprog, fsh, vdecl, strides, streams);
 }
 
-PROGRAM create_program_cs(const ShaderSource &cs_native, CSPreloaded preloaded)
+PROGRAM create_program_cs(const ShaderSourceExt &cs_native, CSPreloaded preloaded)
 {
   return d3di.create_program_cs(cs_native, preloaded);
 }
@@ -120,16 +145,13 @@ PROGRAM create_program_cs(const ShaderSource &cs_native, CSPreloaded preloaded)
 bool set_program(PROGRAM p) { return d3di.set_program(p); }
 void delete_program(PROGRAM p) { return d3di.delete_program(p); }
 
-VPROG create_vertex_shader(const ShaderSource &native_code) { return d3di.create_vertex_shader(native_code); }
+VPROG create_vertex_shader(const ShaderSourceExt &native_code) { return d3di.create_vertex_shader(native_code); }
 void delete_vertex_shader(VPROG vs) { return d3di.delete_vertex_shader(vs); }
 
 bool set_const(unsigned stage, unsigned b, const float *data, unsigned num_regs) { return d3di.set_const(stage, b, data, num_regs); }
 
-FSHADER create_pixel_shader(const ShaderSource &native_code) { return d3di.create_pixel_shader(native_code); }
+FSHADER create_pixel_shader(const ShaderSourceExt &native_code) { return d3di.create_pixel_shader(native_code); }
 void delete_pixel_shader(FSHADER ps) { return d3di.delete_pixel_shader(ps); }
-
-int set_vs_constbuffer_register_count(int required_count) { return d3di.set_vs_constbuffer_register_count(required_count); }
-int set_cs_constbuffer_register_count(int required_count) { return d3di.set_cs_constbuffer_register_count(required_count); }
 
 bool set_const_buffer(unsigned stage, unsigned slot, Sbuffer *buffer) { return d3di.set_const_buffer(stage, slot, buffer); }
 

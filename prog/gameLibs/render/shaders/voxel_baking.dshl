@@ -6,7 +6,17 @@ texture voxel_baker_last_rt3;
 
 macro USE_VOXEL_BAKING()
   hlsl(ps) {
+    #if _HARDWARE_JUST_DX11
+      #define VOXEL_BAKER_DISCARD_CALL shouldDiscard = true
+      #define VOXEL_BAKER_PRE_DISCARD bool shouldDiscard = false;
+      #define VOXEL_BAKER_DISCARD_LATER {if (shouldDiscard) discard;}
+    #else
+      #define VOXEL_BAKER_DISCARD_CALL discard
+      #define VOXEL_BAKER_PRE_DISCARD
+      #define VOXEL_BAKER_DISCARD_LATER
+    #endif
     #if RENDINST_IMPOSTOR_VOXEL
+
       struct VOXEL_DECAL_OUTPUT
       {
         float4 albedo_alpha : SV_Target0;
@@ -33,13 +43,16 @@ macro USE_VOXEL_BAKING()
         return uint4(i & 0xff, (i >> 8) & 0xff, (i >> 16) & 0xff, (i >> 24) & 0xff) / 255.0;
       }
 
-      float voxel_baker_depth(float3 world_pos, float2 screen_pos)
-      {
-        float depth = dot(impostor_depth_proj, float4(world_pos, 1));
-        float sliceDepth = texelFetch(impostor_depth_slice, int2(screen_pos), 0).r;
-        if (depth < sliceDepth + 1) discard;
-        return depth;
-      }
+      #define VOXEL_BAKER_DEPTH(WP, SP) \
+        float depth; \
+        { \
+          float3 world_pos = (WP); \
+          float2 screen_pos = (SP); \
+          depth = dot(impostor_depth_proj, float4(world_pos, 1)); \
+          float sliceDepth = texelFetch(impostor_depth_slice, int2(screen_pos), 0).r; \
+          if (depth < sliceDepth + 1) VOXEL_BAKER_DISCARD_CALL; \
+        } \
+        VOXEL_BAKER_DISCARD_LATER
 
       VOXEL_DECAL_OUTPUT init_baker_decal_output()
       {

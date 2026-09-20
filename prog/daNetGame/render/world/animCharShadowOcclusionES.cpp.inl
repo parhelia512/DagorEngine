@@ -14,6 +14,13 @@
 
 class AnimCharShadowOcclusionManager
 {
+public:
+  AnimCharShadowOcclusionManager() = default;
+  // no copies: nothing needs them and the cull grid is too big to copy by accident
+  AnimCharShadowOcclusionManager(const AnimCharShadowOcclusionManager &) = delete;
+  AnimCharShadowOcclusionManager &operator=(const AnimCharShadowOcclusionManager &) = delete;
+
+private:
   static constexpr int GRID_SIZE = 128;
   static constexpr int GRID_ELEMENT_MAX_BOXES = 3;
 
@@ -141,7 +148,7 @@ bool is_bbox_visible_in_shadows(const AnimCharShadowOcclusionManager *manager, b
   return true;
 }
 
-static void expand_bbox_by_attaches(bbox3f &bbox, ecs::EntityId owner_eid, const ecs::EidList *attaches_list)
+static void expand_bbox_by_attaches(bbox3f &bbox, const ecs::EidList *attaches_list)
 {
   if (!attaches_list)
     return;
@@ -149,10 +156,10 @@ static void expand_bbox_by_attaches(bbox3f &bbox, ecs::EntityId owner_eid, const
   for (ecs::EntityId attachedEid : *attaches_list)
   {
     expand_bbox_by_attach_ecs_query(*g_entity_mgr, attachedEid,
-      [&](const bbox3f &animchar_shadow_cull_bbox, const animchar_visbits_t &animchar_visbits,
-        ecs::EntityId animchar_attach__attachedTo ECS_REQUIRE(eastl::true_type animchar_render__enabled = true)) {
+      [&](const bbox3f &animchar_shadow_cull_bbox,
+        const animchar_visbits_t &animchar_visbits ECS_REQUIRE(eastl::true_type animchar_render__enabled = true)) {
         // we process shadow visibility in same time in other thread. it adds _other_ bit
-        if ((interlocked_relaxed_load(animchar_visbits) & VISFLG_WITHIN_RANGE) && animchar_attach__attachedTo == owner_eid)
+        if (interlocked_relaxed_load(animchar_visbits) & VISFLG_WITHIN_RANGE)
           v_bbox3_add_box(bbox, animchar_shadow_cull_bbox);
       });
   }
@@ -198,15 +205,15 @@ bbox3f ShadowsManager::gatherBboxesForAnimcharShadowCull(const Point3 &cam_pos,
   vec4f bboxExpandSize = v_add(v_make_vec4f(expandSizeShadows, expandSizeShadows, expandSizeShadows, 0.0f), testBboxExpandSize);
 
   gather_soldier_bboxes_to_cull_ecs_query(*g_entity_mgr,
-    [&](ecs::EntityId eid, const AnimV20::AnimcharRendComponent &animchar_render, const vec4f &animchar_bsph,
-      const bbox3f &animchar_shadow_cull_bbox, const animchar_visbits_t &animchar_visbits,
+    [&](const AnimV20::AnimcharRendComponent &animchar_render, const vec4f &animchar_bsph, const bbox3f &animchar_shadow_cull_bbox,
+      const animchar_visbits_t &animchar_visbits,
       const ecs::EidList *attaches_list ECS_REQUIRE(eastl::true_type animchar_render__enabled = true) ECS_REQUIRE(ecs::Tag human)) {
       vec4f r = v_sub(animchar_bsph, v_ldu(&cam_pos.x));
       if (!(interlocked_relaxed_load(animchar_visbits) & VISFLG_WITHIN_RANGE) ||
           v_extract_x(v_dot3_x(r, r)) > maxTestingDist * maxTestingDist)
         return;
       bbox3f testBbox = animchar_shadow_cull_bbox;
-      expand_bbox_by_attaches(testBbox, eid, attaches_list);
+      expand_bbox_by_attaches(testBbox, attaches_list);
 
       if (!v_bbox3_is_empty(testBbox))
       {

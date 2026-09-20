@@ -22,12 +22,14 @@ Sources =
   joltDbgRender.cpp
   joltRayCar.cpp
   shapes/HeightField16Shape.cpp
+  shapes/CollisionBlasShape.cpp
 ;
 
 UseProgLibs =
   engine/phys/physCommon
   3rdPartyLibs/phys/joltPhysics
   engine/heightMapLand
+  engine/gameRes # CollResJoltChunk shares a CollisionResource::Data block
 ;
 
 CPPopt = -DUSE_JOLT_PHYSICS ;

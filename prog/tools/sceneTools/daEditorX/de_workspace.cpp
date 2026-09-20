@@ -231,26 +231,3 @@ bool DeWorkspace::getMetricsBlk(DataBlock &blk) const
 
   return false;
 }
-
-
-const DataBlock *DeWorkspace::findWspBlk(const char *app_blk_path)
-{
-  if (wspData)
-  {
-    const int wspNid = wspData->blk.getNameId("workspace");
-
-    for (int i = 0; i < wspData->blk.blockCount(); ++i)
-    {
-      DataBlock *wspBlk = wspData->blk.getBlock(i);
-
-      if (wspBlk && wspBlk->getBlockNameId() == wspNid)
-      {
-        const char *path = wspBlk->getStr("application_path", NULL);
-        if (path && !::dag_path_compare(path, app_blk_path))
-          return wspBlk;
-      }
-    }
-  }
-
-  return NULL;
-}

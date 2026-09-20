@@ -21,7 +21,7 @@ macro SKIP_RAY_WINDOWS(code)
       if (!current_windows_count)
         return false;
       int3 gridPos = worldPos*windowsGridInv.w + windowsGridInv.xyz;
-      if (any(gridPos < 0 || gridPos >= int3(WINDOW_GRID_XZ, WINDOW_GRID_Y, WINDOW_GRID_XZ)))
+      if (any(or(gridPos < 0, gridPos >= int3(WINDOW_GRID_XZ, WINDOW_GRID_Y, WINDOW_GRID_XZ))))
         return false;
       uint3 gridPosI = uint3(gridPos);
       uint grid = structuredBufferAt(windowsGrid, gridPosI.x + gridPosI.y*WINDOW_GRID_XZ + gridPosI.z*WINDOW_GRID_XZ*WINDOW_GRID_Y);

@@ -25,25 +25,6 @@ const float realSNaN = bitwise_cast<float, int>(SNaNint);
 const double doubleQNaN = bitwise_cast<double, int64_t>(QNaNint64);
 const double doubleSNaN = bitwise_cast<double, int64_t>(SNaNint64);
 
-const Matrix3 Matrix3::IDENT(1.f), Matrix3::ZERO(0.f);
-const TMatrix TMatrix::IDENT(1), TMatrix::ZERO(0);
-const TMatrix4 TMatrix4::IDENT(1), TMatrix4::ZERO(0);
-const TMatrix4D TMatrix4D::IDENT(1.0), TMatrix4D::ZERO(0.0);
-const BBox3 BBox3::IDENT(Point3(), 1.f);
-
-const IPoint2 IPoint2::ZERO = IPoint2(0, 0);
-const IPoint2 IPoint2::ONE = IPoint2(1, 1);
-const IPoint3 IPoint3::ZERO = IPoint3(0, 0, 0);
-const IPoint3 IPoint3::ONE = IPoint3(1, 1, 1);
-const IPoint4 IPoint4::ZERO = IPoint4(0, 0, 0, 0);
-const IPoint4 IPoint4::ONE = IPoint4(1, 1, 1, 1);
-
-const Point2 Point2::ZERO = Point2(0, 0);
-const Point2 Point2::ONE = Point2(1, 1);
-const Point3 Point3::ZERO = Point3(0, 0, 0);
-const Point3 Point3::ONE = Point3(1, 1, 1);
-const Point4 Point4::ZERO = Point4(0, 0, 0, 0);
-const Point4 Point4::ONE = Point4(1, 1, 1, 1);
 
 #if _TARGET_PC_WIN | _TARGET_XBOX
 const float __declspec(align(16)) math_float_zero[16] = {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0};

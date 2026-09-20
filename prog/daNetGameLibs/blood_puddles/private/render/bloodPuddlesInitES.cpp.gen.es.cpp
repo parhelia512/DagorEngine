@@ -8,8 +8,8 @@ ECS_DEF_PULL_VAR(bloodPuddlesInit);
 static void reset_blood_es_all_events(const ecs::Event &__restrict evt, const ecs::QueryView &__restrict components)
 {
   G_UNUSED(components);
-  G_FAST_ASSERT(evt.is<AfterDeviceReset>());
-  reset_blood_es(static_cast<const AfterDeviceReset&>(evt)
+  G_FAST_ASSERT(evt.is<EventAfterDeviceReset>());
+  reset_blood_es(static_cast<const EventAfterDeviceReset&>(evt)
         );
 }
 static ecs::EntitySystemDesc reset_blood_es_es_desc
@@ -21,7 +21,7 @@ static ecs::EntitySystemDesc reset_blood_es_es_desc
   empty_span(),
   empty_span(),
   empty_span(),
-  ecs::EventSetBuilder<AfterDeviceReset>::build(),
+  ecs::EventSetBuilder<EventAfterDeviceReset>::build(),
   0
 );
 //static constexpr ecs::ComponentDesc blood_puddles_handle_render_feature_change_es_comps[] ={};

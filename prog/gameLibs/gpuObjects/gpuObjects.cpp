@@ -226,8 +226,6 @@ void ObjectManager::recreateGrid(int cell_tile, int cells_size_count, float cell
     d3d::resource_barrier({countersBuffer.get(), RB_FLUSH_UAV | RB_STAGE_COMPUTE | RB_SOURCE_STAGE_COMPUTE});
   }
 
-  makeMatricesOffsetsBuffer();
-
   size_t vectorSize = maxObjectsCountInCell > 0 ? cellsCount : 0;
   counters.assign(vectorSize, 0);
   cellsBboxes.resize(vectorSize);
@@ -245,14 +243,6 @@ bool ObjectManager::dispatchNextCell()
   onLandPlacing();
   updateQueue.pop();
   return true;
-}
-
-void ObjectManager::makeMatricesOffsetsBuffer()
-{
-  matricesOffsetsBuffer.close();
-  uint32_t size = maxObjectsCountInCell > 0 ? cellsCount : 0;
-  matricesOffsetsBuffer = dag::create_sbuffer(sizeof(uint32_t) * 2, size + 1, SBCF_BIND_SHADER_RES, TEXFMT_R32G32UI,
-    String(0, "ObjectManager_MatricesOffsets_%s", assetName), RESTAG_GPUOBJ);
 }
 
 void ObjectManager::setShaderVarsAndConsts()
@@ -468,39 +458,51 @@ void ObjectManager::updateVisibilityAndLods(const Frustum &frustum, const Occlus
   }
 }
 
-void ObjectManager::copyMatrices(const eastl::vector<uint32_t> &cells_to_copy, const eastl::vector<uint32_t> &cell_counters,
-  Sbuffer *dst_buffer, Sbuffer *src_buffer, uint32_t max_in_cell, uint32_t dst_offset_rows, uint32_t lod)
+void ObjectManager::appendMatricesOffsets(eastl::vector<eastl::pair<uint32_t, uint32_t>> &shared_offsets, int lod)
 {
-  matricesOffsets.resize((cells_to_copy.size() + 1) * 2);
-  matricesOffsets[0] = 0;
-  uint32_t matricessInCell = 0;
-  for (uint32_t i = 1; i < matricesOffsets.size() / 2; ++i)
+  const eastl::vector<uint32_t> &cells = cellIndexesByLods[lod];
+  sharedOffsetsBase[lod] = shared_offsets.size();
+  maxMatricesPerCell[lod] = 0;
+  if (cells.empty())
+    return;
+
+  const size_t first = shared_offsets.size();
+  shared_offsets.resize(first + cells.size() + 1);
+  eastl::pair<uint32_t, uint32_t> *offsets = shared_offsets.data() + first;
+  uint32_t matricesPerCell = 0;
+  offsets[0].first = 0;
+  for (uint32_t i = 1; i <= cells.size(); ++i)
   {
-    matricesOffsets[2 * i] = matricesOffsets[2 * (i - 1)] + cell_counters[cells_to_copy[i - 1]];
-    matricesOffsets[2 * i - 1] = cells_to_copy[i - 1];
-    matricessInCell = max(matricessInCell, cell_counters[cells_to_copy[i - 1]]);
+    offsets[i].first = offsets[i - 1].first + counters[cells[i - 1]];
+    offsets[i - 1].second = cells[i - 1];
+    matricesPerCell = max(matricesPerCell, counters[cells[i - 1]]);
   }
-
-  if (cells_to_copy.size() > 0 && matricessInCell > 0)
-  {
-    matricesOffsetsBuffer->updateData(0, sizeof(uint32_t) * matricesOffsets.size(), matricesOffsets.data(), 0);
-    STATE_GUARD_NULLPTR(d3d::set_rwbuffer(STAGE_CS, gpu_objects_targetBuffer_reg_no, VALUE), dst_buffer);
-    STATE_GUARD_NULLPTR(d3d::set_buffer(STAGE_CS, gpu_objects_offsets_reg_no, VALUE), matricesOffsetsBuffer.get());
-    STATE_GUARD_NULLPTR(d3d::set_buffer(STAGE_CS, gpu_objects_matrices_reg_no, VALUE), src_buffer);
-
-    ShaderGlobal::set_int(gpu_objects_max_count_in_cellVarId, max_in_cell);
-    ShaderGlobal::set_int(gpu_objects_gather_target_offsetVarId, dst_offset_rows);
-    ShaderGlobal::set_int(gpu_objects_visible_cellsVarId, cells_to_copy.size());
-    ShaderGlobal::set_int(gpu_objects_copy_lod_noVarId, lod);
-
-    gatherMatrices->dispatchThreads(cells_to_copy.size(), matricessInCell, 1);
-    d3d::resource_barrier({dst_buffer, RB_NONE});
-  }
+  maxMatricesPerCell[lod] = matricesPerCell;
 }
 
-void ObjectManager::addMatricesToBuffer(Sbuffer *buffer, uint32_t offset_in_bytes, int lod)
+void ObjectManager::copyMatrices(const eastl::vector<uint32_t> &cells_to_copy, Sbuffer *dst_buffer, Sbuffer *src_buffer,
+  Sbuffer *shared_offsets, uint32_t max_in_cell, uint32_t dst_offset_rows, uint32_t lod)
 {
-  copyMatrices(cellIndexesByLods[lod], counters, buffer, gatheredBuffer.get(), maxObjectsCountInCell, offset_in_bytes, lod);
+  const uint32_t matricesPerCell = maxMatricesPerCell[lod];
+  if (cells_to_copy.empty() || matricesPerCell == 0)
+    return;
+
+  STATE_GUARD_NULLPTR(d3d::set_rwbuffer(STAGE_CS, gpu_objects_targetBuffer_reg_no, VALUE), dst_buffer);
+  STATE_GUARD_NULLPTR(d3d::set_buffer(STAGE_CS, gpu_objects_offsets_reg_no, VALUE), shared_offsets);
+  STATE_GUARD_NULLPTR(d3d::set_buffer(STAGE_CS, gpu_objects_matrices_reg_no, VALUE), src_buffer);
+
+  ShaderGlobal::set_int(gpu_objects_max_count_in_cellVarId, max_in_cell);
+  ShaderGlobal::set_int(gpu_objects_gather_target_offsetVarId, dst_offset_rows);
+  ShaderGlobal::set_int(gpu_objects_visible_cellsVarId, cells_to_copy.size());
+  ShaderGlobal::set_int(gpu_objects_copy_lod_noVarId, lod | (sharedOffsetsBase[lod] << GPUOBJ_OFFSETS_BASE_SHIFT));
+
+  gatherMatrices->dispatchThreads(cells_to_copy.size(), matricesPerCell, 1);
+  d3d::resource_barrier({dst_buffer, RB_NONE});
+}
+
+void ObjectManager::addMatricesToBuffer(Sbuffer *buffer, uint32_t offset_in_bytes, int lod, Sbuffer *shared_offsets)
+{
+  copyMatrices(cellIndexesByLods[lod], buffer, gatheredBuffer.get(), shared_offsets, maxObjectsCountInCell, offset_in_bytes, lod);
 }
 
 uint32_t ObjectManager::getInstancesInGridToDraw(uint32_t lod) const
@@ -1026,6 +1028,23 @@ void GpuObjects::beforeDraw(rendinst::RenderPass render_pass, int cascade, const
     {
       object.updateVisibilityAndLods(frustum, occlusion, forShadow);
     }
+
+    sharedOffsets.clear();
+    for (ObjectManager &object : objects)
+      for (int lod = 0; lod < MAX_LODS; ++lod)
+        object.appendMatricesOffsets(sharedOffsets, lod);
+
+    const uint32_t offsetsCount = uint32_t(sharedOffsets.size());
+    if (offsetsCount > 0)
+    {
+      if (!sharedOffsetsBuffer || sharedOffsetsBuffer->getNumElements() < offsetsCount)
+      {
+        sharedOffsetsBuffer.close();
+        sharedOffsetsBuffer =
+          dag::buffers::create_one_frame_sr_tbuf(offsetsCount * 3 / 2, TEXFMT_R32G32UI, "GPUobjects_MatricesOffsets", RESTAG_GPUOBJ);
+      }
+      sharedOffsetsBuffer->updateData(0, sizeof(sharedOffsets[0]) * offsetsCount, sharedOffsets.data(), VBLOCK_DISCARD);
+    }
   }
   else
   {
@@ -1068,7 +1087,8 @@ void GpuObjects::beforeDraw(rendinst::RenderPass render_pass, int cascade, const
         ShaderGlobal::set_buffer(gpu_objects_bvh_mappingsVarId, mappingId);
       }
 
-      object.addMatricesToBuffer(cascades[cascade].matricesBuffer.get(), bufferOffset * ROWS_IN_MATRIX, lod);
+      object.addMatricesToBuffer(cascades[cascade].matricesBuffer.get(), bufferOffset * ROWS_IN_MATRIX, lod,
+        sharedOffsetsBuffer.get());
       cascades[cascade].layers[layerIdx].offsetsAndCounts.emplace_back(bufferOffset * ROWS_IN_MATRIX, countByLod);
       cascades[cascade].layers[layerIdx].objectIds.emplace_back(objectIds[i].id());
       bufferOffset += countByLod;

@@ -1,2 +1,3 @@
 include "../../../prog/daNetGame/shaders/_build/shaders_pc11.blk"
 include "game_common_override.blk"
+include "loading_screens.blk"

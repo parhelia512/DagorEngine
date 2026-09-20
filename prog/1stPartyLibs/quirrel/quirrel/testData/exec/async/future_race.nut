@@ -11,7 +11,7 @@ async function main() {
     async function go() { winner.resolve("winner") }
     go()
     let r = await Future.race([loser, winner])
-    print("race fulfil: " + r + "\n")
+    println($"race fulfil: {r}")
   }
 
   // First to fault wins: `boom` faults, the other input never settles, so the
@@ -21,9 +21,9 @@ async function main() {
     let pending = Future()  // never settles
     try {
       let r = await Future.race([pending, boom()])
-      print("UNEXPECTED fulfil: " + r + "\n")
+      println($"UNEXPECTED fulfil: {r}")
     } catch (e) {
-      print("race fault: " + e + "\n")
+      println($"race fault: {e}")
     }
   }
 
@@ -35,7 +35,7 @@ async function main() {
     r1.resolve("A")
     r2.resolve("B")
     let r = await Future.race([r1, r2])
-    print("race tiebreak: " + r + "\n")
+    println($"race tiebreak: {r}")
   }
 
   // Non-future element resumes its child immediately (await passthrough), so it
@@ -43,7 +43,7 @@ async function main() {
   {
     let pending = Future()  // never settles
     let r = await Future.race([pending, 42])
-    print("race passthrough: " + r + "\n")
+    println($"race passthrough: {r}")
   }
 
   print("script done\n")

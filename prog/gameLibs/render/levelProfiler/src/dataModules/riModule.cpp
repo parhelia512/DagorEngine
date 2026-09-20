@@ -8,11 +8,21 @@
 #include <EASTL/algorithm.h>
 #include <EASTL/hash_set.h>
 #include <EASTL/array.h>
+#include <EASTL/vector.h>
 #include <math/dag_mathBase.h>
 #include <riGen/riGenData.h>
 #include <riGen/riGenExtra.h>
+#include <rendInst/rendInstGen.h>
+#include <rendInst/rendInstGenRtTools.h>
 #include <generic/dag_enumerate.h>
 #include "riModule.h"
+
+namespace rendinst
+{
+// Defined in rendInstGenGlobals.cpp, declared in no rendInst header. It selects what precomputeCell
+// does with riExtra-substituted pools: on, it creates their pregen instances; off, it counts them.
+extern bool persistentRiExtraInstances;
+} // namespace rendinst
 
 namespace levelprofiler
 {
@@ -25,7 +35,7 @@ RIModule::RIModule() {}
 
 RIModule::~RIModule() { shutdownImpl(); }
 
-void RIModule::init() { collect(); }
+void RIModule::init() {}
 
 void RIModule::shutdown() { shutdownImpl(); }
 
@@ -35,26 +45,33 @@ void RIModule::clear() { clearImpl(); }
 
 void RIModule::clearImpl()
 {
+  resetCollectionState();
   assets.clear();
   textureToAssetsMap.clear();
   textureUsage.clear();
   allRenderableInstances.clear();
   riData.clear();
+  riDataLookup.clear();
   riInstanceCounts.clear();
   maxUniqueTextureUsageCount = 0;
+  maxAssetInstanceCount = 0;
+  riDataProvisional = false;
+  collectCancelled = false;
 }
 
 void RIModule::drawUI() {}
 
 void RIModule::collect()
 {
+  if (collectPhase != CollectPhase::Idle)
+    return;
+
   clear();
   collectRenderableInstances();
   assets = getUniqueAssets();
   collectInstanceCounts();
   buildTextureToAssetMap();
   computeTextureUsageStatistics();
-  collectRiDataForProfiling();
 }
 
 void RIModule::collectRenderableInstances()
@@ -138,21 +155,21 @@ void RIModule::computeTextureUsageStatistics()
 
 const RiData *RIModule::getRiDataByName(const ProfilerString &name) const
 {
-  for (const auto &riDataItem : riData)
-  {
-    if (riDataItem.name == name)
-      return &riDataItem;
-  }
-  return nullptr;
+  auto it = riDataLookup.find(name);
+  return it != riDataLookup.end() ? it->second : nullptr;
 }
 
 void RIModule::collectInstanceCounts()
 {
+  resetCollectionState();
+
   riInstanceCounts.clear();
   maxAssetInstanceCount = 0;
 
   for (const auto &asset : assets)
     riInstanceCounts[asset.name] = 0;
+
+  collectRiDataForProfiling();
 
   rendinst::iterateRIExtra([&](int poolIndex, const rendinst::RiExtraPool &pool) {
     if (!pool.res)
@@ -160,17 +177,309 @@ void RIModule::collectInstanceCounts()
     const char *riName = rendinst::riExtraMap.getName(poolIndex);
     if (!riName)
       return;
-    int instanceCount = static_cast<int>(pool.riTm.size());
-    riInstanceCounts[ProfilerString(riName)] = instanceCount;
-
-    if (instanceCount > maxAssetInstanceCount)
-      maxAssetInstanceCount = instanceCount;
+    int instanceCount = pool.getEntitiesCount();
+    ProfilerString assetName(riName);
+    int &storedCount = riInstanceCounts[assetName];
+    storedCount += instanceCount;
+    if (storedCount > maxAssetInstanceCount)
+      maxAssetInstanceCount = storedCount;
+    updateRiDataCount(assetName, storedCount);
   });
+
+  collectRiGenInstanceCounts();
+}
+
+int RIModule::countRiGenCell(LayerCollectState &state, RendInstGenData *layer, int cell_x, int cell_y)
+{
+  RendInstGenData::RtData *rtData = layer->rtData;
+  if (!rtData)
+    return 0;
+
+  RendInstGenData::CellRtData *crt = new RendInstGenData::CellRtData(rtData->riRes.size(), rtData);
+
+  // With mask-generated off precomputeCell skips land class placement, so force it on to count those RI.
+  const bool prevMaskEnabled = RendInstGenData::maskGeneratedEnabled;
+  if (!prevMaskEnabled)
+    rendinst::enable_rigen_mask_generated(true);
+
+  // The engine calls precomputeCell once per cell and keeps the result; this walk repeats it on
+  // every collect, so with persistent riExtra on it would add a duplicate of the level to the
+  // world every run. The instances it would create are already counted by the riExtra pass.
+  const bool prevPersistentRiExtra = rendinst::persistentRiExtraInstances;
+  rendinst::persistentRiExtraInstances = false;
+
+  layer->precomputeCell(*crt, cell_x, cell_y);
+
+  rendinst::persistentRiExtraInstances = prevPersistentRiExtra;
+  if (!prevMaskEnabled)
+    rendinst::enable_rigen_mask_generated(false);
+
+  int cellInstances = 0;
+  const int poolCount = eastl::min(static_cast<int>(crt->pools.size()), static_cast<int>(state.poolSlots.size()));
+  for (int poolIndex = 0; poolIndex < poolCount; ++poolIndex)
+  {
+    const auto &poolData = crt->pools[poolIndex];
+    if (poolData.avail < 0 || poolData.total <= 0) // avail < 0: substituted to riExtra, counted there
+      continue;
+
+    cellInstances += poolData.total;
+
+    const LayerCollectState::PoolCountSlot &slot = state.poolSlots[poolIndex];
+    if (!slot.count)
+      continue;
+
+    *slot.count += poolData.total;
+    if (*slot.count > maxAssetInstanceCount)
+      maxAssetInstanceCount = *slot.count;
+    if (slot.data)
+      slot.data->countOnMap = *slot.count;
+  }
+
+  delete crt;
+  return cellInstances;
+}
+
+void RIModule::collectRiGenInstanceCounts() { prepareLayerCollection(); }
+
+void RIModule::prepareLayerCollection()
+{
+  layerCollectStates.clear();
+  totalCellsToProcess = 0;
+  processedCells = 0;
+  currentLayerIndex = 0;
+
+  for (int layerIndex = 0; layerIndex < rendinst::rgLayer.size(); layerIndex++)
+  {
+    RendInstGenData *rgl = rendinst::getRgLayer(layerIndex);
+    if (!rgl || !rgl->rtData || rgl->cellNumW <= 0 || rgl->cellNumH <= 0)
+      continue;
+
+    LayerCollectState state;
+    state.layerIndex = layerIndex;
+    state.expectedLayer = rgl;
+    state.expectedRtData = rgl->rtData;
+    state.cellCountW = rgl->cellNumW;
+    state.cellCountH = rgl->cellNumH;
+
+    RendInstGenData::RtData *rtData = rgl->rtData;
+    state.poolSlots.resize(rtData->riResName.size());
+    for (int i = 0; i < static_cast<int>(rtData->riResName.size()); ++i)
+    {
+      const char *riName = rtData->riResName[i];
+      if (!riName)
+        continue;
+      ProfilerString assetName(riName);
+      state.poolSlots[i].count = &riInstanceCounts[assetName];
+      auto it = riDataLookup.find(assetName);
+      state.poolSlots[i].data = it != riDataLookup.end() ? it->second : nullptr;
+    }
+
+    layerCollectStates.push_back(eastl::move(state));
+
+    totalCellsToProcess += static_cast<size_t>(rgl->cellNumW) * static_cast<size_t>(rgl->cellNumH);
+  }
+
+  if (totalCellsToProcess == 0)
+  {
+    collectPhase = CollectPhase::Finalizing;
+    finalizeCollection();
+  }
+  else
+  {
+    collectPhase = CollectPhase::Collecting;
+  }
+}
+
+RendInstGenData *RIModule::resolveCollectLayer(const LayerCollectState &state) const
+{
+  RendInstGenData *rgl = rendinst::getRgLayer(state.layerIndex);
+  if (!rgl || rgl != state.expectedLayer || rgl->rtData != state.expectedRtData)
+    return nullptr;
+
+  // Unload plus load can hand the allocator back both addresses, so the grid is compared as
+  // well: walking a new level with the old geometry indexes outside its cell array. Same
+  // geometry and recycled addresses still pass, which needs a load counter rendInst has not.
+  if (rgl->cellNumW != state.cellCountW || rgl->cellNumH != state.cellCountH)
+    return nullptr;
+
+  return rgl;
+}
+
+bool RIModule::processLayerCell(LayerCollectState &state, RendInstGenData *layer, int &out_instances)
+{
+  out_instances = 0;
+
+  const int totalCells = state.cellCountW * state.cellCountH;
+  if (state.nextCellIndex >= totalCells)
+    return false;
+
+  const int cellIndex = state.nextCellIndex;
+  const int cellX = cellIndex % state.cellCountW;
+  const int cellY = cellIndex / state.cellCountW;
+  state.nextCellIndex++;
+
+  out_instances = countRiGenCell(state, layer, cellX, cellY);
+
+  processedCells++;
+  return true;
+}
+
+void RIModule::finalizeCollection()
+{
+  if (collectPhase == CollectPhase::Idle)
+    return;
+
+  // Counts are published live during the walk, so finalizing only drops the provisional flag.
+  riDataProvisional = false;
+  riDataGeneration++;
+
+  layerCollectStates.clear();
+  currentLayerIndex = 0;
+  totalCellsToProcess = 0;
+  processedCells = 0;
+  collectPhase = CollectPhase::Idle;
+}
+
+void RIModule::cancelCollection()
+{
+  layerCollectStates.clear();
+  currentLayerIndex = 0;
+  totalCellsToProcess = 0;
+  processedCells = 0;
+  collectPhase = CollectPhase::Idle;
+
+  // The walk cannot be resumed against a level that is gone, so the partial counts stay flagged.
+  riDataProvisional = true;
+  collectCancelled = true;
+  riDataGeneration++;
+}
+
+void RIModule::resetCollectionState()
+{
+  layerCollectStates.clear();
+  currentLayerIndex = 0;
+  totalCellsToProcess = 0;
+  processedCells = 0;
+  collectPhase = CollectPhase::Idle;
+
+  riDataLookup.clear();
+  riDataProvisional = false;
+}
+
+// A dense riGen cell holds many instances, so cell count alone does not bound per-frame work.
+// The budget is checked before a cell, so one cell always runs and a huge cell cannot stall the walk.
+static constexpr int RIGEN_INSTANCE_BUDGET_PER_FRAME = 30000;
+static constexpr int CELL_BUDGET_PER_FRAME = 8;
+
+void RIModule::continueCollect()
+{
+  if (collectPhase == CollectPhase::Paused)
+  {
+    // Nothing advances while paused, but a level unload still has to be noticed here: the UI
+    // would otherwise keep reporting a paused walk over layers that no longer exist.
+    if (currentLayerIndex < static_cast<int>(layerCollectStates.size()) && !resolveCollectLayer(layerCollectStates[currentLayerIndex]))
+      cancelCollection();
+    return;
+  }
+
+  if (collectPhase != CollectPhase::Collecting && collectPhase != CollectPhase::Finalizing)
+    return;
+
+  // countRiGenCell forces two process-global riGen flags around precomputeCell, and the riGen
+  // streaming job generates cells under those same flags. isRIGenPrepareFinished only reports
+  // that the job manager was idle when it ran, and the act thread queues cell jobs every frame,
+  // so it is checked per cell rather than once per slice. A job queued while a cell is being
+  // counted can still overlap it; closing that needs a way to serialize with cell generation.
+  if (collectPhase == CollectPhase::Collecting)
+  {
+    int remainingCells = CELL_BUDGET_PER_FRAME;
+    int remainingInstances = RIGEN_INSTANCE_BUDGET_PER_FRAME;
+    while (remainingCells > 0 && remainingInstances > 0 && currentLayerIndex < static_cast<int>(layerCollectStates.size()) &&
+           rendinst::isRIGenPrepareFinished())
+    {
+      LayerCollectState &state = layerCollectStates[currentLayerIndex];
+
+      RendInstGenData *layer = resolveCollectLayer(state);
+      if (!layer)
+      {
+        // The riGen layers were dropped or rebuilt between two pumps (clearRIGen), so the walk is void.
+        cancelCollection();
+        return;
+      }
+
+      int cellInstances = 0;
+      if (!processLayerCell(state, layer, cellInstances))
+      {
+        currentLayerIndex++;
+        continue;
+      }
+
+      remainingCells--;
+      remainingInstances -= cellInstances;
+    }
+
+    if (currentLayerIndex >= static_cast<int>(layerCollectStates.size()))
+      collectPhase = CollectPhase::Finalizing;
+  }
+
+  if (collectPhase == CollectPhase::Finalizing)
+    finalizeCollection();
+}
+
+bool RIModule::isCollecting() const { return collectPhase == CollectPhase::Collecting || collectPhase == CollectPhase::Finalizing; }
+
+float RIModule::getCollectProgress() const
+{
+  if (totalCellsToProcess == 0)
+    return 0.0f;
+
+  return static_cast<float>(processedCells) / static_cast<float>(totalCellsToProcess);
+}
+
+void RIModule::pauseCollection()
+{
+  if (collectPhase == CollectPhase::Idle || collectPhase == CollectPhase::Paused)
+    return;
+
+  if (collectPhase == CollectPhase::Finalizing)
+  {
+    finalizeCollection();
+    return;
+  }
+
+  collectPhase = CollectPhase::Paused;
+}
+
+void RIModule::resumeCollection()
+{
+  if (collectPhase != CollectPhase::Paused)
+    return;
+
+  if (currentLayerIndex >= static_cast<int>(layerCollectStates.size()))
+  {
+    collectPhase = CollectPhase::Finalizing;
+    finalizeCollection();
+    return;
+  }
+
+  collectPhase = CollectPhase::Collecting;
+}
+
+void RIModule::updateRiDataCount(const ProfilerString &asset_name, int new_count)
+{
+  auto it = riDataLookup.find(asset_name);
+  if (it == riDataLookup.end())
+    return;
+  RiData *dataPtr = it->second;
+  if (!dataPtr)
+    return;
+  dataPtr->countOnMap = new_count;
 }
 
 void RIModule::collectRiDataForProfiling()
 {
   riData.clear();
+  riDataLookup.clear();
   riData.reserve(allRenderableInstances.size());
 
   for (auto resource : allRenderableInstances)
@@ -209,8 +518,11 @@ void RIModule::collectRiDataForProfiling()
       return true;
     });
 
-    riData.push_back(riDataItem);
+    riData.push_back(eastl::move(riDataItem));
+    RiData *storedPtr = &riData.back();
+    riDataLookup[storedPtr->name] = storedPtr;
   }
+  riDataProvisional = true;
 }
 
 static constexpr size_t HEAVY_SHADERS_COUNT = 3;

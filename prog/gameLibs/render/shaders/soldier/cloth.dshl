@@ -62,8 +62,6 @@ macro INIT_CLOTH_WIND_NOISE_COMBINED()
 endmacro
 
 macro INIT_CLOTH_WIND(texture_index)
-  channel color8 vcol = vcol; // normalize(RGB) - wind influence direction, lenght(RGB) - cloth tension
-
   texture clothNoiseCombinedTex = material.texture[texture_index];  // RGB - noise gradient, A - noise value
   if (clothNoiseCombinedTex != NULL)
   {
@@ -129,6 +127,10 @@ macro INIT_CLOTH_WIND(texture_index)
   INIT_CLOTH_WIND_NOISE_COMBINED()
 
   USE_COMBINED_WIND(vs)
+endmacro
+
+macro USE_CLOTH_WIND_CHANNEL()
+  channel color8 vcol = vcol; // normalize(RGB) - wind influence direction, length(RGB) - cloth tension
 endmacro
 
 define_macro_if_not_defined USE_CLOTH_COLLISION(code)
@@ -271,6 +273,8 @@ macro USE_CLOTH_WIND_NORMAL_BLENDING()
   {
     void apply_cloth_wind_normals(inout float3 normal_map, float3 local_pos, float2 wind_normal_blend_params)
     {
+      #if !HAS_CLOTH_SKINNING
+
       #ifdef OPTIONAL_CLOTH_WIND
         if (!get_cloth_wind_enabled())
           return;
@@ -303,6 +307,7 @@ macro USE_CLOTH_WIND_NORMAL_BLENDING()
       float3 normalNoise = lerp(waveNormalZ, waveNormalX, noiseBlendCoef);
 
       normal_map = RNM_ndetail_normalized(normal_map, normalNoise);
+      #endif
     }
   }
 endmacro
@@ -347,6 +352,8 @@ macro USE_CLOTH_WIND_VS_POST_FUNCTION_IMPL(code, use_burning_and_wounds, render_
     #define POST_FUNCTION_MODIFIES_POSITION 1
     void vs_post_function(VsInput input, inout VsOutput output, inout float4 prevPos)
     {
+      #if !HAS_CLOTH_SKINNING
+
       ##if render_pass_normal
         output.windNormalBlendParams = float2(0.0, 0.0);
       ##endif
@@ -382,6 +389,7 @@ macro USE_CLOTH_WIND_VS_POST_FUNCTION_IMPL(code, use_burning_and_wounds, render_
         ##endif
         output.pointToEye = world_view_pos - worldPos;
       }
+      #endif
 
       ##if use_burning_and_wounds
         init_burning_and_wounds(input, output);

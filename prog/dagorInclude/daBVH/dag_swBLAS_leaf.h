@@ -108,10 +108,8 @@ inline bool RayIntersectsBoxT0T1(vec3f t0, vec3f t1, float ray_extent)
 {
   const vec3f tmax = v_perm_xyzd(v_max(t0, t1), v_splats(ray_extent));
   const vec3f tmin = v_perm_xyzd(v_min(t0, t1), v_zero());
-  vec3f tmaxMin = v_min(tmax, v_perm_zwxy(tmax));
-  tmaxMin = v_min(tmaxMin, v_perm_yzwx(tmaxMin));
-  vec3f tminMax = v_max(tmin, v_perm_zwxy(tmin));
-  tminMax = v_max(tminMax, v_perm_yzwx(tminMax));
+  vec4f tmaxMin = v_hmin(tmax);
+  vec4f tminMax = v_hmax(tmin);
   return v_test_vec_x_le(tminMax, tmaxMin);
 }
 inline bool RayIntersectsBoxInf(vec3f t0, vec3f t1)
@@ -128,10 +126,8 @@ inline bool RayIntersectsBoxNearT(vec3f t0, vec3f t1, float ray_extent, float &n
 {
   const vec3f tmax = v_perm_xyzd(v_max(t0, t1), v_splats(ray_extent));
   const vec3f tmin = v_perm_xyzd(v_min(t0, t1), v_zero());
-  vec3f tmaxMin = v_min(tmax, v_perm_zwxy(tmax));
-  tmaxMin = v_min(tmaxMin, v_perm_yzwx(tmaxMin));
-  vec3f tminMax = v_max(tmin, v_perm_zwxy(tmin));
-  tminMax = v_max(tminMax, v_perm_yzwx(tminMax));
+  vec4f tmaxMin = v_hmin(tmax);
+  vec4f tminMax = v_hmax(tmin);
   near_t = v_extract_x(tminMax);
   return v_test_vec_x_le(tminMax, tmaxMin);
 }
@@ -278,7 +274,7 @@ __forceinline vec4f rayTriangle4_SoA(vec3f orig, vec3f dir, vec4f v0x, vec4f v0y
   // v_rcp_safe(det, V_C_MAX_VAL) which substitutes 1e32 for the inverse when |det| < V_C_VERY_SMALL_VAL,
   // so subsequent bary checks reject. We reject explicitly with the same threshold for equivalent behavior.
   vec4f detTooSmall = CullCCW ? v_cmp_lt(det, v_splats(float(kEpsilon))) : v_cmp_lt(absDet, V_C_VERY_SMALL_VAL);
-  vec4f detSafe = v_sel(absDet, v_splats(1.f), detTooSmall);
+  vec4f detSafe = v_sel(absDet, V_C_ONE, detTooSmall);
   vec4f sx = v_sub(ox, v0x), sy = v_sub(oy, v0y), sz = v_sub(oz, v0z);
   vec4f u = v_xor(v_add(v_add(v_mul(sx, px), v_mul(sy, py)), v_mul(sz, pz)), detSign);
   vec4f qx = v_sub(v_mul(sy, e1z), v_mul(sz, e1y));
@@ -559,8 +555,7 @@ static __forceinline bool swblas_rayLeaf_SoA(RayData &r, int dataOffset, uint32_
   // wins (same first-lane tie-break as a scalar < scan; misses carry FLT_MAX-like t, never NaN --
   // rayTriangle4_SoA sel's them). A min at or past r.t rejects the leaf, which also makes any
   // pre-masking of farther lanes against r.t unnecessary.
-  vec4f m2 = v_min(ts, v_perm_zwxy(ts));
-  vec4f tMin = v_min(m2, v_perm_yzwx(m2)); // the min in all four lanes
+  vec4f tMin = v_hmin(ts);
   if (v_extract_x(tMin) >= r.t)
     return false;
   const int bestLane = (int)__bsf_unsafe((unsigned)v_truemask(v_cmp_eq(ts, tMin)));

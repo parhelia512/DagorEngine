@@ -695,6 +695,7 @@ class NodeDiffComputer
     case TO_CLONE:
     case TO_PAREN:
     case TO_DELETE:
+    case TO_SPREAD:
       return diffUnary((const UnExpr *)lhs, (const UnExpr *)rhs);
     case TO_LITERAL:
       return diffLiterals((const LiteralExpr *)lhs, (const LiteralExpr *)rhs);

@@ -2,19 +2,20 @@
 
 #include <osApiWrappers/dag_progGlobals.h>
 #include <osApiWrappers/setProgGlobals.h>
+#include <osApiWrappers/dag_atomic.h>
 #if _TARGET_PC_WIN
 #include <windows.h>
 #include <debug/dag_debug.h>
 #endif
 
 static void *prog_hinstance = NULL;
-static void *prog_hwnd = NULL;
+static void *volatile prog_hwnd = NULL;
 
 void *win32_get_instance() { return prog_hinstance; }
-void *win32_get_main_wnd() { return prog_hwnd; }
+void *win32_get_main_wnd() { return interlocked_acquire_load_ptr(prog_hwnd); }
 
 void win32_set_instance(void *hinst) { prog_hinstance = hinst; }
-void win32_set_main_wnd(void *hwnd) { prog_hwnd = hwnd; }
+void win32_set_main_wnd(void *hwnd) { interlocked_release_store_ptr(prog_hwnd, hwnd); }
 
 bool win32_rdp_compatible_mode = false;
 void *win32_empty_mouse_cursor = nullptr;

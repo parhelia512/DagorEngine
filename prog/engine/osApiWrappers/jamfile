@@ -4,6 +4,8 @@ StrictCompile = yes ;
 
 include $(Root)/prog/_jBuild/defaults.jam ;
 
+UseSyncAsyncRead ?= no ; # serve the dfa_* API with plain blocking reads instead of AIO (posix platforms only)
+
 TargetType  = lib ;
 Target      = engine/osApiWrappers.lib ;
 
@@ -70,7 +72,7 @@ if $(Platform) in windows {
     winClipboard.cpp
     winHwExceptUtils.cpp
     winXStateFeatures.cpp
-    asyncRead.cpp
+    winapiAsyncRead.cpp
     dynLib.cpp
   ;
 
@@ -107,11 +109,10 @@ if $(Platform) in windows {
     addressWaitWinApi.cpp
     winClipboard.cpp
     winHwExceptUtils.cpp
-    asyncRead.cpp
+    winapiAsyncRead.cpp
     dynLib.cpp
     gdk/app.cpp
     gdk/plm.cpp
-    gdk/window.cpp
     gdk/ime.cpp
     gdk/inline_ime.cpp
     gdk/modal_ime.cpp
@@ -200,12 +201,17 @@ if $(Platform) in windows {
     stackHlpFill.cpp
     stackHlpGet.cpp
     macosx/macDbgStr.mm
-    macosx/macAsyncRead.cpp
     macosx/macSetTitle.mm
     macosx/macClipboard.mm
     convertUTF.cpp
     dynLib.cpp
   ;
+  if $(UseSyncAsyncRead) = yes {
+    Sources += posix/posixSyncAsyncRead.cpp ;
+    Target = $(Target:S=~syncAIO.lib) ;
+  } else {
+    Sources += posix/posixAIOAsyncRead.cpp ;
+  }
   CPPopt += -Wno-error ;
 } else if $(Platform) in nswitch {
   Sources +=
@@ -226,6 +232,7 @@ if $(Platform) in windows {
     stackHlpGet.cpp
     dynLib.cpp
     convertUTF.cpp
+    linux/addressWaitFutex.cpp
   ;
 
   if $(Platform) = android {
@@ -244,7 +251,10 @@ if $(Platform) in windows {
   }
 
   if $(Platform) in linux {
-    if $(Sanitize) = thread {
+    if $(UseSyncAsyncRead) = yes {
+      Sources += posix/posixSyncAsyncRead.cpp ;
+      Target = $(Target:S=~syncAIO.lib) ;
+    } else if $(Sanitize) = thread {
       Sources += posix/posixThreadAsyncRead.cpp ;
     } else {
       Sources += posix/posixAIOAsyncRead.cpp ;
@@ -262,8 +272,8 @@ if $(Platform) in windows {
 }
 
 # Fallback std::condition_variable bucket impl for platforms without native futex
-# Update threadpool's HAVE_NATIVE_FUTEX if you changing this
-if ! $(Platform) in windows xboxOne scarlett ps5 { Sources += addressWaitStdCondVar.cpp ; }
+# Update threadpool's HAVE_NATIVE_FUTEX and DAG_SPINLOCK_IS_FUTEX_MUTEX if you changing this
+if ! $(Platform) in windows xboxOne scarlett ps5 linux android { Sources += addressWaitStdCondVar.cpp ; }
 
 AddIncludes +=
   $(Root)/prog/engine/sharedInclude

@@ -5,7 +5,7 @@
 #include <daECS/core/entitySystem.h>
 
 #include <render/renderEvent.h>
-#include <render/world/cameraParams.h>
+#include <render/cameraParams.h>
 #include <render/world/frameGraphHelpers.h>
 #include "../hideNodesEvent.h"
 #include "frameGraphNodes.h"

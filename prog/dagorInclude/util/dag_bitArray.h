@@ -44,6 +44,7 @@
 
 
 #ifdef __cplusplus
+#include <util/dag_compilerDefs.h>
 #ifdef _DEBUG_TAB_
 #include <util/dag_globDef.h>
 #include <debug/dag_debug.h>
@@ -77,7 +78,7 @@ typedef unsigned int Bitarraybits;
  * perfomance.
  * @todo cyclic(rotation) shift operations.
  */
-class Bitarray
+class DAGOR_WARN_IF_UNUSED Bitarray
 {
 protected:
   /// total in ints

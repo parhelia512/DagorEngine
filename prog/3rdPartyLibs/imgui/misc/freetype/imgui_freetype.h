@@ -41,6 +41,9 @@ enum ImGuiFreeTypeLoaderFlags_
     ImGuiFreeTypeLoaderFlags_LoadColor     = 1 << 8,   // Enable FreeType color-layered glyphs
     ImGuiFreeTypeLoaderFlags_Bitmap        = 1 << 9,   // Enable FreeType bitmap glyphs
 
+    // MODIFICATION BY GAIJIN (high bit on purpose: upstream ends at 1 << 9)
+    ImGuiFreeTypeLoaderFlags_LinearMetrics = 1 << 20,  // Advances from the unhinted outline, so they scale linearly with the raster size. Needed when one size is baked at several densities (a zoomable canvas): every hinting mode grid-fits the hinted advance. Outlines stay hinted. Not for Bold (synthetic bold widens only the hinted advance) or non-scalable faces (no linear advance).
+
 #ifndef IMGUI_DISABLE_OBSOLETE_FUNCTIONS
     ImGuiFreeTypeBuilderFlags_NoHinting     = ImGuiFreeTypeLoaderFlags_NoHinting,
     ImGuiFreeTypeBuilderFlags_NoAutoHint    = ImGuiFreeTypeLoaderFlags_NoAutoHint,

@@ -5,6 +5,7 @@
 #pragma once
 
 #include <drv/3d/dag_consts.h>
+#include <drv/3d/dag_multi_interface.h>
 #include <generic/dag_functionRef.h>
 #include <EASTL/variant.h>
 
@@ -92,7 +93,7 @@ struct TaggedResourceInfo
 /// Visitor type passed to visit_tagged_resources.
 using ResourceVisitor = dag::FunctionRef<void(const TaggedResourceInfo &res) const>;
 
-namespace d3d
+namespace d3d _MULTI_INTERFACE
 {
 /// Driver will invoke 'visitor' for each resource that matches the filters in 'filter' plus there additional rules:
 /// - Aliasing resources are excluded
@@ -100,7 +101,7 @@ namespace d3d
 /// - RT structures of RT structure pools are not visited as the pools are
 /// NOTE: This may negatively impact overall driver performance at it may acquires multiple internal mutexes for the duration.
 void visit_tagged_resources(const ResourceTypeFilter &filter, const ResourceVisitor &visitor);
-} // namespace d3d
+} // namespace d3d _MULTI_INTERFACE
 
 
 #if _TARGET_D3D_MULTI

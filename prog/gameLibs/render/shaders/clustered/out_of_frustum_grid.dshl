@@ -36,7 +36,7 @@ macro USE_OOF_LIGHTS_GRID(code)
           RenderOmniLight ol = omni_lights_cb[omni_light_index];
           float4 pos_and_radius = ol.posRadius;
           float3 posToLight = pos_and_radius.xyz - worldPos;
-          float2 shadowZnZfar = ol.shadowZnZf_pad.xy;
+          float2 shadowZnZfar = ol.shadowZnZf_flags_packedDataBits.xy;
           if (dot(posToLight, posToLight) > pos_and_radius.w*pos_and_radius.w)
             continue;
           float4 color_and_specular = getFinalColor(ol, worldPos);
@@ -71,7 +71,7 @@ macro USE_OOF_LIGHTS_GRID(code)
             RenderOmniLight ol = omni_lights_cb[omni_light_index];
             float4 pos_and_radius = ol.posRadius;
             float3 posToLight = pos_and_radius.xyz - worldPos;
-            float2 shadowZnZfar = ol.shadowZnZf_pad.xy;
+            float2 shadowZnZfar = ol.shadowZnZf_flags_packedDataBits.xy;
             if (dot(posToLight, posToLight) > pos_and_radius.w*pos_and_radius.w)
               continue;
             float4 color_and_specular = getFinalColor(ol, worldPos);

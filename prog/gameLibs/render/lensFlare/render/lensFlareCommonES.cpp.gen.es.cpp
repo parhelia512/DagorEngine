@@ -179,7 +179,7 @@ static ecs::EntitySystemDesc lens_flare_after_device_reset_es_es_desc
   empty_span(),
   make_span(lens_flare_after_device_reset_es_comps+0, 9)/*rq*/,
   empty_span(),
-  ecs::EventSetBuilder<AfterDeviceReset>::build(),
+  ecs::EventSetBuilder<EventAfterDeviceReset>::build(),
   0
 ,"render");
 static constexpr ecs::ComponentDesc prepare_sun_flares_ecs_query_comps[] =

@@ -47,7 +47,7 @@ macro USE_CSM_SSSS_TRANSMITTANCE_FACTOR(code)
     }
     bool ssss_is_uv_valid(float2 uv, ShadowDescriptor desc)
     {
-      return all(uv >= desc.uvMinMax.xy && uv < desc.uvMinMax.zw);
+      return all(and(uv >= desc.uvMinMax.xy, uv < desc.uvMinMax.zw));
     }
   }
   USE_SSSS_TRANSMITTANCE_FACTOR_CALC(code)

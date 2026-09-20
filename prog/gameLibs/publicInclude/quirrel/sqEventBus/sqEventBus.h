@@ -4,8 +4,8 @@
 //
 #pragma once
 
-#include <EASTL/fixed_function.h>
 #include <EASTL/memory.h>
+#include <generic/dag_functionRef.h>
 #include <sqrat.h>
 #include <debug/dag_assert.h>
 #include <osApiWrappers/dag_miscApi.h> // is_main_thread
@@ -114,8 +114,7 @@ void send_event(const char *event_name, const char *source_id = nullptr);
 void send_event(const char *event_name, const Json::Value &data, const char *source_id = nullptr);
 void send_event(const char *event_name, Json::Value &&data, const char *source_id = nullptr);
 // Warn: `wcb` can be called 0, 1 or more times depending on existence of listeners
-void write_event_main_thread(const char *event_name, const eastl::fixed_function<sizeof(void *) * 8, void(Value &)> &wcb,
-  const char *source_id = nullptr);
+void write_event_main_thread(const char *event_name, dag::FunctionRef<void(Value &) const> wcb, const char *source_id = nullptr);
 template <typename F, typename T = Json::Value>
 void write_event(const char *event_name, F wcb, const char *source_id = nullptr)
 {

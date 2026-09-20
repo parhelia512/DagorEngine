@@ -184,17 +184,17 @@ static SQInteger _blob_as_string(HSQUIRRELVM v)
 }
 
 static const SQRegFunctionFromStr _blob_methods[] = {
-    { _blob_constructor, "constructor([size: int]): instance",      "Creates a blob of the given size (default 0)" },
-    { _blob_resize,      "instance.resize(size: int)",              "Resizes the blob to the given size" },
-    { _blob_swap2,       "instance.swap2()",                        "Byte-swaps the blob contents as an array of 16-bit values" },
-    { _blob_swap4,       "instance.swap4()",                        "Byte-swaps the blob contents as an array of 32-bit values" },
-    { _blob_as_string,   "instance.as_string(): string",            "Returns the blob contents as a string" },
-    { _blob_tostring,    "instance.tostring(): string",             "Allows calling .tostring() on blob instances (bypassing _get)"},
-    { _blob__set,        "instance._set(idx: int, val: int): int",  "Sets the byte at the given index" },
-    { _blob__get,        "instance._get(idx: int): int",            "Returns the byte at the given index" },
-    { _blob__typeof,     "instance._typeof(): string",              "Returns 'blob'" },
-    { _blob__nexti,      "instance._nexti(prev): int|null",         "Iterator support: returns the next index or null" },
-    { _blob__cloned,     "instance._cloned(other: instance)",       "Clones the given blob into this instance" },
+    { _blob_constructor, "constructor([size: int]): instance",      SQ_DOC("Creates a blob of the given size (default 0)") },
+    { _blob_resize,      "instance.resize(size: int)",              SQ_DOC("Resizes the blob to the given size") },
+    { _blob_swap2,       "instance.swap2()",                        SQ_DOC("Byte-swaps the blob contents as an array of 16-bit values") },
+    { _blob_swap4,       "instance.swap4()",                        SQ_DOC("Byte-swaps the blob contents as an array of 32-bit values") },
+    { _blob_as_string,   "instance.as_string(): string",            SQ_DOC("Returns the blob contents as a string") },
+    { _blob_tostring,    "instance.tostring(): string",             SQ_DOC("Allows calling .tostring() on blob instances (bypassing _get)")},
+    { _blob__set,        "instance._set(idx: int, val: int): int",  SQ_DOC("Sets the byte at the given index") },
+    { _blob__get,        "instance._get(idx: int): int",            SQ_DOC("Returns the byte at the given index") },
+    { _blob__typeof,     "instance._typeof(): string",              SQ_DOC("Returns 'blob'") },
+    { _blob__nexti,      "instance._nexti(prev): int|null",         SQ_DOC("Iterator support: returns the next index or null") },
+    { _blob__cloned,     "instance._cloned(other: instance)",       SQ_DOC("Clones the given blob into this instance") },
     { NULL, NULL, NULL }
 };
 
@@ -251,11 +251,11 @@ static SQInteger _g_blob_swapfloat(HSQUIRRELVM v)
 }
 
 static const SQRegFunctionFromStr bloblib_funcs[] = {
-    { _g_blob_casti2f,   "pure fastcall casti2f(i: int): float",        "Reinterprets the bits of an integer as a float" },
-    { _g_blob_castf2i,   "pure fastcall castf2i(f: number): int",       "Reinterprets the bits of a float as an integer" },
-    { _g_blob_swap2,     "pure fastcall swap2(val: number): int",       "Byte-swaps a 16-bit value" },
-    { _g_blob_swap4,     "pure fastcall swap4(val: number): int",       "Byte-swaps a 32-bit value" },
-    { _g_blob_swapfloat, "pure fastcall swapfloat(val: number): float", "Byte-swaps the bits of a float" },
+    { _g_blob_casti2f,   "pure fastcall casti2f(i: int): float",        SQ_DOC("Reinterprets the bits of an integer as a float") },
+    { _g_blob_castf2i,   "pure fastcall castf2i(f: number): int",       SQ_DOC("Reinterprets the bits of a float as an integer") },
+    { _g_blob_swap2,     "pure fastcall swap2(val: number): int",       SQ_DOC("Byte-swaps a 16-bit value") },
+    { _g_blob_swap4,     "pure fastcall swap4(val: number): int",       SQ_DOC("Byte-swaps a 32-bit value") },
+    { _g_blob_swapfloat, "pure fastcall swapfloat(val: number): float", SQ_DOC("Byte-swaps the bits of a float") },
     { NULL, NULL, NULL }
 };
 

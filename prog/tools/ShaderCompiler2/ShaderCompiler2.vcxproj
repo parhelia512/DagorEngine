@@ -16,18 +16,6 @@
     <NMakeIncludeSearchPath>$(NMakeIncludeSearchPath);.;$(CommonProgDir)gameLibs\publicInclude\breakpad</NMakeIncludeSearchPath>
   </PropertyGroup>
   <Import Project="$(MSBuildToolsDir)config.props" />
-  <PropertyGroup>
-    <AdjunctOptions>$(AdjunctOptions) -sRoot=../.. -fShaderCompiler2/jamfile-$(TargetShaderArch) </AdjunctOptions>
-    <NMakeIncludeSearchPath Condition="'$(TargetShaderArch)' == 'ps4'">$(NMakeIncludeSearchPath);$(PS4SDKROOT)\target\include_common;$(PS4SDKROOT)\target\src</NMakeIncludeSearchPath>
-    <NMakeIncludeSearchPath Condition="'$(TargetShaderArch)' == 'ps5'">$(NMakeIncludeSearchPath);$(PS5SDKROOT)host_tools\include;$(PS5SDKROOT)target\include_common</NMakeIncludeSearchPath>
-    <NMakeIncludeSearchPath Condition="'$(TargetShaderArch)' == 'spirv'">$(NMakeIncludeSearchPath);$(_3rdPartyDir)vulkan\glslang;$(_3rdPartyDir)vulkan\include;$(_3rdPartyDir)vulkan\smol-v\source;$(_3rdPartyDir)vulkan\hlslcc\include;$(_3rdPartyDir)vulkan\spirv-tools\include</NMakeIncludeSearchPath>
-    <NMakePreprocessorDefinitions Condition="'$(TargetShaderArch)' == 'dx12'">$(NMakePreprocessorDefinitions);_CROSS_TARGET_DX11;_CROSS_TARGET_DX12;BINDUMP_TARGET_BE=0;USE_BINDLESS_FOR_STATIC_TEX</NMakePreprocessorDefinitions>
-    <NMakePreprocessorDefinitions Condition="'$(TargetShaderArch)' == 'hlsl11'">$(NMakePreprocessorDefinitions);_CROSS_TARGET_DX11;BINDUMP_TARGET_BE=0</NMakePreprocessorDefinitions>
-    <NMakePreprocessorDefinitions Condition="'$(TargetShaderArch)' == 'metal'">$(NMakePreprocessorDefinitions)</NMakePreprocessorDefinitions>
-    <NMakePreprocessorDefinitions Condition="'$(TargetShaderArch)' == 'ps4'">$(NMakePreprocessorDefinitions);_CROSS_TARGET_PS4;USE_BINDLESS_FOR_STATIC_TEX;BINDUMP_TARGET_BE=0;_PS4_SDK_VER=$(PS4SdkVer)</NMakePreprocessorDefinitions>
-    <NMakePreprocessorDefinitions Condition="'$(TargetShaderArch)' == 'ps5'">$(NMakePreprocessorDefinitions);_CROSS_TARGET_PS5;USE_BINDLESS_FOR_STATIC_TEX;BINDUMP_TARGET_BE=0;_PS5_SDK_VER=$(PS5SdkVer)</NMakePreprocessorDefinitions>
-    <NMakePreprocessorDefinitions Condition="'$(TargetShaderArch)' == 'spirv'">$(NMakePreprocessorDefinitions);_CROSS_TARGET_SPIRV;BINDUMP_TARGET_BE=0</NMakePreprocessorDefinitions>
-  </PropertyGroup>
   <Import Project="$(MSBuildToolsDir)common.targets" />
   <ItemGroup>
     <ConfigPerDirectory Include="nodeBased\">

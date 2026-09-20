@@ -198,7 +198,7 @@ struct SplineSegmentPoint
   float splinePos;
 
   SplineSegmentPoint(SplinePointObject *p, float splPos) :
-    in(p->getBezierIn()), pos(p->getPt()), out(p->getBezierOut()), splinePos(splPos)
+    in(p->getKnotBezierIn()), pos(p->getKnotPos()), out(p->getKnotBezierOut()), splinePos(splPos)
   {}
 };
 
@@ -283,7 +283,7 @@ void SplineExporter::fillSplineData(const Tab<SplineObject *> &splines)
         if (p)
         {
           splData.segments.points.push_back(SplineSegmentPoint(p, len));
-          grid.addPoint(p->getPt(), uint16_t(i), uint16_t(pointId));
+          grid.addPoint(p->getKnotPos(), uint16_t(i), uint16_t(pointId));
           pointId++;
         }
         if (j != o->points.size() - 1)

@@ -15,6 +15,7 @@
 #include <dag/dag_vector.h>
 #include <generic/dag_smallTab.h>
 #include <ska_hash_map/flat_hash_map2.hpp>
+#include <recastTools/navmeshExportType.h>
 
 class dtPathCorridor;
 class dtNavMeshQuery;
@@ -64,7 +65,7 @@ struct FindRequest
   dtPolyRef startPoly;
   dtPolyRef endPoly;
 
-  dag::Vector<Point2> areasCost;
+  dag::Vector<Point2, framemem_allocator> areasCost; // framemem: keep a request a frame scoped local of one thread
 };
 
 struct NavParams
@@ -97,6 +98,66 @@ enum NavMeshType : unsigned
   NMT_SIMPLE = 0,
   NMT_TILED,
   NMT_TILECACHED
+};
+
+// Recast settings which cannot all be recovered from a serialized Detour tiled navmesh.
+// Missing tail fields retain these export defaults when an older structure is read.
+struct TiledNavMeshBuildSettings
+{
+  uint32_t size = 0;
+
+  float cellSize = 0.125f;
+  float cellHeight = 0.125f;
+  float agentMaxSlope = 45.0f;
+  float agentHeight = 1.8f;
+  float agentMaxClimb = 0.5f;
+  float agentRadius = 0.25f;
+  float agentClimbAfterGluingMeshes = 0.125f;
+  float edgeMaxLen = 128.0f;
+  float edgeMaxError = 1.5f;
+  float regionMinSize = 2.0f;
+  float regionMergeSize = 100.0f;
+  int32_t vertsPerPoly = 3;
+  float detailSampleDist = 3.0f;
+  float detailSampleMaxError = 2.0f;
+  int32_t tileSize = 256;
+  uint32_t jumpLinksEnabled = 1;
+  uint32_t crossObstaclesWithJumplinks = 1;
+  int32_t jumpLinkExtraCells = 32;
+
+  int32_t jumpLinksTypeGen = 0;
+  float jumpLinksJumpoffMinHeight = 1.0f;
+  float jumpLinksJumpoffMaxHeight = 4.0f;
+  float jumpLinksJumpoffMinLinkLength = 0.3f;
+  float jumpLinksEdgeMappingAngleDeg = 0.0f;
+  float jumpLinksEdgeMergeAngleDeg = 10.0f;
+  float jumpLinksEdgeMergeDist = 0.1f;
+  float jumpLinksEdgeMergeDistV1 = 0.2f;
+  float jumpLinksHeight = 3.0f;
+  float jumpLinksLength = 2.5f;
+  float jumpLinksWidth = 1.5f;
+  float jumpLinksAgentHeight = 2.0f;
+  float jumpLinksAgentMinSpace = 1.0f;
+  float jumpLinksDeltaHeightThreshold = 0.5f;
+  float jumpLinksMaxObstructionAngleRad = 0.436332313f;
+  float jumpLinksMergeAngleCos = 0.965925826f;
+  float jumpLinksMergeDistCos = 0.996194698f;
+  float complexJumpThreshold = 0.5f;
+  uint32_t enableCustomJumplinks = 1;
+
+  uint32_t simplificationEdgeEnabled = 0;
+  float simplificationWalkPrecisionX = 0.25f;
+  float simplificationWalkPrecisionY = 0.5f;
+  float simplificationMaxExtrudeErrorSq = 0.16f;
+  float simplificationExtrudeLimitSq = 0.09f;
+  float simplificationSafeCutLimitSq = 0.25f;
+  float simplificationUnsafeCutLimitSq = 0.04f;
+  float simplificationUnsafeMaxCutSpace = 1.0f;
+
+  float traceStep = 1.5f;
+  float waterLevel = 0.0f;
+  float crossingWaterDepth = 0.0f;
+  NavmeshExportType navmeshExportType = NavmeshExportType::GEOMETRY;
 };
 
 enum PolyArea : uint8_t
@@ -134,11 +195,13 @@ typedef uint32_t obstacle_handle_t;
 void clear(bool clearNavData = true);
 bool loadNavMesh(IGenLoad &crd, NavMeshType type = NMT_SIMPLE, tile_check_cb_t tile_check_cb = nullptr,
   const char *patchNavMeshFileName = nullptr);
+NavMeshType get_nav_mesh_type(int nav_mesh_idx = NM_MAIN);
+TiledNavMeshBuildSettings get_tiled_navmesh_build_settings(int nav_mesh_idx = NM_MAIN);
 void initWeights(const DataBlock *navQueryFilterWeightsBlk);
 bool isLoaded();
 FindPathResult findPath(Tab<Point3> &path, FindRequest &req, float step_size, float slop, const CustomNav *custom_nav);
 FindPathResult findPath(const Point3 &start_pos, const Point3 &end_pos, Tab<Point3> &path, float dist_to_path = 10.f,
-  float step_size = 10.f, float slop = 2.5f, const CustomNav *custom_nav = nullptr, const dag::Vector<Point2> &areasCost = {},
+  float step_size = 10.f, float slop = 2.5f, const CustomNav *custom_nav = nullptr, dag::ConstSpan<Point2> areasCost = {},
   int incl_flags = POLYFLAGS_WALK | POLYFLAG_JUMP | POLYFLAG_LADDER, int excl_flags = POLYFLAG_BLOCKED);
 FindPathResult findPath(const Point3 &start_pos, const Point3 &end_pos, Tab<Point3> &path, const Point3 &extents,
   float step_size = 10.f, float slop = 2.5f, const CustomNav *custom_nav = nullptr,
@@ -206,7 +269,7 @@ struct CorridorInput
   dtPolyRef startPoly;
   dtPolyRef targetPoly;
 
-  dag::Vector<Point2> areasCost;
+  dag::Vector<Point2, framemem_allocator> areasCost; // framemem: keep an input a frame scoped local of one thread
   ska::flat_hash_map<dtPolyRef, float> costAddition;
 };
 
@@ -268,7 +331,7 @@ FindPathResult find_path_ex(int nav_mesh_idx, Tab<Point3> &path, FindRequest &re
   const CustomNav *custom_nav = nullptr);
 FindPathResult find_path_ex(int nav_mesh_idx, const Point3 &start_pos, const Point3 &end_pos, Tab<Point3> &path,
   float dist_to_path = 10.f, float step_size = 10.f, float slop = 2.5f, const CustomNav *custom_nav = nullptr,
-  const dag::Vector<Point2> &areasCost = {}, int incl_flags = POLYFLAGS_WALK | POLYFLAG_JUMP | POLYFLAG_LADDER,
+  dag::ConstSpan<Point2> areasCost = {}, int incl_flags = POLYFLAGS_WALK | POLYFLAG_JUMP | POLYFLAG_LADDER,
   int excl_flags = POLYFLAG_BLOCKED);
 FindPathResult find_path_ex(int nav_mesh_idx, const Point3 &start_pos, const Point3 &end_pos, Tab<Point3> &path, const Point3 &extents,
   float step_size = 10.f, float slop = 2.5f, const CustomNav *custom_nav = nullptr,

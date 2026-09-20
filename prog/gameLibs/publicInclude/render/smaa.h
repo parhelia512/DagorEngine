@@ -8,6 +8,7 @@
 #include <resourcePool/resourcePool.h>
 #include <math/integer/dag_IPoint2.h>
 #include <shaders/dag_postFxRenderer.h>
+#include <3d/dag_resPtr.h>
 #include <3d/dag_textureIDHolder.h>
 #include <drv/3d/dag_renderPass.h>
 
@@ -19,7 +20,7 @@ public:
 
 private:
   PostFxRenderer edge_detect, blend_weights, apply_smaa;
-  TextureIDHolderWithVar edgeDetect, blendWeights;
+  UniqueTexWithShaderVar edgeDetect, blendWeights;
   SharedTexWithShaderVar areaTex, searchTex;
   TextureIDHolder depthStencilTex;
   const IPoint2 resolution;

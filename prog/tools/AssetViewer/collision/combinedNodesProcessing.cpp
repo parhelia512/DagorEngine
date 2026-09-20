@@ -17,8 +17,10 @@ void CombinedNodesProcessing::calcSelectedCombinedNode() { calcCombinedNode(sele
 
 void CombinedNodesProcessing::calcCombinedNode(const SelectedNodesSettings &settings)
 {
-  dag::ConstSpan<CollisionNode> collisionNodes = collisionRes->getAllNodes();
   clearSelectedNode();
+  if (!collisionRes)
+    return;
+  dag::ConstSpan<CollisionNode> collisionNodes = collisionRes->getAllNodes();
   switch (settings.type)
   {
     case ExportCollisionNodeType::MESH:

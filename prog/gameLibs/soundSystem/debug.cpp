@@ -20,6 +20,7 @@
 #include <soundSystem/debug.h>
 #include <drv/3d/dag_lock.h>
 #include <shaders/dag_shaderBlock.h>
+#include <util/dag_console.h>
 
 #include "internal/fmodCompatibility.h"
 #include "internal/framememString.h"
@@ -35,6 +36,10 @@
 
 static WinCritSec g_debug_trace_cs;
 #define SNDSYS_DEBUG_TRACE_BLOCK WinAutoLock debugTraceLock(g_debug_trace_cs);
+
+static constexpr const char *g_instances_expanded_hint = " (\"snd.debug_expanded 0\" to fold)";
+static constexpr const char *g_instances_folded_hint = " (\"snd.debug_expanded 1\" to expand)";
+static constexpr bool g_def_instances_expanded = true;
 
 namespace sndsys
 {
@@ -250,27 +255,48 @@ static class GlobalInstances
   {
     const FMOD::Studio::EventDescription *desc = nullptr;
     const FMOD::Studio::EventInstance *instance = nullptr;
+    const FMOD::Studio::Bank *bank = nullptr;
     uint32_t updateId = 0;
     uint8_t numInstances = 0;
     uint8_t numPlaying = 0;
     uint8_t numVirtual = 0;
     uint8_t numMuted = 0;
     uint8_t numPaused = 0;
-    uint8_t numDuplicated = 0;
     uint8_t time = 0;
+    bool duplicatedInBanks = false;
   };
   eastl::fixed_vector<Desc, capacity> descs;
   uint32_t updateId = 0;
 
-public:
-  void push(const FMOD::Studio::EventInstance &event_instance, const FMOD::Studio::EventDescription &event_description,
-    int num_instances, int num_playing, int num_virtual, int num_muted, int num_paused)
+  bool isExpanded = g_def_instances_expanded;
+
+  Desc *find(const FMOD::Studio::EventDescription &event_description)
   {
     Desc *desc = eastl::find_if(descs.begin(), descs.end(), [&](const auto &it) { return it.desc == &event_description; });
-    if (desc != descs.end())
+    return desc != descs.end() ? desc : nullptr;
+  }
+
+  Desc *find(const FMOD::Studio::EventInstance &event_instance, const FMOD::Studio::EventDescription &event_description)
+  {
+    Desc *desc = eastl::find_if(descs.begin(), descs.end(),
+      [&](const auto &it) { return it.desc == &event_description && it.instance == &event_instance; });
+    return desc != descs.end() ? desc : nullptr;
+  }
+
+public:
+  void push(const FMOD::Studio::EventInstance &event_instance, const FMOD::Studio::EventDescription &event_description,
+    const FMOD::Studio::Bank *bank, int num_instances, int num_playing, int num_virtual, int num_muted, int num_paused)
+  {
+    bool duplicatedInBanks = false;
+    for (const Desc &it : descs)
+      if (it.desc == &event_description && it.bank != bank)
+      {
+        duplicatedInBanks = true;
+        break;
+      }
+    Desc *desc = is_expanded() ? find(event_instance, event_description) : find(event_description);
+    if (desc)
     {
-      if (desc->updateId == updateId && desc->numDuplicated < 0xff)
-        ++desc->numDuplicated;
       if (desc->numInstances < num_instances)
         desc->time = 0;
     }
@@ -280,8 +306,6 @@ public:
         return;
       desc = &descs.push_back();
       desc->desc = &event_description;
-      desc->numDuplicated = 0;
-      desc->time = 0;
     }
     desc->instance = &event_instance;
     desc->numInstances = min(num_instances, 0xff);
@@ -289,6 +313,8 @@ public:
     desc->numVirtual = min(num_virtual, 0xff);
     desc->numMuted = min(num_muted, 0xff);
     desc->numPaused = min(num_paused, 0xff);
+    desc->bank = bank;
+    desc->duplicatedInBanks = desc->duplicatedInBanks || duplicatedInBanks;
     desc->updateId = updateId;
   }
 
@@ -304,13 +330,13 @@ public:
 
   E3DCOLOR getColor(const FMOD::Studio::EventDescription &event_description, const FMOD::Studio::EventInstance &event_instance)
   {
-    const Desc *desc = eastl::find_if(descs.begin(), descs.end(), [&](const auto &it) { return it.desc == &event_description; });
-    if (desc != descs.end())
+    const Desc *desc = find(event_instance, event_description);
+    if (desc != nullptr)
       return getColor(*desc, event_instance);
     return make_color(event_instance, event_description);
   }
 
-  bool isObsolete(const Desc &desc) const { return updateId > desc.updateId + 60; }
+  bool isObsolete(const Desc &desc) const { return updateId > desc.updateId + 30; }
 
   void advance()
   {
@@ -328,6 +354,16 @@ public:
   const Desc *begin() const { return descs.begin(); }
   const Desc *end() const { return descs.end(); }
 
+  bool is_expanded() const { return isExpanded; }
+
+  void set_expanded(bool expanded)
+  {
+    if (isExpanded != expanded)
+    {
+      isExpanded = expanded;
+      reset();
+    }
+  }
 } g_instances;
 
 static FrameString get_debug_name_handle(const FMOD::Studio::EventInstance &event_instance,
@@ -422,12 +458,12 @@ static void print_samples_instances(int offset)
     offset += print(g_offset.x, offset, g_def_color, "");
   }
 
+  FrameString text = "[INSTANCES]";
+  text += g_instances.is_expanded() ? g_instances_expanded_hint : g_instances_folded_hint;
   if (!g_filter.empty())
-    offset += print_format(g_offset.x, offset, g_def_color, "[INSTANCES filtered by=*%s*]", g_filter.c_str());
-  else
-    offset += print(g_offset.x, offset, g_def_color, "[INSTANCES]");
+    text.append_sprintf(" filtered by=*%s*", g_filter.c_str());
+  offset += print(g_offset.x, offset, g_def_color, text.c_str());
 
-  FrameString text;
   int numBanks = 0;
   SOUND_VERIFY(get_studio_system()->getBankList(banks_list.begin(), banks_list.size(), &numBanks));
   G_ASSERT(numBanks <= banks_list.size());
@@ -465,18 +501,31 @@ static void print_samples_instances(int offset)
       bool is3d = false;
       evtDesc->is3D(&is3d);
 
-      int numPlaying = 0, numVirtual = 0, numMuted = 0, numPaused = 0;
       const auto instancesSlice = make_span(instance_list.begin(), numInstances);
-      for (const FMOD::Studio::EventInstance *instance : instancesSlice)
+      if (g_instances.is_expanded())
       {
-        numPlaying += is_playing(*instance) ? 1 : 0;
-        numVirtual += is_virtual(*instance) ? 1 : 0;
-        numMuted += is_muted(*instance) ? 1 : 0;
-        numPaused += is_paused(*instance) ? 1 : 0;
+        for (auto it : instancesSlice)
+        {
+          const int numPlaying = is_playing(*it) ? 1 : 0;
+          const int numVirtual = is_virtual(*it) ? 1 : 0;
+          const int numMuted = is_muted(*it) ? 1 : 0;
+          const int numPaused = is_paused(*it) ? 1 : 0;
+          g_instances.push(*it, *evtDesc, bank, 1, numPlaying, numVirtual, numMuted, numPaused);
+        }
       }
-
-      const FMOD::Studio::EventInstance &firstInstance = *instance_list.front();
-      g_instances.push(firstInstance, *evtDesc, numInstances, numPlaying, numVirtual, numMuted, numPaused);
+      else
+      {
+        int numPlaying = 0, numVirtual = 0, numMuted = 0, numPaused = 0;
+        for (const FMOD::Studio::EventInstance *instance : instancesSlice)
+        {
+          numPlaying += is_playing(*instance) ? 1 : 0;
+          numVirtual += is_virtual(*instance) ? 1 : 0;
+          numMuted += is_muted(*instance) ? 1 : 0;
+          numPaused += is_paused(*instance) ? 1 : 0;
+        }
+        const FMOD::Studio::EventInstance &firstInstance = *instance_list.front();
+        g_instances.push(firstInstance, *evtDesc, bank, numInstances, numPlaying, numVirtual, numMuted, numPaused);
+      }
 
       for (const FMOD::Studio::EventInstance *instance : instancesSlice)
       {
@@ -577,8 +626,8 @@ static void print_samples_instances(int offset)
       if (strcmp(sampleLoadingState, "loaded") != 0)
         text.append_sprintf(" (%s)", sampleLoadingState);
 
-    if (it.numDuplicated > 1)
-      text.append_sprintf(" (--DUPLICATED IN BANKS (%d)--) ", it.numDuplicated);
+    if (it.duplicatedInBanks)
+      text += " (!--DUPLICATED IN BANKS--!) ";
 
     if (!instance.isValid())
       text.append_sprintf(" (not valid)");
@@ -1038,6 +1087,10 @@ void set_debug_filter(const char *text)
   g_instances.reset();
 }
 
+static void set_debug_expanded(bool expanded) { g_instances.set_expanded(expanded); }
+
+static bool is_debug_expanded() { return g_instances.is_expanded(); }
+
 void debug_init(const DataBlock &blk)
 {
   const char *loglevel = blk.getStr("loglevel", "");
@@ -1050,5 +1103,18 @@ void debug_init(const DataBlock &blk)
   else
     g_log_level = def_log_level;
   g_suppress_logerr_once = blk.getBool("suppressLogerrOnce", false);
+  set_debug_expanded(blk.getBool("debugExpanded", g_def_instances_expanded));
 }
 } // namespace sndsys
+
+static bool sndsys_debug_console_handler(const char *argv[], int argc)
+{
+  int found = 0;
+  CONSOLE_CHECK_NAME("snd", "debug_expanded", 1, 2)
+  {
+    sndsys::set_debug_expanded(argc > 1 ? console::to_bool(argv[1]) : !sndsys::is_debug_expanded());
+  }
+  return found;
+}
+
+REGISTER_CONSOLE_HANDLER(sndsys_debug_console_handler);

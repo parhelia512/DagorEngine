@@ -1,0 +1,109 @@
+texture ibl_cube_atlas;
+int ibl_cube_is_inside = 0;
+float ibl_cube_mul_specular = 1;
+float ibl_cube_mul_diffuse = 1;
+float ibl_cube_mul_specular_falloff_end = 0;
+float ibl_cube_mul_diffuse_falloff_end = 0;
+float ibl_cube_falloff_start = 0;
+float ibl_cube_falloff_end = 0;
+float4 ibl_cube_center = (0, 0, 0, 0);
+
+float4 ibl_cube_rotation_row0 = (1, 0, 0, 0);
+float4 ibl_cube_rotation_row1 = (0, 1, 0, 0);
+float4 ibl_cube_rotation_row2 = (0, 0, 1, 0);
+
+float4 ibl_cube_world_to_local_row0 = (1, 0, 0, 0);
+float4 ibl_cube_world_to_local_row1 = (0, 1, 0, 0);
+float4 ibl_cube_world_to_local_row2 = (0, 0, 1, 0);
+
+macro INIT_IBL_CUBE(code)
+  INIT_GLOBAL_LINEAR_CLAMP_SAMPLER(code)
+  (code) {
+    ibl_cube_atlas@tex2d = ibl_cube_atlas;
+    ibl_cube_is_inside@i1 = (ibl_cube_is_inside);
+    ibl_cube_mul_specular@f1 = (ibl_cube_mul_specular);
+    ibl_cube_mul_diffuse@f1 = (ibl_cube_mul_diffuse);
+    ibl_cube_mul_specular_falloff_end@f1 = (ibl_cube_mul_specular_falloff_end);
+    ibl_cube_mul_diffuse_falloff_end@f1 = (ibl_cube_mul_diffuse_falloff_end);
+    ibl_cube_falloff_start@f1 = (ibl_cube_falloff_start);
+    ibl_cube_falloff_end@f1 = (ibl_cube_falloff_end);
+    ibl_cube_center@f4 = ibl_cube_center;
+    ibl_cube_rotation_row0@f4 = ibl_cube_rotation_row0;
+    ibl_cube_rotation_row1@f4 = ibl_cube_rotation_row1;
+    ibl_cube_rotation_row2@f4 = ibl_cube_rotation_row2;
+    ibl_cube_world_to_local_row0@f4 = ibl_cube_world_to_local_row0;
+    ibl_cube_world_to_local_row1@f4 = ibl_cube_world_to_local_row1;
+    ibl_cube_world_to_local_row2@f4 = ibl_cube_world_to_local_row2;
+  }
+endmacro
+
+macro USE_IBL_CUBE(code)
+  hlsl(code) {
+    #define ibl_cube_atlas_samplerstate global_linear_clamp_sampler
+    void ibl_cube_slice_rect(uint slice, out float2 offset, out float2 scale)
+    {
+      if (slice == 0)
+      {
+        offset = float2(0, 0);
+        scale = float2(0.5, 1.0);
+        return;
+      }
+      uint packedIndex = slice - 1;
+      uint column = packedIndex & 1;
+      uint row = 1 - (packedIndex >> 1);
+      offset = float2(0.5 + 0.25 * column, 0.5 * row);
+      scale = float2(0.25, 0.5);
+    }
+
+    float2 ibl_cube_dir_to_equirect_uv(float3 d)
+    {
+      float u = atan2(d.x, d.z) * (0.5 / 3.14159265358979) + 0.5;
+      float v = acos(clamp(d.y, -1.0, 1.0)) * (1.0 / 3.14159265358979);
+      return float2(u, v);
+    }
+
+    float3 ibl_cube_sample_slice(float3 dir, uint slice)
+    {
+      float2 localUv = saturate(ibl_cube_dir_to_equirect_uv(dir));
+      float2 offset, scale;
+      ibl_cube_slice_rect(slice, offset, scale);
+      float w, h;
+      ibl_cube_atlas.GetDimensions(w, h);
+      float2 halfTexel = 0.5 / float2(w, h);
+      float2 atlasUv = offset + localUv * scale;
+      // Clamp inside the slice rect so filtering never crosses into a neighbour slice.
+      atlasUv = clamp(atlasUv, offset + halfTexel, offset + scale - halfTexel);
+      return tex2Dlod(ibl_cube_atlas, float4(atlasUv, 0, 0)).rgb;
+    }
+
+    float3 ibl_cube_to_source_dir(float3 d)
+    {
+      return float3(dot(ibl_cube_rotation_row0.xyz, d), dot(ibl_cube_rotation_row1.xyz, d), dot(ibl_cube_rotation_row2.xyz, d));
+    }
+
+    float3 ibl_cube_sample_specular(float3 reflection_dir, float perceptual_roughness)
+    {
+      uint slice = uint(round(saturate(perceptual_roughness) * 4.0));
+      return ibl_cube_sample_slice(ibl_cube_to_source_dir(reflection_dir), slice);
+    }
+
+    float3 ibl_cube_sample_diffuse(float3 normal) { return ibl_cube_sample_slice(ibl_cube_to_source_dir(normal), 4); }
+
+    float ibl_cube_falloff(float3 world_pos)
+    {
+      if (ibl_cube_falloff_end <= ibl_cube_falloff_start)
+        return 1.0;
+      float dist = length(world_pos - ibl_cube_center.xyz);
+      float t = saturate((dist - ibl_cube_falloff_start) / (ibl_cube_falloff_end - ibl_cube_falloff_start));
+      return (1.0 - t) * (1.0 - t);
+    }
+
+    bool ibl_cube_pixel_inside(float3 world_pos)
+    {
+      float4 wp = float4(world_pos, 1.0);
+      float3 local = float3(dot(ibl_cube_world_to_local_row0, wp), dot(ibl_cube_world_to_local_row1, wp),
+        dot(ibl_cube_world_to_local_row2, wp));
+      return all(abs(local) <= 0.5);
+    }
+  }
+endmacro

@@ -1,6 +1,7 @@
 // Copyright (C) Gaijin Games KFT.  All rights reserved.
 
 #include "gpu_postmortem_nvidia_aftermath.h"
+#include "names.h"
 #include <device.h>
 #include <platform.h>
 

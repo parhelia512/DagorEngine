@@ -43,52 +43,65 @@ macro USE_PLANAR_DECALS_BASE(stage, use_gradients, lod_without_gradients)
       return (half)saturate((influence_raw - minAng80) * influenceMult / (maxAng45 - minAng80));
     }
 
+    // Derive from the color before any decal: the decal lerp mutates it in place.
+    half get_decal_diff_mul(half3 pre_decal_color)
+    {
+      return saturate(luminance(pre_decal_color.rgb) * (half)DIFFUSE_MUL_RCP);
+    }
+
+    half apply_planar_decal(inout half3 diffuseColor, half diff_mul, float4 model_pos4, float3 model_normal,
+                            Texture2D atlas_tex, SamplerState atlas_tex_samplerstate,
+                            PlanarDecalTransformAndUV tmAndUv, half decal_width)
+    {
+      half influenceRaw_side0 = dot(model_normal, tmAndUv.tmRow2[0].xyz);
+      half influenceRaw_side1 = dot(model_normal, tmAndUv.tmRow2[1].xyz);
+
+      half3 uvz_side0 = half3(
+        dot(model_pos4, tmAndUv.tmRow0[0]),
+        dot(model_pos4, tmAndUv.tmRow1[0]),
+        dot(model_pos4, tmAndUv.tmRow2[0]));
+
+      half3 uvz_side1 = half3(
+        dot(model_pos4, tmAndUv.tmRow0[1]),
+        dot(model_pos4, tmAndUv.tmRow1[1]),
+        dot(model_pos4, tmAndUv.tmRow2[1]));
+
+      half influenceRaw = max(influenceRaw_side0, influenceRaw_side1);
+      half3 uvz = influenceRaw_side0 > influenceRaw_side1 ? uvz_side0 : uvz_side1;
+
+      float4 atlasUvOriginScale = tmAndUv.atlasUvOriginScale;
+      float2 atlasUv = uvz.xy * atlasUvOriginScale.zw + atlasUvOriginScale.xy;
+      ##if use_gradients
+        float2 atlasUvDdx = ddx(atlasUv);
+        float2 atlasUvDdy = ddy(atlasUv);
+        // left part - vectorized [0,1] range check
+        float2 l = float2(length(atlasUvDdx), length(atlasUvDdy));
+        if (any(float4(uvz.xy - l, 1, 1) < float4(0, 0, uvz.xy + l)) || abs(uvz.z) >= decal_width - max(l.x, l.y))
+          return 0.0h;
+        half4 decal = (half4)tex2Dgrad(atlas_tex, atlasUv, atlasUvDdx, atlasUvDdy);
+      ##else
+        if (any(float4(uvz.xy, 1, 1) < float4(0, 0, uvz.xy)) || abs(uvz.z) >= decal_width)
+          return 0.0h;
+        half4 decal = (half4)tex2Dlod(atlas_tex, float4(atlasUv, 0, lod_without_gradients));
+      ##endif
+      half decalEffect = get_influence(influenceRaw) * decal.a;
+      diffuseColor.rgb = lerp(diffuseColor.rgb, diff_mul * decal.rgb, decalEffect);
+      return decalEffect;
+    }
+
     half apply_decals(inout half3 diffuseColor, float3 model_pos, float3 model_normal,
                       Texture2D atlas_tex, SamplerState atlas_tex_samplerstate, int decal_count, PlanarDecalsParamsSet decals_params)
     {
       float4 modelPos4 = float4(model_pos, 1);
-      half diffMul = saturate(luminance(diffuseColor.rgb) * (half)DIFFUSE_MUL_RCP);
+      half diffMul = get_decal_diff_mul(diffuseColor);
       half4 decalWidths = (half4)decals_params.decalWidths;
 
       half decalEffectTotalInv = 1.0h;
       ##assert(decal_count <= MAX_PLANAR_DECALS);
       for (int decalId = 0; decalId < decal_count; ++decalId)
       {
-        PlanarDecalTransformAndUV tmAndUv = decals_params.tmAndUv[decalId];
-
-        half influenceRaw_side0 = dot(model_normal, tmAndUv.tmRow2[0].xyz);
-        half influenceRaw_side1 = dot(model_normal, tmAndUv.tmRow2[1].xyz);
-
-        half3 uvz_side0 = half3(
-          dot(modelPos4, tmAndUv.tmRow0[0]),
-          dot(modelPos4, tmAndUv.tmRow1[0]),
-          dot(modelPos4, tmAndUv.tmRow2[0]));
-
-        half3 uvz_side1 = half3(
-          dot(modelPos4, tmAndUv.tmRow0[1]),
-          dot(modelPos4, tmAndUv.tmRow1[1]),
-          dot(modelPos4, tmAndUv.tmRow2[1]));
-
-        half influenceRaw = max(influenceRaw_side0, influenceRaw_side1);
-        half3 uvz = influenceRaw_side0 > influenceRaw_side1 ? uvz_side0 : uvz_side1;
-
-        float4 atlasUvOriginScale = decals_params.tmAndUv[decalId].atlasUvOriginScale;
-        float2 atlasUv = uvz.xy * atlasUvOriginScale.zw + atlasUvOriginScale.xy;
-        ##if use_gradients
-          float2 atlasUvDdx = ddx(atlasUv);
-          float2 atlasUvDdy = ddy(atlasUv);
-          // left part - vectorized [0,1] range check
-          float2 l = float2(length(atlasUvDdx), length(atlasUvDdy));
-          if (any(float4(uvz.xy - l, 1, 1) < float4(0, 0, uvz.xy + l)) || abs(uvz.z) >= decalWidths[decalId] - max(l.x, l.y))
-            continue;
-          half4 decal = (half4)tex2Dgrad(atlas_tex, atlasUv, atlasUvDdx, atlasUvDdy);
-        ##else
-          if (any(float4(uvz.xy, 1, 1) < float4(0, 0, uvz.xy)) || abs(uvz.z) >= decalWidths[decalId])
-            continue;
-          half4 decal = (half4)tex2Dlod(atlas_tex, float4(atlasUv, 0, lod_without_gradients));
-        ##endif
-        half decalEffect = get_influence(influenceRaw) * decal.a;
-        diffuseColor.rgb = lerp(diffuseColor.rgb, diffMul * decal.rgb, decalEffect);
+        half decalEffect = apply_planar_decal(diffuseColor, diffMul, modelPos4, model_normal,
+          atlas_tex, atlas_tex_samplerstate, decals_params.tmAndUv[decalId], decalWidths[decalId]);
         decalEffectTotalInv *= 1.0h - decalEffect;
       }
 

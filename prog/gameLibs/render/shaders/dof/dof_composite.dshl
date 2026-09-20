@@ -89,8 +89,8 @@ macro USE_DOF_COMPOSITE_FAR(code)
         );
         cLayerFar.a += dot(ComputeFarCircleOfConfusion4(depth4, dof_focus_params), float4(0.125, 0.125, 0.125, 0.125));
       #elif DOF_FAR_POSTFX_TSR
-        float pseudoDepth = tex2Dlod(frame_tex, float4(tc.xy, 0, 0)).a;
-        cLayerFar.a = ComputeFarCircleOfConfusion(pseudoDepth, dof_focus_params);
+        float depth = tex2Dlod(tsr_depth, float4(tc.xy, 0, 0)).x;
+        cLayerFar.a = ComputeFarCircleOfConfusion(depth, dof_focus_params);
       #else
         float depth = tex2Dlod(dof_blend_depth_tex, float4(tc.xy, 0, 0)).x;
         float farCoC = ComputeFarCircleOfConfusion(depth, dof_focus_params);

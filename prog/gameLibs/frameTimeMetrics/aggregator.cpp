@@ -75,7 +75,7 @@ void FrameTimeMetricsAggregator::update(const float current_time_msec, const uin
         isBackgroundShadersProcessingInProgress ? " (PROCESSING)" : "");
 
     if (last_frame_count > 1)
-      fpsText += String(-1, " FG: %u", last_frame_count - 1);
+      fpsText += String(-1, " FG: %ux", last_frame_count);
 
     if (dynamicResolution.has_value())
       fpsText +=

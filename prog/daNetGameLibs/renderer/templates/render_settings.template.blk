@@ -16,6 +16,7 @@ render_settings {
   render_settings__bare_minimum:b=false
   render_settings__grassQuality:t="high" // "minimum", "low", "high"
   render_settings__grassRendInstRangeMul:r=1
+  render_settings__dagdpDensityMul:r=1
 
   render_settings__fftWaterQuality:t="high" // low, medium, high, ultra
   render_settings__waterQuality:t="low" // low, medium, high
@@ -58,11 +59,11 @@ render_settings {
   render_settings__enableRTGI:b=no
   render_settings__bvhDagdp:b=no
   render_settings__bvhDynModels:b=yes
-  render_settings__useRTRCheckerboardDepth:b = no;
-  render_settings__useRTRSmartDepth:b = no;
 
   render_settings__gtao_screen_radius:r=0
 
   render_settings__antialiasing_mode:t="tsr"
   render_settings__rayReconstruction:b=no
+
+  render_settings__neuralRendering:b=no
 }

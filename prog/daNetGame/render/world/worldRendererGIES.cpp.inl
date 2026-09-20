@@ -10,6 +10,7 @@
 
 #include <memory/dag_framemem.h>
 #include <gameRes/dag_collisionResource.h>
+#include <gamePhys/collision/collisionLib.h>
 #include <rendInst/visibility.h>
 #include <util/dag_convar.h>
 #include "private_worldRenderer.h"
@@ -26,7 +27,7 @@
 #include <math/dag_cube_matrix.h>
 #include <util/dag_hash.h>
 #include <render/lruCollision.h>
-#include <daGI2/treesAboveDepth.h>
+#include <rendInst/rendInstCollision.h>
 #include "global_vars.h"
 #include <scene/dag_tiledScene.h>
 #include <math/dag_math3d.h>
@@ -119,18 +120,25 @@ void WorldRenderer::processGIInvalidationRequests()
   if (enviProbeState != EnviProbeState::Ready)
     return;
 
-  if (pendingFullGiInvalidationRequest.has_value())
+  // drain under the lock, invalidate outside it: a box pushed after the drain keeps to the
+  // next frame instead of being wiped by the reset
+  BBox3 boxes[MAX_GI_INVALIDATE_BOXES];
+  uint32_t count = 0;
+  bool fullInvalidate = false;
   {
-    doInvalidateGI(pendingFullGiInvalidationRequest->force);
+    OSSpinlockScopedLock lock(pendingGiInvalidateLock);
+    count = pendingGiInvalidateCount;
+    pendingGiInvalidateCount = 0;
+    for (uint32_t i = 0; i < count; ++i)
+      boxes[i] = pendingGiInvalidateBoxes[i];
+    fullInvalidate = pendingFullGiInvalidation;
+    pendingFullGiInvalidation = false;
   }
-  else if (pendingPartialGiInvalidationRequest.has_value())
-  {
-    doInvalidateGI(pendingPartialGiInvalidationRequest->modelBbox, pendingPartialGiInvalidationRequest->tm,
-      pendingPartialGiInvalidationRequest->approx);
-  }
-
-  pendingFullGiInvalidationRequest = eastl::nullopt;
-  pendingPartialGiInvalidationRequest = eastl::nullopt;
+  if (fullInvalidate)
+    doInvalidateGI(); // covers the drained boxes too
+  else if (daGI2)
+    for (uint32_t i = 0; i < count; ++i) // the blocks in the box refill on the normal budget
+      daGI2->invalidateBox(boxes[i]);
 }
 
 ECS_TAG(render)
@@ -162,33 +170,66 @@ void WorldRenderer::processHeroTeleportation()
 
   extern void invalidate_ssr_history(int frames);
   giUpdatePosFrameCounter = 0;
-  invalidateGI(true);
+  invalidateAllGI();
   invalidate_ssr_history(3);
 
   hasPendingHeroTeleportation = false;
 }
 
-void WorldRenderer::doInvalidateGI(const bool force)
+void WorldRenderer::doInvalidateGI()
 {
-  G_UNUSED(force);
-  // todo: support force
   if (daGI2)
-    daGI2->afterReset();
-  if (treesAbove)
-    treesAbove->invalidate();
+    daGI2->invalidateAll(); // not a device reset: the baked media volume bricks stay, resetGI rebakes them
 }
 
-void WorldRenderer::invalidateGI(const bool force) { pendingFullGiInvalidationRequest = GiFullInvalidationRequest{.force = force}; }
-void WorldRenderer::invalidateGI(const BBox3 &model_bbox, const TMatrix &tm, const BBox3 &approx)
+void WorldRenderer::invalidateRiCollision()
 {
-  pendingPartialGiInvalidationRequest = GiPartialInvalidateRequest{.modelBbox = model_bbox, .tm = tm, .approx = approx};
+  if (lruCollision)
+    lruCollision->clearRiInfo();
+}
+
+void WorldRenderer::invalidateAllGI()
+{
+  OSSpinlockScopedLock lock(pendingGiInvalidateLock);
+  pendingFullGiInvalidation = true;
+}
+void WorldRenderer::invalidateGI(const BBox3 &world_box)
+{
+  OSSpinlockScopedLock lock(pendingGiInvalidateLock);
+  if (pendingGiInvalidateCount < MAX_GI_INVALIDATE_BOXES)
+  {
+    pendingGiInvalidateBoxes[pendingGiInvalidateCount++] = world_box;
+    return;
+  }
+  // past the cap, merge into the box that grows the least: a burst of nearby events (a shell
+  // in a grove, a tank through grass) stays local instead of stretching one box across them
+  auto growth = [&](int i) {
+    BBox3 merged = pendingGiInvalidateBoxes[i];
+    merged += world_box;
+    return merged.volume() - pendingGiInvalidateBoxes[i].volume();
+  };
+  int best = 0;
+  float bestGrowth = growth(0);
+  for (int i = 1; i < MAX_GI_INVALIDATE_BOXES; ++i)
+  {
+    const float g = growth(i);
+    if (g < bestGrowth)
+    {
+      bestGrowth = g;
+      best = i;
+    }
+  }
+  pendingGiInvalidateBoxes[best] += world_box;
 }
 
 void WorldRenderer::drawGIDebug(const Frustum &camera_frustum)
 {
   G_UNUSED(camera_frustum);
   if (daGI2)
+  {
     daGI2->debugRenderTrans();
+    mediaVolumes.debugRender(); // the debug pass view vars are set by debugRenderTrans above
+  }
 }
 
 // static const int DEFERRED_FRAMES_TO_INVALIDATE_GI = 9;
@@ -396,7 +437,8 @@ void WorldRenderer::giBeforeRender()
   if (useGiGlobalLights)
   {
     int sdfClipsWithLights = s.sdf.clips - 2; // Could be a parameter.
-    float xzSize = (1 << (sdfClipsWithLights - 1)) * s.sdf.texWidth * s.sdf.voxel0Size;
+    // the int product is made explicit for pvs V636, which this change surfaces by moving the line
+    float xzSize = float((1 << (sdfClipsWithLights - 1)) * s.sdf.texWidth) * s.sdf.voxel0Size;
     float ySize = xzSize * s.sdf.yResScale;
     Point3 center = currentFrameCamera.viewItm.getcol(3);
     Point3 halfSize = Point3(xzSize, ySize, xzSize) * 0.5f;
@@ -448,26 +490,6 @@ void WorldRenderer::giBeforeRender()
   daGI2->beforeRender(w, h, maxW, maxH, currentFrameCamera.viewItm, currentFrameCamera.jitterProjTm,
     currentFrameCamera.noJitterPersp.zn, currentFrameCamera.noJitterPersp.zf, ru);
 
-  if (treesAbove)
-  {
-    auto &worldSdf = daGI2->getWorldSDF();
-    int sdfW, sdfH;
-    worldSdf.getResolution(sdfW, sdfH);
-
-    uint16_t w = s.mediaScene.w, d = s.mediaScene.d, clips = s.mediaScene.clips;
-    d = d ? d : w * sdfH / sdfW;
-    float voxel0 = s.mediaScene.voxel0Size;
-
-    const float sdfV = worldSdf.getVoxelSize(worldSdf.getClipsCount() - 1);
-    if (voxel0 <= 0.f)
-    {
-      voxel0 = max((sdfW * sdfV) / w, (sdfH * sdfV) / d) / (1 << (clips - 1));
-    }
-
-    const float halfDist = sdfW * sdfV * 0.5f * 1.2f; // 120% bigger
-    treesAbove->init(halfDist, voxel0);
-  }
-
   if (gi_quality.pullValueChange() || gi_algorithm_quality.pullValueChange() || giNeededReprojection != giNeedsReprojection())
   {
     requestFgRecreation("gi shvars");
@@ -512,41 +534,6 @@ void WorldRenderer::updateGIPos(const Point3 &pos, const TMatrix &view_itm, floa
   if (giWindows)
     giWindows->updatePos(pos);
 
-  {
-    float minZ, maxZ;
-    getMinMaxZ(minZ, maxZ);
-    const float treeHeightMax = 24;
-    maxZ += treeHeightMax;
-    treesAbove->prepare(pos, minZ, maxZ, [&](const BBox3 &box, bool depth_min) {
-      DA_PROFILE_GPU;
-      TMatrix4 proj = matrix_ortho_off_center_lh(box[0].x, box[1].x, box[1].z, box[0].z, box[depth_min].y, box[!depth_min].y);
-      d3d::settm(TM_PROJ, &proj);
-
-      TMatrix view;
-      view.setcol(0, 1, 0, 0);
-      view.setcol(1, 0, 0, 1);
-      view.setcol(2, 0, 1, 0);
-      view.setcol(3, 0, 0, 0);
-      d3d::settm(TM_VIEW, view);
-
-      TMatrix4 globtm_ = TMatrix4(view) * proj;
-      mat44f globtm;
-      v_mat44_make_from_44cu(globtm, globtm_.m[0]);
-
-      STATE_GUARD_0(ShaderGlobal::set_int(gbuffer_for_treesaboveVarId, VALUE), depth_min ? 0 : 1);
-
-      rendinst::prepareRIGenVisibility(Frustum(globtm), Point3::xVy(box.center(), minZ), rendinst_trees_visibility, false, NULL);
-      uint32_t immediateConsts[] = {0u, 0u, ((uint32_t)float_to_half(-1.f) << 16) | (uint32_t)float_to_half(0.f)};
-      d3d::set_immediate_const(STAGE_PS, immediateConsts, countof(immediateConsts));
-      ShaderGlobal::setBlock(-1, ShaderGlobal::LAYER_SCENE);
-      rendinst::render::before_draw(depth_min ? rendinst::RenderPass::Depth : rendinst::RenderPass::Normal, rendinst_trees_visibility,
-        Frustum{globtm}, nullptr);
-      rendinst::render::renderRIGen(depth_min ? rendinst::RenderPass::Depth : rendinst::RenderPass::Normal, rendinst_trees_visibility,
-        view_itm, rendinst::LayerFlag::NotExtra, rendinst::OptimizeDepthPass::No);
-      d3d::set_immediate_const(STAGE_PS, nullptr, 0);
-      ShaderGlobal::setBlock(-1, ShaderGlobal::LAYER_SCENE);
-    });
-  }
   if (!gi_update_pos.get())
     return daGI2->updateConstants();
   int oldBlock = ShaderGlobal::getBlock(ShaderGlobal::LAYER_FRAME);
@@ -618,6 +605,9 @@ void WorldRenderer::updateGIPos(const Point3 &pos, const TMatrix &view_itm, floa
     getRenderingResolution(rw, rh);
     bvh_bind_resources(rw);
   }
+  mediaVolumes.updateTypes();
+  if (mediaVolumes.bakePending(globalFrameBlockId)) // the bake wave settled
+    daGI2->invalidateInitialMedia();
   daGI2->updatePosition(
     [&](int sdf_clip, const BBox3 &box, float voxelSize, uintptr_t &) {
       G_UNUSED(sdf_clip);
@@ -691,19 +681,16 @@ void WorldRenderer::updateGIPos(const Point3 &pos, const TMatrix &view_itm, floa
       SCOPE_VIEW_PROJ_MATRIX;
       const bool intersectLevel = baseVoxelizeRI(box, Point3(voxelSize, voxelSize, voxelSize));
       return intersectLevel ? UpdateGiQualityStatus::RENDERED : UpdateGiQualityStatus::NOTHING;
-    });
+    },
+    [&](const BBox3 &region, float voxelSize) { mediaVolumes.setRegionInstances(region, voxelSize); });
   bvh_unbind_resources();
+  // gather the closest source instances for the media volume debug trace (gi_media_vols_debug)
+  mediaVolumes.debugPrepare(view_itm.getcol(3));
 
   if (!lightsInsideFrustum)
     lights.setInsideOfFrustumLightsToShader();
 
   ShaderGlobal::setBlock(oldBlock, ShaderGlobal::LAYER_FRAME);
-}
-
-#include <sceneRay/dag_sceneRay.h>
-namespace dacoll
-{
-const StaticSceneRayTracer *get_frt(); // To consider: move to public interface?
 }
 
 void WorldRenderer::initGIWindows(eastl::unique_ptr<scene::TiledScene> &&windows)
@@ -724,46 +711,15 @@ void WorldRenderer::initGI()
     return;
   }
 
-  if (const StaticSceneRayTracer *frt = dacoll::get_frt())
+  staticSceneCollisionResource = dacoll::get_static_collision_resource();
+  if (staticSceneCollisionResource)
   {
-    if (frt->getFacesCount())
-    {
-      // One CollisionResource over the whole static scene: uint32 indices remove the old 65536-vert
-      // chunking, so faces reference frt vertices directly. The standard optimize path still ends up
-      // grid-resident or per-node-BLAS-chunked with owning indices, like any loaded collision asset.
-      const uint32_t totalVerts = frt->getVertsCount();
-      uint32_t faceCnt = frt->getFacesCount();
-      const Point3_vec4 *frtVerts = (const Point3_vec4 *)&frt->verts(0);
-      staticSceneCollisionResource.reset();
-
-      // Cap to the LRU compute voxelizer's per-resource face limit and report the loss rather than
-      // emitting geometry GI will quietly skip (dispatchInstances drops oversized resources whole).
-      constexpr uint32_t maxFaces = LRURendinstCollision::MAX_VOXELIZATION_TRIS;
-      if (faceCnt > maxFaces)
-      {
-        logerr("static scene collision has %u faces, over the %u GI voxelization limit; only the first %u are used for SDF", faceCnt,
-          maxFaces, maxFaces);
-        faceCnt = maxFaces;
-      }
-
-      dag::Vector<uint32_t> indices;
-      indices.reserve((size_t)faceCnt * 3);
-      for (uint32_t f = 0; f < faceCnt; ++f)
-      {
-        const uint32_t vs[3] = {frt->faces(f).v[0], frt->faces(f).v[1], frt->faces(f).v[2]};
-        if (vs[0] >= totalVerts || vs[1] >= totalVerts || vs[2] >= totalVerts)
-          continue; // defensive: skip faces referencing out-of-range verts
-        for (uint32_t vi : vs)
-          indices.push_back(vi);
-      }
-
-      BBox3 box;
-      for (uint32_t v = 0; v < totalVerts; ++v)
-        box += Point3(frtVerts[v].x, frtVerts[v].y, frtVerts[v].z);
-      const BSphere3 sph(box.center(), box.width().length() * 0.5f);
-      staticSceneCollisionResource.reset(CollisionResource::createSingleMesh(dag::ConstSpan<Point3_vec4>(frtVerts, totalVerts),
-        dag::ConstSpan<uint32_t>(indices.data(), indices.size()), box, sph, 0, "static_scene"));
-    }
+    const uint32_t faceCnt = (uint32_t)staticSceneCollisionResource->getTrianglesCount(CollisionNode::TRACEABLE);
+    if (faceCnt > LRURendinstCollision::MAX_VOXELIZATION_TRIS)
+      logerr("static scene collision has %u faces, over the %u GI voxelization limit; SDF gets no static scene", faceCnt,
+        LRURendinstCollision::MAX_VOXELIZATION_TRIS);
+    if (!faceCnt || faceCnt > LRURendinstCollision::MAX_VOXELIZATION_TRIS)
+      staticSceneCollisionResource = nullptr;
   }
 
   daGI2 = create_dagi();
@@ -779,11 +735,6 @@ void WorldRenderer::initGI()
   rendinst_voxelize_visibility = rendinst::createRIGenVisibility(midmem);
   rendinst::setRIGenVisibilityMinLod(rendinst_voxelize_visibility, 0, 2);
 
-  rendinst_trees_visibility = rendinst::createRIGenVisibility(midmem);
-  rendinst::setRIGenVisibilityMinLod(rendinst_trees_visibility, 0, 4);
-
-  treesAbove.reset(new TreesAboveDepth());
-
   createGiNodes();
 
   ShaderGlobal::set_sampler(specular_tex_samplerstateVarId, d3d::request_sampler({}));
@@ -795,8 +746,7 @@ void WorldRenderer::resetGI()
     lruCollision->reset();
   if (daGI2)
     daGI2->afterReset();
-  if (treesAbove)
-    treesAbove->invalidate();
+  mediaVolumes.afterReset(); // the atlas content did not survive the device reset, rebake all types
   if (giWindows)
     giWindows->afterReset();
   giUpdatePosFrameCounter = 0;
@@ -804,8 +754,7 @@ void WorldRenderer::resetGI()
 
 void WorldRenderer::closeGI()
 {
-  staticSceneCollisionResource.reset();
-  treesAbove.reset();
+  staticSceneCollisionResource = nullptr;
   lruCollision.reset();
   rendinst::destroyRIGenVisibility(rendinst_voxelize_visibility);
   rendinst_voxelize_visibility = nullptr;
@@ -816,8 +765,7 @@ void WorldRenderer::closeGI()
   del_it(voxelizeCollision);
   createGiNodes();
 
-  rendinst::destroyRIGenVisibility(rendinst_trees_visibility);
-  rendinst_trees_visibility = nullptr;
+  mediaVolumes.clear();
 
   requestFgRecreation("close GI");
 }
@@ -825,16 +773,6 @@ void WorldRenderer::closeGI()
 const scene::TiledScene *WorldRenderer::getWallsScene() const { return nullptr; }
 
 const scene::TiledScene *WorldRenderer::getWindowsScene() const { return giWindows ? giWindows->windows.get() : nullptr; }
-
-void WorldRenderer::doInvalidateGI(const BBox3 &model_bbox, const TMatrix &tm, const BBox3 &approx)
-{
-  G_UNUSED(approx);
-  // fixme: add
-  // if (daGI2)
-  //   daGI2->invalidate(model_bbox, tm, approx);
-  if (treesAbove)
-    treesAbove->invalidateTrees2d(model_bbox, tm);
-}
 
 void WorldRenderer::createGiNodes()
 {

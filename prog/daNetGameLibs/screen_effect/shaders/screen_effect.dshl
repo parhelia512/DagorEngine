@@ -21,7 +21,7 @@ buffer screen_effects_buffer;
 int screen_effects_count;
 shader screen_effect
 {
-  supports global_const_block;
+  GLOBAL_CONSTS(ps)
 
   cull_mode = none;
   z_write = false;

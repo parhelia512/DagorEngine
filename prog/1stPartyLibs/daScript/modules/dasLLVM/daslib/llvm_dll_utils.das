@@ -281,8 +281,10 @@ class public DLLHandle {
 
 }
 
+// The object is emitted for the host triple, and jam names the target with the host toolchain's
+// object suffix, so the two must agree on .obj/.o.
 def public add_obj_extension(path : string) {
-    return "{path}.o"
+    return get_platform_name() == "windows" ? "{path}.obj" : "{path}.o"
 }
 def public add_dll_extension(path : string) {
     return "{path}.dll"

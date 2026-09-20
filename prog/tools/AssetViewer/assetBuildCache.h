@@ -35,11 +35,29 @@ bool get_dabuild_current_build_uses_jobs();
 void render_dabuild_imgui();
 void bring_dabuild_to_front_explicit();
 
+bool is_queued(uint64_t pack_id, unsigned tc);
 void queue_add_pack(uint64_t pack_id, unsigned tc);
 void queue_remove_pack(uint64_t pack_id, unsigned tc);
 void queue_toggle_pack(uint64_t pack_id, unsigned tc);
+// PC first, then the additional platforms: export_queue() groups packs by tc sequence, not by set
+void queue_get_all_platform_tcs(Tab<unsigned> &out_tcs);
+
+enum class PacksQueueState
+{
+  None,
+  Partial,
+  All
+};
+// label and action must both read this or they drift apart; ids that resolve to no pack are skipped
+PacksQueueState queue_get_packs_state(dag::ConstSpan<uint64_t> pack_ids, unsigned tc);
+// All counts the current platforms only; None means nothing at all is stored, including a code the workspace no longer lists
+PacksQueueState queue_get_packs_state_all_platforms(dag::ConstSpan<uint64_t> pack_ids);
+
+void queue_add_missing_packs(dag::ConstSpan<uint64_t> pack_ids, unsigned tc);
+void queue_add_missing_packs_all_platforms(dag::ConstSpan<uint64_t> pack_ids);
+void queue_remove_packs(dag::ConstSpan<uint64_t> pack_ids, unsigned tc);
+void queue_remove_packs_all_platforms(dag::ConstSpan<uint64_t> pack_ids);
 void queue_add_pack_all_platforms(uint64_t pack_id);
-void queue_toggle_all_platforms(uint64_t pack_id);
 void queue_remove_all();
 void queue_select_all_known_packs();
 void export_queue();

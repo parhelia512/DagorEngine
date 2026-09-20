@@ -55,15 +55,29 @@ extern TextureFactory *default_tex_mgr_factory;
 extern TexTagInfoArray textagInfo;
 extern int mt_enabled;
 extern CritSecStorage crit_sec;
-extern WinCritSec rec_lock; // Intentionally not spinlock, since waiting times might be quite long (>1ms) e.g. within
-                            // unload_tex_to_reserve
-struct TRAL
+// Streaming takes this per texture, so the uncontended path matters; set_add_lod_bias and
+// reset_anisotropy sweep the whole table under it, so waiters must park instead of spinning.
+class DAG_TS_CAPABILITY("mutex") TexRecLock
 {
-  TRAL() { rec_lock.lock("texMgrRex"); }
-  ~TRAL() { rec_lock.unlock(); }
+#if DAG_SPINLOCK_IS_FUTEX_MUTEX
+  OSSpinlock impl;
+#else
+  WinCritSec impl;
+#endif
+
+public:
+  void lock() DAG_TS_ACQUIRE() DAG_TS_NO_THREAD_SAFETY_ANALYSIS { impl.lock(); }
+  void unlock() DAG_TS_RELEASE() DAG_TS_NO_THREAD_SAFETY_ANALYSIS { impl.unlock(); }
+};
+extern TexRecLock rec_lock;
+
+struct DAG_TS_SCOPED_CAPABILITY TRAL
+{
+  TRAL() DAG_TS_ACQUIRE(rec_lock) { rec_lock.lock(); }
+  ~TRAL() DAG_TS_RELEASE() { rec_lock.unlock(); }
 };
 
-#define TEX_REC_LOCK()      texmgr_internal::rec_lock.lock("texMgrRex")
+#define TEX_REC_LOCK()      texmgr_internal::rec_lock.lock()
 #define TEX_REC_UNLOCK()    texmgr_internal::rec_lock.unlock()
 #define TEX_REC_AUTO_LOCK() texmgr_internal::TRAL trAL
 
@@ -232,8 +246,22 @@ public:
     resQS[idx].setQLev(1);
     resQS[idx].setMaxQL(TQL_base, TQL_base);
     texUsedSz[idx].memSize4K = texUsedSz[idx].addMemSizeNeeded4K = 0;
+    texAllocLev[idx] = 0;
     levDesc[idx] = 0x0010;
     texDesc[idx].init();
+    // only a free slot may drop base-tex state: on a live entry (factory teardown) dependents
+    // still release base refs by a valid id. Refs stranded by a stale id may still guard a
+    // decode in flight, so a block pinned that way is orphaned, not freed
+    if (getRefCount(idx) == INVALID_REFCOUNT)
+    {
+      unsigned bt_rc = getBaseTexUsedCount(idx);
+      if (bt_rc)
+        logwarn("[TEXMGR] rec %d: drop stale base tex refs (btRc=%u)", idx, bt_rc);
+      if (BaseData *orphan = RMGR.replaceTexBaseData(idx, nullptr, /*delete_old*/ bt_rc == 0))
+        RMGR.incBdTotal(tql::sizeInKb(orphan->sz)); // still allocated, so still held memory
+      pairedBaseTexId[idx] = BAD_TEXTUREID;         // published by the release store below
+      interlocked_release_store(btUsageRefCount[idx], (uint16_t)0);
+    }
     interlocked_release_store(texImportance[idx], 0);
     texSamplers[idx] = d3d::INVALID_SAMPLER_HANDLE;
     texSamplerInfo[idx] = d3d::SamplerInfo{};
@@ -255,6 +283,7 @@ public:
     resQS[idx].setQLev(0);
     resQS[idx].setMaxQL(TQL_stub, TQL_stub);
     texUsedSz[idx].memSize4K = texUsedSz[idx].addMemSizeNeeded4K = 0;
+    texAllocLev[idx] = 0;
     levDesc[idx] = 0x0000;
     texDesc[idx].term();
     interlocked_release_store(texImportance[idx], 0);
@@ -431,7 +460,7 @@ public:
   static bool scheduleReading(int idx, TextureFactory *f);
   static TexLoadRes readDdsxTex(TEXTUREID tid, const ddsx::Header &hdr, IGenLoad &crd, int quality_id,
     dag::FixedMoveOnlyFunction<sizeof(void *), void(int) const> completion_cb,
-    on_tex_slice_loaded_cb_t on_tex_slice_loaded_cb = nullptr);
+    on_tex_slice_loaded_cb_t on_tex_slice_loaded_cb = nullptr) DAG_TS_EXCLUDES(rec_lock);
   static void finishReading(int idx);
   static void cancelReading(int idx);
   static bool startReading(int idx, unsigned rd_lev)
@@ -443,7 +472,7 @@ public:
   }
 
   //! downgrades texture to specified level; returns true when downgrade done
-  static bool downgradeTexQuality(int idx, BaseTexture &this_tex, int req_lev);
+  static bool downgradeTexQuality(int idx, BaseTexture &this_tex, int req_lev) DAG_TS_EXCLUDES(rec_lock);
   //! calculate GPU memory size for texture for specified target level
   static unsigned calcTexMemSize(int idx, int target_lev, const ddsx::Header &hdr);
 
@@ -507,7 +536,7 @@ public:
 
   // NOTE: replacement CAN be equal to target, which means "simply update min/max mip levels"
   void completeTextureUpdateAsync(unsigned target_idx, BaseTexture *target, BaseTexture *replacement, int minlevel, int maxlevel,
-    dag::FixedMoveOnlyFunction<sizeof(void *), void(int) const> completion_cb)
+    dag::FixedMoveOnlyFunction<sizeof(void *), void(int) const> completion_cb) DAG_TS_EXCLUDES(rec_lock)
   {
     // replaceTexResObject & texmiplevel cannot safely be done concurrently with main thread
     // reading texture contents while rendering, so deferring to main thread is required.
@@ -519,7 +548,7 @@ public:
       TextureReplacementOp{target_idx, target, replacement, minlevel, maxlevel, eastl::move(completion_cb)});
   }
 
-  void performAsyncTextureReplacementCompletions()
+  void performAsyncTextureReplacementCompletions() DAG_TS_EXCLUDES(rec_lock)
   {
     dag::Vector<TextureReplacementOp, framemem_allocator> replacements;
 
@@ -582,22 +611,30 @@ public:
       fetchedTexAddMemSizeNeededKB, getName(idx));
   }
 
-  int incRefCountAndDecReadyForDiscardTex(int idx)
+  int incRefCountAndDecReadyForDiscardTexLocked(int idx) DAG_TS_REQUIRES(rec_lock)
   {
-    TEX_REC_AUTO_LOCK();
     const int rc = incRefCount(idx);
     if (rc == 1)
       decReadyForDiscardTex(idx);
     return rc;
   }
-
-  int decRefCountAndIncReadyForDiscardTex(int idx)
+  int incRefCountAndDecReadyForDiscardTex(int idx) DAG_TS_EXCLUDES(rec_lock)
   {
     TEX_REC_AUTO_LOCK();
+    return incRefCountAndDecReadyForDiscardTexLocked(idx);
+  }
+
+  int decRefCountAndIncReadyForDiscardTexLocked(int idx) DAG_TS_REQUIRES(rec_lock)
+  {
     const int rc = decRefCount(idx) & ~RCBIT_FOR_REMOVE;
     if (rc == 0)
       incReadyForDiscardTex(idx);
     return rc;
+  }
+  int decRefCountAndIncReadyForDiscardTex(int idx) DAG_TS_EXCLUDES(rec_lock)
+  {
+    TEX_REC_AUTO_LOCK();
+    return decRefCountAndIncReadyForDiscardTexLocked(idx);
   }
 
   int getTotalUsedTexCount() const { return interlocked_acquire_load(totalUsedTexCount); }
@@ -647,12 +684,17 @@ public:
   //! \param idx index of the texture
   static unsigned getTexAddMemSizeNeeded4K(int idx) { return interlocked_acquire_load(texUsedSz[idx].addMemSizeNeeded4K); }
 
+  //! \brief Get the level of the mips the texture object with index \p idx holds (0 when there is no object)
+  //! \param idx index of the texture
+  static unsigned getTexAllocLev(int idx) { return interlocked_acquire_load(texAllocLev[idx]); }
+
   //! \brief Notifies the memory usage tracking system of changes in the current memory consumed by a
   //! texture and the memory needed to stream in the full-resolution version of the texture.
   //! \param idx index of the texture
   //! \param new_sz_kb new size of the texture in memory (in kilobytes)
   //! \param full_needed_sz_kb how much memory is needed for the full-res version of the texture (in kilobytes)
-  void changeTexUsedMem(int idx, int new_sz_kb, int full_needed_sz_kb)
+  //! \param alloc_lev level of the mips the texture object holds (0 when there is no object)
+  void changeTexUsedMem(int idx, int new_sz_kb, int full_needed_sz_kb, unsigned alloc_lev)
   {
     G_ASSERTF_AND_DO(new_sz_kb <= full_needed_sz_kb, full_needed_sz_kb = new_sz_kb, "new_sz_kb=%d full_needed_sz_kb=%d", new_sz_kb,
       full_needed_sz_kb);
@@ -675,6 +717,7 @@ public:
 
     interlocked_release_store(texUsedSz[idx].memSize4K, new_sz_kb / 4);
     interlocked_release_store(texUsedSz[idx].addMemSizeNeeded4K, (full_needed_sz_kb - new_sz_kb) / 4);
+    interlocked_release_store(texAllocLev[idx], (uint8_t)alloc_lev);
 
 #if DAGOR_DBGLEVEL > 0
     const int fetchedReadyForDiscardTexSzKB = interlocked_relaxed_load(readyForDiscardTexSzKB);
@@ -705,17 +748,17 @@ public:
   static inline int uint16_to_int(uint16_t v) { return v == 0xffffu ? -1 : v; }
   static void dumpTexState(int idx)
   {
-    debug("%d: %dx%dx%d,L%d, desc=0x%04X max=%d(%d/%d) ld=%d rd=%d req=%d  tm=%X  "
+    debug("%d: %dx%dx%d,L%d, desc=0x%04X max=%d(%d/%d) ld=%d rd=%d alloc=%d req=%d  tm=%X  "
           "TQ=%d:%d BQ=%d:%d HQ=%d:%d UHQ=%d:%d (%s) rc=%d bt.rc=%d bt.id=%d ql=%d(%d) stubIdx=%d gpu=%dK(+%dK) bd=%dK lfu=%u",
       idx, texDesc[idx].dim.w, texDesc[idx].dim.h, texDesc[idx].dim.d, texDesc[idx].dim.l, levDesc[idx], texDesc[idx].dim.maxLev,
-      resQS[idx].getQLev(), resQS[idx].getMaxLev(), resQS[idx].getLdLev(), resQS[idx].getRdLev(), resQS[idx].getMaxReqLev(),
-      getTagMask(idx), texDesc[idx].packRecIdx[TQL_thumb].pack, uint16_to_int(texDesc[idx].packRecIdx[TQL_thumb].rec),
-      texDesc[idx].packRecIdx[TQL_base].pack, uint16_to_int(texDesc[idx].packRecIdx[TQL_base].rec),
-      texDesc[idx].packRecIdx[TQL_high].pack, uint16_to_int(texDesc[idx].packRecIdx[TQL_high].rec),
-      texDesc[idx].packRecIdx[TQL_uhq].pack, uint16_to_int(texDesc[idx].packRecIdx[TQL_uhq].rec), getName(idx), getRefCount(idx),
-      getBaseTexUsedCount(idx), pairedBaseTexId[idx] ? pairedBaseTexId[idx].index() : -1, resQS[idx].getCurQL(), resQS[idx].getMaxQL(),
-      texDesc[idx].dim.stubIdx, getTexMemSize4K(idx) * 4, getTexAddMemSizeNeeded4K(idx) * 4, getTexBaseDataSize(idx) >> 10,
-      getResLFU(idx));
+      resQS[idx].getQLev(), resQS[idx].getMaxLev(), resQS[idx].getLdLev(), resQS[idx].getRdLev(), getTexAllocLev(idx),
+      resQS[idx].getMaxReqLev(), getTagMask(idx), texDesc[idx].packRecIdx[TQL_thumb].pack,
+      uint16_to_int(texDesc[idx].packRecIdx[TQL_thumb].rec), texDesc[idx].packRecIdx[TQL_base].pack,
+      uint16_to_int(texDesc[idx].packRecIdx[TQL_base].rec), texDesc[idx].packRecIdx[TQL_high].pack,
+      uint16_to_int(texDesc[idx].packRecIdx[TQL_high].rec), texDesc[idx].packRecIdx[TQL_uhq].pack,
+      uint16_to_int(texDesc[idx].packRecIdx[TQL_uhq].rec), getName(idx), getRefCount(idx), getBaseTexUsedCount(idx),
+      pairedBaseTexId[idx] ? pairedBaseTexId[idx].index() : -1, resQS[idx].getCurQL(), resQS[idx].getMaxQL(), texDesc[idx].dim.stubIdx,
+      getTexMemSize4K(idx) * 4, getTexAddMemSizeNeeded4K(idx) * 4, getTexBaseDataSize(idx) >> 10, getResLFU(idx));
     G_UNUSED(idx);
   }
   //! dump of utilized memory summary
@@ -728,15 +771,6 @@ public:
       debug("BaseData: %dK in %d blocks (ready to free %dK in %d blocks)", interlocked_relaxed_load(totalBdSzKB),
         interlocked_relaxed_load(totalBdCount), interlocked_relaxed_load(readyForDiscardBdSzKB),
         interlocked_relaxed_load(readyForDiscardBdCount));
-  }
-
-  //! copies resQS::maxReqLev to maxReqLevelPrev (at the end of frame to have latest/previous maxReqLev value)
-  static void copyMaxReqLevToPrev()
-  {
-    auto *dest = maxReqLevelPrev, *dest_e = dest + getAccurateIndexCount();
-    auto *src = resQS;
-    for (; dest < dest_e; dest++, src++)
-      *dest = src->getMaxReqLev();
   }
 
 protected:
@@ -784,7 +818,7 @@ public:
   static TEXTUREID *__restrict pairedBaseTexId;
   static BaseData *__restrict *__restrict texBaseData;
   static TexUsedSz *__restrict texUsedSz;
-  static uint8_t *__restrict maxReqLevelPrev;
+  static uint8_t *__restrict texAllocLev;
   static uint16_t *__restrict texImportance;
   static d3d::SamplerHandle *__restrict texSamplers;
   static d3d::SamplerInfo *__restrict texSamplerInfo;

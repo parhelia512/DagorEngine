@@ -13,11 +13,10 @@
 #include <util/dag_localization.h>
 
 #include <perfMon/dag_cpuFreq.h>
-#include <osApiWrappers/dag_atomic.h>
+#include <drv/3d/dag_commands.h>
 #include <startup/dag_globalSettings.h>
 #include <workCycle/dag_workCycle.h>
 #include <frameTimeMetrics/aggregator.h>
-#include <workCycle/dag_wcHooks.h>
 
 namespace darg
 {
@@ -38,9 +37,8 @@ void BhvLatencyBar::onAttach(Element *elem)
 
 int BhvLatencyBar::update(UpdateStage /*stage*/, darg::Element *elem, float /*dt*/)
 {
-  const auto getFramesPresented = interlocked_acquire_load_ptr(dwc_get_frames_presented);
   frameTimeMetrics->update(::get_time_msec(), ::dagor_frames_presented(), ::dagor_game_act_time, displayMode,
-    getFramesPresented ? getFramesPresented() : 1);
+    d3d::driver_command(Drv3dCommand::GET_PRESENTED_FRAME_COUNT));
   if (textVersion != frameTimeMetrics->getTextVersion())
   {
     textVersion = frameTimeMetrics->getTextVersion();

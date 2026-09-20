@@ -112,7 +112,7 @@ static IDagorAssetExporter *loadSingleExporterPlugin(const DataBlock &appblk, Da
     if (get_plugin)
     {
       texPlugin = get_plugin();
-      if (texPlugin && texPlugin->init(appblk))
+      if (texPlugin && dabuild_plugin_init(*texPlugin, appblk))
       {
         ::symhlp_load(fname);
 

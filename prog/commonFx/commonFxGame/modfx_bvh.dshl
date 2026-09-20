@@ -9,6 +9,7 @@ int dafx_modfx_bvh_meta_id_regno = 100 always_referenced;
 
 int dafx_modfx_bvh_max_count = 0;
 int4 dafx_modfx_bvh_blas_address = 0;
+float dafx_modfx_bvh_min_screen_height = 0;
 
 shader dafx_modfx_bvh
 {
@@ -27,6 +28,7 @@ shader dafx_modfx_bvh
 
     bvh_max_count@i1 = dafx_modfx_bvh_max_count;
     bvh_blas_address@i4 = dafx_modfx_bvh_blas_address;
+    bvh_min_screen_height@f1 = dafx_modfx_bvh_min_screen_height;
   }
 
   DAFX_RENDER_INIT()
@@ -118,20 +120,9 @@ shader dafx_modfx_bvh
       ModfxRenData rdata;
       modfx_load_ren_data(0, data_ofs, decls, rdata);
 
-      uint bvhIndex;
-      bvh_instance_count.InterlockedAdd(0, 1, bvhIndex);
-
-      // Write a HW instance here
-      if (bvhIndex >= uint(bvh_max_count))
-        return 0;
-
       rdata.pos += rdata.pos_offset;
       if (rdata.radius <= 0.f)
         is_dead = true;
-
-      float angle_sin = 0.f;
-      float angle_cos = 1.f;
-      sincos( -rdata.angle, angle_sin, angle_cos );
 
       float4x4 wtm = get_identity_tm();
       float wtm_scale = 1;
@@ -145,6 +136,22 @@ shader dafx_modfx_bvh
       float2 aspect = 1;
       if ( parent_data.mods_offsets[MODFX_RMOD_CUSTOM_ASPECT] )
         aspect = dafx_get_2f( 0, parent_data.mods_offsets[MODFX_RMOD_CUSTOM_ASPECT] );
+
+      // Cull tiny particles before they take a TLAS instance slot.
+      float view_dist_approx = length( gdata.world_view_pos - rdata.pos );
+      if ( aspect.y * rdata.radius * gdata.proj_hk < bvh_min_screen_height * view_dist_approx )
+        return 0;
+
+      uint bvhIndex;
+      bvh_instance_count.InterlockedAdd(0, 1, bvhIndex);
+
+      // Write a HW instance here
+      if (bvhIndex >= uint(bvh_max_count))
+        return 0;
+
+      float angle_sin = 0.f;
+      float angle_cos = 1.f;
+      sincos( -rdata.angle, angle_sin, angle_cos );
 
       float stable_rnd_offset = (ren_info.instance_id + ren_info.data_ofs % 20) * 0.001;
       rdata.pos += gdata.view_dir_z * stable_rnd_offset;

@@ -7,8 +7,6 @@
 
 #include <util/dag_globDef.h>
 
-#include <EASTL/string_view.h>
-
 
 inline bool operator==(D3D12_CPU_DESCRIPTOR_HANDLE l, D3D12_CPU_DESCRIPTOR_HANDLE r) { return l.ptr == r.ptr; }
 inline bool operator!=(D3D12_CPU_DESCRIPTOR_HANDLE l, D3D12_CPU_DESCRIPTOR_HANDLE r) { return !(l == r); }
@@ -235,20 +233,6 @@ inline D3D12_RESOURCE_ALLOCATION_INFO get_resource_allocation_info(ID3D12Device 
     }
   }
   return result;
-}
-
-inline void set_object_name(ID3D12Object *d3d12_object, eastl::string_view name)
-{
-  // lazy way of converting to wchar, this assumes name is not multi byte encoding
-  wchar_t wcharName[drv3d_dx12::MAX_OBJECT_NAME_LENGTH];
-  *eastl::copy(name.data(), min(name.data() + name.size(), name.data() + drv3d_dx12::MAX_OBJECT_NAME_LENGTH - 1), wcharName) = L'\0';
-  d3d12_object->SetName(wcharName);
-}
-
-inline void set_object_name(ID3D12Object *d3d12_object, eastl::wstring_view name)
-{
-  // technically not correct, when name is a sub-string...
-  d3d12_object->SetName(name.data());
 }
 
 const char *dxgi_format_name(DXGI_FORMAT fmt);

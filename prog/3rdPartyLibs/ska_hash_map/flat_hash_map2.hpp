@@ -31,6 +31,12 @@ extern "C" unsigned char _BitScanReverse64(unsigned long *_Index, unsigned __int
 #define SKA_NOINLINE(...) __VA_ARGS__ __attribute__((noinline))
 #endif
 
+#if (defined(__GNUC__) || defined(__clang__)) && !defined(PVS_STUDIO)
+#define SKA_WARN_UNUSED __attribute__((warn_unused))
+#else
+#define SKA_WARN_UNUSED
+#endif
+
 namespace ska
 {
 struct power_of_two_hash_policy;
@@ -1034,7 +1040,7 @@ private:
 };
 
 template<typename K, typename V, typename H = eastl::hash<K>, typename E = eastl::equal_to<K>, typename A = EASTLAllocatorType>
-class flat_hash_map
+class SKA_WARN_UNUSED flat_hash_map
         : public detailv3::sherwood_v3_table
         <
             eastl::pair<K, V>,
@@ -1167,7 +1173,7 @@ private:
 };
 
 template<typename T, typename H = eastl::hash<T>, typename E = eastl::equal_to<T>, typename A = EASTLAllocatorType>
-class flat_hash_set
+class SKA_WARN_UNUSED flat_hash_set
         : public detailv3::sherwood_v3_table
         <
             T,

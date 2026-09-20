@@ -132,7 +132,7 @@ void register_dagor_system(SqModules *module_mgr)
 
     .Func("get_log_directory", get_log_directory)
     .SquirrelFuncDeclString(get_all_arg_values_by_name, "get_all_arg_values_by_name(name: string): array|null",
-      "returns null or list [value1, value2,...] of all command line arguments provided in -name:value1 -name2:value2")
+      SQ_DOC("returns null or list [value1, value2,...] of all command line arguments provided in -name:value1 -name2:value2"))
     ///@param name s
     ///@return a|null : returns null or list [value1, value2,...] of all command line arguments provided in -name:value1 -name2:value2
     /// format

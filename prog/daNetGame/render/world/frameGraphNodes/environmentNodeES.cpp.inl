@@ -6,7 +6,7 @@
 #include <render/deferredRenderer.h>
 #include <render/skies.h>
 #include <render/world/worldRendererQueries.h>
-#include <render/world/cameraParams.h>
+#include <render/cameraParams.h>
 #include <render/rendererFeatures.h>
 #include <render/viewVecs.h>
 #include <render/daFrameGraph/daFG.h>
@@ -185,9 +185,12 @@ eastl::fixed_vector<dafg::NodeHandle, 5> makeEnvironmentNodes()
     result.push_back(
       dafg::register_node("render_skies_no_panorama", DAFG_PP_NODE_SRC, [execSkies, requestCommonSkiesState](dafg::Registry registry) {
         auto [_, mainPovSkiesDataHndl] = requestCommonSkiesState(registry, "prepare_skies_token", "prepare_skies_token_before_env");
-        auto currentCameraHndl = use_current_camera(registry).handle();
+        auto camera = use_camera_in_camera(registry);
+        auto currentCameraHndl = CameraViewShvars{camera}.bindViewVecs().toHandle();
 
-        return [execSkies, currentCameraHndl = currentCameraHndl, mainPovSkiesDataHndl = mainPovSkiesDataHndl]() {
+        return [execSkies, currentCameraHndl = currentCameraHndl, mainPovSkiesDataHndl = mainPovSkiesDataHndl](
+                 const dafg::multiplexing::Index &multiplexing_index) {
+          camera_in_camera::ApplyPostfxState camcam{multiplexing_index, currentCameraHndl.ref(), camera_in_camera::USE_STENCIL};
           execSkies(currentCameraHndl, mainPovSkiesDataHndl, false);
         };
       }));

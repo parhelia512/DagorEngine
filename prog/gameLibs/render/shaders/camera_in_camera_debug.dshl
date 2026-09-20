@@ -1,0 +1,23 @@
+include "shader_global.dshl"
+include "camera_in_camera.dshl"
+
+shader camcam_debug_ellipse
+{
+  cull_mode = none;
+  z_write = false;
+  z_test = false;
+
+  blend_src = sa; blend_dst = isa;
+
+  POSTFX_VS_TEXCOORD(0, tc)
+  INIT_AND_USE_ON_TOP_CAMERA_IN_CAMERA(ps)
+
+  hlsl(ps) {
+    float4 camcam_debug_ellipse_ps(VsOutput input) : SV_Target0
+    {
+      DISCARD_IF_INVALID_VIEW_AREA_PS(input.tc);
+      return float4(0, 1, 1, 0.7);
+    }
+  }
+  compile("target_ps", "camcam_debug_ellipse_ps");
+}

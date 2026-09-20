@@ -55,7 +55,6 @@
   VAR(render_with_normalmap)            \
   VAR(solid_color)                      \
   VAR(envi_probe_specular)              \
-  VAR(envi_probe_specular_samplerstate) \
   VAR(underwater_fade)                  \
   VAR(small_sampled_buffers)            \
   VAR(chromatic_aberration_params)      \
@@ -87,8 +86,6 @@
   VAR(specular_tex_samplerstate)              \
   VAR(gi_quality)                             \
   VAR(current_ambient)                        \
-  VAR(world_to_trees_tex_mul)                 \
-  VAR(world_to_trees_tex_ofs)                 \
   VAR(depth_bounds_support)                   \
   VAR(deform_hmap_enabled)                    \
   VAR(hmap_patches_min_max_z)                 \
@@ -160,7 +157,6 @@
   VAR(antialiasing_type)                      \
   VAR(contrast_adaptive_sharpening_strength)  \
   VAR(voxelize_box0)                          \
-  VAR(gbuffer_for_treesabove)                 \
   VAR(world_to_hmap_tex_ofs_ri_landclass_arr) \
   VAR(world_to_hmap_ofs_ri_landclass_arr)     \
   VAR(voxelize_box1)                          \
@@ -176,7 +172,6 @@
 
 #define GLOBAL_BLOCKS_LIST \
   VAR(globalFrame)         \
-  VAR(globalConst)         \
   VAR(rendinstDepth)       \
   VAR(rendinstDepthScene)  \
   VAR(dynamicScene)        \

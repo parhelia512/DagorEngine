@@ -7,6 +7,7 @@
 #include <stdint.h>
 #include <vecmath/dag_vecMath.h>
 #include <dag/dag_vector.h>
+#include <generic/dag_span.h> // dag::ConstSpan
 #include <util/dag_baseDef.h>
 #include <daBVH/swBLASLeafDefs.hlsli>
 #include <daBVH/dag_swBLASRootRef.h> // soa4::RootRef
@@ -40,12 +41,20 @@ class IGenLoad;
 // deserializeQuadBLAS treats its input as untrusted: every header field and tree offset is bounds
 // checked, the rebuild recursion is depth-capped (BVH_IO_MAX_TREE_DEPTH), and any violation throws
 // IGenLoad::LoadException instead of over-reading, over-allocating, or overflowing the stack.
+//
+// Version 2 streams may carry the leaves' active-edge flags words (dag_swBLAS_soa4.h) as a section
+// after the tree: one uint16 per leaf, in the wire tree order, no count field (the tree's own leaf
+// count implies it). The SoA4 deserializer writes each word into its leaf's flags slot during the
+// emit; the stackless deserializer, whose layout has no slots, consumes the section and drops it.
+// A stream serialized without words keeps the version 1 header, readable by version 1 readers.
 
 namespace build_bvh
 {
 
 inline constexpr int BVH_IO_MAGIC = _MAKE4C('dBLi'); // daBVH BLAS Io
-inline constexpr uint16_t BVH_IO_VERSION = 1;        // bump on any on-disk layout change
+inline constexpr uint16_t BVH_IO_VERSION = 2;        // bump on any on-disk layout change
+// A version >= 2 header is followed by one uint32 of io flags; unknown bits reject the stream.
+inline constexpr uint32_t BVH_IO_FLAG_EDGE_FLAGS = 1; // an edge-flags section follows the tree
 
 // The 24-bit quad base reaches at most QUAD_BASE_BYTE_MAX (~64 MB), so no valid BLAS is bigger.
 // Capping the accepted total at that reach keeps a corrupt header from overflowing the size math or
@@ -75,15 +84,18 @@ static_assert(sizeof(BlasIoHeader) == 40, "BlasIoHeader must stay 40 LE bytes");
 // commits a truncated stream -- when the input is not a plausible BLAS (null/empty, an internal
 // node fanout the one-byte child count cannot encode, a tree nested past BVH_IO_MAX_TREE_DEPTH,
 // or a no-hit leaf as the whole tree, which both deserializers refuse).
-//   blas       : stackless [tree][pad][vert21] buffer. CollisionResource::Grid::blasData stores the
-//                SoA4 conversion and cannot be passed here: the serializer walks stackless skip words.
+//   blas       : stackless [tree][pad][vert21] buffer. A CollisionResource per-node chunk stores
+//                the SoA4 layout and cannot be passed here: the serializer walks stackless skip words.
 //   tree_bytes : real stackless tree size.
 //   verts_ofs  : byte offset of the source vert21 region; any offset >= tree_bytes -- tight or
 //                aligned -- works, deserialize re-aligns on load regardless.
 //   vert_count : number of vert21 vertices.
 //   local_box  : the whole-BLAS local box, needed to recover the placement frame.
+//   leaf_edge_flags : optional active-edge words, one uint16 per leaf in the wire tree order (the
+//                span's size must equal the tree's leaf count, or the write refuses); when
+//                non-empty, the stream gets a version 2 header and the section after the tree.
 bool serializeQuadBLAS(IGenSave &cwr, const uint8_t *blas, int tree_bytes, int verts_ofs, int vert_count, bbox3f local_box,
-  int leaf_size = BVH_BLAS_LEAF_SIZE, int vert_stride = 8);
+  int leaf_size = BVH_BLAS_LEAF_SIZE, int vert_stride = 8, dag::ConstSpan<uint16_t> leaf_edge_flags = {});
 
 // Everything a caller needs to mount the buffer deserializeQuadBLAS filled as a runtime BLAS.
 struct BlasDeserializeResult
@@ -109,7 +121,8 @@ struct Soa4DeserializeResult
   int vertsOfs = 0;        // byte offset of the vert21 region: align8(treeBytes)
   int vertCount = 0;       // vert21 vertices in that region
   bbox3f box = {};         // whole-BLAS local box (from the header; carried separately, not in the buffer)
-  int serializedBytes = 0; // on-wire bytes this BLAS occupied: header + verts + stackless tree
+  int serializedBytes = 0; // on-wire bytes this BLAS occupied: header (+ v2 io flags), verts, tree (+ v2 flags section)
+  bool edgeFlags = false;  // the wire carried the edge flags words; they sit in the tree's slots
 };
 
 // Read a BLAS from `crd` straight into one freshly-allocated SoA4 CPU buffer, skipping the transient
@@ -123,6 +136,25 @@ struct Soa4DeserializeResult
 // parse depth deserializeQuadBLAS accepts) is thrown out here at the load trust boundary. 1-child chains
 // are promoted before that depth is measured, so a chain that collapses within the bound loads; one that
 // stays past it after promotion returns an invalid root (no throw), like the other non-representable trees.
+// The flags slots are always laid out (Soa4FlagSlots::Always; a flag-less stream leaves them zero).
 Soa4DeserializeResult deserializeQuadBLASToSoA4(IGenLoad &crd, dag::Vector<uint8_t> &out);
+
+// Whether a stream without an edge-flags section still gets zeroed flags slots. FromWire matches
+// soa4::buildFromStackless with_flags = false, so a tree built without the slots round-trips byte for byte.
+enum class Soa4FlagSlots : uint8_t
+{
+  Always,
+  FromWire
+};
+
+// The in-place twin of the vector overload: the same stream and bytes into a caller-placed span. The
+// verts are read at the span's tail, the tree is emitted at its head and the verts move down behind it,
+// so the result is dst[0, vertsOfs + vertCount * 8). A span too small for the verts throws before any
+// read; a tree that does not fit throws after the parse, with the stream consumed.
+Soa4DeserializeResult deserializeQuadBLASToSoA4(IGenLoad &crd, dag::Span<uint8_t> dst, Soa4FlagSlots slots);
+
+// A tree's edge-flags words in iterateLeafRefs order: the order serializeQuadBLAS writes them and the
+// SoA4 deserializer lands them.
+void collectLeafEdgeFlags(const uint8_t *tree, soa4::RootRef root, dag::Vector<uint16_t> &out);
 
 } // namespace build_bvh

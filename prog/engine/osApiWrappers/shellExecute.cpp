@@ -71,7 +71,7 @@ public:
       *dirIt = '\\';
   }
 
-  const char *getJobName(bool &) const override { return "ShellExecuteJob"; }
+  const char *getJobName(bool &) const override { return DAPROFILER_STRING("ShellExecuteJob"); }
 
   virtual void doJob();
 

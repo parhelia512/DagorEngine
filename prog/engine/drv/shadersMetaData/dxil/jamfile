@@ -1,0 +1,13 @@
+Root    ?= ../../../../.. ;
+Location = prog/engine/drv/shadersMetaData/dxil ;
+
+include $(Root)/prog/_jBuild/defaults.jam ;
+
+TargetType  = lib ;
+Target      = engine/drv/shadersMetaData/dxil.lib ;
+
+Sources =
+  unpack.cpp
+;
+
+include $(Root)/prog/_jBuild/build.jam ;

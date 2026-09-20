@@ -8,7 +8,7 @@ include $(Root)/$(Location)/jamfile-common ;
 
 Target = tools/dsc2-hlsl11.exe ;
 
-Sources += hlsl11transcode/asmShaders11.cpp ;
+Sources += hlsl11transcode/asmShaders11.cpp ver_obj_pcdx.cpp ;
 
 AddLibs += D3dcompiler.lib
 ;

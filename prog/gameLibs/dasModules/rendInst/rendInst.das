@@ -17,7 +17,7 @@ def rendinst_iterateRiGenExtraResId(callback : block<(id : int) : bool>) : void
 
 
 [generic]
-def rendinst_iterateRiGenExtraResId(from : uint, callback : block<(id : int) : void>) : void
+def rendinst_iterateRiGenExtraResId(from : int, callback : block<(id : int) : void>) : void
   let poolsCount = rendinst_getRiGenExtraResCount()
   for id in range(from, poolsCount)
     callback(id)

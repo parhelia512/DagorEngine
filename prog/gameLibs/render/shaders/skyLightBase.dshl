@@ -36,11 +36,11 @@ define_macro_if_not_defined INIT_SIMPLE_AMBIENT(code)
 endmacro
 
 define_macro_if_not_defined INIT_ENVI_SPECULAR_BASE(code)
-  (code) { envi_probe_specular@smpCube = envi_probe_specular; }
+  (code) { envi_probe_specular@texCube = envi_probe_specular; envi_probe_specular_samplerstate@sampler = global_linear_wrap_sampler; }
   INIT_SKY_POLARIZATION_FILTER_TERM(code)
 endmacro
 define_macro_if_not_defined INIT_LOCAL_SPECULAR_BASE(code)
-  (code) { envi_probe_specular@smpCube = local_light_probe_tex; }
+  (code) { envi_probe_specular@texCube = local_light_probe_tex; envi_probe_specular_samplerstate@sampler = global_linear_wrap_sampler; }
 endmacro
 define_macro_if_not_defined INIT_SKY_UP_DIFFUSE_BASE(code)
   (ps) { enviUp@f3 = (enviSPH0.y+enviSPH0.w, enviSPH1.y+enviSPH1.w, enviSPH2.y+enviSPH2.w, 0); }

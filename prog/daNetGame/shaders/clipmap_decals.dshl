@@ -63,7 +63,7 @@ shader clipmap_decal_base
         uint lowBits = rawMask.x;
         uint highBits = rawMask.y;
         uint4 shift = leftTopRigthBottom.xzxz * displacementMaskSize + leftTopRigthBottom.yyww;
-        float4 displMask4 = ((shift > 0x1f ? highBits : lowBits) >> (shift & 0x1f)) & 1;
+        float4 displMask4 = (select(shift > 0x1f, highBits, lowBits) >> (shift & 0x1f)) & 1;
         float2 displMask2 = lerp(displMask4.xy, displMask4.zw, displCoordFrac.y);
         float displacementMaskMul = lerp(displMask2.x, displMask2.y, displCoordFrac.x);
         //We apply this mask not only for displacement but for all channels, otherwise bomb craters look too flat

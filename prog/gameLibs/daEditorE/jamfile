@@ -25,6 +25,7 @@ Sources =
 UseProgLibs =
   tools/libTools/util
   gameLibs/quirrel/sqEventBus
+  gameLibs/quirrel/frp
   gameLibs/quirrel/quirrel_json
 ;
 

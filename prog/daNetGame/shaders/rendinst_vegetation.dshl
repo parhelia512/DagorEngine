@@ -39,10 +39,6 @@ define_macro_if_not_defined USE_BURNT_GRASS()
   }
 endmacro
 
-// trees above only requires albedo and ao for gbuffer
-int gbuffer_for_treesabove = 0;
-interval gbuffer_for_treesabove : off < 1, on;
-
 int has_discard_without_prepass = 0;
 interval has_discard_without_prepass: discardOff <1, discardOn;
 
@@ -840,14 +836,7 @@ shader rendinst_tree_colored, rendinst_tree_colored_alpha_split, rendinst_grass_
         USE_RANDOM_COLOR()
       }
       USE_PIXEL_TANGENT_SPACE()
-      if (gbuffer_for_treesabove == off)
-      {
-        WRITE_GBUFFER()
-      }
-      else
-      {
-        WRITE_GBUFFER_ALBEDO_AO()
-      }
+      WRITE_GBUFFER()
       if (is_pivoted == yes)
       {
         USE_PIVOT_PAINTER()

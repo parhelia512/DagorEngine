@@ -7,22 +7,33 @@ import time
 import argparse
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-# committed results rendered into the documentation live next to the perf docs
-RESULTS_DIR = os.path.normpath(os.path.join(HERE, "..", "doc", "source", "performance"))
+# The doc site reads this side-car and renders the bars; see the {{benchmarks}}
+# directive in ../doc/gen/render.py.
+RESULTS = os.path.normpath(os.path.join(HERE, "..", "doc", "content", "_bench.json"))
 
-lua = ["Lua-5.4.6", "lua", ["lua.exe"]]
+PINNED_CPU = 2
+RUNS_PER_CELL = 3
+SUSPECT_SPREAD_RATIO = 0.05
+SUSPECT_SPREAD_SECONDS = 0.005
+
+lua = ["Lua-5.5.1", "lua", ["lua.exe"]]
 luajit_joff = ["LuaJIT2.1-joff", "lua", ["luajit.exe", "-joff"]]
-quickjs = ["QuickJS", "js", ["qjs.exe"]]
-# the Quirrel row runs the release csq built from this repo (jam -sConfig=rel
-# in the consoleSq tool) - the shipped runtime configuration (mimalloc).
-# A plain cmake sq.exe sits on the CRT heap and is up to 2x slower on
-# table-sweep workloads, misrepresenting shipped performance.
-CSQ_REL = os.path.normpath(os.path.join(HERE, "..", "..", "..", "..", "..",
-                                        "tools", "dagor_cdk", "windows-x86_64", "csq.exe"))
-quirrel = ["Quirrel-4.35.1", "quirrel", [CSQ_REL]]
-squirrel = ["Squirrel-3.1", "quirrel", ["sq3-64.exe"]]
+quickjs = ["QuickJS-ng-0.16.2", "js", ["qjs.exe"]]
+# the Quirrel row runs the release sq built from this repo (jam -sConfig=rel in
+# prog/tools/sq) - the shipped runtime
+# configuration (clang, mimalloc). A dev build carries the asserts and dlmalloc
+# and is up to 2x slower on table-sweep workloads, misrepresenting shipped
+# performance.
+SQ_REL = os.path.normpath(os.path.join(HERE, "..", "..", "..", "..", "..",
+                                       "tools", "util", "sq-64.exe"))
+quirrel = ["Quirrel-4.38.0", "quirrel", [SQ_REL]]
+squirrel = ["Squirrel-3.2", "quirrel", ["sq3-64.exe"]]
 daslang_int =  ["Daslang (interperter)", None, None]
-luau = ["Luau", "luau", ["luau.exe"]]
+luau = ["Luau-0.735", "luau", ["luau.exe"]]
+
+# Every interpreter the suite measures. ../doc/gen/check.py reads this to catch a
+# row whose label was bumped here but left stale in the committed side-car.
+ALL_LANGS = [lua, luajit_joff, quickjs, quirrel, squirrel, luau]
 
 featured_lang = quirrel[0]
 baseline_lang = None
@@ -133,6 +144,18 @@ benchmarks = [
 ]
 
 
+def pin_self_and_children(cpu):
+  if sys.platform == "win32":
+    from ctypes import WinDLL, WinError, c_size_t, get_last_error, wintypes
+    k32 = WinDLL("kernel32", use_last_error=True)
+    k32.GetCurrentProcess.restype = wintypes.HANDLE
+    k32.SetProcessAffinityMask.argtypes = [wintypes.HANDLE, c_size_t]
+    if not k32.SetProcessAffinityMask(k32.GetCurrentProcess(), 1 << cpu):
+      raise WinError(get_last_error())
+  else:
+    os.sched_setaffinity(0, {cpu})
+
+
 class pushd:
     def __init__(self, path):
         self.olddir = os.getcwd()
@@ -150,12 +173,58 @@ def isnumeric(f):
     return False
   return True
 
-def run_tests(benchmarks, results_file_name=None, perform_tests=None, perform_tests_by_name=None, update=False):
-  src = None
+def suspect_spread(times):
+  fastest, slowest = min(times), max(times)
+  ratio = slowest / fastest - 1
+  if slowest - fastest < SUSPECT_SPREAD_SECONDS or ratio < SUSPECT_SPREAD_RATIO:
+    return 0
+  return ratio
+
+
+def header_mismatch(kept, runs):
+  now = machine_info()
+  claimed = (("runs", kept.get("runs"), runs),
+             ("cpu", kept.get("info", {}).get("cpu"), now["cpu"]),
+             ("platform", kept.get("info", {}).get("platform"), now["platform"]))
+  return [name for name, before, after in claimed if before != after]
+
+
+def measure_once(cmds, folder):
+  try:
+    with pushd(folder):
+      proc = subprocess.run(cmds, capture_output=True,text=True, check=True)
+      out = proc.stdout
+  except subprocess.CalledProcessError as e:
+    print("Error", e, f"\nin {folder} performing {cmds}")
+    return None
+  fullout = out
+  out = out.splitlines()
+  if len(out)==0:
+    print(f"Error in {cmds}, no correct output, got {fullout}, expected <test name>, <testres in float seconds>, <number of tests>")
+    return None
+  out = out[0].split(",")
+  out = [str(o).strip() for o in out]
+  possible_vals = [o for o in out if isnumeric(o)]
+  if len(possible_vals) > 0:
+    possible_val = possible_vals[0]
+  else:
+    possible_val = out[0]
+  return float(possible_val) if isnumeric(possible_val) else possible_val
+
+
+def run_tests(benchmarks, results_file_name=None, perform_tests=None, perform_tests_by_name=None, update=False,
+              runs=RUNS_PER_CELL):
+  res = {}
   if update:
+    # -u keeps the rows this run does not measure. A row whose label changed since
+    # is kept too, so refresh a renamed interpreter with a full run instead.
     with open(results_file_name, "rt", encoding="utf-8") as f:
-      src = json.load(f)
-  res = {} if src is None else src
+      kept = json.load(f)
+    res = kept.get("results", {})
+    stale = header_mismatch(kept, runs)
+    if stale:
+      print("WARNING: the kept rows were measured with a different", ", ".join(stale),
+            "and the header written now speaks for them too, so refresh them as well")
   for test_name, benchs in benchmarks:
     if perform_tests_by_name is not None and test_name not in perform_tests_by_name:
       continue
@@ -173,92 +242,54 @@ def run_tests(benchmarks, results_file_name=None, perform_tests=None, perform_te
       if os.path.exists(exe):
         cmds = [exe] + cmds[1:]
       print(cmds, folder)
-      try:
-        with pushd(folder):
-          proc = subprocess.run(cmds, capture_output=True,text=True, check=True)
-          out = proc.stdout
-      except subprocess.CalledProcessError as e:
-        print("Error", e, f"\nin {folder} performing {cmds}")
+      times = [measure_once(cmds, folder) for _ in range(runs)]
+      if None in times:
         continue
-      fullout = out
-      out = out.splitlines()
-      if len(out)==0:
-        print(f"Error in {cmds}, no correct output, got {fullout}, expected <test name>, <testres in float seconds>, <number of tests>")
-        continue
-      out = out[0].split(",")
-      out = [str(o).strip() for o in out]
-      possible_vals = [o for o in out if isnumeric(o)]
-      if len(possible_vals) > 0:
-        possible_val = possible_vals[0]
-      elif len(out) >1:
-        possible_val = out[0]
-      else:
-        possible_val = out[0]
-      val = float(possible_val) if isnumeric(possible_val) else possible_val
+      timed = all(isinstance(t, float) for t in times) and min(times) > 0
+      val = min(times) if timed else times[0]
+      if runs > 1:
+        print("  ", times, "->", val)
+        spread = suspect_spread(times) if timed else 0
+        if spread:
+          print(f"     suspect: the {runs} runs spread {spread * 100:.0f}%, re-measure this row")
       rs[lang_name] = val
-  with open(results_file_name, "w") as f:
-    json.dump(res, f, indent=2)
+  write_results(results_file_name, res, runs)
   return res
 
-def read_results(results_file_name=None):
-  data = None
-  if not os.path.exists(results_file_name) or results_file_name is None:
-    print(results_file_name, "doesnt exists!")
-    return data
-  with open(results_file_name, "r") as f:
-    data = json.load(f)
-  return data
+def write_results(results_file_name, res, runs=RUNS_PER_CELL):
+  """The side-car the doc site renders: the numbers, the row to pick out, and what
+  they were measured on."""
+  doc = {"info": machine_info(), "featured": featured_lang, "runs": runs, "results": res}
+  with open(results_file_name, "w", encoding="utf-8", newline="\n") as f:
+    json.dump(doc, f, indent=2)
+    f.write("\n")
 
-def convert_results_to_rst(data, fname, test_info):
-  out = []
-  out.append("\n.. raw:: html\n")
-  for testname, results in data.items():
-    out.append(f"  <br><br>\n  <h3>{testname}</h3>")
-    out.append(f'  <table class="chart" style="width: 600px;">')
-    results = list(results.items())
-    results.sort(key=lambda x: 1/x[1], reverse=True)
-    if len(results)==0:
-      continue
-    maxvalue = results[-1][1]
-    for lang, res in results:
-      relative = int(res/maxvalue*100)
-      res = round(res, 3)
-      chart = 'chart-bar featured' if lang == featured_lang else 'chart-bar'
-      s = f'    <tr><th>{lang}</th><td><div class="{chart}"  style="width: {relative}%;">{res}s&nbsp;</div></td></tr>'
-      out.append(s)
-    out.append("\n  </table>\n\n")
-  out.append("| ")
-  for line in test_info:
-    out.append(f"| *{line}*")
-  with open(fname, "wt") as f:
-    f.writelines(line + '\n' for line in out)
+def machine_info():
+  """What the numbers were measured on. run_vm_bench.py imports this too, so the
+  two side-cars describe their machine the same way."""
+  return {
+    "platform": f"{platform.platform()} ({platform.release()})",
+    "arch": platform.machine(),
+    "cpu": platform.processor(),
+    "when": time.strftime("%Y-%m-%d"),
+  }
 
-def get_current_test_info():
-  return [
-    "Platform: " + platform.platform() +"(" +platform.release() +")",
-    "Architecture: " + platform.machine(),
-    "Processor: " + platform.processor(),
-    time.ctime()
-  ]
 if __name__ == "__main__":
-  results_file_name = os.path.join(RESULTS_DIR, "results.json")
-  result_rst = os.path.join(RESULTS_DIR, "results.rst")
-  def_perform_tests_for_langs = [lua, luajit_joff, quickjs, quirrel, squirrel, luau]
+  def_perform_tests_for_langs = ALL_LANGS
   def_langs = [l[0] for l in def_perform_tests_for_langs]
   def_tests = [b[0] for b in benchmarks]
   parser = argparse.ArgumentParser(description='Script to do benchmarks.')
   parser.add_argument('-l','--lang', type=str, nargs='+', default = def_langs, help='langs to perform tests. default are:' + ",".join(def_langs))
-  parser.add_argument('--update', '-u', default=False, help='Update results', action='store_true')
-  parser.add_argument('--only_rst', '-o', default=False, help='Only Build RST', action='store_true')
+  parser.add_argument('--update', '-u', default=False, help='keep the rows this run does not measure', action='store_true')
   parser.add_argument('-t','--test', type=str, nargs='+', default = def_tests, help='test to do. default are all, Possible options:' + ",".join(def_tests))
-  parser.add_argument('-r','--result', type=str, default = results_file_name, help='json file for results')
+  parser.add_argument('-r','--result', type=str, default = RESULTS, help='json file for results; a path of your own leaves the committed side-car alone')
+  parser.add_argument('--cpu', type=int, default = PINNED_CPU, help=f'logical CPU every interpreter is pinned to, default {PINNED_CPU}')
+  parser.add_argument('--no-pin', dest='pin', default=True, action='store_false', help='do not pin, which lets a row drift by tens of percent')
+  parser.add_argument('--runs', type=int, default = RUNS_PER_CELL, help=f'process runs per cell, the fastest is published, default {RUNS_PER_CELL}')
   args = parser.parse_args()
-  langs = args.lang
-  update = args.update
-  tests = args.test
-  test_info = get_current_test_info()
-  perform_tests_for_langs = [l for l in def_perform_tests_for_langs if l[0] in langs]
-  if not args.only_rst:
-    run_tests(benchmarks, results_file_name, perform_tests_for_langs, tests, update=update)
-  results = read_results(results_file_name)
-  convert_results_to_rst(results, result_rst, test_info)
+  if args.pin:
+    pin_self_and_children(args.cpu)
+    print("pinned to cpu", args.cpu)
+  perform_tests_for_langs = [l for l in def_perform_tests_for_langs if l[0] in args.lang]
+  run_tests(benchmarks, args.result, perform_tests_for_langs, args.test, update=args.update, runs=args.runs)
+  print("results ->", args.result)

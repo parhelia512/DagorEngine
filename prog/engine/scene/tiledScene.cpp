@@ -1364,6 +1364,9 @@ bool scene::TiledScene::buildKdTree(TileData &tdata)
     const auto &node = getNode(*it);
     bbox3f box = calcNodeBox(node);
     vec3f center = v_bbox3_center(box);
+    if (!v_test_xyz_finite(center))
+      LOGERR_ONCE("kdtree: node %d of pool %d has a non-finite bbox center, pos=%f %f %f", getNodeIndexInternal(*it),
+        get_node_pool(node), V4D(node.col3));
     totalFlags |= get_node_flags(node);
     box.bmax = v_perm_xyzd(box.bmax, node.col0);
     v_bbox3_add_box(totalBox, box);

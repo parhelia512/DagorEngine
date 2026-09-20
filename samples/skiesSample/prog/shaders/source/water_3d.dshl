@@ -272,7 +272,7 @@ shader water_nv2/*, water3d_compatibility, water_3d_decal*/
         bool useHeightmap;
         float3 pos_world = float3(getWorldPosXZ(posXZ, distFade, useHeightmap USED_INSTANCE_ID), water_level_max_wave_height.x).xzy;
         pos_world_undisplaced = pos_world;
-        pos_world += getWaterDisplacement(pos_world, nvsf_tex_coord_cascade01, nvsf_tex_coord_cascade23, nvsf_tex_coord_cascade45) + float3(0, 0, get_wake_height(pos_world.xzy)) * distFade;
+        pos_world += (getWaterDisplacement(pos_world, nvsf_tex_coord_cascade01, nvsf_tex_coord_cascade23, nvsf_tex_coord_cascade45) + float3(0, get_wake_height(pos_world), 0)) * distFade;
 
       ##endif
 

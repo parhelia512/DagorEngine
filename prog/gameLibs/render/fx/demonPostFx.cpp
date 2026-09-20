@@ -402,7 +402,7 @@ void DemonPostFx::calcGlowGraphics()
     d3d::resource_barrier({prevFrameLowResTex->getTex2D(), RB_RO_SRV | RB_STAGE_PIXEL, 0, 0});
     // glow
     d3d::set_render_target({}, DepthAccess::RW, {{tmpTex->getTex2D(), 0, 0}});
-    d3d::clearview(CLEAR_DISCARD_TARGET, 0, 0.f, 0);
+    d3d::clearview(DISCARD_TARGET, 0, 0.f, 0);
     glowBlurXFx.getMat()->set_color4_param(weight0VarId, current.hdrGlowMul * glowWeights0X);
     glowBlurXFx.getMat()->set_color4_param(weight1VarId, current.hdrGlowMul * glowWeights1X);
     glowBlurXFx.getMat()->set_color4_param(darkThreshold0VarId, -(current.hdrGlowMul * current.hdrDarkThreshold) * glowWeights0X);
@@ -423,7 +423,7 @@ void DemonPostFx::calcGlowGraphics()
   {
     TIME_D3D_PROFILE(glowBlurYFx);
     d3d::set_render_target({}, DepthAccess::RW, {{glowTex->getTex2D(), 0, 0}});
-    d3d::clearview(CLEAR_DISCARD_TARGET, 0, 0.f, 0);
+    d3d::clearview(DISCARD_TARGET, 0, 0.f, 0);
     glowBlurYFx.getMat()->set_texture_param(texVarId, tmpTex->getTexId());
     glowBlurYFx.render();
     glowBlurYFx.getMat()->set_texture_param(texVarId, BAD_TEXTUREID);
@@ -433,7 +433,7 @@ void DemonPostFx::calcGlowGraphics()
   {
     TIME_D3D_PROFILE(glowBlur2XFx);
     d3d::set_render_target({}, DepthAccess::RW, {{tmpTex->getTex2D(), 0, 0}});
-    d3d::clearview(CLEAR_DISCARD_TARGET, 0, 0.f, 0);
+    d3d::clearview(DISCARD_TARGET, 0, 0.f, 0);
     glowBlur2XFx.getMat()->set_texture_param(texVarId, glowTex->getTexId());
     glowBlur2XFx.render();
     glowBlur2XFx.getMat()->set_texture_param(texVarId, BAD_TEXTUREID);
@@ -443,7 +443,7 @@ void DemonPostFx::calcGlowGraphics()
   {
     TIME_D3D_PROFILE(glowBlur2YFx);
     d3d::set_render_target({}, DepthAccess::RW, {{glowTex->getTex2D(), 0, 0}});
-    d3d::clearview(CLEAR_DISCARD_TARGET, 0, 0.f, 0);
+    d3d::clearview(DISCARD_TARGET, 0, 0.f, 0);
     glowBlur2YFx.getMat()->set_texture_param(texVarId, tmpTex->getTexId());
     glowBlur2YFx.render();
     glowBlur2YFx.getMat()->set_texture_param(texVarId, BAD_TEXTUREID);
@@ -647,7 +647,7 @@ void DemonPostFx::downsample(Texture *to, TEXTUREID src, int srcW, int srcH, con
 
   // use filtered downsampling
   d3d::set_render_target({}, DepthAccess::RW, {{to, 0, 0}});
-  d3d::clearview(CLEAR_DISCARD_TARGET, 0, 0.f, 0);
+  d3d::clearview(DISCARD_TARGET, 0, 0.f, 0);
   Color4 target_coefs = quadCoeffs0001;
   static int texelOffsetVarId = ::get_shader_variable_id("texelOffset");
   static int uvTransformVarId = ::get_shader_variable_id("uvTransform");
@@ -1043,7 +1043,7 @@ void DemonPostFx::apply(bool vr_mode, Texture *target_tex, Texture *output_tex, 
       output_viewport->bottom - output_viewport->top);
   }
 
-  d3d::clearview(CLEAR_DISCARD_TARGET, 0, 0.f, 0);
+  d3d::clearview(DISCARD_TARGET, 0, 0.f, 0);
 
 
   ShaderGlobal::set_texture_unsafe(glob_demon_postfix_combine_texVarId, target_tex);

@@ -170,8 +170,7 @@ void TreeControlStandalone::drawNode(TreeNode *node, bool &double_clicked_on_ite
       drawList->AddImage(image_helper.getImTextureIdFromIconId(node->icon), iconPos, iconRectRightBottom);
     }
 
-    const ImRect itemRect(ImGui::GetItemRectMin(), ImGui::GetItemRectMax());
-    TreeHierarchyLineDrawer<TreeNode>::draw(*node, *drawList, itemRect, iconOrTextStartX, isOpen,
+    TreeHierarchyLineDrawer<TreeNode>::draw(*node, *drawList, endData.rowBB, iconOrTextStartX, isOpen,
       getOverriddenColorU32(ColorOverride::TREE_HIERARCHY_LINE), getOverriddenColorU32(ColorOverride::TREE_OPEN_CLOSE_ICON_INNER));
 
     const float currentMaxX = endData.textPos.x + endData.labelSize.x;
@@ -246,35 +245,19 @@ void TreeControlStandalone::handleDragAndDrop(TreeNode *node, ImguiHelper::TreeN
     if (dropHandler->canDropBetween())
     {
       const ImGuiID nodeId = ImGui::GetCurrentWindow()->GetID(node);
+      const ImRect &itemRect = endData.itemBB;
+      const ImRect &rowRect = endData.rowBB;
 
-      ImRect extendedRect = g.LastItemData.DisplayRect;
-      const float verticalSpacing = ImGui::GetStyle().ItemSpacing.y / 2.f;
-      extendedRect.Expand(ImVec2(0.f, verticalSpacing));
-
-      if (ImGui::BeginDragDropTargetCustom(extendedRect, nodeId))
+      if (ImGui::BeginDragDropTargetCustom(itemRect, nodeId))
       {
         auto mousePos = ImGui::GetMousePos();
-        float betweenDropArea = g.LastItemData.DisplayRect.GetHeight() * 0.15f;
+        float betweenDropArea = rowRect.GetHeight() * 0.15f;
         const TLeafHandle leaf = nodeAsLeafHandle(node);
 
-        const auto drawBetweenDropLine = [&g, verticalSpacing](bool top) {
+        const auto drawBetweenDropLine = [&itemRect](bool top) {
           ImDrawList *drawList = ImGui::GetWindowDrawList();
-          ImVec2 lineStart;
-          ImVec2 lineEnd;
-          if (top)
-          {
-            lineStart = g.LastItemData.DisplayRect.GetTL();
-            lineStart.y -= verticalSpacing;
-            lineEnd = g.LastItemData.DisplayRect.GetTR();
-            lineEnd.y -= verticalSpacing;
-          }
-          else
-          {
-            lineStart = g.LastItemData.DisplayRect.GetBL();
-            lineStart.y += verticalSpacing;
-            lineEnd = g.LastItemData.DisplayRect.GetBR();
-            lineEnd.y += verticalSpacing;
-          }
+          const ImVec2 lineStart = top ? itemRect.GetTL() : itemRect.GetBL();
+          const ImVec2 lineEnd = top ? itemRect.GetTR() : itemRect.GetBR();
 
           const ImVec2 oldCursorPos = ImGui::GetCursorScreenPos();
           ImGui::SetCursorScreenPos(lineStart);
@@ -282,7 +265,7 @@ void TreeControlStandalone::handleDragAndDrop(TreeNode *node, ImguiHelper::TreeN
           ImGui::SetCursorScreenPos(oldCursorPos);
         };
 
-        if (mousePos.y <= extendedRect.Min.y + betweenDropArea + verticalSpacing)
+        if (mousePos.y <= rowRect.Min.y + betweenDropArea)
         {
           const TLeafHandle parentLeaf = getParentLeaf(leaf);
           auto result = dropHandler->onDropTargetBetween(parentLeaf, getChildIndex(leaf));
@@ -294,7 +277,7 @@ void TreeControlStandalone::handleDragAndDrop(TreeNode *node, ImguiHelper::TreeN
             drawBetweenDropLine(true);
           }
         }
-        else if (mousePos.y >= extendedRect.Max.y - betweenDropArea - verticalSpacing)
+        else if (mousePos.y >= rowRect.Max.y - betweenDropArea)
         {
           const TLeafHandle parentLeaf = getParentLeaf(leaf);
           auto result = dropHandler->onDropTargetBetween(parentLeaf, getChildIndex(leaf) + 1);

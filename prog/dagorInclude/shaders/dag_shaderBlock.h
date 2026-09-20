@@ -12,8 +12,7 @@ enum
 {
   LAYER_FRAME,
   LAYER_SCENE,
-  LAYER_OBJECT,
-  LAYER_GLOBAL_CONST
+  LAYER_OBJECT
 };
 
 //! searches shader block by name and returns ID

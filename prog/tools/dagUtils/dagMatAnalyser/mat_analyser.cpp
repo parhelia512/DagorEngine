@@ -532,7 +532,7 @@ struct FindAssetsJob : cpujobs::IJob
 
   void releaseJob() override {}
 
-  const char *getJobName(bool &) const override { return "FindAssetsJob"; }
+  const char *getJobName(bool &) const override { return DAPROFILER_STRING("FindAssetsJob"); }
 };
 
 struct AnalyiseJob : cpujobs::IJob
@@ -559,7 +559,7 @@ struct AnalyiseJob : cpujobs::IJob
 
   virtual void releaseJob() override {}
 
-  const char *getJobName(bool &) const override { return "AnalyiseJob"; }
+  const char *getJobName(bool &) const override { return DAPROFILER_STRING("AnalyiseJob"); }
 };
 
 // Threadpool backend data

@@ -14,6 +14,8 @@ void init_entity_object_editor();
 void init_da_editor4();
 void term_da_editor4();
 void register_editor_script(SqModules *module_mgr);
+void unregister_editor_script(HSQUIRRELVM vm);
+void invalidate_scene_tree(); // call at every scene record or entity set change
 bool is_editor_activated();
 bool is_editor_in_reload();
 void start_editor_reload();

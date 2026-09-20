@@ -15,8 +15,10 @@ namespace frx
 {
 
 DAGOR_NOINLINE inline static void cut_mesh_plane_impl(const DestrContext &ctx, const DestrMesh &mesh, DestrMesh &up_mesh,
-  DestrMesh &down_mesh, plane3f cut_plane, CutFaceData &cut_face_data)
+  DestrMesh &down_mesh, CutFaceData &cut_face_data)
 {
+  const plane3f cut_plane = v_ldu(&cut_face_data.basis.plane.n.x);
+
   constexpr float EPS = 1e-6f;
 
   // reserve face arrays
@@ -230,7 +232,6 @@ DAGOR_NOINLINE inline static void cut_mesh_plane_impl(const DestrContext &ctx, c
 
   // flush cut vertices, project them on the plane
   {
-    cut_face_data.basis = PlaneBasis(cut_plane);
     mat33f basis;
     basis.col0 = v_ldu(&cut_face_data.basis.U.x);
     basis.col1 = v_ldu(&cut_face_data.basis.V.x);

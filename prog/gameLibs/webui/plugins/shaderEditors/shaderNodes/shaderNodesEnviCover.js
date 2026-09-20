@@ -354,7 +354,8 @@ var GE_nodeDescriptionsAdditional =
       {name:"gbuffer", caption:"in-gbuffer", types:["NBSGbuffer"], singleConnect:true, role:"in"},
       {name:"layer", caption:"layer", types:["Layer_t"], singleConnect:true, role:"in"},
       {name:"mask", caption:"mask", types:["mask_t"], singleConnect:true, role:"in"},
-      {name:"overwrite", caption:"shouldOverwrite", types:["bool"], singleConnect:true, role:"in",  data:{def_val:"%shouldOverwrite%", code:"overwriteWithLayer($gbuffer$, $layer$, $mask$, $overwrite$)"}},
+      {name:"overwrite", caption:"shouldOverwrite", types:["bool"], singleConnect:true, role:"in",  data:{def_val:"%shouldOverwrite%"}},
+      {name:"applied", types:["bool"], singleConnect:false, role:"out", data:{code:"overwriteWithLayer($gbuffer$, $layer$, $mask$, $overwrite$)", sideEffect:true}},
       {name:"output", caption:"out-gbuffer", types:["NBSGbuffer"], singleConnect:false, role:"out", data:{code:"$gbuffer$"}},
       { name: "control", types: ["ctrl_t"], singleConnect: true, role: "ctrl" }
     ],
@@ -373,7 +374,8 @@ var GE_nodeDescriptionsAdditional =
       {name:"layer", caption:"layer", types:["Layer_t"], singleConnect:true, role:"in"},
       {name:"mask", caption:"mask", types:["mask_t"], singleConnect:true, role:"in"},
       {name:"weight", caption:"weight", types:["float"], singleConnect:true, role:"in",  data:{def_val:"%weight%"}},
-      {name:"allowOverwrite", caption:"allowOverwrite", types:["bool"], singleConnect:true, role:"in",  data:{def_val:"%allowOverwrite%", code:"lerpWithLayer($gbuffer$, $layer$, $mask$, $weight$, $allowOverwrite$)"}},
+      {name:"allowOverwrite", caption:"allowOverwrite", types:["bool"], singleConnect:true, role:"in",  data:{def_val:"%allowOverwrite%"}},
+      {name:"applied", types:["bool"], singleConnect:false, role:"out", data:{code:"lerpWithLayer($gbuffer$, $layer$, $mask$, $weight$, $allowOverwrite$)", sideEffect:true}},
       {name:"output", caption:"out-gbuffer", types:["NBSGbuffer"], singleConnect:false, role:"out", data:{code:"$gbuffer$"}},
       { name: "control", types: ["ctrl_t"], singleConnect: true, role: "ctrl" }
     ],
@@ -393,7 +395,8 @@ var GE_nodeDescriptionsAdditional =
       {name:"layer", caption:"layer", types:["Layer_t"], singleConnect:true, role:"in"},
       {name:"mask", caption:"mask", types:["mask_t"], singleConnect:true, role:"in"},
       {name:"weight", caption:"weight", types:["float"], singleConnect:true, role:"in",  data:{def_val:"%weight%"}},
-      {name:"bias", caption:"bias", types:["float"], singleConnect:true, role:"in",  data:{def_val:"%bias%", code:"ditherWithLayer($gbuffer$, $layer$, $mask$, $weight$, $bias$, dtId)"}},
+      {name:"bias", caption:"bias", types:["float"], singleConnect:true, role:"in",  data:{def_val:"%bias%"}},
+      {name:"applied", types:["bool"], singleConnect:false, role:"out", data:{code:"ditherWithLayer($gbuffer$, $layer$, $mask$, $weight$, $bias$, dtId)", sideEffect:true}},
       {name:"output", caption:"out-gbuffer", types:["NBSGbuffer"], singleConnect:false, role:"out", data:{code:"$gbuffer$"}},
       { name: "control", types: ["ctrl_t"], singleConnect: true, role: "ctrl" }
     ],

@@ -7,6 +7,7 @@
   debug
 
 #include <d3d11.h>
+#include <drv/shadersMetaData/dx11/register_limits.h>
 #include "d3d_config.h"
 
 #define IDXGI_SWAP_CHAIN           IDXGISwapChain
@@ -31,15 +32,17 @@ struct RENDERDOC_API_1_5_0;
 #endif
 #define CHECK_THREAD CHECK_MAIN_THREAD()
 
-#define MAX_PS_SAMPLERS 16
-#define MAX_VS_SAMPLERS 16
-#define MAX_CS_SAMPLERS 16
+#define MAX_PS_SAMPLERS dx11::MAX_S_REGISTERS
+#define MAX_VS_SAMPLERS dx11::MAX_S_REGISTERS
+#define MAX_CS_SAMPLERS dx11::MAX_S_REGISTERS
 
-#define MAX_RESOURCES 32
-// D3D11_COMMONSHADER_INPUT_RESOURCE_SLOT_COUNT
+#define MAX_RESOURCES dx11::MAX_T_REGISTERS
 
-#define MAX_UAV           8
-#define MAX_CONST_BUFFERS 12
+#define MAX_UAV           dx11::MAX_U_REGISTERS
+#define MAX_CONST_BUFFERS dx11::MAX_B_REGISTERS
+
+// The b register the compiler emits the immediate cbuffer at; immediateConstStub.h defaults it.
+#define IMMEDAITE_CB_REGISTER_NO dx11::IMMEDIATE_CB_REGISTER
 
 #define MAX_VERTEX_STREAMS 4
 #define PRIM_UNDEF         0

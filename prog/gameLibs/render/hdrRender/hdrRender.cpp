@@ -31,9 +31,12 @@ namespace defaults
 GLOBAL_VARS_LIST
 #undef VAR
 
-// Same as in render_options.nut
 constexpr float MIN_PAPER_WHITE_NITS = 50;
 constexpr float MAX_PAPER_WHITE_NITS = 1000;
+constexpr float MIN_HDR_BRIGHTNESS = 0.5f;
+constexpr float MAX_HDR_BRIGHTNESS = 2.0f;
+constexpr float MIN_HDR_SHADOWS = 0.0f;
+constexpr float MAX_HDR_SHADOWS = 2.0f;
 
 float paper_white_nits = defaults::paper_white_nits;
 float hdr_brightness = defaults::hdr_brightness;
@@ -60,14 +63,11 @@ void hdrrender::init_globals(const DataBlock &videoCfg)
 {
   update_globals();
 
-  paper_white_nits = videoCfg.getInt("paperWhiteNits", int(defaults::paper_white_nits));
-  hdr_brightness = videoCfg.getReal("hdr_brightness", defaults::hdr_brightness);
-  hdr_shadows = videoCfg.getReal("hdr_shadows", defaults::hdr_shadows);
   use_dynamic_hdr = videoCfg.getBool("dynamic_hdr", false);
 
-  update_paper_white_nits(paper_white_nits);
-  update_hdr_brightness(hdr_brightness);
-  update_hdr_shadows(hdr_shadows);
+  update_paper_white_nits(videoCfg.getInt("paperWhiteNits", int(defaults::paper_white_nits)));
+  update_hdr_brightness(videoCfg.getReal("hdr_brightness", defaults::hdr_brightness));
+  update_hdr_shadows(videoCfg.getReal("hdr_shadows", defaults::hdr_shadows));
 }
 
 static void create_hdr_fp_tex(int width, int height, int fp_format, bool uav_usage)
@@ -154,12 +154,16 @@ void hdrrender::set_render_target()
     d3d::set_render_target();
 }
 
+// Writes the var without touching the requested peak, so the dynamic path below cannot re-feed its
+// own output back into it.
+static void set_paper_white_nits_var(float value) { ShaderGlobal::set_float(paper_white_nitsVarId, value); }
+
 static void update_current_nits()
 {
   float headroom = 1.f;
   d3d::driver_command(Drv3dCommand::HDR_HEADROOM, (void *)&headroom);
-  const float nits = (1 - headroom) * MIN_PAPER_WHITE_NITS + headroom * paper_white_nits;
-  hdrrender::update_paper_white_nits(nits);
+  // headroom is normalized by the driver, so the result stays within [MIN_PAPER_WHITE_NITS, peak]
+  set_paper_white_nits_var((1 - headroom) * MIN_PAPER_WHITE_NITS + headroom * paper_white_nits);
 }
 
 bool hdrrender::encode(int x_offset, int y_offset)
@@ -184,28 +188,31 @@ void hdrrender::update_globals()
   ShaderGlobal::set_int(hdr_ps_output_modeVarId, outputMode);
 }
 
+static float clamp_checked(float value, float min_value, float max_value, const char *name)
+{
+  if (value < min_value || value > max_value)
+    logerr("Invalid %s value: %f. Clamping it!", name, value);
+  return eastl::clamp(value, min_value, max_value);
+}
+
+// The requested values are kept, not just applied: dynamic hdr re-derives the paper white var from
+// its peak every frame, and a settings reload has to be able to put back what the player asked for.
 void hdrrender::update_paper_white_nits(float value)
 {
-  if (value < MIN_PAPER_WHITE_NITS || value > MAX_PAPER_WHITE_NITS)
-    logerr("Invalid paper white nits value: %f. Clamping it!", value);
-  value = eastl::clamp(value, MIN_PAPER_WHITE_NITS, MAX_PAPER_WHITE_NITS);
-  ShaderGlobal::set_float(paper_white_nitsVarId, value);
+  paper_white_nits = clamp_checked(value, MIN_PAPER_WHITE_NITS, MAX_PAPER_WHITE_NITS, "paper white nits");
+  set_paper_white_nits_var(paper_white_nits);
 }
 
 void hdrrender::update_hdr_brightness(float value)
 {
-  if (value < 0.5f || value > 2.0f)
-    logerr("Invalid HDR brightness value: %f. Clamping it!", value);
-  value = eastl::clamp(value, 0.5f, 2.0f);
-  ShaderGlobal::set_float(hdr_brightnessVarId, value);
+  hdr_brightness = clamp_checked(value, MIN_HDR_BRIGHTNESS, MAX_HDR_BRIGHTNESS, "HDR brightness");
+  ShaderGlobal::set_float(hdr_brightnessVarId, hdr_brightness);
 }
 
 void hdrrender::update_hdr_shadows(float value)
 {
-  if (value < 0.0f || value > 2.0f)
-    logerr("Invalid HDR shadows value: %f. Clamping it!", value);
-  value = eastl::clamp(value, 0.0f, 2.0f);
-  ShaderGlobal::set_float(hdr_shadowsVarId, value);
+  hdr_shadows = clamp_checked(value, MIN_HDR_SHADOWS, MAX_HDR_SHADOWS, "HDR shadows");
+  ShaderGlobal::set_float(hdr_shadowsVarId, hdr_shadows);
 }
 
 float hdrrender::get_default_paper_white_nits() { return defaults::paper_white_nits; }
@@ -214,8 +221,9 @@ float hdrrender::get_default_hdr_brightness() { return defaults::hdr_brightness;
 
 float hdrrender::get_default_hdr_shadows() { return defaults::hdr_shadows; }
 
-float hdrrender::get_paper_white_nits() { return ShaderGlobal::get_float(paper_white_nitsVarId); }
+// The requested values, which for paper white differs from the applied one under dynamic hdr.
+float hdrrender::get_paper_white_nits() { return paper_white_nits; }
 
-float hdrrender::get_hdr_brightness() { return ShaderGlobal::get_float(hdr_brightnessVarId); }
+float hdrrender::get_hdr_brightness() { return hdr_brightness; }
 
-float hdrrender::get_hdr_shadows() { return ShaderGlobal::get_float(hdr_shadowsVarId); }
+float hdrrender::get_hdr_shadows() { return hdr_shadows; }

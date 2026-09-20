@@ -35,7 +35,7 @@ bool ContextMenu::updateImgui()
   if (open)
   {
     MenuItem *clickedItem = nullptr;
-    rootMenu.updateImgui(clickedItem);
+    rootMenu.updateImgui(clickedItem, menuStyle);
 
     if (clickedItem && eventHandler)
     {

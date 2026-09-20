@@ -1,5 +1,6 @@
 // Copyright (C) Gaijin Games KFT.  All rights reserved.
 
+#include <de3_editorEvents.h>
 #include <de3_interface.h>
 #include <EditorCore/ec_editorCommandSystem.h>
 #include <EditorCore/ec_wndGlobal.h>
@@ -10,9 +11,9 @@
 #include <libTools/util/undo.h>
 #include <osApiWrappers/dag_direct.h>
 #include <winGuiWrapper/wgw_dialogs.h>
+#include <winGuiWrapper/wgw_input.h>
 
 #include <EASTL/algorithm.h>
-#include <EASTL/hash_set.h>
 #include <EASTL/sort.h>
 
 #include <imgui/imgui.h>
@@ -20,12 +21,11 @@
 #include <graphEditor/graph_data.h>
 #include <graphEditor/graph_subgraph_expand.h>
 
-#include "base_nodes_panel.h"
+#include "node_library_panel.h"
 #include "command_definitions.h"
 #include "graph_compile.h"
 #include "graph_panel.h"
 #include "graph_shortcuts_panel.h"
-#include "graph_undo.h"
 #include "histogram_panel.h"
 #include "landscape_preview_panel.h"
 #include "landscape_preview_scene.h"
@@ -44,7 +44,7 @@ enum
   CM_SHOW_TEXTURE_PREVIEW,
   CM_SHOW_HISTOGRAM,
   CM_SHOW_LANDSCAPE_PREVIEW,
-  CM_SHOW_BASE_NODES,
+  CM_SHOW_NODE_LIBRARY,
   CM_SHOW_PROPERTIES,
   CM_SHOW_SHORTCUTS,
   CM_NEW_GRAPH,
@@ -57,13 +57,19 @@ enum
   CM_FORCE_REBUILD,
 };
 
+constexpr unsigned RECENT_NODE_LIMIT = 20;
+
+// Canvas-space cascade for spawns that have no cursor position of their own.
+constexpr unsigned SPAWN_SLOT_COUNT = 8;
+constexpr float SPAWN_SLOT_STEP = 32.0f;
+
 enum
 {
   GRAPH_PANEL_WTYPE = 160,
   TEXTURE_PREVIEW_PANEL_WTYPE = 161,
   HISTOGRAM_PANEL_WTYPE = 162,
   LANDSCAPE_PREVIEW_PANEL_WTYPE = 163,
-  BASE_NODES_PANEL_WTYPE = 164,
+  NODE_LIBRARY_PANEL_WTYPE = 164,
   PROPERTIES_PANEL_WTYPE = 165,
   SHORTCUTS_PANEL_WTYPE = 166,
 };
@@ -94,8 +100,30 @@ bool prompt_texture_substring(String &out_substring)
   return accepted;
 }
 
+// An edit box keeps Enter for itself (it reports the key as an onKeyDown event instead), so a dialog
+// whose focus sits in one never sees the Enter that would close it. Relay it back to the Ok button.
+class EnterAcceptsDialog final : public PropPanel::ControlEventHandler
+{
+public:
+  explicit EnterAcceptsDialog(PropPanel::DialogWindow &dlg) : dialog(dlg) {}
+
+  long onKeyDown(int pcb_id, PropPanel::ContainerPropertyControl *panel, unsigned v_key) override
+  {
+    G_UNUSED(pcb_id);
+    G_UNUSED(panel);
+    if (v_key == wingw::V_ENTER)
+    {
+      dialog.clickDialogButton(PropPanel::DIALOG_ID_OK);
+    }
+    return 0;
+  }
+
+private:
+  PropPanel::DialogWindow &dialog;
+};
+
 // Adapter installed into the texgen service. compile() runs on the worker
-// thread and holds the plugin's graphMutex for the whole compile-and-commit: it
+// thread and holds the document's graph mutex for the whole compile-and-commit: it
 // READS the source-of-truth graph (gd.nodes / edges / properties) and writes only
 // the compiled output (gd.mainGraphBlk / shaderListBlk), so a main-thread writer
 // cannot mutate the source mid-compile. Main stays the only writer of nodes and
@@ -105,13 +133,13 @@ bool prompt_texture_substring(String &out_substring)
 class GraphCompilerImpl final : public IGraphCompiler
 {
 public:
-  explicit GraphCompilerImpl(GraphEditorPlg &p) : plugin(p) {}
+  GraphCompilerImpl(GraphEditorPlg &p, GraphDocument &d) : plugin(p), doc(d) {}
 
   bool compile() override
   {
     bool ok = false;
     eastl::string compileMsg;
-    plugin.mutateGraphData([&](GraphData &gd) {
+    doc.mutateGraphData([&](GraphData &gd) {
       // Compile into local BLKs first so a failure (e.g. iteration-limit hit)
       // leaves gd.mainGraphBlk / shaderListBlk untouched -- the service relies
       // on this to keep the previous compile's output usable on failure.
@@ -163,7 +191,7 @@ public:
           }
           stashed.emplace_back(compileGd->nodes[i].id, eastl::move(pendingNamesByIdx[i]));
         }
-        plugin.setPendingPinCustomTextureNames(eastl::move(stashed));
+        doc.setPendingPinCustomTextureNames(eastl::move(stashed));
       }
     });
 
@@ -186,7 +214,7 @@ public:
 
   void copyCompiledGraph(DataBlock &main_graph_blk, DataBlock &shader_list_blk) override
   {
-    plugin.readGraphData([&](const GraphData &gd) {
+    doc.readGraphData([&](const GraphData &gd) {
       main_graph_blk.setFrom(&gd.mainGraphBlk);
       shader_list_blk.setFrom(&gd.shaderListBlk);
     });
@@ -194,26 +222,69 @@ public:
 
 private:
   GraphEditorPlg &plugin;
+  GraphDocument &doc;
 };
 } // namespace
 
-GraphEditorPlg::GraphEditorPlg() {}
+GraphEditorPlg::GraphEditorPlg() : document(*this) {}
 
 GraphEditorPlg::~GraphEditorPlg()
 {
-  if (graphCompiler)
+  document.setView(nullptr);
+  // The service and the undo stack both outlive the plugin and hold pointers into it: the service
+  // the graph plus the compiler adapter, the undo entries a GraphDocument&. shutdownTexGen goes
+  // first because setGraphData(nullptr) frees the pipeline without stopping the worker.
+  if (IEditorService *svc = IDaEditor3Engine::get().findService("texgen"))
   {
-    if (IEditorService *svc = IDaEditor3Engine::get().findService("texgen"))
+    if (IGraphTexGenService *texgen = svc->queryInterface<IGraphTexGenService>())
     {
-      if (IGraphTexGenService *texgen = svc->queryInterface<IGraphTexGenService>())
-      {
-        texgen->setGraphCompiler(nullptr);
-      }
+      texgen->shutdownTexGen();
+      texgen->setGraphData(nullptr);
+      texgen->setGraphCompiler(nullptr);
+    }
+  }
+  dropMyUndoOps();
+}
+
+void GraphEditorPlg::registered() {}
+
+// Per app, not global: shader and subgraph descriptors are project-scoped, so a uid saved by another
+// project would never resolve. The editor wraps this in plugins/graphEditor already.
+void GraphEditorPlg::loadSettings(const DataBlock & /*global_settings*/, const DataBlock &per_app_settings)
+{
+  recentNodeUids.clear();
+
+  const DataBlock &nodeLibraryBlk = *per_app_settings.getBlockByNameEx("nodeLibrary");
+  const int nameId = nodeLibraryBlk.getNameId("recentNode");
+  for (uint32_t i = 0; i < nodeLibraryBlk.paramCount() && recentNodeUids.size() < RECENT_NODE_LIMIT; ++i)
+  {
+    if (nodeLibraryBlk.getParamNameId(i) != nameId || nodeLibraryBlk.getParamType(i) != DataBlock::TYPE_STRING)
+    {
+      continue;
+    }
+
+    // Hand-edited settings can repeat a uid; noteRecentlyUsedNode never does.
+    const char *uid = nodeLibraryBlk.getStr(i);
+    if (eastl::find(recentNodeUids.begin(), recentNodeUids.end(), uid) == recentNodeUids.end())
+    {
+      recentNodeUids.push_back(eastl::string(uid));
     }
   }
 }
 
-void GraphEditorPlg::registered() {}
+void GraphEditorPlg::saveSettings(DataBlock & /*global_settings*/, DataBlock &per_app_settings)
+{
+  if (recentNodeUids.empty())
+  {
+    return;
+  }
+
+  DataBlock &nodeLibraryBlk = *per_app_settings.addBlock("nodeLibrary");
+  for (const eastl::string &uid : recentNodeUids)
+  {
+    nodeLibraryBlk.addStr("recentNode", uid.c_str());
+  }
+}
 
 void GraphEditorPlg::unregistered() {}
 
@@ -229,7 +300,7 @@ bool GraphEditorPlg::begin(int toolbar_id, unsigned menu_id)
   commandSystem->addMenuItem(*mainMenu, menu_id, CM_SHOW_TEXTURE_PREVIEW, SHOW_TEXTURE_PREVIEW, "Show texture preview");
   commandSystem->addMenuItem(*mainMenu, menu_id, CM_SHOW_HISTOGRAM, SHOW_HISTOGRAM, "Show histogram");
   commandSystem->addMenuItem(*mainMenu, menu_id, CM_SHOW_LANDSCAPE_PREVIEW, SHOW_LANDSCAPE_PREVIEW, "Show landscape preview");
-  commandSystem->addMenuItem(*mainMenu, menu_id, CM_SHOW_BASE_NODES, SHOW_BASE_NODES, "Show base nodes");
+  commandSystem->addMenuItem(*mainMenu, menu_id, CM_SHOW_NODE_LIBRARY, SHOW_NODE_LIBRARY, "Show node library");
   commandSystem->addMenuItem(*mainMenu, menu_id, CM_SHOW_PROPERTIES, SHOW_PROPERTIES, "Show properties");
   commandSystem->addMenuItem(*mainMenu, menu_id, CM_SHOW_SHORTCUTS, SHOW_SHORTCUTS, "Show shortcuts");
   commandSystem->addMenuItem(*mainMenu, menu_id, CM_NEW_GRAPH, NEW_GRAPH, "New graph");
@@ -265,9 +336,9 @@ bool GraphEditorPlg::begin(int toolbar_id, unsigned menu_id)
   tool->setButtonPictures(CM_SHOW_LANDSCAPE_PREVIEW, "show_panel");
   tool->setBool(CM_SHOW_LANDSCAPE_PREVIEW, isLandscapeVisible);
 
-  commandSystem->createToolbarToggleButton(*tool, CM_SHOW_BASE_NODES, SHOW_BASE_NODES, "Show base nodes");
-  tool->setButtonPictures(CM_SHOW_BASE_NODES, "show_panel");
-  tool->setBool(CM_SHOW_BASE_NODES, isBaseNodesVisible);
+  commandSystem->createToolbarToggleButton(*tool, CM_SHOW_NODE_LIBRARY, SHOW_NODE_LIBRARY, "Show node library");
+  tool->setButtonPictures(CM_SHOW_NODE_LIBRARY, "node_library");
+  tool->setBool(CM_SHOW_NODE_LIBRARY, isNodeLibraryVisible);
 
   commandSystem->createToolbarToggleButton(*tool, CM_SHOW_PROPERTIES, SHOW_PROPERTIES, "Show properties");
   tool->setButtonPictures(CM_SHOW_PROPERTIES, "show_panel");
@@ -324,9 +395,9 @@ bool GraphEditorPlg::begin(int toolbar_id, unsigned menu_id)
     EDITORCORE->addPropPanel(LANDSCAPE_PREVIEW_PANEL_WTYPE, hdpi::_pxScaled(300));
   }
 
-  if (isBaseNodesVisible)
+  if (isNodeLibraryVisible)
   {
-    EDITORCORE->addPropPanel(BASE_NODES_PANEL_WTYPE, hdpi::_pxScaled(280));
+    EDITORCORE->addPropPanel(NODE_LIBRARY_PANEL_WTYPE, hdpi::_pxScaled(280));
   }
 
   if (isPropertiesVisible)
@@ -339,7 +410,7 @@ bool GraphEditorPlg::begin(int toolbar_id, unsigned menu_id)
     EDITORCORE->addPropPanel(SHORTCUTS_PANEL_WTYPE, hdpi::_pxScaled(420));
   }
 
-  if (isGraphVisible || isTexturePreviewVisible || isHistogramVisible || isLandscapeVisible || isBaseNodesVisible ||
+  if (isGraphVisible || isTexturePreviewVisible || isHistogramVisible || isLandscapeVisible || isNodeLibraryVisible ||
       isPropertiesVisible || isShortcutsVisible)
   {
     EDITORCORE->managePropPanels();
@@ -383,7 +454,7 @@ void GraphEditorPlg::loadObjects([[maybe_unused]] const DataBlock &blk, [[maybe_
 
     if (!graphCompiler)
     {
-      graphCompiler.reset(new GraphCompilerImpl(*this));
+      graphCompiler.reset(new GraphCompilerImpl(*this, document));
     }
     texGenService->setGraphCompiler(graphCompiler.get());
   }
@@ -397,17 +468,15 @@ void GraphEditorPlg::newEmptyGraph()
   // reset through to the service and the canvas; graphPanel->onGraphDataChanged rebuilds
   // the canvas widget tree. Same shape as the post-load tail in promptAndLoadGraphBlk.
   // No dirty-tracking confirmation here -- the user explicitly asked to skip it for now.
-  mutateGraphData([](GraphData &gd) { clear_graph_data(gd); });
+  document.mutateGraphData([](GraphData &gd) { clear_graph_data(gd); });
   notifyGraphSourceChanged();
   if (graphPanel)
   {
     graphPanel->onGraphDataChanged();
   }
   // The new graph reuses node ids from 0, so our existing undo entries would alias different
-  // nodes. Drop only THIS plugin's ops (matched by owner); other plugins keep their history.
-  // The cast goes through IGenEditorPlugin* because that is the subobject the engine stamps as
-  // the op owner (set_op_owner) -- with multiple inheritance the void* must match exactly.
-  EDITORCORE->getUndoSystem()->remove_ops_by_owner(static_cast<IGenEditorPlugin *>(this));
+  // nodes. Drop only THIS plugin's ops; other plugins keep their history.
+  dropMyUndoOps();
 }
 
 void GraphEditorPlg::promptAndLoadGraphBlk()
@@ -420,7 +489,7 @@ void GraphEditorPlg::promptAndLoadGraphBlk()
   }
 
   bool ok = false;
-  mutateGraphData(
+  document.mutateGraphData(
     [&](GraphData &gd) { ok = load_graph_data_blk(gd, picked.str(), resourcePaths.shaderIncludesDir, &getBaseNodesBlk()); });
   if (!ok)
   {
@@ -431,25 +500,26 @@ void GraphEditorPlg::promptAndLoadGraphBlk()
   {
     graphPanel->onGraphDataChanged();
   }
-  // Loaded graph reuses node ids from 0; drop only this plugin's stale undo entries (matched by
-  // owner) so a later Ctrl+Z cannot alias an unrelated node in the new graph. See newEmptyGraph.
-  EDITORCORE->getUndoSystem()->remove_ops_by_owner(static_cast<IGenEditorPlugin *>(this));
+  // Loaded graph reuses node ids from 0; drop this plugin's stale undo entries so a later Ctrl+Z
+  // cannot alias an unrelated node in the new graph.
+  dropMyUndoOps();
 }
 
 void GraphEditorPlg::promptAndSaveGraphBlk()
 {
   // If we have a previously-loaded source path, pass it as the dialog seed so the user
   // gets the same filename pre-populated; otherwise fall back to the mainGraphs dir.
-  String initPath = !graphData.sourcePath.empty() ? String(graphData.sourcePath.c_str()) : resourcePaths.mainGraphsDir;
+  const eastl::string &curPath = document.getGraphData().sourcePath;
+  String initPath = !curPath.empty() ? String(curPath.c_str()) : resourcePaths.mainGraphsDir;
   String picked = wingw::file_save_dlg(nullptr, "Save graph BLK", "Graph BLK (*.blk)|*.blk|All files (*.*)|*.*", "blk", initPath);
   if (!picked.length())
   {
     return;
   }
 
-  if (save_graph_data_blk(graphData, picked.str()))
+  if (save_graph_data_blk(document.getGraphData(), picked.str()))
   {
-    graphData.sourcePath = picked.str();
+    document.mutateGraphData([&](GraphData &gd) { gd.sourcePath = picked.str(); });
   }
   else
   {
@@ -465,7 +535,7 @@ void GraphEditorPlg::promptAndSaveAsSubgraphBlk()
   // not one per error -- chasing them down individually with a sequence of prompts is
   // worse UX than a flat list.
   eastl::vector<SubgraphSchemaError> errors;
-  if (!validate_subgraph_schema(graphData, errors))
+  if (!validate_subgraph_schema(document.getGraphData(), errors))
   {
     String text("Cannot save as subgraph -- schema invalid:");
     for (const SubgraphSchemaError &err : errors)
@@ -483,7 +553,7 @@ void GraphEditorPlg::promptAndSaveAsSubgraphBlk()
   // subgraph's outputs -- usually a forgotten wire inside the child. Show the names (or
   // type as fallback for any pin we couldn't name) and let the user confirm.
   eastl::vector<DeadInputBoundary> dead;
-  find_dead_input_boundaries(graphData, dead);
+  find_dead_input_boundaries(document.getGraphData(), dead);
   if (!dead.empty())
   {
     String warning("The following input pins do not propagate to any output:");
@@ -506,9 +576,9 @@ void GraphEditorPlg::promptAndSaveAsSubgraphBlk()
   // subgraphs convention; otherwise drop to the subgraphsDir so the user doesn't end up
   // saving a subgraph back into mainGraphs/ by accident.
   String initPath = subgraphsDir;
-  if (!graphData.sourcePath.empty())
+  if (!document.getGraphData().sourcePath.empty())
   {
-    const String existing(graphData.sourcePath.c_str());
+    const String existing(document.getGraphData().sourcePath.c_str());
     if (existing.suffix(".subgraph.blk"))
     {
       initPath = existing;
@@ -534,13 +604,13 @@ void GraphEditorPlg::promptAndSaveAsSubgraphBlk()
     }
   }
 
-  if (!save_graph_data_blk(graphData, finalPath.str()))
+  if (!save_graph_data_blk(document.getGraphData(), finalPath.str()))
   {
     DAEDITOR3.conError("GraphEditor: failed to save subgraph BLK to %s", finalPath.str());
     return;
   }
 
-  graphData.sourcePath = finalPath.str();
+  document.mutateGraphData([&](GraphData &gd) { gd.sourcePath = finalPath.str(); });
   DAEDITOR3.conNote("GraphEditor: saved subgraph to %s", finalPath.str());
 
   // Make the freshly-saved file appear in the Subgraphs palette without a restart.
@@ -549,11 +619,29 @@ void GraphEditorPlg::promptAndSaveAsSubgraphBlk()
   reloadBaseNodes();
 }
 
-void GraphEditorPlg::selectAll() {}
+void GraphEditorPlg::selectAll()
+{
+  if (graphPanel)
+  {
+    graphPanel->requestSelectAll();
+  }
+}
 
-void GraphEditorPlg::deselectAll() {}
+void GraphEditorPlg::deselectAll()
+{
+  if (graphPanel)
+  {
+    graphPanel->requestDeselectAll();
+  }
+}
 
-void GraphEditorPlg::invertSelection() {}
+void GraphEditorPlg::invertSelection()
+{
+  if (graphPanel)
+  {
+    graphPanel->requestInvertSelection();
+  }
+}
 
 // Texture generation runs on a worker thread inside the service. The poll here is cheap
 // (no D3D, no generation steps) and just feeds the worker file-change notifications and
@@ -571,7 +659,7 @@ void GraphEditorPlg::actObjects(float dt)
     }
   }
 
-  applyPendingPinCustomTextureNames();
+  document.applyPendingPinCustomTextureNames();
 
   if (graphPanel)
   {
@@ -604,8 +692,10 @@ void GraphEditorPlg::updateImgui()
     PropPanel::PanelWindowPropertyControl *panelWindow = graphPanel->getPanelWindow();
 
     bool open = true;
-    DAEDITOR3.imguiBegin(*panelWindow, &open);
-    graphPanel->updateImgui();
+    if (DAEDITOR3.imguiBegin(*panelWindow, &open))
+    {
+      graphPanel->updateImgui();
+    }
     DAEDITOR3.imguiEnd();
 
     if (!open)
@@ -618,8 +708,10 @@ void GraphEditorPlg::updateImgui()
   if (previewPanel)
   {
     bool open = true;
-    DAEDITOR3.imguiBegin(*previewPanel->getPanelWindow(), &open);
-    previewPanel->updateImgui();
+    if (DAEDITOR3.imguiBegin(*previewPanel->getPanelWindow(), &open))
+    {
+      previewPanel->updateImgui();
+    }
     DAEDITOR3.imguiEnd();
 
     if (!open)
@@ -632,8 +724,10 @@ void GraphEditorPlg::updateImgui()
   if (histogramPanel)
   {
     bool open = true;
-    DAEDITOR3.imguiBegin(*histogramPanel->getPanelWindow(), &open);
-    histogramPanel->updateImgui();
+    if (DAEDITOR3.imguiBegin(*histogramPanel->getPanelWindow(), &open))
+    {
+      histogramPanel->updateImgui();
+    }
     DAEDITOR3.imguiEnd();
 
     if (!open)
@@ -646,8 +740,10 @@ void GraphEditorPlg::updateImgui()
   if (landscapePanel)
   {
     bool open = true;
-    DAEDITOR3.imguiBegin(*landscapePanel->getPanelWindow(), &open);
-    landscapePanel->updateImgui();
+    if (DAEDITOR3.imguiBegin(*landscapePanel->getPanelWindow(), &open))
+    {
+      landscapePanel->updateImgui();
+    }
     DAEDITOR3.imguiEnd();
 
     if (!open)
@@ -657,16 +753,18 @@ void GraphEditorPlg::updateImgui()
     }
   }
 
-  if (baseNodesPanel)
+  if (nodeLibraryPanel)
   {
     bool open = true;
-    DAEDITOR3.imguiBegin(*baseNodesPanel->getPanelWindow(), &open);
-    baseNodesPanel->updateImgui();
+    if (DAEDITOR3.imguiBegin(*nodeLibraryPanel->getPanelWindow(), &open))
+    {
+      nodeLibraryPanel->updateImgui();
+    }
     DAEDITOR3.imguiEnd();
 
     if (!open)
     {
-      EDITORCORE->removePropPanel(baseNodesPanel.get());
+      EDITORCORE->removePropPanel(nodeLibraryPanel.get());
       EDITORCORE->managePropPanels();
     }
   }
@@ -677,8 +775,10 @@ void GraphEditorPlg::updateImgui()
   if (propertiesPanel)
   {
     bool open = true;
-    DAEDITOR3.imguiBegin(*propertiesPanel->getPanelWindow(), &open);
-    propertiesPanel->updateImgui();
+    if (DAEDITOR3.imguiBegin(*propertiesPanel->getPanelWindow(), &open))
+    {
+      propertiesPanel->updateImgui();
+    }
     DAEDITOR3.imguiEnd();
 
     if (!open)
@@ -691,8 +791,10 @@ void GraphEditorPlg::updateImgui()
   if (shortcutsPanel)
   {
     bool open = true;
-    DAEDITOR3.imguiBegin(*shortcutsPanel->getPanelWindow(), &open);
-    shortcutsPanel->updateImgui();
+    if (DAEDITOR3.imguiBegin(*shortcutsPanel->getPanelWindow(), &open))
+    {
+      shortcutsPanel->updateImgui();
+    }
     DAEDITOR3.imguiEnd();
 
     if (!open)
@@ -701,6 +803,9 @@ void GraphEditorPlg::updateImgui()
       EDITORCORE->managePropPanels();
     }
   }
+
+  // After the panels: it reads the canvas drop target's verdict from this same frame.
+  dragOverlay.draw(*this, graphPanel.get());
 }
 
 void *GraphEditorPlg::queryInterfacePtr([[maybe_unused]] unsigned huid) { return nullptr; }
@@ -765,18 +870,9 @@ bool GraphEditorPlg::onPluginMenuClick([[maybe_unused]] unsigned id)
       EDITORCORE->managePropPanels();
       return true;
     }
-    case CM_SHOW_BASE_NODES:
+    case CM_SHOW_NODE_LIBRARY:
     {
-      if (!baseNodesPanel)
-      {
-        EDITORCORE->addPropPanel(BASE_NODES_PANEL_WTYPE, hdpi::_pxScaled(280));
-      }
-      else
-      {
-        EDITORCORE->removePropPanel(baseNodesPanel.get());
-      }
-
-      EDITORCORE->managePropPanels();
+      toggleNodeLibraryPanel();
       return true;
     }
     case CM_SHOW_PROPERTIES:
@@ -854,6 +950,34 @@ bool GraphEditorPlg::onPluginMenuClick([[maybe_unused]] unsigned id)
 
 void GraphEditorPlg::handleViewportAcceleratorCommand([[maybe_unused]] unsigned id) {}
 
+bool GraphEditorPlg::catchEvent(unsigned event_huid, [[maybe_unused]] void *user_data)
+{
+  if (event_huid != HUID_ZoomAndCenter)
+  {
+    return false;
+  }
+  if (graphPanel)
+  {
+    graphPanel->requestFrameSelected();
+  }
+  // Handled even with no panel: this plugin has no 3D selection for the viewport fallback to frame.
+  return true;
+}
+
+void GraphEditorPlg::toggleNodeLibraryPanel()
+{
+  if (!nodeLibraryPanel)
+  {
+    EDITORCORE->addPropPanel(NODE_LIBRARY_PANEL_WTYPE, hdpi::_pxScaled(280));
+  }
+  else
+  {
+    EDITORCORE->removePropPanel(nodeLibraryPanel.get());
+  }
+
+  EDITORCORE->managePropPanels();
+}
+
 void GraphEditorPlg::toggleShortcutsPanel()
 {
   if (!shortcutsPanel)
@@ -874,7 +998,7 @@ void GraphEditorPlg::registerEditorCommands(IEditorCommandSystem &command_system
   command_system.addCommand(SHOW_TEXTURE_PREVIEW);
   command_system.addCommand(SHOW_HISTOGRAM);
   command_system.addCommand(SHOW_LANDSCAPE_PREVIEW);
-  command_system.addCommand(SHOW_BASE_NODES);
+  command_system.addCommand(SHOW_NODE_LIBRARY);
   command_system.addCommand(SHOW_PROPERTIES);
   command_system.addCommand(SHOW_SHORTCUTS, ImGuiKey_F1);
   command_system.addCommand(NEW_GRAPH);
@@ -884,12 +1008,10 @@ void GraphEditorPlg::registerEditorCommands(IEditorCommandSystem &command_system
   command_system.addCommand(SAVE_TEXTURES);
   command_system.addCommand(SAVE_TEXTURES_BY_SUBSTRING);
   command_system.addCommand(RELOAD_TEXTURES);
-  command_system.addCommand(FORCE_REBUILD);
+  command_system.addCommand(FORCE_REBUILD, ImGuiMod_Ctrl | ImGuiKey_R);
 
   // Canvas-local shortcuts
   command_system.addCommand(CANVAS_DELETE_SELECTED, ImGuiKey_Delete);
-  command_system.addCommand(CANVAS_FRAME_SELECTED, ImGuiKey_F);
-  command_system.addCommand(CANVAS_FRAME_SELECTED_WITH_MARGIN, ImGuiMod_Ctrl | ImGuiMod_Shift | ImGuiKey_F);
   command_system.addCommand(CANVAS_COPY, ImGuiMod_Ctrl | ImGuiKey_C);
   command_system.addCommand(CANVAS_CUT, ImGuiMod_Ctrl | ImGuiKey_X);
   command_system.addCommand(CANVAS_PASTE, ImGuiMod_Ctrl | ImGuiKey_V);
@@ -901,6 +1023,14 @@ void GraphEditorPlg::registerEditorCommands(IEditorCommandSystem &command_system
   command_system.addCommand(CANVAS_MODIFY_EDGE_AT_PIN, ImGuiKey_A);
   command_system.addCommand(CANVAS_JUMP_OPPOSITE_PIN, ImGuiKey_Tab);
   command_system.addCommand(CANVAS_COMMENT_PIN, ImGuiKey_C);
+  // No Ctrl+D alias for Duplicate, and no Ctrl+A of our own: the editor already binds those to
+  // Deselect all and Select all, which reach this plugin through deselectAll() and selectAll().
+  command_system.addCommand(CANVAS_DUPLICATE, ImGuiKey_D);
+  command_system.addCommand(CANVAS_TOGGLE_AUTOUPDATE, ImGuiMod_Shift | ImGuiKey_Q);
+  // The editor also binds bare Space, to free camera, but only as a viewport accelerator: it routes
+  // RouteGlobal, which the canvas dispatch outranks while this panel has focus.
+  command_system.addCommand(CANVAS_ADD_NODE_AT_PIN, ImGuiKey_Space);
+  command_system.addCommand(CANVAS_ADD_TRANSIT_NODE, ImGuiMod_Shift | ImGuiKey_Space);
 }
 
 void GraphEditorPlg::registerMenuAccelerators()
@@ -908,14 +1038,19 @@ void GraphEditorPlg::registerMenuAccelerators()
   IWndManager *manager = IEditorCoreEngine::get()->getWndManager();
   G_ASSERT(manager);
   manager->addAccelerator(CM_SHOW_SHORTCUTS, SHOW_SHORTCUTS);
+  // The menu item and toolbar button show this command's chord, so it has to work outside the canvas.
+  manager->addAccelerator(CM_FORCE_REBUILD, FORCE_REBUILD);
 }
 
 bool GraphEditorPlg::promptPinComment(eastl::string &inout_comment)
 {
   String text(inout_comment.c_str());
   PropPanel::DialogWindow *dlg = DAGORED2->createDialog(hdpi::_pxScaled(360), hdpi::_pxScaled(130), "Pin comment");
+  dlg->setInitialFocus(PID_PIN_COMMENT);
 
   PropPanel::ContainerPropertyControl &panel = *dlg->getPanel();
+  EnterAcceptsDialog enterHandler(*dlg);
+  panel.setEventHandler(&enterHandler); // must precede createEditBox: a control copies the panel's handler at creation
   panel.createEditBox(PID_PIN_COMMENT, "Comment:", text);
 
   const int ret = dlg->showDialog();
@@ -974,7 +1109,8 @@ void *GraphEditorPlg::onWmCreateWindow(int type)
         return nullptr;
       }
 
-      graphPanel = eastl::make_unique<GraphPanel>(*this, texGenService, graphData);
+      graphPanel = eastl::make_unique<GraphPanel>(*this, texGenService, document);
+      document.setView(graphPanel.get());
 
       if (toolBar)
       {
@@ -1034,22 +1170,22 @@ void *GraphEditorPlg::onWmCreateWindow(int type)
       isLandscapeVisible = true;
       return landscapePanel.get();
     }
-    case BASE_NODES_PANEL_WTYPE:
+    case NODE_LIBRARY_PANEL_WTYPE:
     {
-      if (baseNodesPanel)
+      if (nodeLibraryPanel)
       {
         return nullptr;
       }
 
-      baseNodesPanel = eastl::make_unique<BaseNodesPanel>(*this);
+      nodeLibraryPanel = eastl::make_unique<NodeLibraryPanel>(*this);
 
       if (toolBar)
       {
-        toolBar->setBool(CM_SHOW_BASE_NODES, true);
+        toolBar->setBool(CM_SHOW_NODE_LIBRARY, true);
       }
 
-      isBaseNodesVisible = true;
-      return baseNodesPanel.get();
+      isNodeLibraryVisible = true;
+      return nodeLibraryPanel.get();
     }
     case PROPERTIES_PANEL_WTYPE:
     {
@@ -1058,7 +1194,7 @@ void *GraphEditorPlg::onWmCreateWindow(int type)
         return nullptr;
       }
 
-      propertiesPanel = eastl::make_unique<PropertiesPanel>(*this);
+      propertiesPanel = eastl::make_unique<PropertiesPanel>(*this, document);
 
       if (toolBar)
       {
@@ -1096,6 +1232,7 @@ bool GraphEditorPlg::onWmDestroyWindow(void *window)
 
   if (graphPanel && window == graphPanel.get())
   {
+    document.setView(nullptr);
     graphPanel.reset();
     isGraphVisible = false;
 
@@ -1145,14 +1282,14 @@ bool GraphEditorPlg::onWmDestroyWindow(void *window)
     return true;
   }
 
-  if (baseNodesPanel && window == baseNodesPanel.get())
+  if (nodeLibraryPanel && window == nodeLibraryPanel.get())
   {
-    baseNodesPanel.reset();
-    isBaseNodesVisible = false;
+    nodeLibraryPanel.reset();
+    isNodeLibraryVisible = false;
 
     if (toolBar)
     {
-      toolBar->setBool(CM_SHOW_BASE_NODES, false);
+      toolBar->setBool(CM_SHOW_NODE_LIBRARY, false);
     }
     return true;
   }
@@ -1244,18 +1381,9 @@ void GraphEditorPlg::onClick(int pcb_id, PropPanel::ContainerPropertyControl *pa
       EDITORCORE->managePropPanels();
       break;
     }
-    case CM_SHOW_BASE_NODES:
+    case CM_SHOW_NODE_LIBRARY:
     {
-      if (!baseNodesPanel)
-      {
-        EDITORCORE->addPropPanel(BASE_NODES_PANEL_WTYPE, hdpi::_pxScaled(280));
-      }
-      else
-      {
-        EDITORCORE->removePropPanel(baseNodesPanel.get());
-      }
-
-      EDITORCORE->managePropPanels();
+      toggleNodeLibraryPanel();
       break;
     }
     case CM_SHOW_PROPERTIES:
@@ -1337,6 +1465,10 @@ void GraphEditorPlg::onClick(int pcb_id, PropPanel::ContainerPropertyControl *pa
   }
 }
 
+// The engine stamps the active IGenEditorPlugin* as the op owner (set_op_owner), so with multiple
+// inheritance the void* has to name that subobject exactly.
+void GraphEditorPlg::dropMyUndoOps() { EDITORCORE->getUndoSystem()->remove_ops_by_owner(static_cast<IGenEditorPlugin *>(this)); }
+
 void GraphEditorPlg::initResourcePaths()
 {
   String graphEditorDataDir = ::make_full_path(sgg::get_common_data_dir(), "graphEditor/");
@@ -1381,7 +1513,7 @@ void GraphEditorPlg::appendShaderTemplatesToBaseNodes()
       continue;
     }
 
-    // Synthesise a node{} descriptor in baseNodesBlk so the base-nodes panel /
+    // Synthesise a node{} descriptor in baseNodesBlk so the node library panel /
     // properties panel / spawn factory all treat shader templates uniformly with
     // built-ins. name overrides the JS-era "[[description-name]]" template macro
     // with the file stem; category overrides "[[description-category]]" with a
@@ -1421,7 +1553,7 @@ void GraphEditorPlg::appendShaderTemplatesToBaseNodes()
 void GraphEditorPlg::appendSubgraphTemplatesToBaseNodes()
 {
   // Scans `subgraphsDir` for *.subgraph.blk files, synthesising one node{} descriptor in
-  // baseNodesBlk per file so the BaseNodesPanel can list them under category "Subgraphs" and
+  // baseNodesBlk per file so the NodeLibraryPanel can list them under category "Subgraphs" and
   // the existing drag-drop / spawn machinery (makeNodeFromBaseBlk) handles insertion. Each
   // synthesised pin{} mirrors a `subgraph in: TYPE` / `subgraph out` boundary node found
   // inside the child graph; the pin's `name` is the boundary's `name` property value (the
@@ -1598,11 +1730,10 @@ void GraphEditorPlg::appendSubgraphTemplatesToBaseNodes()
       }
       pinBlk->setStr("types", b.types.c_str());
       pinBlk->setStr("role", b.isInput ? "in" : "out");
-      // singleConnect on instance inputs mirrors the boundary's single-driver semantics:
-      // the `subgraph in: TYPE` boundary inside the child accepts exactly one source, so a
-      // multi-source parent edge would have nowhere to splice. resolve_node_pins's default
-      // for inputs is multi-connect, so set explicitly. Outputs default to single-connect.
-      pinBlk->setBool("singleConnect", true);
+      // One driver per instance input: the expander substitutes a single parent edge into the
+      // child's `subgraph in: TYPE` boundary and errors on a second, while it rewires every
+      // consumer of an output. graphEditor.js builds its external pins with the same split.
+      pinBlk->setBool("singleConnect", b.isInput);
     };
     for (const Boundary &b : boundaries)
     {
@@ -1712,9 +1843,9 @@ void GraphEditorPlg::reloadBaseNodes()
   baseNodesBlk.reset();
   baseNodesBlkLoaded = false;
   loadBaseNodesBlkIfNeeded();
-  if (baseNodesPanel)
+  if (nodeLibraryPanel)
   {
-    baseNodesPanel->refresh();
+    nodeLibraryPanel->refresh();
   }
 }
 
@@ -1808,630 +1939,104 @@ bool GraphEditorPlg::makeNodeFromBaseBlk(const char *template_uid, float x, floa
   return true;
 }
 
+bool GraphEditorPlg::buildSpawnedNode(const char *template_uid, float x, float y, GraphData::Node &out)
+{
+  if (!graphPanel)
+  {
+    return false;
+  }
+  if (!makeNodeFromBaseBlk(template_uid, x, y, out))
+  {
+    DAEDITOR3.conWarning("GraphEditor: unknown base-node uid '%s'", template_uid ? template_uid : "");
+    return false;
+  }
+  out.id = graphPanel->allocateNodeId();
+  return true;
+}
+
 void GraphEditorPlg::spawnBaseNode(const char *template_uid, float x, float y)
+{
+  GraphData::Node n;
+  if (!buildSpawnedNode(template_uid, x, y, n))
+  {
+    return;
+  }
+  document.createNode(eastl::move(n));
+  noteRecentlyUsedNode(template_uid);
+}
+
+int GraphEditorPlg::spawnBaseNodeWired(const char *template_uid, float x, float y, int anchor_node, int anchor_pin, bool splice,
+  int anchor_edge)
+{
+  GraphData::Node n;
+  if (!buildSpawnedNode(template_uid, x, y, n))
+  {
+    return -1;
+  }
+
+  const int newId = n.id;
+  const eastl::string shownName = n.descName; // n is moved from below
+  const int wiredPin = splice ? document.recordInsertNodeOnPin(eastl::move(n), anchor_node, anchor_pin, anchor_edge)
+                              : document.recordAddConnectedNode(eastl::move(n), anchor_node, anchor_pin);
+  if (wiredPin < 0)
+  {
+    // The whole-graph pass refused every pin. Creating it unconnected beats discarding the node the
+    // user picked or dropped.
+    DAEDITOR3.conWarning("GraphEditor: '%s' has no pin that can take this connection; added unconnected", shownName.c_str());
+  }
+  noteRecentlyUsedNode(template_uid);
+  return newId;
+}
+
+void GraphEditorPlg::spawnBaseNodeAtCanvasCenter(const char *template_uid)
 {
   if (!graphPanel)
   {
     return;
   }
-  GraphData::Node n;
-  if (!makeNodeFromBaseBlk(template_uid, x, y, n))
-  {
-    DAEDITOR3.conWarning("GraphEditor: drag-drop unknown base-node uid '%s'", template_uid ? template_uid : "");
-    return;
-  }
-  n.id = graphPanel->allocateNodeId();
-  graphPanel->addNode(n); // already locks via mutateGraphData internally
-  markGraphDirtyAndRegen();
 
-  UndoSystem *undoSystem = EDITORCORE->getUndoSystem();
-  undoSystem->begin();
-  undoSystem->put(new UndoCreateNode(*this, eastl::move(n)));
-  undoSystem->accept("Create node");
+  // Stepped along a short diagonal by the node count: successive spawns would otherwise land on
+  // the identical centre and overlap exactly, which reads as nothing having happened. Derived
+  // rather than counted because a node dragged away leaves graphData holding its old position.
+  const ImVec2 center = graphPanel->getLastCanvasCenter();
+  const float slot = static_cast<float>(document.getGraphData().nodes.size() % SPAWN_SLOT_COUNT);
+  spawnBaseNode(template_uid, center.x + slot * SPAWN_SLOT_STEP, center.y + slot * SPAWN_SLOT_STEP);
 }
 
-void GraphEditorPlg::reinsertNode(const GraphData::Node &node)
+void GraphEditorPlg::noteRecentlyUsedNode(const char *template_uid)
 {
-  if (graphPanel)
-  {
-    graphPanel->addNode(node);
-  }
-  else
-  {
-    mutateGraphData([&node](GraphData &gd) { gd.nodes.push_back(node); });
-  }
-  markGraphDirtyAndRegen();
-}
-
-void GraphEditorPlg::eraseNode(int node_id)
-{
-  if (graphPanel)
-  {
-    graphPanel->removeNodeById(node_id); // strips incident edges + regens internally
-    return;
-  }
-  // Graph panel closed: mutate the canonical store directly so undo stays correct with no canvas.
-  mutateGraphData([node_id](GraphData &gd) {
-    auto edgeEnd = eastl::remove_if(gd.edges.begin(), gd.edges.end(),
-      [node_id](const GraphData::Edge &e) { return e.elemA == node_id || e.elemB == node_id; });
-    gd.edges.erase(edgeEnd, gd.edges.end());
-    auto nodeIt = eastl::find_if(gd.nodes.begin(), gd.nodes.end(), [node_id](const GraphData::Node &n) { return n.id == node_id; });
-    if (nodeIt != gd.nodes.end())
-    {
-      gd.nodes.erase(nodeIt);
-    }
-  });
-  markGraphDirtyAndRegen();
-}
-
-void GraphEditorPlg::reinsertEdge(const GraphData::Edge &edge)
-{
-  if (graphPanel)
-  {
-    graphPanel->addEdge(edge); // mutates + marks dirty + cull
-  }
-  else
-  {
-    mutateGraphData([&edge](GraphData &gd) { gd.edges.push_back(edge); });
-    markGraphDirtyAndRegen();
-  }
-}
-
-void GraphEditorPlg::eraseEdge(int edge_id)
-{
-  if (graphPanel)
-  {
-    graphPanel->removeEdgeById(edge_id); // mutates + marks dirty + cull
-    return;
-  }
-  // Graph panel closed: mutate the canonical store directly so undo stays correct with no canvas.
-  bool erased = false;
-  mutateGraphData([edge_id, &erased](GraphData &gd) {
-    auto it = eastl::find_if(gd.edges.begin(), gd.edges.end(), [edge_id](const GraphData::Edge &e) { return e.id == edge_id; });
-    if (it != gd.edges.end())
-    {
-      gd.edges.erase(it);
-      erased = true;
-    }
-  });
-  if (erased)
-  {
-    markGraphDirtyAndRegen();
-  }
-}
-
-void GraphEditorPlg::eraseNodes(const eastl::vector<int> &node_ids)
-{
-  for (int id : node_ids)
-  {
-    eraseNode(id);
-  }
-}
-
-void GraphEditorPlg::restoreNodesAndEdges(const eastl::vector<GraphData::Node> &nodes, const eastl::vector<GraphData::Edge> &edges)
-{
-  // Nodes first, then edges, so a restored edge never references a not-yet-present node.
-  for (const GraphData::Node &n : nodes)
-  {
-    reinsertNode(n);
-  }
-  for (const GraphData::Edge &e : edges)
-  {
-    reinsertEdge(e);
-  }
-}
-
-void GraphEditorPlg::deleteNodesUndoable(const eastl::vector<int> &node_ids)
-{
-  if (node_ids.empty())
+  if (!template_uid || !template_uid[0])
   {
     return;
   }
 
-  // Snapshot the removed sub-graph BEFORE erasing: the nodes plus every edge incident to any of
-  // them, so undo can restore the exact connections. This is a main-thread READ of node/edge data,
-  // which only the main thread ever writes (always under mutateGraphData). The texgen worker takes
-  // graphData by const ref and writes only the compiled-output BLKs, so at most it reads these
-  // concurrently -- and read-vs-read is not a race -- so no graph mutex is needed for the snapshot.
-  eastl::hash_set<int> idSet;
-  idSet.reserve(node_ids.size());
-  for (int id : node_ids)
+  for (auto it = recentNodeUids.begin(); it != recentNodeUids.end(); ++it)
   {
-    idSet.insert(id);
-  }
-  eastl::vector<GraphData::Node> removedNodes;
-  eastl::vector<GraphData::Edge> removedEdges;
-  removedNodes.reserve(node_ids.size());
-  for (const GraphData::Node &n : graphData.nodes)
-  {
-    if (idSet.find(n.id) != idSet.end())
+    if (*it == template_uid)
     {
-      removedNodes.push_back(n);
-    }
-  }
-  for (const GraphData::Edge &e : graphData.edges)
-  {
-    if (idSet.find(e.elemA) != idSet.end() || idSet.find(e.elemB) != idSet.end())
-    {
-      removedEdges.push_back(e);
-    }
-  }
-  if (removedNodes.empty())
-  {
-    return;
-  }
-
-  eraseNodes(node_ids);
-
-  // Incident-edge ids (for the link-selection fold below), captured before removedEdges is moved.
-  eastl::hash_set<int> removedEdgeIds;
-  removedEdgeIds.reserve(removedEdges.size());
-  for (const GraphData::Edge &e : removedEdges)
-  {
-    removedEdgeIds.insert(e.id);
-  }
-
-  UndoSystem *undoSystem = EDITORCORE->getUndoSystem();
-  undoSystem->begin();
-  undoSystem->put(new UndoDeleteNodes(*this, eastl::move(removedNodes), eastl::move(removedEdges)));
-  if (graphPanel)
-  {
-    // Fold the selection change in: undo re-adds the nodes/edges and reselects what was selected, redo
-    // deletes them and drops them from the selection -- one Ctrl+Z covers both.
-    const GraphSelection &oldSel = graphPanel->getRecordedSelection();
-    GraphSelection newSel;
-    for (int id : oldSel.nodes)
-    {
-      if (idSet.find(id) == idSet.end())
-      {
-        newSel.nodes.push_back(id);
-      }
-    }
-    for (int id : oldSel.links)
-    {
-      if (removedEdgeIds.find(id) == removedEdgeIds.end())
-      {
-        newSel.links.push_back(id);
-      }
-    }
-    if (oldSel != newSel)
-    {
-      undoSystem->put(new UndoSelection(*this, oldSel, eastl::move(newSel)));
-    }
-    graphPanel->suppressSelectionUndoThisFrame();
-  }
-  undoSystem->accept("Delete nodes");
-}
-
-void GraphEditorPlg::addEdgeUndoable(GraphData::Edge edge)
-{
-  reinsertEdge(edge);
-
-  UndoSystem *undoSystem = EDITORCORE->getUndoSystem();
-  undoSystem->begin();
-  undoSystem->put(new UndoCreateEdge(*this, edge));
-  undoSystem->accept("Create edge");
-}
-
-void GraphEditorPlg::setEdgeMuted(int edge_id, bool muted)
-{
-  bool changed = false;
-  mutateGraphData([edge_id, muted, &changed](GraphData &gd) {
-    auto it = eastl::find_if(gd.edges.begin(), gd.edges.end(), [edge_id](const GraphData::Edge &e) { return e.id == edge_id; });
-    if (it != gd.edges.end() && it->muted != muted)
-    {
-      it->muted = muted;
-      changed = true;
-    }
-  });
-  if (!changed)
-  {
-    return;
-  }
-  // Endpoints did not move, so the cull cache stays valid -- but the compile result does not.
-  // The canvas picks up the new dead-path set through the graph revision bumped above.
-  markGraphDirtyAndRegen();
-}
-
-void GraphEditorPlg::toggleEdgeMutedUndoable(int edge_id)
-{
-  // Main-thread read of edge data (see the snapshot note in deleteNodesUndoable).
-  auto it =
-    eastl::find_if(graphData.edges.begin(), graphData.edges.end(), [edge_id](const GraphData::Edge &e) { return e.id == edge_id; });
-  if (it == graphData.edges.end())
-  {
-    return;
-  }
-  const bool oldMuted = it->muted;
-
-  setEdgeMuted(edge_id, !oldMuted);
-
-  UndoSystem *undoSystem = EDITORCORE->getUndoSystem();
-  undoSystem->begin();
-  undoSystem->put(new UndoToggleEdgeMuted(*this, edge_id, oldMuted));
-  undoSystem->accept(oldMuted ? "Unmute edge" : "Mute edge");
-}
-
-void GraphEditorPlg::deleteEdgesUndoable(const eastl::vector<int> &edge_ids)
-{
-  if (edge_ids.empty())
-  {
-    return;
-  }
-
-  // Snapshot the edges before erasing so undo can restore them. Main-thread read of edge data (see
-  // the snapshot note in deleteNodesUndoable).
-  eastl::vector<GraphData::Edge> removedEdges;
-  removedEdges.reserve(edge_ids.size());
-  for (int id : edge_ids)
-  {
-    auto it = eastl::find_if(graphData.edges.begin(), graphData.edges.end(), [id](const GraphData::Edge &e) { return e.id == id; });
-    if (it != graphData.edges.end())
-    {
-      removedEdges.push_back(*it);
-    }
-  }
-  if (removedEdges.empty())
-  {
-    return;
-  }
-
-  for (int id : edge_ids)
-  {
-    eraseEdge(id);
-  }
-
-  UndoSystem *undoSystem = EDITORCORE->getUndoSystem();
-  undoSystem->begin();
-  undoSystem->put(new UndoDeleteEdges(*this, eastl::move(removedEdges)));
-  if (graphPanel)
-  {
-    // Fold the link-selection change in: undo re-adds the edges and reselects what was selected, redo
-    // removes them and drops them from the selection.
-    eastl::hash_set<int> idSet;
-    idSet.reserve(edge_ids.size());
-    for (int id : edge_ids)
-    {
-      idSet.insert(id);
-    }
-    const GraphSelection &oldSel = graphPanel->getRecordedSelection();
-    GraphSelection newSel;
-    newSel.nodes = oldSel.nodes;
-    for (int id : oldSel.links)
-    {
-      if (idSet.find(id) == idSet.end())
-      {
-        newSel.links.push_back(id);
-      }
-    }
-    if (oldSel != newSel)
-    {
-      undoSystem->put(new UndoSelection(*this, oldSel, eastl::move(newSel)));
-    }
-    graphPanel->suppressSelectionUndoThisFrame();
-  }
-  undoSystem->accept("Delete edges");
-}
-
-void GraphEditorPlg::recordPaste(eastl::vector<GraphData::Node> pasted_nodes, eastl::vector<GraphData::Edge> pasted_edges)
-{
-  if (pasted_nodes.empty())
-  {
-    return;
-  }
-
-  UndoSystem *undoSystem = EDITORCORE->getUndoSystem();
-  undoSystem->begin();
-  for (const GraphData::Node &n : pasted_nodes)
-  {
-    undoSystem->put(new UndoCreateNode(*this, n));
-  }
-  for (const GraphData::Edge &e : pasted_edges)
-  {
-    undoSystem->put(new UndoCreateEdge(*this, e));
-  }
-  if (graphPanel)
-  {
-    // Paste clears the selection and selects the pasted nodes; fold that so undo restores the prior
-    // selection (and removes the nodes) while redo reselects the paste.
-    const GraphSelection &oldSel = graphPanel->getRecordedSelection();
-    GraphSelection newSel;
-    newSel.nodes.reserve(pasted_nodes.size());
-    for (const GraphData::Node &n : pasted_nodes)
-    {
-      newSel.nodes.push_back(n.id);
-    }
-    if (oldSel != newSel)
-    {
-      undoSystem->put(new UndoSelection(*this, oldSel, eastl::move(newSel)));
-    }
-    graphPanel->suppressSelectionUndoThisFrame();
-  }
-  undoSystem->accept("Paste");
-}
-
-void GraphEditorPlg::recordRemoveKeepingConnections(eastl::vector<GraphData::Node> removed_nodes,
-  eastl::vector<GraphData::Edge> removed_edges, eastl::vector<GraphData::Edge> bridge_edges)
-{
-  if (removed_nodes.empty())
-  {
-    return;
-  }
-
-  // One UndoDeleteNodes (the removed nodes + their incident edges) followed by a UndoCreateEdge per
-  // bridge edge. The holder redoes forward (delete, then add bridges) and undoes in reverse (remove
-  // bridges, then restore the sub-graph), reproducing/reverting the splice exactly.
-  UndoSystem *undoSystem = EDITORCORE->getUndoSystem();
-  undoSystem->begin();
-  undoSystem->put(new UndoDeleteNodes(*this, eastl::move(removed_nodes), eastl::move(removed_edges)));
-  for (const GraphData::Edge &e : bridge_edges)
-  {
-    undoSystem->put(new UndoCreateEdge(*this, e));
-  }
-  if (graphPanel)
-  {
-    // The splice clears the selection (it removed the selected nodes); fold that so undo brings the
-    // nodes back selected and redo clears again.
-    const GraphSelection &oldSel = graphPanel->getRecordedSelection();
-    if (oldSel != GraphSelection())
-    {
-      undoSystem->put(new UndoSelection(*this, oldSel, GraphSelection()));
-    }
-    graphPanel->suppressSelectionUndoThisFrame();
-  }
-  undoSystem->accept("Remove keeping connections");
-}
-
-void GraphEditorPlg::recordReconnectEdge(const GraphData::Edge &removed_edge, const GraphData::Edge *added_edge)
-{
-  UndoSystem *undoSystem = EDITORCORE->getUndoSystem();
-  undoSystem->begin();
-  eastl::vector<GraphData::Edge> removed;
-  removed.push_back(removed_edge);
-  undoSystem->put(new UndoDeleteEdges(*this, eastl::move(removed)));
-  if (added_edge)
-  {
-    undoSystem->put(new UndoCreateEdge(*this, *added_edge));
-  }
-  undoSystem->accept("Reconnect edge");
-}
-
-void GraphEditorPlg::recordSelectionChange(GraphSelection old_selection, GraphSelection new_selection)
-{
-  UndoSystem *undoSystem = EDITORCORE->getUndoSystem();
-  undoSystem->begin();
-  undoSystem->put(new UndoSelection(*this, eastl::move(old_selection), eastl::move(new_selection)));
-  undoSystem->accept("Select");
-}
-
-void GraphEditorPlg::applySelection(const GraphSelection &selection)
-{
-  if (graphPanel)
-  {
-    graphPanel->setPendingSelection(selection);
-  }
-}
-
-void GraphEditorPlg::getNodeProperties(int node_id, eastl::vector<eastl::pair<eastl::string, eastl::string>> &out) const
-{
-  out.clear();
-  // Main-thread read of node data (see the snapshot note in deleteNodesUndoable).
-  for (const GraphData::Node &n : graphData.nodes)
-  {
-    if (n.id == node_id)
-    {
-      out = n.propertyValues;
-      return;
-    }
-  }
-}
-
-void GraphEditorPlg::setNodeProperties(int node_id, const eastl::vector<eastl::pair<eastl::string, eastl::string>> &props)
-{
-  bool found = false;
-  mutateGraphData([&](GraphData &gd) {
-    for (auto &node : gd.nodes)
-    {
-      if (node.id == node_id)
-      {
-        node.propertyValues = props;
-        found = true;
-        break;
-      }
-    }
-  });
-  if (found)
-  {
-    markGraphDirtyAndRegen();
-  }
-  // The displayed controls still show the pre-undo values; force the panel to rebuild them.
-  if (propertiesPanel)
-  {
-    propertiesPanel->invalidateControls();
-  }
-}
-
-void GraphEditorPlg::getGraphSettings(GraphSettings &out) const
-{
-  // Main-thread read of graph data (see the snapshot note in deleteNodesUndoable).
-  out.renderDir = graphData.renderDir;
-  out.entityDir = graphData.entityDir;
-  out.heightmapScale = graphData.heightmapScale;
-  out.heightmapMin = graphData.heightmapMin;
-  out.heightmapCellSize = graphData.heightmapCellSize;
-  out.graphTextureWidth = graphData.graphTextureWidth;
-  out.graphTextureHeight = graphData.graphTextureHeight;
-  out.graphTextureDepth = graphData.graphTextureDepth;
-  out.graphTextureType = graphData.graphTextureType;
-  out.graphTextureWrap = graphData.graphTextureWrap;
-}
-
-void GraphEditorPlg::setGraphSettings(const GraphSettings &settings)
-{
-  mutateGraphData([&](GraphData &gd) {
-    gd.renderDir = settings.renderDir;
-    gd.entityDir = settings.entityDir;
-    gd.heightmapScale = settings.heightmapScale;
-    gd.heightmapMin = settings.heightmapMin;
-    gd.heightmapCellSize = settings.heightmapCellSize;
-    gd.graphTextureWidth = settings.graphTextureWidth;
-    gd.graphTextureHeight = settings.graphTextureHeight;
-    gd.graphTextureDepth = settings.graphTextureDepth;
-    gd.graphTextureType = settings.graphTextureType;
-    gd.graphTextureWrap = settings.graphTextureWrap;
-  });
-  // Re-push heightmap params (mirrors notifyGraphSourceChanged, minus the disruptive setGraphData) so
-  // the landscape preview follows the restored values, then kick a recompile.
-  if (texGenService)
-  {
-    texGenService->setHeightmapParams(graphData.heightmapScale, graphData.heightmapMin, graphData.heightmapCellSize);
-  }
-  markGraphDirtyAndRegen();
-  if (propertiesPanel)
-  {
-    propertiesPanel->invalidateControls();
-  }
-}
-
-void GraphEditorPlg::recordGraphSettingsChange(GraphSettings old_settings)
-{
-  GraphSettings current;
-  getGraphSettings(current);
-  if (current == old_settings)
-  {
-    return; // no net change (e.g. focus left an unedited field, or a combo re-picked its value)
-  }
-  UndoSystem *undoSystem = EDITORCORE->getUndoSystem();
-  undoSystem->begin();
-  undoSystem->put(new UndoGraphSettings(*this, eastl::move(old_settings)));
-  undoSystem->accept("Change graph settings");
-}
-
-void GraphEditorPlg::setPinComment(int node_id, int pin_index, const eastl::string &comment)
-{
-  mutateGraphData([&](GraphData &gd) {
-    for (GraphData::Node &n : gd.nodes)
-    {
-      if (n.id == node_id && pin_index >= 0 && pin_index < static_cast<int>(n.pins.size()))
-      {
-        n.pins[pin_index].comment = comment;
-        break;
-      }
-    }
-  });
-  // Display-only annotation: the canvas re-reads graphData each frame, so no regen is needed.
-}
-
-void GraphEditorPlg::setPinCommentUndoable(int node_id, int pin_index, const eastl::string &new_comment)
-{
-  // Read the current comment as the undo's old value (main-thread read; see deleteNodesUndoable).
-  eastl::string oldComment;
-  bool found = false;
-  for (const GraphData::Node &n : graphData.nodes)
-  {
-    if (n.id == node_id && pin_index >= 0 && pin_index < static_cast<int>(n.pins.size()))
-    {
-      oldComment = n.pins[pin_index].comment;
-      found = true;
+      recentNodeUids.erase(it);
       break;
     }
   }
-  if (!found || oldComment == new_comment)
+
+  recentNodeUids.insert(recentNodeUids.begin(), eastl::string(template_uid));
+  if (recentNodeUids.size() > RECENT_NODE_LIMIT)
   {
-    return;
+    recentNodeUids.resize(RECENT_NODE_LIMIT);
   }
 
-  UndoSystem *undoSystem = EDITORCORE->getUndoSystem();
-  undoSystem->begin();
-  undoSystem->put(new UndoPinComment(*this, node_id, pin_index, oldComment, new_comment));
-  setPinComment(node_id, pin_index, new_comment);
-  undoSystem->accept("Edit pin comment");
+  if (nodeLibraryPanel)
+  {
+    nodeLibraryPanel->onRecentNodesChanged();
+  }
 }
 
-void GraphEditorPlg::applyBlockSizes(const eastl::vector<BlockSize> &sizes)
+void GraphEditorPlg::invalidatePropertiesPanel()
 {
-  mutateGraphData([&](GraphData &gd) {
-    for (const BlockSize &bs : sizes)
-    {
-      for (GraphData::Node &n : gd.nodes)
-      {
-        if (n.id == bs.nodeId)
-        {
-          n.blockWidth = bs.width;
-          n.blockHeight = bs.height;
-          break;
-        }
-      }
-    }
-  });
-  // ne stores group bounds and ignores drawBlockNode's supplied size for an existing group, so the
-  // size must be pushed via ne::SetGroupSize -- queue it (drawBlockNode drains it before BeginNode).
-  if (graphPanel)
+  if (propertiesPanel)
   {
-    eastl::vector<int> ids;
-    ids.reserve(sizes.size());
-    for (const BlockSize &bs : sizes)
-    {
-      ids.push_back(bs.nodeId);
-    }
-    graphPanel->markBlockSizesPending(ids);
+    propertiesPanel->invalidateControls();
   }
-  // Block size is display-only; no regen needed.
-}
-
-void GraphEditorPlg::applyNodePositions(const eastl::vector<NodePos> &positions)
-{
-  if (positions.empty())
-  {
-    return;
-  }
-  mutateGraphData([&positions](GraphData &gd) {
-    for (const NodePos &p : positions)
-    {
-      for (GraphData::Node &n : gd.nodes)
-      {
-        if (n.id == p.nodeId)
-        {
-          n.x = p.x;
-          n.y = p.y;
-          break;
-        }
-      }
-    }
-  });
-  if (graphPanel)
-  {
-    eastl::vector<int> ids;
-    ids.reserve(positions.size());
-    for (const NodePos &p : positions)
-    {
-      ids.push_back(p.nodeId);
-    }
-    graphPanel->markPositionsPending(ids);
-  }
-  // Node position is display-only -- do not markGraphDirtyAndRegen.
-}
-
-void GraphEditorPlg::commitNodeTransforms(eastl::vector<NodePos> old_positions, eastl::vector<NodePos> new_positions,
-  eastl::vector<BlockSize> old_sizes, eastl::vector<BlockSize> new_sizes)
-{
-  applyNodePositions(new_positions); // commit positions to graphData + push to ne (no-op if empty)
-  // Sizes are already committed to graphData live by syncBlockSizes; only the undo entry is needed.
-
-  // Fold a corner resize (which moves and resizes the same block) into one entry, so a single Ctrl+Z
-  // restores both -- the deferred SetNodePosition + SetGroupSize on undo re-anchor the block correctly.
-  const bool hasResize = !old_sizes.empty();
-  UndoSystem *undoSystem = EDITORCORE->getUndoSystem();
-  undoSystem->begin();
-  if (!old_positions.empty())
-  {
-    undoSystem->put(new UndoMoveNodes(*this, eastl::move(old_positions), eastl::move(new_positions)));
-  }
-  if (hasResize)
-  {
-    undoSystem->put(new UndoBlockResize(*this, eastl::move(old_sizes), eastl::move(new_sizes)));
-  }
-  undoSystem->accept(hasResize ? "Resize block" : "Move nodes");
 }
 
 void GraphEditorPlg::markGraphDirtyAndRegen()
@@ -2458,46 +2063,7 @@ void GraphEditorPlg::notifyGraphSourceChanged()
   {
     return;
   }
-  texGenService->setHeightmapParams(graphData.heightmapScale, graphData.heightmapMin, graphData.heightmapCellSize);
-  texGenService->setGraphData(&graphData);
+  document.pushHeightmapParams();
+  texGenService->setGraphData(document.dataForTexGenService());
   texGenService->markGraphDirty();
-}
-
-void GraphEditorPlg::applyPendingPinCustomTextureNames()
-{
-  // Skip the lock when there's nothing to apply. Reading the size without the
-  // mutex is safe-ish (worst case we miss a just-arrived batch and pick it up
-  // next tick), and lets the typical no-pending-work tick avoid the
-  // WinCritSec round-trip entirely.
-  if (pendingPinCustomTextureNames.empty())
-  {
-    return;
-  }
-  mutateGraphData([&](GraphData &gd) {
-    if (pendingPinCustomTextureNames.empty())
-    {
-      return;
-    }
-    eastl::hash_map<int, int> idToIdx;
-    idToIdx.reserve(gd.nodes.size());
-    for (int i = 0; i < static_cast<int>(gd.nodes.size()); ++i)
-    {
-      idToIdx[gd.nodes[i].id] = i;
-    }
-    for (auto &entry : pendingPinCustomTextureNames)
-    {
-      const auto it = idToIdx.find(entry.first);
-      if (it == idToIdx.end())
-      {
-        continue; // node deleted between compile and drain
-      }
-      GraphData::Node &n = gd.nodes[it->second];
-      const int count = static_cast<int>(eastl::min(entry.second.size(), n.pins.size()));
-      for (int j = 0; j < count; ++j)
-      {
-        n.pins[j].customTextureName = eastl::move(entry.second[j]);
-      }
-    }
-    pendingPinCustomTextureNames.clear();
-  });
 }

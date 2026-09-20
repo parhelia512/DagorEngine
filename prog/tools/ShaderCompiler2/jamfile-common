@@ -46,6 +46,7 @@ Sources =
   variantSemantic.cpp
   variantAssembly.cpp
   preshaderCompilation.cpp
+  gatherVariantLocalVars.cpp
 
   shCode.cpp
   shTargetStorage.cpp
@@ -75,8 +76,6 @@ Sources =
   refinedBlockRegisterAllocator.cpp
   codeBlocks.cpp
   condParser.cpp
-  ver_obj_spirv.cpp
-  ver_obj_dxc.cpp
   deSerializationContext.cpp
 
   linkShaders.cpp

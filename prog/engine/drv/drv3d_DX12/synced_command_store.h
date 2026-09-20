@@ -110,7 +110,7 @@ public:
   uint32_t tryVisitAllAndDestroy(U &&visitor)
   {
     return BaseType::tryVisitAllAndDestroy([this, &visitor](auto &&value) {
-      onConsumeCommand<decltype(value)>();
+      this->onConsumeCommand<decltype(value)>();
       visitor(std::forward<decltype(value)>(value));
     });
   }

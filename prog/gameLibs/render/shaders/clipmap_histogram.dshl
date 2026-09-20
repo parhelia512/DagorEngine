@@ -160,7 +160,7 @@ shader clipmap_process_feedback_cs
       uint2 pos; uint mip; uint ri_offset;
       unpackFeedbackInfo(loadFeedback(dtId), pos.xy, mip, ri_offset);
 
-      if ( all(pos < TILE_WIDTH && mip < clipmap_tex_mips && ri_offset < MAX_RI_OFFSET) )
+      if ( all(pos < TILE_WIDTH) && mip < clipmap_tex_mips && ri_offset < MAX_RI_OFFSET )
       {
         uint histId = calc_histogram_index(pos.x, pos.y, mip, ri_offset);
         clipmap_histogram_buf_rw.InterlockedAdd(histId*4, 1u);

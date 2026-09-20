@@ -145,8 +145,7 @@ void GameInputKeyboardDevice::update()
 {
   TIME_PROFILE(HID_GINP_updateKeyboard);
 
-  gameinput::DevicesList devices;
-  gameinput::get_devices(GameInputKindKeyboard, devices);
+  gameinput::DevicesList devices = gameinput::get_devices(GameInputKindKeyboard);
 
   KeyboardRawState newState = {};
 

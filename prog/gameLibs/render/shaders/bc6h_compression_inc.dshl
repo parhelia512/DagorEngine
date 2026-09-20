@@ -139,8 +139,8 @@ hlsl {
     float3 refinedBlockMax = blockMin;
     for (i = 0; i < 16; ++i)
     {
-      refinedBlockMin = min(refinedBlockMin, texels[i] == blockMin ? refinedBlockMin : texels[i]);
-      refinedBlockMax = max(refinedBlockMax, texels[i] == blockMax ? refinedBlockMax : texels[i]);
+      refinedBlockMin = min(refinedBlockMin, select(texels[i] == blockMin, refinedBlockMin, texels[i]));
+      refinedBlockMax = max(refinedBlockMax, select(texels[i] == blockMax, refinedBlockMax, texels[i]));
     }
 
     float3 logBlockMax = log2(blockMax + 1.0f);

@@ -320,7 +320,7 @@ void set_num_cascades(FFTWater *water, int cascades);
 float get_period(const FFTWater *water);
 void delete_water(FFTWater *&water);
 void simulate(FFTWater *water, double time);
-void before_render(const FFTWater *water);
+void before_render(const FFTWater *water, float scaled_dt);
 void set_render_quad(FFTWater *water, const BBox2 &quad);
 void render(const FFTWater *water, const Point3 &pos, TEXTUREID distance_tex_id, const Frustum &frustum, Occlusion *occlusion,
   const Driver3dPerspective &persp, int geom_lod_quality = GEOM_LOD_NORMAL, int survey_id = -1,

@@ -12,7 +12,7 @@
 
 using namespace drv3d_vulkan;
 
-NO_UBSAN uint32_t d3d::register_bindless_sampler(d3d::SamplerHandle sampler)
+uint32_t d3d::register_bindless_sampler(d3d::SamplerHandle sampler)
 {
   D3D_CONTRACT_ASSERTF_RETURN(Globals::VK::phy.hasBindless, 0, "Bindless resources are not supported on this hardware");
   return Globals::bindless.registerBindlessSampler(reinterpret_cast<SamplerResource *>(sampler));

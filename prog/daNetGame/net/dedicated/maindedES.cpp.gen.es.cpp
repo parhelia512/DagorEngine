@@ -24,3 +24,23 @@ static ecs::EntitySystemDesc dedicated_init_on_appstart_es_es_desc
   ecs::EventSetBuilder<EventOnGameAppStarted>::build(),
   0
 ,nullptr,nullptr,nullptr,"on_gameapp_started_es");
+//static constexpr ecs::ComponentDesc dedicated_player_app_id_changed_es_comps[] ={};
+static void dedicated_player_app_id_changed_es_all_events(const ecs::Event &__restrict evt, const ecs::QueryView &__restrict components)
+{
+  G_UNUSED(components);
+  G_FAST_ASSERT(evt.is<NetMatchingEventOnPlayerAppIdChanged>());
+  dedicated::dedicated_player_app_id_changed_es(static_cast<const NetMatchingEventOnPlayerAppIdChanged&>(evt)
+        );
+}
+static ecs::EntitySystemDesc dedicated_player_app_id_changed_es_es_desc
+(
+  "dedicated_player_app_id_changed_es",
+  "prog/daNetGame/net/dedicated/maindedES.cpp.inl",
+  ecs::EntitySystemOps(nullptr, dedicated_player_app_id_changed_es_all_events),
+  empty_span(),
+  empty_span(),
+  empty_span(),
+  empty_span(),
+  ecs::EventSetBuilder<NetMatchingEventOnPlayerAppIdChanged>::build(),
+  0
+,nullptr,nullptr,"*");

@@ -40,6 +40,7 @@ endmacro
 macro USE_CLOUDS_DISTANCE_STUB(code)
   hlsl(code) {
     #if !CLOUDS_HAS_TILED_DIST
+    float closest_tiled_dist(uint2 scrPos) { return 0; }
     void closest_tiled_dist_clamp(float start, uint2 scr){}
     bool tile_is_empty(uint2 scrPos) { return false; }
     #endif

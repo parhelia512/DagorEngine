@@ -7,6 +7,8 @@
 #include <shaders/dag_shaders.h>
 #include <math/dag_color.h>
 #include <daECS/core/componentTypes.h>
+#include <generic/dag_relocatableFixedVector.h>
+#include <memory/dag_framemem.h>
 
 #define CAMOUFLAGE_OVERRIDE_VARS    \
   VAR(material_id)                  \
@@ -32,77 +34,104 @@ static void dynamic_sheen_camo_override_params_es_event_handler(const ecs::Event
   if (camouflage_override.empty() || !VariableMap::isVariablePresent(material_idVarId))
     return;
 
+  struct OverrideEntry
+  {
+    int materialId = -1;
+    const Point4 *camouflageScaleAndOffset = nullptr;
+    const Point4 *solidFillColor = nullptr;
+    const float *colorMultiplier = nullptr;
+    const bool *forceSolidFill = nullptr;
+    const int *microDetailLayer = nullptr;
+    const float *microDetailLayerIntensity = nullptr;
+    const float *microDetailLayerUvScale = nullptr;
+    const float *microDetailLayerVScale = nullptr;
+
+    bool empty() const
+    {
+      return !camouflageScaleAndOffset && !solidFillColor && !colorMultiplier && !forceSolidFill && !microDetailLayer &&
+             !microDetailLayerIntensity && !microDetailLayerUvScale && !microDetailLayerVScale;
+    }
+    bool affects(const ShaderMaterial *mat) const
+    {
+      if (camouflageScaleAndOffset && mat->hasVariable(camouflage_scale_and_offsetVarId.get_var_id()))
+        return true;
+      if (solidFillColor && mat->hasVariable(solid_fill_colorVarId.get_var_id()))
+        return true;
+      if (colorMultiplier && mat->hasVariable(color_multiplierVarId.get_var_id()))
+        return true;
+      if (forceSolidFill && *forceSolidFill && mat->hasVariable(camouflage_texVarId.get_var_id()))
+        return true;
+      if (microDetailLayer && mat->hasVariable(micro_detail_layerVarId.get_var_id()))
+        return true;
+      if (microDetailLayerIntensity && mat->hasVariable(micro_detail_layer_intensityVarId.get_var_id()))
+        return true;
+      if (microDetailLayerUvScale && mat->hasVariable(micro_detail_layer_uv_scaleVarId.get_var_id()))
+        return true;
+      if (microDetailLayerVScale && mat->hasVariable(micro_detail_layer_v_scaleVarId.get_var_id()))
+        return true;
+      return false;
+    }
+    void apply(ShaderMaterial *mat) const
+    {
+      if (camouflageScaleAndOffset)
+        mat->set_color4_param(camouflage_scale_and_offsetVarId.get_var_id(), Color4::xyzw(*camouflageScaleAndOffset));
+      if (solidFillColor)
+        mat->set_color4_param(solid_fill_colorVarId.get_var_id(), Color4::xyzw(*solidFillColor));
+      if (colorMultiplier)
+        mat->set_real_param(color_multiplierVarId.get_var_id(), *colorMultiplier);
+      if (forceSolidFill && *forceSolidFill)
+        mat->set_texture_param(camouflage_texVarId.get_var_id(), BAD_TEXTUREID);
+
+      if (microDetailLayer)
+        mat->set_int_param(micro_detail_layerVarId.get_var_id(), *microDetailLayer);
+      if (microDetailLayerIntensity)
+        mat->set_real_param(micro_detail_layer_intensityVarId.get_var_id(), *microDetailLayerIntensity);
+      if (microDetailLayerUvScale)
+        mat->set_real_param(micro_detail_layer_uv_scaleVarId.get_var_id(), *microDetailLayerUvScale);
+      if (microDetailLayerVScale)
+        mat->set_real_param(micro_detail_layer_v_scaleVarId.get_var_id(), *microDetailLayerVScale);
+    }
+  };
+
+  dag::RelocatableFixedVector<OverrideEntry, 16, true, framemem_allocator> entries;
   for (const auto &material : camouflage_override)
   {
-    ecs::Object parameters = material.get<ecs::Object>();
-    if (!parameters.empty())
-    {
-      const int materialId = parameters.getMemberOr(ECS_HASH("material_id"), -1);
-      const Point4 *camouflageScaleAndOffset = parameters.getNullable<Point4>(ECS_HASH("camouflage_scale_and_offset"));
-      const Point4 *solidFillColor = parameters.getNullable<Point4>(ECS_HASH("solid_fill_color"));
-      const float *colorMultiplier = parameters.getNullable<float>(ECS_HASH("color_multiplier"));
-      const bool *forceSolidFill = parameters.getNullable<bool>(ECS_HASH("force_solid_fill"));
-      const int *microDetailLayer = parameters.getNullable<int>(ECS_HASH("micro_detail_layer"));
-      const float *microDetailLayerIntensity = parameters.getNullable<float>(ECS_HASH("micro_detail_layer_intensity"));
-      const float *microDetailLayerUvScale = parameters.getNullable<float>(ECS_HASH("micro_detail_layer_uv_scale"));
-      const float *microDetailLayerVScale = parameters.getNullable<float>(ECS_HASH("micro_detail_layer_v_scale"));
+    const ecs::Object &parameters = material.get<ecs::Object>();
+    if (parameters.empty())
+      continue;
 
-      if (!camouflageScaleAndOffset && !solidFillColor && !colorMultiplier && !forceSolidFill && !microDetailLayer &&
-          !microDetailLayerIntensity && !microDetailLayerUvScale && !microDetailLayerVScale)
-        continue;
-
-      recreate_material_with_new_params(
-        animchar_render,
-        [&](const ShaderMaterial *mat) {
-          if (strcmp(mat->getShaderClassName(), "dynamic_sheen_camo") != 0)
-            return false;
-          int currentMaterialId = -1;
-          mat->getIntVariable(material_idVarId.get_var_id(), currentMaterialId);
-          if (materialId != currentMaterialId)
-            return false;
-
-          if (camouflageScaleAndOffset && mat->hasVariable(camouflage_scale_and_offsetVarId.get_var_id()))
-            return true;
-          if (solidFillColor && mat->hasVariable(solid_fill_colorVarId.get_var_id()))
-            return true;
-          if (colorMultiplier && mat->hasVariable(color_multiplierVarId.get_var_id()))
-            return true;
-          if (forceSolidFill && *forceSolidFill && mat->hasVariable(camouflage_texVarId.get_var_id()))
-            return true;
-          if (microDetailLayer && mat->hasVariable(micro_detail_layerVarId.get_var_id()))
-            return true;
-          if (microDetailLayerIntensity && mat->hasVariable(micro_detail_layer_intensityVarId.get_var_id()))
-            return true;
-          if (microDetailLayerUvScale && mat->hasVariable(micro_detail_layer_uv_scaleVarId.get_var_id()))
-            return true;
-          if (microDetailLayerVScale && mat->hasVariable(micro_detail_layer_v_scaleVarId.get_var_id()))
-            return true;
-          return false;
-        },
-        [&](ShaderMaterial *mat) {
-          int currentMaterialId = -1;
-          mat->getIntVariable(material_idVarId.get_var_id(), currentMaterialId);
-          if (materialId != currentMaterialId)
-            return;
-
-          if (camouflageScaleAndOffset)
-            mat->set_color4_param(camouflage_scale_and_offsetVarId.get_var_id(), Color4::xyzw(*camouflageScaleAndOffset));
-          if (solidFillColor)
-            mat->set_color4_param(solid_fill_colorVarId.get_var_id(), Color4::xyzw(*solidFillColor));
-          if (colorMultiplier)
-            mat->set_real_param(color_multiplierVarId.get_var_id(), *colorMultiplier);
-          if (forceSolidFill && *forceSolidFill)
-            mat->set_texture_param(camouflage_texVarId.get_var_id(), BAD_TEXTUREID);
-
-          if (microDetailLayer)
-            mat->set_int_param(micro_detail_layerVarId.get_var_id(), *microDetailLayer);
-          if (microDetailLayerIntensity)
-            mat->set_real_param(micro_detail_layer_intensityVarId.get_var_id(), *microDetailLayerIntensity);
-          if (microDetailLayerUvScale)
-            mat->set_real_param(micro_detail_layer_uv_scaleVarId.get_var_id(), *microDetailLayerUvScale);
-          if (microDetailLayerVScale)
-            mat->set_real_param(micro_detail_layer_v_scaleVarId.get_var_id(), *microDetailLayerVScale);
-        });
-    }
+    const OverrideEntry entry{.materialId = parameters.getMemberOr(ECS_HASH("material_id"), -1),
+      .camouflageScaleAndOffset = parameters.getNullable<Point4>(ECS_HASH("camouflage_scale_and_offset")),
+      .solidFillColor = parameters.getNullable<Point4>(ECS_HASH("solid_fill_color")),
+      .colorMultiplier = parameters.getNullable<float>(ECS_HASH("color_multiplier")),
+      .forceSolidFill = parameters.getNullable<bool>(ECS_HASH("force_solid_fill")),
+      .microDetailLayer = parameters.getNullable<int>(ECS_HASH("micro_detail_layer")),
+      .microDetailLayerIntensity = parameters.getNullable<float>(ECS_HASH("micro_detail_layer_intensity")),
+      .microDetailLayerUvScale = parameters.getNullable<float>(ECS_HASH("micro_detail_layer_uv_scale")),
+      .microDetailLayerVScale = parameters.getNullable<float>(ECS_HASH("micro_detail_layer_v_scale"))};
+    if (!entry.empty())
+      entries.push_back(entry);
   }
+  if (entries.empty())
+    return;
+
+  recreate_material_with_new_params(
+    animchar_render,
+    [&](const ShaderMaterial *mat) {
+      if (strcmp(mat->getShaderClassName(), "dynamic_sheen_camo") != 0)
+        return false;
+      int currentMaterialId = -1;
+      mat->getIntVariable(material_idVarId.get_var_id(), currentMaterialId);
+      for (const OverrideEntry &entry : entries)
+        if (entry.materialId == currentMaterialId && entry.affects(mat))
+          return true;
+      return false;
+    },
+    [&](ShaderMaterial *mat) {
+      int currentMaterialId = -1;
+      mat->getIntVariable(material_idVarId.get_var_id(), currentMaterialId);
+      for (const OverrideEntry &entry : entries)
+        if (entry.materialId == currentMaterialId)
+          entry.apply(mat);
+    });
 }

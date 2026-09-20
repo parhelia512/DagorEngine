@@ -209,7 +209,7 @@ public:
   void onSnapSettingChanged();
   void onSnapStepChanged();
 
-  void updateImguiDialog() override;
+  void updateImguiDialog(const PropPanel::DialogWindow::DialogFrameSizing &sizing) override;
 
 private:
   bool onOk() override;

@@ -60,6 +60,11 @@ public:
   //! resets buffers and flushes pending read-op
   KRNLIMP void reset();
 
+  //! Bytes/requests actually issued since assignFile().
+  //! Deliberately NOT cleared by reset(), since close() calls reset() before stats are read.
+  uint32_t getRequestedBytes() const { return requestedBytes; }
+  uint32_t getRequestCount() const { return requestCount; }
+
   //! wait for prebuffering done
   void waitForBuffersFull();
 
@@ -85,6 +90,7 @@ protected:
 
   unsigned short pendMask = 0, doneMask = 0;
   int readAheadPos = 0, lastSweepPos = 0, maxBackSeek = 0;
+  uint32_t requestedBytes = 0, requestCount = 0;
   char *rawBufMem = nullptr;
   dag::Span<Range> ranges;
   SimpleString targetFilename;

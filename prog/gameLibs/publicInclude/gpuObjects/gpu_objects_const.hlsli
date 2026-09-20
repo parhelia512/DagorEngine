@@ -19,6 +19,9 @@
 #define GPU_OBJ_HLSL_ENCODE_VAL 8192
 #define GPU_OBJ_BBOX_CLEANER_SIZE 8
 
+#define GPUOBJ_OFFSETS_BASE_SHIFT 8
+#define GPUOBJ_LOD_NO_MASK 0xFF
+
 #define MAX_GPU_OBJECT_BIOMES 32
 
 struct GeometryTriangle

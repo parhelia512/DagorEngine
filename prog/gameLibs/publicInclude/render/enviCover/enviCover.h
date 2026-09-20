@@ -5,11 +5,10 @@
 #pragma once
 
 #include <EASTL/unique_ptr.h>
-#include <EASTL/array.h>
+#include <render/deferredRT.h>
 
 class NodeBasedShader;
 class ComputeShaderElement;
-class BaseTexture;
 class DataBlock;
 class String;
 
@@ -18,7 +17,6 @@ enum class NodeBasedShaderQuality : uint32_t;
 class EnviCover
 {
 public:
-  static constexpr const int ENVI_COVER_MAX_RW_TARGETS = 5;
   enum class EnviCoverUseType
   {
     STANDALONE_FGNODE,
@@ -31,7 +29,7 @@ public:
   };
   void initShader(const String &root_graph);
   bool updateShaders(const String &shader_name, const DataBlock &shader_blk, String &out_errors);
-  void render(int x, int y, const eastl::array<BaseTexture *, ENVI_COVER_MAX_RW_TARGETS> &&gbufBaseTextures);
+  void render(int x, int y, const GbufRtArray &gbufBaseTextures);
   void initRender(EnviCoverUseType envi_cover_type);
   EnviCover();
   ~EnviCover();

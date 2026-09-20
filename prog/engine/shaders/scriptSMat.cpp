@@ -531,6 +531,11 @@ const shaderbindump::ShaderCode *ScriptedShaderMaterial::find_variant() const
   G_FAST_ASSERT(uintptr_t(&codeFlags) % sizeof(codeFlags) == 0); // Otherwise atomic might crash on ARM
   interlocked_or(codeFlags, shaderbindump::ShaderCode::CF_USED);
 #endif
+
+#if DAGOR_DBGLEVEL > 0
+  interlocked_relaxed_store(selectedStaticVariantCode, variant_code);
+#endif
+
   return &props.sclass->code[id];
 }
 

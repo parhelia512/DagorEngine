@@ -291,19 +291,19 @@ static SQInteger _stream__cloned(HSQUIRRELVM v)
 }
 
 static const SQRegFunctionFromStr _stream_methods[] = {
-    { _stream_readblob,    "instance.readblob(size: int): instance",         "Reads up to size bytes and returns them as a blob" },
-    { _stream_readn,       "instance.readn(format: int): number",            "Reads a value of the given numeric format and returns it" },
-    { _stream_writeblob,   "instance.writeblob(blob: instance): int",        "Writes the given blob and returns the number of bytes written" },
-    { _stream_writestring, "instance.writestring(str: string): int",         "Writes the string and returns the number of characters written" },
-    { _stream_writen,      "instance.writen(value: number, format: int)",    "Writes a numeric value in the given format" },
-    { _stream_seek,        "instance.seek(offset: int, [origin: int]): int", "Seeks to the given offset; origin is 'b' (begin), 'c' (current) or 'e' (end)" },
-    { _stream_tell,        "instance.tell(): int",                           "Returns the current stream position" },
-    { _stream_len,         "instance.len(): int",                            "Returns the stream length" },
-    { _stream_eos,         "instance.eos(): int|null",                       "Returns non-null if the stream is at end-of-stream" },
-    { _stream_flush,       "instance.flush(): int|null",                     "Flushes the stream and returns non-null on success" },
-    { _stream_writeobject, "instance.writeobject(obj, [classes: table|null])",    "Serializes the object to the stream" },
-    { _stream_readobject,  "instance.readobject([classes: table|null]): any",     "Deserializes an object from the stream" },
-    { _stream__cloned,     "instance._cloned(other)",                        "Stream cloning is not supported" },
+    { _stream_readblob,    "instance.readblob(size: int): instance",         SQ_DOC("Reads up to size bytes and returns them as a blob") },
+    { _stream_readn,       "instance.readn(format: int): number",            SQ_DOC("Reads a value of the given numeric format and returns it") },
+    { _stream_writeblob,   "instance.writeblob(blob: instance): int",        SQ_DOC("Writes the given blob and returns the number of bytes written") },
+    { _stream_writestring, "instance.writestring(str: string): int",         SQ_DOC("Writes the string and returns the number of characters written") },
+    { _stream_writen,      "instance.writen(value: number, format: int)",    SQ_DOC("Writes a numeric value in the given format") },
+    { _stream_seek,        "instance.seek(offset: int, [origin: int]): int", SQ_DOC("Seeks to the given offset; origin is 'b' (begin), 'c' (current) or 'e' (end)") },
+    { _stream_tell,        "instance.tell(): int",                           SQ_DOC("Returns the current stream position") },
+    { _stream_len,         "instance.len(): int",                            SQ_DOC("Returns the stream length") },
+    { _stream_eos,         "instance.eos(): int|null",                       SQ_DOC("Returns non-null if the stream is at end-of-stream") },
+    { _stream_flush,       "instance.flush(): int|null",                     SQ_DOC("Flushes the stream and returns non-null on success") },
+    { _stream_writeobject, "instance.writeobject(obj, [classes: table|null])",    SQ_DOC("Serializes the object to the stream") },
+    { _stream_readobject,  "instance.readobject([classes: table|null]): any",     SQ_DOC("Deserializes an object from the stream") },
+    { _stream__cloned,     "instance._cloned(other)",                        SQ_DOC("Stream cloning is not supported") },
     { NULL, NULL, NULL }
 };
 

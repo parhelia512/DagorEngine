@@ -34,10 +34,28 @@ class ParamScriptsPool *get_effect_scripts_pool();
 extern DataBlock gameres_rendinst_desc;
 extern DataBlock gameres_dynmodel_desc;
 
+
+//! The three below lock the index against each other, not gameres_rendinst_desc itself.
+//! Anything that reads the desc without the index has to know the writers: the game load, and at runtime
+//! gameres_add_ri_desc_block, the DLC and addon pack loads, and the optional-pack update.
+
+//! O(1) while gameres_final_optimize_desc keeps the desc indexed, a scan by name id otherwise;
+const DataBlock *gameres_find_ri_desc_block(const char *name);
+//! adds a block for a name riDesc lacks and indexes it; the desc owns it, the caller only fills it;
+//! null for a null name or one riDesc already has, so the caller faults instead of duplicating a name;
+DataBlock *gameres_add_ri_desc_block(const char *name);
+//! must be called by anything that changes gameres_rendinst_desc blocks by itself:
+//! a mutation that keeps the block count, such as replacing one, is invisible to the index;
+//! a no-op for any other desc, so a mutator shared by both descs can call it unconditionally;
+void gameres_invalidate_ri_desc_index(const DataBlock &desc);
+
+
 void gameres_append_desc(DataBlock &desc, const char *desc_fn, const char *pkg_folder, bool allow_override = false);
 void gameres_patch_desc(DataBlock &desc, const char *patch_desc_fn, const char *pkg_folder, const char *desc_fn);
 // strip_sub_blocks lists sub-block names to drop from every desc block before optimizing
 void gameres_final_optimize_desc(DataBlock &desc, const char *label, dag::ConstSpan<const char *> strip_sub_blocks = {});
+//! use instead of desc.reset(), so the riDesc index goes with the blocks it indexes
+void gameres_reset_desc(DataBlock &desc);
 
 void register_stub_gameres_factories(dag::ConstSpan<unsigned> stubbed_types, bool report_stubs_as_loaded);
 void terminate_stub_gameres_factories();

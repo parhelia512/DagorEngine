@@ -26,7 +26,47 @@ static ecs::EntitySystemDesc film_grain_lut_after_device_reset_es_event_handler_
   empty_span(),
   empty_span(),
   empty_span(),
-  ecs::EventSetBuilder<AfterDeviceReset>::build(),
+  ecs::EventSetBuilder<EventAfterDeviceReset>::build(),
+  0
+,"render");
+//static constexpr ecs::ComponentDesc film_grain_lut_cache_after_device_reset_es_comps[] ={};
+static void film_grain_lut_cache_after_device_reset_es_all_events(const ecs::Event &__restrict evt, const ecs::QueryView &__restrict components)
+{
+  G_UNUSED(components);
+  G_FAST_ASSERT(evt.is<EventAfterDeviceReset>());
+  film_grain_lut_cache_after_device_reset_es(static_cast<const EventAfterDeviceReset&>(evt)
+        );
+}
+static ecs::EntitySystemDesc film_grain_lut_cache_after_device_reset_es_es_desc
+(
+  "film_grain_lut_cache_after_device_reset_es",
+  "prog/daNetGame/render/filmGrainES.cpp.inl",
+  ecs::EntitySystemOps(nullptr, film_grain_lut_cache_after_device_reset_es_all_events),
+  empty_span(),
+  empty_span(),
+  empty_span(),
+  empty_span(),
+  ecs::EventSetBuilder<EventAfterDeviceReset>::build(),
+  0
+,"render");
+//static constexpr ecs::ComponentDesc film_grain_lut_cache_shutdown_es_comps[] ={};
+static void film_grain_lut_cache_shutdown_es_all_events(const ecs::Event &__restrict evt, const ecs::QueryView &__restrict components)
+{
+  G_UNUSED(components);
+  G_FAST_ASSERT(evt.is<EventOnGameShutdown>());
+  film_grain_lut_cache_shutdown_es(static_cast<const EventOnGameShutdown&>(evt)
+        );
+}
+static ecs::EntitySystemDesc film_grain_lut_cache_shutdown_es_es_desc
+(
+  "film_grain_lut_cache_shutdown_es",
+  "prog/daNetGame/render/filmGrainES.cpp.inl",
+  ecs::EntitySystemOps(nullptr, film_grain_lut_cache_shutdown_es_all_events),
+  empty_span(),
+  empty_span(),
+  empty_span(),
+  empty_span(),
+  ecs::EventSetBuilder<EventOnGameShutdown>::build(),
   0
 ,"render");
 static constexpr ecs::ComponentDesc film_grain_lut_params_change_es_event_handler_comps[] =

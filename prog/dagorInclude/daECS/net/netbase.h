@@ -14,6 +14,8 @@
 #include <daNet/disconnectionCause.h>
 #include <generic/dag_tab.h>
 #include <generic/dag_enumBitMask.h>
+#include <generic/dag_functionRef.h>
+#include <EASTL/string.h>
 
 
 namespace danet
@@ -61,6 +63,17 @@ enum class EncryptionKeyBits : uint32_t
 DAGOR_ENABLE_ENUM_BITMASK(EncryptionKeyBits);
 extern const uint32_t MIN_ENCRYPTION_KEY_LENGTH;
 
+enum ConnFlags : uint32_t
+{
+  CF_NONE = 0,
+  CF_PENDING = 1u << 0,       // pre-handshake / not yet approved
+  CF_DISCONNECTING = 1u << 1, // disconnect requested, not yet torn down
+  CF_RESERVED_1 = 1u << 2,
+  CF_RESERVED_2 = 1u << 3,
+  CF_RESERVED_3 = 1u << 4,
+};
+DAGOR_ENABLE_ENUM_BITMASK(ConnFlags);
+
 class IConnection
 {
 public:
@@ -82,8 +95,11 @@ public:
   virtual void setUserPtr(void *ptr) = 0;
   virtual void *getUserPtr() const = 0;
 
-  virtual uint32_t getConnFlags() const = 0;
-  virtual uint32_t &getConnFlagsRW() = 0;
+  virtual void addFlags(ConnFlags) = 0;
+  virtual void clearFlags(ConnFlags) = 0;
+  virtual bool hasAnyFlags(ConnFlags) const = 0;
+
+  bool isActive() const { return !hasAnyFlags(CF_DISCONNECTING | CF_PENDING); }
 
   virtual void sendEcho(const char *, uint32_t) {}
   virtual bool send(int cur_time, const danet::BitStream &bs, PacketPriority prio, PacketReliability rel, uint8_t chn,
@@ -104,11 +120,14 @@ public:
   virtual ecs::EntityManager &getEntityManager() = 0;
 };
 
+// daNetGame's ConnectionsIterator yields only isActive() connections (skips CF_PENDING /
+// CF_DISCONNECTING). Other trees may iterate differently; do not assume that filter here.
+// Must not outlive the net session; the connection set must not change under it
+// (single-frame send loops; mutating it would be UB).
 class ConnectionsIterator
 {
   int i = 0;
-  // Resolved once by the constructor. The iterator must not outlive the net session, and the
-  // connection set must not change under it (single-frame send loops; mutating it would be UB).
+  // Resolved once by the constructor.
   union
   {
     Connection *const *clientConns; // server: getClientConnections() storage, valid over [0, clientConnCount)
@@ -162,7 +181,8 @@ void serialize_comp_nameless(ecs::EntityManager &mgr, ecs::component_t name, con
   danet::BitStream &bs);
 ecs::MaybeChildComponent deserialize_comp_nameless(ecs::EntityManager &mgr, ecs::component_t &name, const danet::BitStream &bs);
 
-void write_eid(danet::BitStream &bs, ecs::EntityId eid);
+// see write_server_eid() for ctx_err_cb and the return value
+bool write_eid(danet::BitStream &bs, ecs::EntityId eid, dag::FunctionRef<eastl::string() const> ctx_err_cb = {});
 bool read_eid(const danet::BitStream &bs, ecs::EntityId &eid); // return false if read from stream failed
 
 }; // namespace net

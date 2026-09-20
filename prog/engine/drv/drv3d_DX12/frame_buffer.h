@@ -206,7 +206,71 @@ struct FramebufferLayout
     return mask;
   }
 
+  bool isSupported() const
+  {
+    bool ok = true;
+    supportCheckVisit([&ok](auto, auto, auto result) { ok = ok && SupportCheckResult::Pass == result; });
+    return ok;
+  }
+
+  void reportUnsupportedFormats() const
+  {
+    supportCheckVisit([](auto slot, auto format, auto result) {
+      const char *reason = nullptr;
+      switch (result)
+      {
+        case SupportCheckResult::Pass: return;
+        case SupportCheckResult::NoSupport: reason = "no hardware support"; break;
+        case SupportCheckResult::NoMsaaSupport: reason = "no MSAA level support"; break;
+      }
+      if (Driver3dRenderTarget::MAX_SIMRT > slot)
+      {
+        logdbg("DX12: %s of render target slot %u unsupported, because %s", format.template getNameString<false>(), slot, reason);
+      }
+      else
+      {
+        logdbg("DX12: %s of depth stencil target unsupported, because %s", format.template getNameString<false>(), reason);
+      }
+    });
+  }
+
 private:
+  enum SupportCheckResult
+  {
+    Pass,
+    NoSupport,
+    NoMsaaSupport,
+  };
+  void supportCheckVisit(auto &&visit) const
+  {
+    for (auto i : LsbVisitor{colorTargetMask})
+    {
+      auto &fmt = colorFormats[i];
+      SupportCheckResult result = SupportCheckResult::Pass;
+      if (!fmt.isSupportedRenderTarget())
+      {
+        result = SupportCheckResult::NoSupport;
+      }
+      else if (!fmt.isSampleCountSupported(1u << getColorMsaaLevel(i)))
+      {
+        result = SupportCheckResult::NoMsaaSupport;
+      }
+      visit(i, colorFormats[i], result);
+    }
+    if (hasDepth)
+    {
+      SupportCheckResult result = SupportCheckResult::Pass;
+      if (!depthStencilFormat.isSupportedDepthStencil())
+      {
+        result = SupportCheckResult::NoSupport;
+      }
+      else if (!depthStencilFormat.isSampleCountSupported(1u << depthMsaaLevel))
+      {
+        result = SupportCheckResult::NoMsaaSupport;
+      }
+      visit(Driver3dRenderTarget::MAX_SIMRT, depthStencilFormat, result);
+    }
+  }
   static constexpr int MSAA_LEVEL_MASK = TEXCF_SAMPLECOUNT_MASK >> TEXCF_SAMPLECOUNT_OFFSET;
 
   void clearColorMsaaLevel(uint8_t index) { colorMsaaLevels &= ~(MSAA_LEVEL_MASK << (index * MSAA_LEVEL_BITS_PER_RT)); }

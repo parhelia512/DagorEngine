@@ -49,7 +49,7 @@ rule ProcessCompileTarget
 
   if $(StrictCompile) = yes {
     if ! [ MATCH /(3rdPartyLibs)/ : $(Location) ] && ! [ MATCH /(devtools)/ : $(Location) ] { # Note: this doesn't work on 3rdp headers
-      _CPP_OPT += -Wunused-parameter ;
+      _CPP_OPT += -Wunused-parameter -Wunused-lambda-capture -Wrange-loop-construct -Werror=unused-lambda-capture -Werror=range-loop-construct ;
     }
   }
 

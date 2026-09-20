@@ -144,6 +144,7 @@ public:
   float getDist(uint16_t fromNodeId, uint16_t toNodeId) const;
 
   const IntersectionNode &getIntersectionNode(uint16_t nodeId) const;
+  int getIntersectionDataType() const { return intersectionDataType; }
 
   void clear();
   bool load(IGenLoad &crd);

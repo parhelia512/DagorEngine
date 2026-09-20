@@ -19,6 +19,7 @@ macro CAUSTICS_RENDER_CORE(code)
   INIT_ZNZFAR_STAGE(code)
 
   (code) {
+    from_sun_direction@f3 = from_sun_direction;
     world_view_pos@f3 = world_view_pos;
     depth_for_caustics@smp2d = depth_for_caustics;
     normals_for_caustics@smp2d = normals_for_caustics;

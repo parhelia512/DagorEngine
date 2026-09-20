@@ -145,10 +145,11 @@ SubgraphHandle make_subgraph(const char *name, uint32_t update_max_delay_frames)
  * subgraph(s). Both steps happen before dafg::run_nodes(), so daFG sees a
  * single incremental recompilation window per frame.
  *
- * On a forced frame, only the forced subgraph(s) run. The least-slack
- * pending subgraph is deferred, to avoid a multi-subgraph spike. A deferred
- * subgraph keeps its slack and becomes forced once its age reaches
- * update_max_delay_frames. The deadline guarantee still holds.
+ * More than one subgraph can run in the same frame. Each tick the scheduler
+ * activates as many subgraphs as the pending deadlines demand, earliest
+ * deadline first: if the j earliest pending requests are due within L frames,
+ * at least ceil(j / L) of them run per frame (10 requests with a 5-frame
+ * deadline run 2 per frame). The deadline guarantee still holds.
  */
 void update();
 

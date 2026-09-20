@@ -10,7 +10,7 @@ struct ImVec2;
 
 // "Modify edge" (the A shortcut) interaction state machine, ported from graphEditor.js
 // modifyEdgeUnderCursor. It grabs an edge at the pin under the cursor, deletes it, and lets the
-// user re-route the edge's far (anchored) end to a new pin with a rubber-band preview.
+// user re-route the edge's opposite (anchored) end to a new pin with a rubber-band preview.
 class GraphEdgeReconnect
 {
 public:
@@ -18,11 +18,13 @@ public:
   int anchorNode() const { return anchorNodeId; }
   int anchorPin() const { return anchorPinIndex; }
 
-  // Look for an edge touching pin (node_id, pin_index). If one exists, record its opposite (far)
-  // end as the anchor and return the id of the edge to remove (the caller performs the removal).
-  // Returns -1 -- and starts nothing -- when no edge touches that pin or a re-route is already in
-  // progress.
-  int begin(const GraphData &gd, int node_id, int pin_index);
+  // The last live edge touching the pin, or -1. A muted one is never picked: resolving a re-route
+  // records a delete plus a create, and the created edge would come back unmuted.
+  static int pickEdgeAtPin(const GraphData &gd, int node_id, int pin_index);
+
+  // Anchors the opposite end of `edge_id` as seen from (detach_node, detach_pin) and starts the gesture;
+  // the caller removes the edge. False -- and nothing started -- if any of that does not hold.
+  bool beginForEdge(const GraphData &gd, int edge_id, int detach_node, int detach_pin);
 
   // Anchor pin's current on-screen centre, fed from the pin render pass (it moves with pan/zoom).
   void setAnchorScreenPos(float x, float y)

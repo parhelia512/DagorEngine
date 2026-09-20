@@ -74,8 +74,8 @@ void ShaderClass::sortStaticVarsByMode()
 {
   Tab<eastl::pair<Var, int>> argvars{};
   argvars.resize(stvar.size());
-  int i = 0;
-  eastl::transform(stvar.cbegin(), stvar.cend(), argvars.begin(), [&i](const Var &var) { return eastl::make_pair(var, i++); });
+  eastl::transform(stvar.cbegin(), stvar.cend(), argvars.begin(),
+    [i = 0](const Var &var) mutable { return eastl::make_pair(var, i++); });
 
   // First statics, then dynamics, with as little reordering as possible
   eastl::stable_partition(argvars.begin(), argvars.end(), [this](const auto &p) { return !stvarsAreDynamic.test(p.second, false); });
@@ -98,6 +98,17 @@ void ShaderClass::sortStaticVarsByMode()
       for (ShaderCode::StVarMapping &mapping : shcode->stvarmap)
         mapping.sv = remapping[mapping.sv];
     }
+  }
+
+  // And patch the init code in case vars we moved down
+  G_ASSERT(shInitCode.size() % 2 == 0);
+  for (int i = 0; i < shInitCode.size(); i += 2)
+  {
+    int op = shInitCode[i + 1];
+    if (shaderopcode::getOp(op) == SHCOD_TEXTURE_STUBCOL)
+      shInitCode[i + 1] = shaderopcode::makeOp2(SHCOD_TEXTURE_STUBCOL, 0, remapping[shaderopcode::getOp2p2(op)]);
+    else
+      shInitCode[i] = remapping[shInitCode[i]];
   }
 }
 

@@ -56,8 +56,8 @@ struct CmdSetIndexBuffer
 
 struct CmdSetVertexBuffer
 {
-  uint32_t stream;
   BufferRef buffer;
+  uint32_t stream;
   uint32_t offset;
 };
 

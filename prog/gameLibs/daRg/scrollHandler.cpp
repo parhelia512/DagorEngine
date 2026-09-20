@@ -119,7 +119,6 @@ void ScrollHandler::scrollToChildren(Sqrat::Object finder, int depth, bool x, bo
 
   Sqrat::Function f(finder.GetVM(), Sqrat::Object(finder.GetVM()), finder.GetObject());
 
-  Point2 summaryRelPos(0, 0);
   BBox2 bbox = calc_children_bbox(elem, f, depth, Point2(0, 0));
   if (!bbox.isempty())
   {

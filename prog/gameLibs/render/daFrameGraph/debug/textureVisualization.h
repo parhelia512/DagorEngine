@@ -42,6 +42,7 @@ struct Selection
 {
   TimePoint when;
   dafg::ResNameId what;
+  bool history = false;
 };
 void update_fg_debug_tex(const eastl::optional<Selection> &selection, dafg::InternalRegistry &registry,
   const dafg::DependencyData &dep_data);

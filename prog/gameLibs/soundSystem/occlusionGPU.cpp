@@ -127,7 +127,7 @@ static constexpr int g_max_active_blobs = 512;
 static constexpr int g_max_blobs = 2048;
 
 static constexpr float g_def_attach_radius = 0.5f;
-static constexpr float g_def_occlusion_radius = 0.13f;
+static constexpr float g_def_occlusion_radius = 0.2f;
 static constexpr float g_def_hardness_k = 3.f;
 
 static Blob *get_blob(sound_handle_t blob_handle) { return g_blobs.get(blob_handle); }

@@ -1,6 +1,6 @@
 // Copyright (C) Gaijin Games KFT.  All rights reserved.
 
-#include <render/world/cameraInCamera.h>
+#include <render/cameraInCamera/cameraInCamera.h>
 #include <daECS/core/componentTypes.h>
 #include <daECS/core/coreEvents.h>
 #include <daECS/core/entityManager.h>
@@ -11,7 +11,7 @@
 #include <render/daFrameGraph/ecs/frameGraphNode.h>
 
 #include <render/renderEvent.h>
-#include <render/world/cameraParams.h>
+#include <render/cameraParams.h>
 #include <render/world/frameGraphHelpers.h>
 #include <render/world/wrDispatcher.h>
 #include <render/world/renderPrecise.h>

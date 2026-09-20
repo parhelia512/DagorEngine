@@ -5,6 +5,7 @@
 #include <validation/texture.h>
 #include <memory/dag_fixedBlockAllocator.h>
 #include <drv/3d/dag_commands.h>
+#include <drv/3d/dag_texture.h>
 #include <drv/3d/dag_platform_pc.h>
 #include <drv/3d/dag_resetDevice.h>
 #include <math/dag_TMatrix.h>
@@ -32,6 +33,7 @@
 #include <util/dag_watchdog.h>
 #include <math/dag_mathUtils.h>
 
+#include <texResizeGeneric.h>
 #include <validateUpdateSubRegion.h>
 #include <validation.h>
 #include "drv_assert_defs.h"
@@ -48,6 +50,8 @@
 #else
 #define VERBOSE_DEBUG(...)
 #endif
+
+using namespace drv3d_dx11;
 
 namespace drv3d_dx11
 {
@@ -622,73 +626,6 @@ int BaseTex::updateSubRegionImpl(BaseTexture *base_src, int src_subres_idx, int 
   return 0;
 }
 
-int BaseTex::updateSubRegion(BaseTexture *base_src, int src_subres_idx, int src_x, int src_y, int src_z, int src_w, int src_h,
-  int src_d, int dest_subres_idx, int dest_x, int dest_y, int dest_z)
-{
-  validate_copy_destination_flags(this, "updateSubRegion", ((BaseTex *)base_src)->cflg);
-
-  return updateSubRegionImpl(base_src, src_subres_idx, src_x, src_y, src_z, src_w, src_h, src_d, dest_subres_idx, dest_x, dest_y,
-    dest_z);
-}
-
-BaseTexture *BaseTex::downSize(int new_width, int new_height, int new_depth, int new_mips, unsigned start_src_level,
-  unsigned level_offset)
-{
-  auto rep = makeTmpTexResCopy(new_width, new_height, new_depth, new_mips);
-  if (!rep)
-    return nullptr;
-
-  TextureInfo selfInfo;
-  getinfo(selfInfo, 0);
-
-  unsigned sourceLevel = max<unsigned>(level_offset, start_src_level);
-  unsigned sourceLevelEnd = min<unsigned>(selfInfo.mipLevels, new_mips + level_offset);
-  rep->texmiplevel(sourceLevel - level_offset, sourceLevelEnd - level_offset - 1);
-  for (; sourceLevel < sourceLevelEnd; sourceLevel++)
-  {
-    for (int s = 0; s < selfInfo.a; s++)
-    {
-      // copy depth is the source mip depth: 1 for the layered types (each slice is a separate
-      // subresource iterated by s), the per-mip depth for volumes
-      ((BaseTex *)rep)
-        ->updateSubRegionImpl(this, calcSubResIdx(sourceLevel, s, selfInfo.mipLevels), 0, 0, 0, max<int>(selfInfo.w >> sourceLevel, 1),
-          max<int>(selfInfo.h >> sourceLevel, 1), max<int>(selfInfo.d >> sourceLevel, 1),
-          calcSubResIdx(sourceLevel - level_offset, s, new_mips), 0, 0, 0);
-    }
-  }
-
-  return rep;
-}
-
-BaseTexture *BaseTex::upSize(int new_width, int new_height, int new_depth, int new_mips, unsigned start_src_level,
-  unsigned level_offset)
-{
-  auto rep = makeTmpTexResCopy(new_width, new_height, new_depth, new_mips);
-  if (!rep)
-    return nullptr;
-
-  TextureInfo selfInfo;
-  getinfo(selfInfo, 0);
-
-  unsigned destinationLevel = level_offset + start_src_level;
-  unsigned destinationLevelEnd = min<unsigned>(selfInfo.mipLevels + level_offset, new_mips);
-  rep->texmiplevel(destinationLevel, destinationLevelEnd - 1);
-  for (; destinationLevel < destinationLevelEnd; destinationLevel++)
-  {
-    for (int s = 0; s < selfInfo.a; s++)
-    {
-      // copy depth is the source mip depth: 1 for the layered types (each slice is a separate
-      // subresource iterated by s), the per-mip depth for volumes
-      ((BaseTex *)rep)
-        ->updateSubRegionImpl(this, calcSubResIdx(destinationLevel - level_offset, s, selfInfo.mipLevels), 0, 0, 0,
-          max<int>(new_width >> destinationLevel, 1), max<int>(new_height >> destinationLevel, 1),
-          max<int>(selfInfo.d >> (destinationLevel - level_offset), 1), calcSubResIdx(destinationLevel, s, new_mips), 0, 0, 0);
-    }
-  }
-
-  return rep;
-}
-
 void BaseTex::clear()
 {
   ResAutoLock resLock;
@@ -1184,6 +1121,9 @@ int BaseTex::lockimg(void **p, int &stride, int face, int level, unsigned flags)
       D3D_ERROR("failed to auto-create tex.tex2D on lockImg");
       return 0;
     }
+  // the deferred TEXCF_CLEAR_ON_CREATE clear must not wipe CPU writes made before first bind
+  if (needs_clear && (flags & TEXLOCK_WRITE) && tex.tex2D)
+    clear();
   stride = 0;
 
   uint32_t prevFlags = lockFlags;
@@ -1495,6 +1435,10 @@ int BaseTex::lockbox(void **data, int &row_pitch, int &slice_pitch, int level, u
     D3D_CONTRACT_ASSERTF(!(flags & TEXLOCK_WRITE), "can not write to render target");
   }
 
+  // same as lockimg: the deferred TEXCF_CLEAR_ON_CREATE clear must not wipe CPU writes made before first bind
+  if (needs_clear && (flags & TEXLOCK_WRITE) && tex.tex3D)
+    clear();
+
   if (flags & TEXLOCK_RWMASK)
   {
     if ((flags & TEXLOCK_READ) && !(cflg & (TEXCF_RTARGET | TEXCF_UNORDERED)))
@@ -1719,3 +1663,39 @@ void BaseTex::D3DTextures::setPrivateData(const char *name) const
 #endif
 }
 } // namespace drv3d_dx11
+
+int d3d::update_sub_region(BaseTexture *src, int src_subres_idx, int src_x, int src_y, int src_z, int src_w, int src_h, int src_d,
+  BaseTexture *dst, int dst_subres_idx, int dst_x, int dst_y, int dst_z)
+{
+  validate_copy_destination_flags(getbasetex(dst), "update_sub_region", getbasetex(src)->cflg);
+
+  return getbasetex(dst)->updateSubRegionImpl(src, src_subres_idx, src_x, src_y, src_z, src_w, src_h, src_d, dst_subres_idx, dst_x,
+    dst_y, dst_z);
+}
+
+int d3d::update_sub_region_no_order(BaseTexture *src, int src_subres_idx, int src_x, int src_y, int src_z, int src_w, int src_h,
+  int src_d, BaseTexture *dst, int dst_subres_idx, int dst_x, int dst_y, int dst_z)
+{
+  return d3d::update_sub_region(src, src_subres_idx, src_x, src_y, src_z, src_w, src_h, src_d, dst, dst_subres_idx, dst_x, dst_y,
+    dst_z);
+}
+
+// updateSubRegionImpl skips the copy destination flag check, which lets dx11 migrate mips
+// without TEXCF_UPDATE_DESTINATION on the source.
+static int copy_sub_res_no_dest_flag(BaseTexture *src, int src_subres_idx, int src_w, int src_h, int src_d, BaseTexture *dst,
+  int dst_subres_idx)
+{
+  return getbasetex(dst)->updateSubRegionImpl(src, src_subres_idx, 0, 0, 0, src_w, src_h, src_d, dst_subres_idx, 0, 0, 0);
+}
+
+BaseTexture *d3d::down_size_tex(BaseTexture *tex, int width, int height, int depth, int mips, unsigned start_src_level,
+  unsigned level_offset)
+{
+  return tex_resize_generic::down_size_tex(tex, width, height, depth, mips, start_src_level, level_offset, copy_sub_res_no_dest_flag);
+}
+
+BaseTexture *d3d::up_size_tex(BaseTexture *tex, int width, int height, int depth, int mips, unsigned start_src_level,
+  unsigned level_offset)
+{
+  return tex_resize_generic::up_size_tex(tex, width, height, depth, mips, start_src_level, level_offset, copy_sub_res_no_dest_flag);
+}

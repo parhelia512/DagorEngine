@@ -45,7 +45,7 @@ void ScreenshotSettingsDialog::fill()
   removeDialogButton(PropPanel::DIALOG_ID_CANCEL);
 }
 
-void ScreenshotSettingsDialog::updateImguiDialog()
+void ScreenshotSettingsDialog::updateImguiDialog(const PropPanel::DialogWindow::DialogFrameSizing &sizing)
 {
   if (needsReloading)
   {
@@ -54,7 +54,7 @@ void ScreenshotSettingsDialog::updateImguiDialog()
     needsReloading = false;
   }
 
-  Base::updateImguiDialog();
+  Base::updateImguiDialog(sizing);
 }
 
 void ScreenshotSettingsDialog::onChange(int pcb_id, PropPanel::ContainerPropertyControl *panel)

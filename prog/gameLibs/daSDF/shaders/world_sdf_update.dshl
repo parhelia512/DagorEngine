@@ -167,9 +167,9 @@ shader world_sdf_ping_pong_cs, world_sdf_ping_pong_final_cs
         float toCoordEncodedDistOfs = toCoordDist*(1.0/MAX_WORLD_SDF_VOXELS_BAND);
         uint3 rasterTargetCoord = world_sdf_raster_target_coord_from_world(coord);
         #if (TYPED_UAV_LOAD || !WRITE_FINAL_SDF)
-          if (all(
-                  uint3(coord - world_sdf_update_old.xyz) < uint3(world_sdf_res.xxy) &&
-                  uint3(coord - world_sdf_raster_begin() - WORLD_SDF_RASTERIZE_VOXELS_DIST) >= uint3(world_sdf_raster_width().xyz - 2*WORLD_SDF_RASTERIZE_VOXELS_DIST)))
+          if (all(and(
+                  uint3(coord - world_sdf_update_old.xyz) < uint3(world_sdf_res.xxy),
+                  uint3(coord - world_sdf_raster_begin() - WORLD_SDF_RASTERIZE_VOXELS_DIST) >= uint3(world_sdf_raster_width().xyz - 2*WORLD_SDF_RASTERIZE_VOXELS_DIST))))
           {
             //only if inside valid part of already rendered clip!
             uint3 otherTargetCoord = target_coord_from_world_sdf(coord);

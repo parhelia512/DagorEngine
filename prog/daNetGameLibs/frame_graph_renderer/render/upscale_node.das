@@ -39,10 +39,10 @@ def register_upscale_tex_gen_node(var upscale_tex_gen_node : NodeHandle&)
 struct OnRenderSettingsReady {}
 
 [cpp_event(broadcast)]
-struct AfterDeviceReset
+struct EventAfterDeviceReset
   fullReset : bool
 
-[es(on_event=AfterDeviceReset)]
+[es(on_event=EventAfterDeviceReset)]
 def restoreWeights(evt : Event)
   query() <| $ [es] (upscale_weights_buffer : UniqueBufWithShaderVar)
     upload_weights(upscale_weights_buffer)

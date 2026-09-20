@@ -62,6 +62,7 @@ public:
   Point4 getShadowUvMinMax(uint32_t id) const;
   bool isShadowTwoSided(uint32_t id) const { return volumes[id].isTwoSided(); }
 
+  void setTextureToShader();
   void startPrepareShadows(); // increases currentFrame
   // useShadowOnFrame should be called for any light which should be called
   void useShadowOnFrame(int id); // hint that we need shadow now,in this frame
@@ -74,7 +75,7 @@ public:
   // prepares volumesToRender list
   // max_static_views_to_update limits full static scene renders per frame
   // volumes are never split, so the first volume is admitted even if it exceeds the budget
-  void endPrepareShadows(dynamic_shadow_render::VolumesVector &volumesToRender, int max_shadow_volumes_to_update,
+  void endPrepareShadows(dynamic_shadow_render::FrameVolumeData &volume_data, int max_shadow_volumes_to_update,
     int max_static_views_to_update, float max_area_part_to_update, const Point3 &viewPos, float hk, mat44f_cref viewproj);
 
   const Frustum &getVolumeFrustum(uint16_t id) const { return volumesFrustum[id]; }
@@ -83,7 +84,7 @@ public:
   const bbox3f &getVolumeBox(uint16_t id) const { return volumesBox[id]; }
   bool isVolumeContentValid(uint16_t id) const { return volumes[id].isValidContent(); }
   bool hasVolumeEverBeenRendered(uint16_t id) const { return volumes[id].hasEverBeenRendered(); }
-  void startRenderVolumes(const dag::ConstSpan<uint16_t> &volumesToRender);
+  void startRenderVolumes(const dynamic_shadow_render::FrameVolumeData &volume_data);
 
   enum RenderFlags
   {

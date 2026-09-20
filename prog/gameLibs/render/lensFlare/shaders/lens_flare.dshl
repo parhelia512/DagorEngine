@@ -8,6 +8,7 @@ include "brunetonSky.dshl"
 include "light_mask_helpers.dshl"
 include "clusteredViewLights.dshl"
 include "draw_indirect_buffer_layout.dshl"
+include "camera_in_camera.dshl"
 
 // Used by the compute shader to prepare the instances
 int lens_flare_prepare_flare_type;
@@ -29,6 +30,8 @@ int lens_flare_prepare_dynamic_lights_use_occlusion = 0;
 float lens_flare_prepare_dynamic_lights_depth_bias = 0;
 float lens_flare_prepare_dynamic_lights_exposure_pow_param = 0;
 float lens_flare_prepare_spot_lights_cone_angle_cos = 0;
+float lens_flare_prepare_dynamic_lights_max_component_intensity = 0;
+float lens_flare_min_visible_intensity = 0;
 float4x4 lens_flare_perpare_globtm;
 float lens_flare_prepare_exposure_pow_param;
 int lens_flare_prepare_far_depth_mip = 0;
@@ -87,6 +90,7 @@ shader prepare_lens_flare
     INIT_AND_USE_CLUSTERED_VIEW_LIGHTS(cs)
   }
 
+  INIT_AND_USE_ON_TOP_CAMERA_IN_CAMERA(cs)
   INIT_BRUNETON_FOG(cs)
   BASE_USE_BRUNETON_FOG(cs)
   INIT_VOLUMETRIC_LIGHT_TRANSPARENT(cs)
@@ -109,6 +113,8 @@ shader prepare_lens_flare
     dynamic_lights_depth_bias@f1 = (lens_flare_prepare_dynamic_lights_depth_bias);
     dynamic_lights_exposure_pow_param@f1 = (lens_flare_prepare_dynamic_lights_exposure_pow_param);
     spot_lights_cone_angle_cos@f1 = lens_flare_prepare_spot_lights_cone_angle_cos;
+    dynamic_lights_max_component_intensity@f1 = (lens_flare_prepare_dynamic_lights_max_component_intensity);
+    min_visible_intensity@f1 = (lens_flare_min_visible_intensity);
     clouds_shadow_influence@f1 = clouds_shadow_influence;
     exposure_pow_param@f1 = lens_flare_prepare_exposure_pow_param;
     downsampled_far_depth_tex@smp2d = downsampled_far_depth_tex;
@@ -161,7 +167,7 @@ shader prepare_lens_flare
 
     float getDownsampledFarDepth(int2 coord, int2 dim)
     {
-      if (any(coord < 0 || coord >= dim))
+      if (any(or(coord < 0, coord >= dim)))
         return 1;
       return texelFetch(downsampled_far_depth_tex, coord, far_depth_mip).x;
     }
@@ -321,6 +327,7 @@ shader prepare_lens_flare
       bool isSun;
       float exposurePowParam;
       float depthBias;
+      float maxComponentIntensity;
     };
 
     ##if lens_flare_prepare_flare_type == manual_flares
@@ -344,6 +351,7 @@ shader prepare_lens_flare
         result.drawCallIndicesEntryIndex = flareConfigId+1;
         result.exposurePowParam = exposurePowParam;
         result.depthBias = lightData.depthBias;
+        result.maxComponentIntensity = lightData.maxComponentIntensity;
         return true;
       }
     ##endif
@@ -371,6 +379,7 @@ shader prepare_lens_flare
         result.isSun = false;
         result.drawCallIndicesEntryIndex = 0;
         result.depthBias = dynamic_lights_depth_bias;
+        result.maxComponentIntensity = dynamic_lights_max_component_intensity;
         return true;
       }
     ##endif
@@ -410,6 +419,7 @@ shader prepare_lens_flare
         result.isSun = false;
         result.drawCallIndicesEntryIndex = 0;
         result.depthBias = dynamic_lights_depth_bias;
+        result.maxComponentIntensity = dynamic_lights_max_component_intensity;
         return true;
       }
     ##endif
@@ -435,6 +445,7 @@ shader prepare_lens_flare
       lightData.isSun = false;
       lightData.drawCallIndicesEntryIndex = 0;
       lightData.depthBias = 0;
+      lightData.maxComponentIntensity = 0;
 
       ##if lens_flare_prepare_flare_type == manual_flares
         bool lightHasFlares = get_manual_flare_intensity(light_id, lightData);
@@ -448,6 +459,15 @@ shader prepare_lens_flare
       {
         LensFlareInstanceData instanceData =
           calculateFlareInstanceData(lightData.pos, lightData.intensity, lightData.color, lightData.fadeoutDistance, lightData.useOcclusion, lightData.isSun, lightData.exposurePowParam, lightData.depthBias);
+
+        // This is the maximum value that this lense flare can add to pixel (see vs and ps).
+        float peak = instanceData.color_intensity.w
+          * max3(instanceData.color_intensity.r, instanceData.color_intensity.g, instanceData.color_intensity.b)
+          * lightData.maxComponentIntensity
+          * getExposureScale();
+        if (peak < min_visible_intensity)
+          instanceData.color_intensity.w = 0;
+
         preCullAndWriteLight(instanceData, lightData.drawCallIndicesEntryIndex, lightData.useOcclusion);
       }
     }
@@ -552,7 +572,7 @@ shader lens_flare_occlusion
           if (hasValidHistory)
           {
             uint historyCount = min3(historyData.framesVisible, maxHistorySize, uint(max_visibility_history_size));
-            float4 historySum = historyAges <= historyCount ? historyData.history : 0;
+            float4 historySum = select(historyAges <= historyCount, historyData.history, float4(0,0,0,0));
             correctedVisibility = (visibility + dot(historySum, float4(1, 1, 1, 1))) / (historyCount + 1);
           }
           else
@@ -561,7 +581,7 @@ shader lens_flare_occlusion
           historyData.previousFrameId = visibility_history_frame_id;
           historyData.positionHash = instanceData.positionHash;
           historyData.framesVisible = historyData.framesVisible + 1;
-          historyData.history = historyAges < maxHistorySize ? historyData.history : visibility;
+          historyData.history = select(historyAges < maxHistorySize, historyData.history, visibility);
           structuredBufferAt(lensFlareVisibilityHistory, visibilityHistoryId) = historyData;
         }
         structuredBufferAt(lensFlareInstances, instanceId).color_intensity.w = instanceData.color_intensity.w * correctedVisibility;
@@ -593,6 +613,7 @@ shader lens_flare
     }
     resolution@f2 = (lens_flare_resolution);
     global_scale@f2 = (lens_flare_global_scale);
+    min_visible_intensity@f1 = (lens_flare_min_visible_intensity);
   }
 
   (ps) {
@@ -643,6 +664,26 @@ shader lens_flare
   USE_HDR(vs)
 
   hlsl(vs) {
+    VsOutput get_discarded_flare_output()
+    {
+      VsOutput output;
+      output.pos = 0; // discard vertices
+      output.color_intensity = 0;
+      ##if lens_flare_rounding_type == sharp
+        output.tc_gradientIntensity_invFalloff = 0;
+        output.edgeGradientIntensity = 0;
+      ##elif lens_flare_rounding_type == rounded
+        output.tc_pos = 0;
+        output.edgeDistance_vertexId_invMaxDist = 0;
+        output.roundness_radius_offset_cos = 0;
+        output.invGradient_invFalloff_invEdgeGradient_vposOffset = 0;
+      ##elif lens_flare_rounding_type == circle
+        output.tc_normalizedPos = 0;
+        output.invGradient_invFalloff_invEdgeGradient = 0;
+      ##endif
+      return output;
+    }
+
     VsOutput lens_flare_vs(VsInput input HW_USE_INSTANCE_ID)
     {
       uint instanceIdOffset = get_immediate_dword_0();
@@ -655,24 +696,8 @@ shader lens_flare
       // Early exit / discard
 
       BRANCH
-      if (instanceData.color_intensity.w < 0.000001)
-      {
-        output.pos = 0; // discard vertices
-        output.color_intensity = 0;
-        ##if lens_flare_rounding_type == sharp
-          output.tc_gradientIntensity_invFalloff = 0;
-          output.edgeGradientIntensity = 0;
-        ##elif lens_flare_rounding_type == rounded
-          output.tc_pos = 0;
-          output.edgeDistance_vertexId_invMaxDist = 0;
-          output.roundness_radius_offset_cos = 0;
-          output.invGradient_invFalloff_invEdgeGradient_vposOffset = 0;
-        ##elif lens_flare_rounding_type == circle
-          output.tc_normalizedPos = 0;
-          output.invGradient_invFalloff_invEdgeGradient = 0;
-        ##endif
-        return output;
-      }
+      if (instanceData.color_intensity.w <= 0.000001)
+        return get_discarded_flare_output();
 
       // --- Reading parameters ---
 
@@ -724,6 +749,11 @@ shader lens_flare
       if (!useLightColor)
         lightColor.xyz = max3(lightColor.x, lightColor.y, lightColor.z);
       float3 preExposedColor = pack_hdr(lightColor*tint); // it will be modulated by texture rgb in ps
+
+      // Same test as in prepare_lens_flare, but with gradient and texture applied which can only lower the value.
+      BRANCH
+      if (intensity * max3(preExposedColor.r, preExposedColor.g, preExposedColor.b) < min_visible_intensity)
+        return get_discarded_flare_output();
 
 
       // --- Calculations specific to this vertex ---

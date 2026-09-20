@@ -19,11 +19,9 @@ static int init_refcount = 0;
 
 struct DevicesListWrapper
 {
-  DevicesList list;
+  DevicesList list = {};
   WinCritSec cs;
   volatile uint32_t generation = 0;
-
-  DevicesListWrapper() { list.resize(MAX_DEVICES_PER_TYPE, nullptr); }
 };
 
 
@@ -31,6 +29,30 @@ static DevicesListWrapper gamepads_list;
 static DevicesListWrapper keyboards_list;
 static DevicesListWrapper mouses_list;
 static DevicesListWrapper flightsticks_list;
+
+
+struct TrackedKind
+{
+  GameInputKind kind;
+  DevicesListWrapper *list;
+};
+
+static constexpr TrackedKind tracked_kinds[] = {
+  {GameInputKindGamepad, &gamepads_list},
+  {GameInputKindKeyboard, &keyboards_list},
+  {GameInputKindMouse, &mouses_list},
+  {GameInputKindFlightStick, &flightsticks_list},
+};
+
+static constexpr GameInputKind make_tracked_kinds_mask()
+{
+  unsigned mask = GameInputKindUnknown;
+  for (const TrackedKind &tracked : tracked_kinds)
+    mask |= tracked.kind;
+  return GameInputKind(mask);
+}
+
+static constexpr GameInputKind TRACKED_KINDS_MASK = make_tracked_kinds_mask();
 
 
 static void dump_input_kind(GameInputKind kind)
@@ -58,33 +80,13 @@ static void dump_input_kind(GameInputKind kind)
 
 static DevicesListWrapper *select_list_by_kind(GameInputKind kind)
 {
-  if (kind & GameInputKindGamepad)
-    return &gamepads_list;
-  if (kind & GameInputKindKeyboard)
-    return &keyboards_list;
-  if (kind & GameInputKindMouse)
-    return &mouses_list;
-  if (kind & GameInputKindFlightStick)
-    return &flightsticks_list;
+  for (const TrackedKind &tracked : tracked_kinds)
+    if (kind & tracked.kind)
+      return tracked.list;
 
   logwarn("Unsupported GameInputKind: 0x%x", kind);
   dump_input_kind(kind);
   return nullptr;
-}
-
-
-static eastl::vector<DevicesListWrapper *> select_all_supported_lists(GameInputKind kind)
-{
-  eastl::vector<DevicesListWrapper *> result;
-  if (kind & GameInputKindGamepad)
-    result.push_back(&gamepads_list);
-  if (kind & GameInputKindKeyboard)
-    result.push_back(&keyboards_list);
-  if (kind & GameInputKindMouse)
-    result.push_back(&mouses_list);
-  if (kind & GameInputKindFlightStick)
-    result.push_back(&flightsticks_list);
-  return result;
 }
 
 
@@ -147,23 +149,25 @@ static void __cdecl device_connection_callback(GameInputCallbackToken, void *, I
   uint16_t pid = deviceInfo->productId;
   debug("Device (%X:%X) %p kind: 0x%x", vid, pid, dev, kind);
   dump_input_kind(kind);
-  eastl::vector<DevicesListWrapper *> dlws = select_all_supported_lists(kind);
-  if (dlws.empty())
-  {
-    logwarn("Unsupported device kind");
-    return;
-  }
 
   bool connected = status & GameInputDeviceConnected;
+  bool supported = false;
 
-  for (DevicesListWrapper *dlw : dlws)
+  for (const TrackedKind &tracked : tracked_kinds)
   {
-    if (update_devices_state(dlw, dev, connected))
+    if (!(kind & tracked.kind))
+      continue;
+
+    supported = true;
+    if (update_devices_state(tracked.list, dev, connected))
     {
       debug("Devices list 0x%x updated", kind);
-      interlocked_increment(dlw->generation);
+      interlocked_increment(tracked.list->generation);
     }
   }
+
+  if (!supported)
+    logwarn("Unsupported device kind");
 }
 
 
@@ -201,10 +205,8 @@ void init()
 
   if (initialized)
   {
-    constexpr GameInputKind trackedKinds =
-      GameInputKindGamepad | GameInputKindKeyboard | GameInputKindMouse | GameInputKindFlightStick;
-    result = game_input->RegisterDeviceCallback(nullptr, trackedKinds, GameInputDeviceConnected, GameInputAsyncEnumeration, nullptr,
-      device_connection_callback, &device_connection_cb_token);
+    result = game_input->RegisterDeviceCallback(nullptr, TRACKED_KINDS_MASK, GameInputDeviceConnected, GameInputAsyncEnumeration,
+      nullptr, device_connection_callback, &device_connection_cb_token);
     initialized &= SUCCEEDED(result);
   }
 }
@@ -213,7 +215,7 @@ void init()
 static void clear_devices_list(DevicesListWrapper &dlw)
 {
   WinAutoLock lock(dlw.cs);
-  eastl::fill(dlw.list.begin(), dlw.list.end(), nullptr);
+  dlw.list.fill(nullptr);
 }
 
 
@@ -263,24 +265,20 @@ Reading get_current_reading(GameInputKind kind, IGameInputDevice *device)
 }
 
 
-void get_devices(GameInputKind kind, DevicesList &devices)
+DevicesList get_devices(GameInputKind kind)
 {
-  devices.clear();
   DevicesListWrapper *dlw = select_list_by_kind(kind);
-  if (dlw)
-  {
-    WinAutoLock lock(dlw->cs);
-    devices.resize(MAX_DEVICES_PER_TYPE, nullptr);
-    eastl::copy(dlw->list.begin(), dlw->list.end(), devices.begin());
-  }
+  if (!dlw)
+    return {};
+
+  WinAutoLock lock(dlw->cs);
+  return dlw->list;
 }
 
 
 bool has_input_device_of_kind(GameInputKind kind)
 {
-  gameinput::DevicesList devices;
-  gameinput::get_devices(kind, devices);
-  for (const IGameInputDevice *device : devices)
+  for (const IGameInputDevice *device : gameinput::get_devices(kind))
   {
     if (device)
       return true;

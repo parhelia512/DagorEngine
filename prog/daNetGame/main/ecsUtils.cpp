@@ -16,6 +16,7 @@
 #include "app.h"
 #include "net/net.h"
 #include "net/dedicated.h"
+#include <daECS/net/network.h>
 #include <soundSystem/soundSystem.h>
 #include "sound_net/soundNet.h"
 #include <memory/dag_framemem.h>
@@ -31,6 +32,7 @@
 #include "ui/uiShared.h"
 #include <util/dag_console.h>
 #include "gameProjConfig.h"
+#include <string.h>
 
 static bool load_templates_blk(ecs::EntityManager &mgr,
   ecs::TemplateRefs &trefs,
@@ -207,13 +209,20 @@ ecs::EntityId create_simple_entity(ecs::EntityManager &mgr, const char *templ_na
   return eid;
 }
 
-Tab<const char *> ecs_get_global_tags_context()
+Tab<const char *> ecs_get_global_tags_context(ecs::EntityManager &mgr)
 {
   Tab<const char *> globalTags(framemem_ptr());
-  globalTags.push_back("gEntityMgr");
-  if (has_network())
+
+  if (&mgr == g_entity_mgr.getRaw())
+    globalTags.push_back("gEntityMgr");
+  else
+    globalTags.push_back("userEM");
+
+  net::CNetwork *net = GET_NET();
+  if (net && &net->getEntityManager() == &mgr)
     globalTags.push_back("net");
   globalTags.push_back(is_server() ? "server" : "netClient"); // Note: currently is_server() might return false only within network
+
   if (!dedicated::is_dedicated())
     globalTags.push_back("gameClient"); // i.e. client or local server
   if (sndsys::is_inited())
@@ -272,6 +281,7 @@ Tab<const char *> ecs_get_global_tags_context()
   return globalTags;
 }
 
+
 static void load_es_order(
   ecs::EntityManager &mgr, Tab<SimpleString> &out_es_order, Tab<SimpleString> &out_es_skip, dag::ConstSpan<const char *> tags)
 {
@@ -282,20 +292,27 @@ static void load_es_order(
   ecs::load_es_order(mgr, blk, out_es_order, out_es_skip, tags);
 }
 
-void ecs_set_global_tags_context(ecs::EntityManager &mgr, const char *user_game_mode_es_order_fn)
+void ecs_apply_global_tags(ecs::EntityManager &mgr, Tab<const char *> &out_tags)
 {
-  Tab<const char *> globalTags = ecs_get_global_tags_context();
-  mgr.setFilterTags(globalTags);
+  out_tags = ecs_get_global_tags_context(mgr);
+  mgr.setFilterTags(out_tags);
+  mgr.setEsTags(out_tags);
+}
+
+void ecs_reset_global_tags_and_load_es_order(ecs::EntityManager &mgr, const char *user_game_mode_es_order_fn)
+{
+  Tab<const char *> globalTags(framemem_ptr());
+  ecs_apply_global_tags(mgr, globalTags);
   Tab<SimpleString> esOrder(framemem_ptr()), esSkip(framemem_ptr());
   load_es_order(mgr, esOrder, esSkip, globalTags);
   if (user_game_mode_es_order_fn)
   {
-    debug("ecs_set_global_tags_context: appending %s", user_game_mode_es_order_fn);
+    debug("ecs_reset_global_tags_and_load_es_order: appending %s", user_game_mode_es_order_fn);
     DataBlock blk(framemem_ptr());
     if (dblk::load(blk, user_game_mode_es_order_fn, dblk::ReadFlag::ROBUST))
       ecs::load_es_order(mgr, blk, esOrder, esSkip, globalTags);
     else
-      logerr("ecs_set_global_tags_context: failed to load  %s", user_game_mode_es_order_fn);
+      logerr("ecs_reset_global_tags_and_load_es_order: failed to load  %s", user_game_mode_es_order_fn);
   }
   mgr.setEsOrder(dag::Span<const char *>((const char **)esOrder.data(), esOrder.size()),
     dag::Span<const char *>((const char **)esSkip.data(), esSkip.size()));

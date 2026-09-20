@@ -159,7 +159,7 @@ Point2 DirFromAngle(float angle)
 ChopWaterGenerator::ChopWaterGenerator()
 {
   m_spectrum_cache.emplace_back();
-  Update(0.0f); // to calc maxWaveHeight, significantWaveHeight
+  Update(0.0f, 0.0f); // to calc maxWaveHeight, significantWaveHeight
 }
 
 void ChopWaterGenerator::LazyInit()
@@ -247,7 +247,7 @@ void ChopWaterGenerator::setWind(float speed, const Point2 &wind_dir)
     GenerateWaves(genProps, windDir, &m_spectrum_cache[0], genProps.wind_speed);
 }
 
-void ChopWaterGenerator::Update(float water_time, bool detail_waves_enabled)
+void ChopWaterGenerator::Update(float water_time, float scaled_dt, bool detail_waves_enabled)
 {
   genProps.amplitude_scale = convar::amplitude_scale;
   genProps.wind_spread = convar::wind_spread;
@@ -301,14 +301,20 @@ void ChopWaterGenerator::Update(float water_time, bool detail_waves_enabled)
   wave_spectrum->domains[3].power = wave_spectrum->domains[3].max_wave_height / max_wind_wave_spectrum.domains[3].max_wave_height;
   wave_spectrum->domains[4].power = wave_spectrum->domains[4].max_wave_height / max_wind_wave_spectrum.domains[4].max_wave_height;
 
-  if (!lazyInited)
+  if (!lazyInited || scaled_dt == 0.0f)
   {
     return;
   }
+
   G_ASSERTF(m_wavelet_0 != BAD_TEXTUREID, "ChopWater: m_wavelet_0 is not set");
   // render domains
   ShaderGlobal::set_float(global_time_secondsVarId, water_time);
   ShaderGlobal::set_float(last_cascade_nm_strengthVarId, convar::last_cascade_nm_strength);
+
+  float foamRetention = pow(genProps.foam_retention, 0.01f) * 0.999f; // original logic with fixed foamRetention
+  float retentionFactor = 60.0f * log(foamRetention);                 // We assume that original retention was set for 60 fps,
+  foamRetention = exp(retentionFactor * scaled_dt);                   // so we scale it by current dt
+  ShaderGlobal::set_float(foam_retentionVarId, foamRetention);
 
   ArrayTexture *rt_arr_curr = pingPongIndex % 2 ? wave_spectrum->rt_array_0.getArrayTex() : wave_spectrum->rt_array_1.getArrayTex();
   ArrayTexture *rt_arr_prev = pingPongIndex % 2 ? wave_spectrum->rt_array_1.getArrayTex() : wave_spectrum->rt_array_0.getArrayTex();
@@ -689,7 +695,6 @@ void ChopWaterGenerator::RenderDomain(const fft_water::ChopWaterProps &water_pro
   ShaderGlobal::set_float(size_in_meters_over_4VarId, domain.size_in_meters / 4.0f);
   ShaderGlobal::set_float(domain_max_wave_heightVarId, domain.max_wave_height);
   ShaderGlobal::set_float(domain_significant_wave_heightVarId, domain.significant_wave_height);
-  ShaderGlobal::set_float(foam_retentionVarId, pow(water_props.foam_retention, 0.01f) * 0.999f);
   ShaderGlobal::set_float4(wind_dirVarId, Color4(wind_dir.x, wind_dir.y, 0.f, convar::chop_debug));
 
   // height map

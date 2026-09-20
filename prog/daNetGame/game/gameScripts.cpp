@@ -282,7 +282,7 @@ void global_init_das()
     : gen2MakeSyntax ? bind_dascript::DasSyntax::V1_5
                      : bind_dascript::DasSyntax::V1_0);
 
-  const Tab<const char *> ecsTags = ecs_get_global_tags_context();
+  const Tab<const char *> ecsTags = ecs_get_global_tags_context(*g_entity_mgr);
   const auto devTagPos = eastl::find_if(ecsTags.begin(), ecsTags.end(), [](const char *tag) { return strcmp(tag, "dev") == 0; });
   const bool loadDebugCode = devTagPos != ecsTags.end();
   bind_dascript::init_scripts(auto_hot_reload ? bind_dascript::HotReload::ENABLED : bind_dascript::HotReload::DISABLED,
@@ -564,7 +564,6 @@ bool run_with_serialization()
   G_ASSERT(sqvm);
 
   Sqrat::Object exports;
-  String errMsg;
 
   start_es_loading(); // prevents calls to es_reset_order during es registrations
 
@@ -618,7 +617,6 @@ bool run()
   G_ASSERT(sqvm);
 
   Sqrat::Object exports;
-  String errMsg;
 
   start_es_loading(); // prevents calls to es_reset_order during es registrations
 

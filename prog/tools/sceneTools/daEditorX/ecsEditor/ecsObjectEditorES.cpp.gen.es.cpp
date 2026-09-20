@@ -119,6 +119,46 @@ static ecs::EntitySystemDesc on_entity_scene_data_changed_es_event_handler_es_de
   ecs::EventSetBuilder<ecs::EventOnEntitySceneDataChanged>::build(),
   0
 );
+//static constexpr ecs::ComponentDesc on_scene_order_changed_es_event_handler_comps[] ={};
+static void on_scene_order_changed_es_event_handler_all_events(const ecs::Event &__restrict evt, const ecs::QueryView &__restrict components)
+{
+  G_UNUSED(components);
+  G_FAST_ASSERT(evt.is<ecs::EventOnSceneOrderChanged>());
+  on_scene_order_changed_es_event_handler(static_cast<const ecs::EventOnSceneOrderChanged&>(evt)
+        );
+}
+static ecs::EntitySystemDesc on_scene_order_changed_es_event_handler_es_desc
+(
+  "on_scene_order_changed_es",
+  "prog/tools/sceneTools/daEditorX/ecsEditor/ecsObjectEditorES.cpp.inl",
+  ecs::EntitySystemOps(nullptr, on_scene_order_changed_es_event_handler_all_events),
+  empty_span(),
+  empty_span(),
+  empty_span(),
+  empty_span(),
+  ecs::EventSetBuilder<ecs::EventOnSceneOrderChanged>::build(),
+  0
+);
+//static constexpr ecs::ComponentDesc on_scene_parent_changed_es_event_handler_comps[] ={};
+static void on_scene_parent_changed_es_event_handler_all_events(const ecs::Event &__restrict evt, const ecs::QueryView &__restrict components)
+{
+  G_UNUSED(components);
+  G_FAST_ASSERT(evt.is<ecs::EventOnSceneParentChanged>());
+  on_scene_parent_changed_es_event_handler(static_cast<const ecs::EventOnSceneParentChanged&>(evt)
+        );
+}
+static ecs::EntitySystemDesc on_scene_parent_changed_es_event_handler_es_desc
+(
+  "on_scene_parent_changed_es",
+  "prog/tools/sceneTools/daEditorX/ecsEditor/ecsObjectEditorES.cpp.inl",
+  ecs::EntitySystemOps(nullptr, on_scene_parent_changed_es_event_handler_all_events),
+  empty_span(),
+  empty_span(),
+  empty_span(),
+  empty_span(),
+  ecs::EventSetBuilder<ecs::EventOnSceneParentChanged>::build(),
+  0
+);
 static constexpr ecs::ComponentDesc editable_entities_ecs_query_comps[] =
 {
 //start of 2 ro components at [0]

@@ -65,6 +65,18 @@ struct CmdSetDlssOptions
   int viewIndex;
 };
 
+struct CmdExecuteStreamlineDLSSNR
+{
+  nv::DlssNRParams<Image> dlssNRParams;
+  int viewIndex;
+};
+
+struct CmdSetDlssNROptions
+{
+  nv::DlssNROptions options;
+  int viewIndex;
+};
+
 struct CmdExecuteXESS
 {
   Image *inColor;

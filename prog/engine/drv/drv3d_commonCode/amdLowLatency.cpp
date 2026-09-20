@@ -82,7 +82,7 @@ public:
     if (modes.size() == 1)
       return;
 
-    TIME_D3D_PROFILE(nv_low_latency_sleep);
+    TIME_D3D_PROFILE(amd_low_latency_sleep);
     if (d3d::get_driver_code().is(d3d::dx11))
       G_VERIFY(SUCCEEDED(AMD::AntiLag2DX11::Update(&context11, isActive, maxFps)));
     else

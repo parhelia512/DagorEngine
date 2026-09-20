@@ -83,6 +83,8 @@ public:
 
   void setDefaultValue(Variant var) override { defaultValue = var.convert<TMatrix>(); }
 
+  const char *getImguiTypeName() const override { return "Matrix"; }
+
   void updateImgui() override
   {
     ScopedImguiBeginDisabled scopedDisabled(!controlEnabled);
@@ -95,6 +97,9 @@ public:
     if (valueHighlightColorSet)
       ImGui::PushStyleColor(ImGuiCol_FrameBg, getOverriddenColor(valueHighlightColor));
 
+    constexpr const char *cellSubIds[3][4] = {
+      {"r0c0", "r0c1", "r0c2", "r0c3"}, {"r1c0", "r1c1", "r1c2", "r1c3"}, {"r2c0", "r2c1", "r2c2", "r2c3"}};
+
     for (int row = 0; row < 3; ++row)
     {
       ImGui::PushMultiItemsWidths(4, ImGui::GetContentRegionAvail().x);
@@ -102,7 +107,7 @@ public:
       {
         if (col != 0)
           ImGui::SameLine(0.0f, ImGui::GetStyle().ItemInnerSpacing.x);
-        spinEdit[row][col].updateImgui(*this, &controlTooltip, this);
+        spinEdit[row][col].updateImgui(*this, &controlTooltip, this, this, cellSubIds[row][col]);
         ImGui::PopItemWidth();
       }
     }

@@ -84,8 +84,11 @@ static RenderState apply_override(RenderState state, const OverrideState &overri
   }
   const bool forcedSampleCountEnabled =
     override_state.isOn(OverrideState::FORCED_SAMPLE_COUNT) && override_state.forcedSampleCount > 0;
+  G_ASSERT(!override_state.isOn(OverrideState::Z_TEST_ENABLE) || !override_state.isOn(OverrideState::Z_TEST_DISABLE));
   if (override_state.isOn(OverrideState::Z_TEST_DISABLE) || forcedSampleCountEnabled)
     state.ztest = 0;
+  if (override_state.isOn(OverrideState::Z_TEST_ENABLE) && !forcedSampleCountEnabled)
+    state.ztest = 1;
   if (override_state.isOn(OverrideState::CONSERVATIVE))
   {
     if (d3d::get_driver_desc().caps.hasConservativeRassterization)

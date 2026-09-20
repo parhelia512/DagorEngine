@@ -69,6 +69,8 @@ void PhysObjState::applyPartialState(const CommonPhysPartialState &state)
   velocity = state.velocity;
 }
 
+void PhysObjState::applyResyncedState(const PhysObjState & /*state*/) {}
+
 void PhysObjState::applyDesyncedState(const PhysObjState & /*state*/) {}
 
 
@@ -295,7 +297,7 @@ static inline bool apply_impulse_to_ri(rendinst::RendInstDesc &ri_desc, float at
   if (impulse >= destructionImpulse)
   {
     riCollisionInfo->onImpulse(impulse, impulse_dir, contact_pos, speed, -impulse_dir);
-    velocity *= (1.0f - safediv(destructionImpulse, impulse));
+    velocity *= (1.0f - clamp(safediv(destructionImpulse, impulse), 0.f, 1.f));
     return true;
   }
 
@@ -497,7 +499,7 @@ void PhysObj::updateAwakePhys(double at_time, float dt, bool)
         if (linearImpulse >= destructionImpulse)
         {
           contacts[i].objectInfo->onImpulse(linearImpulse, impulseDir, contacts[i].wpos, speed, contacts[i].wnormB);
-          currentState.velocity *= (1.0f - max(0.f, safediv(destructionImpulse, linearImpulse)));
+          currentState.velocity *= (1.0f - clamp(safediv(destructionImpulse, linearImpulse), 0.f, 1.f));
           gamephys::remove_contact(contacts, i--);
           hasRiDestroyingCollision = true;
           continue;

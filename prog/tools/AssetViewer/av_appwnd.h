@@ -211,6 +211,7 @@ public:
   class LibCache *getLibCachePtr() override { return NULL; }
   Tab<struct WspLibData> *getLibData() override { return NULL; }
   const EditorWorkspace &getBaseWorkspace() override { return GenericEditorAppWindow::getWorkspace(); }
+  const char *getTestScriptMount() const override { return "%asset_viewer_tests"; }
 
   // ==========================================================================
 
@@ -399,6 +400,10 @@ private:
 
   // PropPanel::IDelayedCallbackHandler
   void onImguiDelayedCallback(void *user_data) override;
+
+  DagorAsset *getAssetSelectorSelectedAsset() const;
+
+  DagorAssetFolder *getAssetSelectorSelectedAssetFolder() const;
 
   enum class AssetBuildWarningDisplay
   {

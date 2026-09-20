@@ -168,14 +168,14 @@ int BaseTex::updateSubRegionInternal(BaseTexture *srcBaseTex, int src_subres_idx
 {
   if (isStub())
   {
-    D3D_CONTRACT_ERROR("updateSubRegion() called for tex=<%s> in stub state: stubTexIdx=%d", getTexName(), stubTexIdx);
+    D3D_CONTRACT_ERROR("update_sub_region() called for tex=<%s> in stub state: stubTexIdx=%d", getTexName(), stubTexIdx);
     return 0;
   }
   if (srcBaseTex)
     if (BaseTex *stex = getbasetex(srcBaseTex))
       if (stex->isStub())
       {
-        D3D_CONTRACT_ERROR("updateSubRegion() called with src tex=<%s> in stub state: stubTexIdx=%d", srcBaseTex->getTexName(),
+        D3D_CONTRACT_ERROR("update_sub_region() called with src tex=<%s> in stub state: stubTexIdx=%d", srcBaseTex->getTexName(),
           stex->stubTexIdx);
         return 0;
       }
@@ -307,15 +307,14 @@ int BaseTex::update(BaseTexture *src)
 {
   if (isStub())
   {
-    D3D_CONTRACT_ERROR("updateSubRegion() called for tex=<%s> in stub state: stubTexIdx=%d", getTexName(), stubTexIdx);
+    D3D_CONTRACT_ERROR("update() called for tex=<%s> in stub state: stubTexIdx=%d", getTexName(), stubTexIdx);
     return 0;
   }
   if (src)
     if (BaseTex *stex = getbasetex(src))
       if (stex->isStub())
       {
-        D3D_CONTRACT_ERROR("updateSubRegion() called with src tex=<%s> in stub state: stubTexIdx=%d", src->getTexName(),
-          stex->stubTexIdx);
+        D3D_CONTRACT_ERROR("update() called with src tex=<%s> in stub state: stubTexIdx=%d", src->getTexName(), stex->stubTexIdx);
         return 0;
       }
 
@@ -336,20 +335,6 @@ int BaseTex::update(BaseTexture *src)
     }
   }
   return 0;
-}
-
-int BaseTex::updateSubRegion(BaseTexture *src, int src_subres_idx, int src_x, int src_y, int src_z, int src_w, int src_h, int src_d,
-  int dest_subres_idx, int dest_x, int dest_y, int dest_z)
-{
-  return BaseTex::updateSubRegionInternal(src, src_subres_idx, src_x, src_y, src_z, src_w, src_h, src_d, dest_subres_idx, dest_x,
-    dest_y, dest_z, false);
-}
-
-int BaseTex::updateSubRegionNoOrder(BaseTexture *src, int src_subres_idx, int src_x, int src_y, int src_z, int src_w, int src_h,
-  int src_d, int dest_subres_idx, int dest_x, int dest_y, int dest_z)
-{
-  return BaseTex::updateSubRegionInternal(src, src_subres_idx, src_x, src_y, src_z, src_w, src_h, src_d, dest_subres_idx, dest_x,
-    dest_y, dest_z, true);
 }
 
 void BaseTex::destroy()

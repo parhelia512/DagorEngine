@@ -109,5 +109,5 @@ inline CompileFlags operator&(CompileFlags l, CompileFlags r)
 }
 
 CompileToSpirVResult compileHLSL_DXC(const DXCContext *dxc_ctx, dag::ConstSpan<char> source, const char *entry, const char *profile,
-  CompileFlags flags, const eastl::vector<eastl::string_view> &disabledSpirvOptims);
+  int implicit_cbuf_size, CompileFlags flags, const eastl::vector<eastl::string_view> &disabledSpirvOptims);
 } // namespace spirv

@@ -13,6 +13,7 @@
 #include <cs/phyexp.h>
 #include <meshnormalspec.h>
 #include <impexp.h>
+#include <format>
 #include <string_view>
 #include "comboBoxHelper.h"
 #include "dagor.h"
@@ -20,29 +21,29 @@
 #include "enumnode.h"
 #include "dagfmt.h"
 #include "mater.h"
-#include "expanim.h"
-#include "expanim2.h"
 #include "Bones.h"
 #include "iparamb2.h"
 #include "ISkin.h"
 #include "resource.h"
 #include "debug.h"
 #include "rolluppanel.h"
+#include "ci.h"
 #include "common.h"
 #include "datablk.h"
-#include <INamedSelectionSetManager.h>
 
 // #define TIMER
 #include <unordered_set>
 #include <unordered_map>
 #include <map>
 #include <vector>
+#include <algorithm>
+#include <ranges>
 #include <string>
 #include "Timer.hpp"
 #ifdef TIMER
-#define INTERVAL(name, elapsed, type) TimerInterval timerInterval(name, elapsed, type)
+#define INTERVAL(elapsed, type) TimerInterval timerInterval(elapsed, type)
 #else
-#define INTERVAL(name, elapsed, type)
+#define INTERVAL(elapsed, type)
 #endif
 #include <string>
 #include <utility>
@@ -93,22 +94,14 @@ public:
 
   IUtil *iu;
   Interface *ip;
-  HWND hExpDag, hExpAnim, hExpOther, hLog;
-  ICustEdit *eastart, *eaend;
-  ICustEdit *epose, *erote, *escle, *eorte;
-  ICustEdit *epose2, *erote2;
+  HWND hExpDag, hExpOther, hLog;
 
   fs::path exp_fname;
-  fs::path exp_anim2_fname;
-  fs::path exp_camera_fname;
   fs::path exp_phys_fname;
   fs::path exp_instances_fname;
 
   int expflg;
   ExportMode exportMode;
-  float poseps, roteps, scleps, orteps;
-  float poseps2, roteps2;
-  TimeValue astart, aend;
   bool suppressPrompts;
 
   ExpUtil();
@@ -117,7 +110,6 @@ public:
   void DeleteThis() override {}
 
   void update_ui_dag(HWND hw);
-  void update_ui_anim(HWND hw);
   void update_ui_other(HWND hw);
   void update_ui();
   void update_tooltips();
@@ -125,26 +117,17 @@ public:
   void set_expflg(int flg, int);
 
   void Init(HWND hw);
-  void Destroy(HWND hw);
-
-  void InitAnim(HWND hw);
-  void DestroyAnim(HWND hw);
 
   int input_exp_fname();
-  int input_exp_anim2_fname();
-  int input_exp_camera_fname();
   int input_exp_phys_fname();
   int input_exp_instances_fname();
   BOOL export_one_dag(const fs::path &exp_fn);
   BOOL export_one_dag_cb(ExportENCB &cb, const fs::path &exp_fn);
   BOOL export_dag();
-  void export_anim_v2();
-  void export_camera_v1();
   void exportPhysics();
   void export_instances();
   void calcMomj();
   BOOL export_dlg_proc(HWND hw, UINT msg, WPARAM wParam, LPARAM lParam);
-  BOOL export_anim_dlg_proc(HWND hw, UINT msg, WPARAM wParam, LPARAM lParam);
   BOOL export_other_dlg_proc(HWND hw, UINT msg, WPARAM wParam, LPARAM lParam);
   void checkDupesAndSpaces(Tab<INode *> &node_list);
   void errorMessage(const TCHAR *msg);
@@ -207,6 +190,9 @@ static DagExpCD dagexpcd;
 
 ClassDesc *GetDAGEXPCD() { return &dagexpcd; }
 
+// asked by the other translation units before they open a box of their own
+bool are_prompts_suppressed() { return util.suppressPrompts; }
+
 void explog(const TCHAR *s, ...)
 {
   va_list ap;
@@ -246,18 +232,14 @@ public:
   IOResult Load(ILoad *) override;
 };
 
+// Warning! These ids are stored in the Max file. The gaps are ids that are no longer written.
 enum
 {
   CH_EXP_FNAME = 1,
-  CH_EXPHIDDEN,
-  CH_EXPFLG,
-  CH_ANIMEPS,
-  CH_ANIMRANGE,
-  CH_EXP_ANIM2_FNAME,
-  CH_EXP_CAMERA_FNAME,
-  CH_ANIMEPS2,
-  CH_EXP_PHYS_FNAME,
-  CH_EXP_MODE,
+  CH_EXPHIDDEN = 2,
+  CH_EXPFLG = 3,
+  CH_EXP_PHYS_FNAME = 9,
+  CH_EXP_MODE = 10,
 };
 
 IOResult ExpUtilDesc::Save(ISave *io)
@@ -275,44 +257,7 @@ IOResult ExpUtilDesc::Save(ISave *io)
   if (io->Write(&util.expflg, 4, &nw) != IO_OK)
     return IO_ERROR;
   io->EndChunk();
-  io->BeginChunk(CH_ANIMRANGE);
-  if (io->Write(&util.astart, 4, &nw) != IO_OK)
-    return IO_ERROR;
-  if (io->Write(&util.aend, 4, &nw) != IO_OK)
-    return IO_ERROR;
-  io->EndChunk();
-  io->BeginChunk(CH_ANIMEPS);
-  if (io->Write(&util.poseps, 4, &nw) != IO_OK)
-    return IO_ERROR;
-  if (io->Write(&util.roteps, 4, &nw) != IO_OK)
-    return IO_ERROR;
-  if (io->Write(&util.scleps, 4, &nw) != IO_OK)
-    return IO_ERROR;
-  if (io->Write(&util.orteps, 4, &nw) != IO_OK)
-    return IO_ERROR;
-  io->EndChunk();
 
-  io->BeginChunk(CH_ANIMEPS2);
-  if (io->Write(&util.poseps2, 4, &nw) != IO_OK)
-    return IO_ERROR;
-  if (io->Write(&util.roteps2, 4, &nw) != IO_OK)
-    return IO_ERROR;
-  io->EndChunk();
-
-  if (!util.exp_anim2_fname.empty())
-  {
-    io->BeginChunk(CH_EXP_ANIM2_FNAME);
-    if (io->WriteCString(util.exp_anim2_fname.c_str()) != IO_OK)
-      return IO_ERROR;
-    io->EndChunk();
-  }
-  if (!util.exp_camera_fname.empty())
-  {
-    io->BeginChunk(CH_EXP_CAMERA_FNAME);
-    if (io->WriteCString(util.exp_camera_fname.c_str()) != IO_OK)
-      return IO_ERROR;
-    io->EndChunk();
-  }
   if (!util.exp_phys_fname.empty())
   {
     io->BeginChunk(CH_EXP_PHYS_FNAME);
@@ -345,16 +290,6 @@ IOResult ExpUtilDesc::Load(ILoad *io)
           return IO_ERROR;
         util.exp_fname = str;
         break;
-      case CH_EXP_ANIM2_FNAME:
-        if (io->ReadCStringChunk(&str) != IO_OK)
-          return IO_ERROR;
-        util.exp_anim2_fname = str;
-        break;
-      case CH_EXP_CAMERA_FNAME:
-        if (io->ReadCStringChunk(&str) != IO_OK)
-          return IO_ERROR;
-        util.exp_camera_fname = str;
-        break;
       case CH_EXP_PHYS_FNAME:
         if (io->ReadCStringChunk(&str) != IO_OK)
           return IO_ERROR;
@@ -363,28 +298,6 @@ IOResult ExpUtilDesc::Load(ILoad *io)
       case CH_EXPHIDDEN: util.expflg |= EXP_HID; break;
       case CH_EXPFLG:
         if (io->Read(&util.expflg, 4, &nr) != IO_OK)
-          return IO_ERROR;
-        break;
-      case CH_ANIMRANGE:
-        if (io->Read(&util.astart, 4, &nr) != IO_OK)
-          return IO_ERROR;
-        if (io->Read(&util.aend, 4, &nr) != IO_OK)
-          return IO_ERROR;
-        break;
-      case CH_ANIMEPS:
-        if (io->Read(&util.poseps, 4, &nr) != IO_OK)
-          return IO_ERROR;
-        if (io->Read(&util.roteps, 4, &nr) != IO_OK)
-          return IO_ERROR;
-        if (io->Read(&util.scleps, 4, &nr) != IO_OK)
-          return IO_ERROR;
-        if (io->Read(&util.orteps, 4, &nr) != IO_OK)
-          return IO_ERROR;
-        break;
-      case CH_ANIMEPS2:
-        if (io->Read(&util.poseps2, 4, &nr) != IO_OK)
-          return IO_ERROR;
-        if (io->Read(&util.roteps2, 4, &nr) != IO_OK)
           return IO_ERROR;
         break;
       case CH_EXP_MODE:
@@ -415,8 +328,6 @@ BOOL ExpUtil::export_dlg_proc(HWND hw, UINT msg, WPARAM wpar, LPARAM lpar)
   switch (msg)
   {
     case WM_INITDIALOG: Init(hw); break;
-
-    case WM_DESTROY: Destroy(hw); break;
 
     case WM_COMMAND:
     {
@@ -461,64 +372,6 @@ BOOL ExpUtil::export_dlg_proc(HWND hw, UINT msg, WPARAM wpar, LPARAM lpar)
   return TRUE;
 }
 
-BOOL ExpUtil::export_anim_dlg_proc(HWND hw, UINT msg, WPARAM wpar, LPARAM lpar)
-{
-  switch (msg)
-  {
-    case WM_INITDIALOG: InitAnim(hw); break;
-
-    case WM_DESTROY: DestroyAnim(hw); break;
-
-    case WM_COMMAND:
-    {
-      WORD id = LOWORD(wpar);
-      switch (id)
-      {
-        case IDC_ARANGE: set_expflg(EXP_ARNG, IsDlgButtonChecked(hw, id)); break;
-        case IDC_USEKEYS: set_expflg(EXP_UKEYS, IsDlgButtonChecked(hw, id)); break;
-        case IDC_USENTKEYS: set_expflg(EXP_UNTKEYS, IsDlgButtonChecked(hw, id)); break;
-        case IDC_DONTCHKKEYS: set_expflg(EXP_DONTCHKKEYS, IsDlgButtonChecked(hw, id)); break;
-        case IDC_REDUCE_POS: set_expflg(EXP_DONT_REDUCE_POS, !IsDlgButtonChecked(hw, id)); break;
-        case IDC_LOOP_ANIM: set_expflg(EXP_LOOPED_ANIM, IsDlgButtonChecked(hw, id)); break;
-        case IDC_REDUCE_ROT: set_expflg(EXP_DONT_REDUCE_ROT, !IsDlgButtonChecked(hw, id)); break;
-        case IDC_REDUCE_SCL: set_expflg(EXP_DONT_REDUCE_SCL, !IsDlgButtonChecked(hw, id)); break;
-        case IDC_ASTART:
-        {
-          TSTR s;
-          s.Resize(64);
-          eastart->GetText(s.dataForWrite(), 64);
-          StringToTime(s, astart);
-        }
-        break;
-        case IDC_AEND:
-        {
-          TSTR s;
-          s.Resize(64);
-          eaend->GetText(s.dataForWrite(), 64);
-          StringToTime(s, aend);
-        }
-        break;
-        case IDC_POSEPS: poseps = epose->GetFloat(); break;
-        case IDC_SCLEPS: scleps = escle->GetFloat() / 100; break;
-        case IDC_ROTEPS: roteps = DegToRad(erote->GetFloat()); break;
-        case IDC_ORTEPS: orteps = DegToRad(eorte->GetFloat()); break;
-        case IDC_ORIGIN_LINVEL_EPS: poseps2 = epose2->GetFloat(); break;
-        case IDC_ORIGIN_ANGVEL_EPS: roteps2 = DegToRad(erote2->GetFloat()); break;
-
-        case IDC_EXPORT_ANIM2:
-          if (input_exp_anim2_fname())
-            export_anim_v2();
-          break;
-
-        default: break;
-      }
-    }
-    break;
-    default: return FALSE;
-  }
-  return TRUE;
-}
-
 
 BOOL ExpUtil::export_other_dlg_proc(HWND hw, UINT msg, WPARAM wpar, LPARAM lpar)
 {
@@ -535,9 +388,6 @@ BOOL ExpUtil::export_other_dlg_proc(HWND hw, UINT msg, WPARAM wpar, LPARAM lpar)
       {
         case IDC_CALC_MOMJ: calcMomj(); break;
         case IDC_CALC_MOMJ_ON_EXPORT: set_expflg(EXP_DONT_CALC_MOMJ, !IsDlgButtonChecked(hw, id)); break;
-
-        case IDC_EXPLTARG: set_expflg(EXP_LTARG, IsDlgButtonChecked(hw, id)); break;
-        case IDC_EXPCTARG: set_expflg(EXP_CTARG, IsDlgButtonChecked(hw, id)); break;
 
         case IDC_SET_DAGORPATH:
         {
@@ -579,11 +429,6 @@ BOOL ExpUtil::export_other_dlg_proc(HWND hw, UINT msg, WPARAM wpar, LPARAM lpar)
           }
           break;
 
-        case IDC_EXPORT_CAMERA2:
-          if (input_exp_camera_fname())
-            export_camera_v1();
-          break;
-
         case IDC_EXPORT_PHYS:
           if (input_exp_phys_fname())
             exportPhysics();
@@ -607,11 +452,6 @@ BOOL ExpUtil::export_other_dlg_proc(HWND hw, UINT msg, WPARAM wpar, LPARAM lpar)
 static INT_PTR CALLBACK ExpDagDlgProc(HWND hw, UINT msg, WPARAM wParam, LPARAM lParam)
 {
   return util.export_dlg_proc(hw, msg, wParam, lParam);
-}
-
-static INT_PTR CALLBACK ExportAnimDlgProc(HWND hw, UINT msg, WPARAM wParam, LPARAM lParam)
-{
-  return util.export_anim_dlg_proc(hw, msg, wParam, lParam);
 }
 
 static INT_PTR CALLBACK ExportOtherDlgProc(HWND hw, UINT msg, WPARAM wParam, LPARAM lParam)
@@ -640,21 +480,10 @@ ExpUtil::ExpUtil()
 {
   iu = NULL;
   ip = NULL;
-  hExpDag = hExpAnim = hExpOther = hLog = NULL;
+  hExpDag = hExpOther = hLog = NULL;
 
   expflg = EXP_DEFAULT;
   exportMode = ExportMode::Standard;
-  astart = GetAnimStart();
-  aend = GetAnimEnd();
-  poseps = 0.005f;
-  scleps = 0.01f;
-  roteps = DegToRad(1);
-  orteps = DegToRad(1);
-
-  poseps2 = 0.005f;
-  roteps2 = DegToRad(1);
-  eastart = eaend = NULL;
-  epose = erote = escle = eorte = NULL;
 
   suppressPrompts = false;
 }
@@ -665,7 +494,6 @@ void ExpUtil::BeginEditParams(Interface *ip, IUtil *iu)
   this->ip = ip;
 
   hExpDag = add_rollup_page(ip, IDD_EXPUTIL, ExpDagDlgProc, _T("DAG"), 0);
-  hExpAnim = add_rollup_page(ip, IDD_EXPANIM, ExportAnimDlgProc, _T("Animation"), 0);
   hExpOther = add_rollup_page(ip, IDD_EXPOTHER, ExportOtherDlgProc, _T("Other"), 0, APPENDROLL_CLOSED);
   hLog = add_rollup_page(ip, IDD_LOGROLL, LogDlgProc, GetString(IDS_EXPLOG_ROLL), 0, APPENDROLL_CLOSED);
 }
@@ -676,7 +504,6 @@ void ExpUtil::EndEditParams(Interface *ip, IUtil *iu)
   this->ip = NULL;
 
   delete_rollup_page(ip, &hExpDag);
-  delete_rollup_page(ip, &hExpAnim);
   delete_rollup_page(ip, &hExpOther);
   delete_rollup_page(ip, &hLog);
 }
@@ -730,48 +557,18 @@ void ExpUtil::update_ui_dag(HWND hw)
   CheckDlgButton(hw, IDC_EXPMATEROPT, expflg & EXP_MATOPT);
 }
 
-void ExpUtil::update_ui_anim(HWND hw)
-{
-  if (!hw)
-    return;
-
-  TSTR s;
-  TimeToString(astart, s);
-  eastart->SetText(s);
-  TimeToString(aend, s);
-  eaend->SetText(s);
-  epose->SetText(poseps, 3);
-  escle->SetText(scleps * 100, 2);
-  erote->SetText(RadToDeg(roteps), 2);
-  eorte->SetText(RadToDeg(orteps), 2);
-  epose2->SetText(poseps2, 3);
-  erote2->SetText(RadToDeg(roteps2), 2);
-
-  CheckDlgButton(hw, IDC_ARANGE, expflg & EXP_ARNG);
-  CheckDlgButton(hw, IDC_USEKEYS, expflg & EXP_UKEYS);
-  CheckDlgButton(hw, IDC_USENTKEYS, expflg & EXP_UNTKEYS);
-  CheckDlgButton(hw, IDC_DONTCHKKEYS, expflg & EXP_DONTCHKKEYS);
-  CheckDlgButton(hw, IDC_REDUCE_POS, !(expflg & EXP_DONT_REDUCE_POS));
-  CheckDlgButton(hw, IDC_REDUCE_ROT, !(expflg & EXP_DONT_REDUCE_ROT));
-  CheckDlgButton(hw, IDC_REDUCE_SCL, !(expflg & EXP_DONT_REDUCE_SCL));
-  CheckDlgButton(hw, IDC_LOOP_ANIM, expflg & EXP_LOOPED_ANIM);
-}
-
 void ExpUtil::update_ui_other(HWND hw)
 {
   if (!hw)
     return;
 
   CheckDlgButton(hw, IDC_CALC_MOMJ_ON_EXPORT, !(expflg & EXP_DONT_CALC_MOMJ));
-  CheckDlgButton(hw, IDC_EXPLTARG, expflg & EXP_LTARG);
-  CheckDlgButton(hw, IDC_EXPCTARG, expflg & EXP_CTARG);
   update_path_edit_control(hw, IDC_DAGORPATH, dagor_path);
 }
 
 void ExpUtil::update_ui()
 {
   update_ui_dag(hExpDag);
-  update_ui_anim(hExpAnim);
   update_ui_other(hExpOther);
 }
 
@@ -798,55 +595,12 @@ void ExpUtil::Init(HWND hw)
   SendMessage(tooltipExtender.GetToolTipHWND(), TTM_SETDELAYTIME, TTDT_AUTOPOP, 32000);
 }
 
-void ExpUtil::Destroy(HWND hw) {}
-
-void ExpUtil::InitAnim(HWND hw)
-{
-  eastart = GetICustEdit(GetDlgItem(hw, IDC_ASTART));
-  eaend = GetICustEdit(GetDlgItem(hw, IDC_AEND));
-  epose = GetICustEdit(GetDlgItem(hw, IDC_POSEPS));
-  erote = GetICustEdit(GetDlgItem(hw, IDC_ROTEPS));
-  escle = GetICustEdit(GetDlgItem(hw, IDC_SCLEPS));
-  eorte = GetICustEdit(GetDlgItem(hw, IDC_ORTEPS));
-  epose2 = GetICustEdit(GetDlgItem(hw, IDC_ORIGIN_LINVEL_EPS));
-  erote2 = GetICustEdit(GetDlgItem(hw, IDC_ORIGIN_ANGVEL_EPS));
-  update_ui_anim(hw);
-}
-
-void ExpUtil::DestroyAnim(HWND hw)
-{
-  ReleaseICustEdit(eastart);
-  ReleaseICustEdit(eaend);
-  ReleaseICustEdit(epose);
-  ReleaseICustEdit(erote);
-  ReleaseICustEdit(escle);
-  ReleaseICustEdit(eorte);
-  ReleaseICustEdit(epose2);
-  ReleaseICustEdit(erote2);
-}
-
 int ExpUtil::input_exp_fname()
 {
   FilterList fl;
   fl.Append(GetString(IDS_SCENE_FILES));
   fl.Append(_T("*.dag"));
   return get_save_filename(hExpDag, GetString(IDS_SAVE_SCENE_TITLE), fl, _T("dag"), exp_fname);
-}
-
-int ExpUtil::input_exp_anim2_fname()
-{
-  FilterList fl;
-  fl.Append(GetString(IDS_ANIM2_FILES));
-  fl.Append(_T ("*.a2d"));
-  return get_save_filename(hExpAnim, GetString(IDS_SAVE_ANIM2_TITLE2), fl, _T("a2d"), exp_anim2_fname);
-}
-
-int ExpUtil::input_exp_camera_fname()
-{
-  FilterList fl;
-  fl.Append(GetString(IDS_CAMERA_FILES));
-  fl.Append(_T ("*.cam"));
-  return get_save_filename(hExpOther, GetString(IDS_SAVE_CAMERA_TITLE), fl, _T("cam"), exp_camera_fname);
 }
 
 int ExpUtil::input_exp_phys_fname()
@@ -947,113 +701,6 @@ struct ExpMat
   ExpMat() : mtl(0), wirecolor(0) {}
 };
 
-class MyExpTMAnimCB : public ExpTMAnimCB
-{
-public:
-  INode *node, *pnode, *origin;
-  char nonort;
-
-  MyExpTMAnimCB(INode *n, INode *pn, INode *orig)
-  {
-    node = n;
-    pnode = pn;
-    origin = orig;
-    nonort = 0;
-  }
-  const TCHAR *get_name() override
-  {
-    if (!node)
-      return _T("<NULL>");
-    return node->GetName();
-  }
-  void interp_tm(TimeValue t, Matrix3 &m) override
-  {
-    Matrix3 ntm = get_scaled_stretch_node_tm(node, t);
-    adjwtm(ntm);
-    Matrix3 ptm;
-    if (pnode)
-    {
-      ptm = get_scaled_stretch_node_tm(pnode, t);
-      if (!pnode->IsRootNode())
-        adjwtm(ptm);
-      m = ntm * Inverse(ptm);
-    }
-    else if (origin)
-    {
-      Matrix3 otm;
-      otm = get_scaled_stretch_node_tm(origin, t);
-      adjwtm(otm);
-      m = ntm * Inverse(otm);
-    }
-    else
-      m = ntm;
-  }
-  void non_orthog_tm(TimeValue t) override { nonort = 1; }
-};
-
-static int save_pos_anim(FILE *h, Tab<PosKey> &k)
-{
-#define wr(p, l)                 \
-  {                              \
-    if (fwrite(p, l, 1, h) != 1) \
-      return 0;                  \
-  }
-  int num = k.Count();
-  if (num > 0xFFFF)
-    num = 0xFFFF;
-  wr(&num, 2);
-  if (num == 1)
-  {
-    wr(&k[0].p, 12);
-  }
-  else
-  {
-    for (int i = 0; i < num; ++i)
-    {
-      DagPosKey d;
-      d.t = k[i].t;
-      d.p = k[i].p;
-      d.i = k[i].i;
-      d.o = k[i].o;
-      wr(&d, sizeof(d));
-    }
-  }
-  return 1;
-#undef wr
-}
-
-static int save_rot_anim(FILE *h, Tab<RotKey> &k)
-{
-#define wr(p, l)                 \
-  {                              \
-    if (fwrite(p, l, 1, h) != 1) \
-      return 0;                  \
-  }
-  int num = k.Count();
-  if (num > 0xFFFF)
-    num = 0xFFFF;
-  wr(&num, 2);
-  if (num == 1)
-  {
-    Quat q = Conjugate(k[0].p);
-    wr(&q, 16);
-  }
-  else
-  {
-    for (int i = 0; i < num; ++i)
-    {
-      DagRotKey d;
-      d.t = k[i].t;
-      d.p = Conjugate(k[i].p);
-      d.i = Conjugate(k[i].i);
-      d.o = Conjugate(k[i].o);
-      wr(&d, sizeof(d));
-    }
-  }
-  return 1;
-#undef wr
-}
-
 struct ExpNode
 {
   Tab<ExpNode *> child;
@@ -1080,27 +727,12 @@ struct ExpNode
   }
 };
 
-struct ExpKeyLabel
-{
-  ushort id;
-  TimeValue t;
-};
-
-struct ExpNoteTrack
-{
-  Tab<ExpKeyLabel> kl;
-  INode *node;
-
-  ExpNoteTrack(INode *n) { node = n; }
-};
-
-const char origin_lin_vel_node_name[] = "origin_lin_vel_node_name";
-const char origin_ang_vel_node_name[] = "origin_ang_vel_node_name";
 #ifdef TIMER
-static Timer timer;
-static double mtlElapsed = 0., procAddMtl = 0., dagorMatElapsed = 0., dagorMatEarlyExitElapsed = 0.;
+static double mtlElapsed = 0., procAddMtl = 0., dagorMatElapsed = 0.;
 static int mtlCount = 0, procNodeCount = 0;
 #endif
+
+static int face_mtl_slot(MtlID face_mtl_id, int sub_mtl_num) { return face_mtl_id % sub_mtl_num; }
 
 static bool any_explicit_normals_set(const MeshNormalSpec *normalSpec)
 {
@@ -1114,46 +746,100 @@ static bool any_explicit_normals_set(const MeshNormalSpec *normalSpec)
 #endif
 }
 
+static bool is_blank(wchar_t c) { return c == L' ' || c == L'\t'; }
+
+static size_t line_start(std::wstring_view script, size_t at)
+{
+  const size_t nl = script.rfind(L'\n', at);
+  return nl == std::wstring_view::npos ? 0 : nl + 1;
+}
+
+static size_t skip_blanks(std::wstring_view script, size_t from)
+{
+  while (from < script.size() && is_blank(script[from]))
+    ++from;
+  return from;
+}
+
+static size_t skip_blanks_back(std::wstring_view script, size_t at)
+{
+  while (at > 0 && is_blank(script[at - 1]))
+    --at;
+  return at;
+}
+
+static bool is_param_start(std::wstring_view script, size_t at)
+{
+  const size_t lineStart = line_start(script, at);
+
+  const size_t firstOnLine = skip_blanks(script, lineStart);
+  if (script.compare(firstOnLine, 2, L"//") == 0)
+    return false;
+
+  const size_t paramStart = skip_blanks_back(script, at);
+  return paramStart == lineStart || script[paramStart - 1] == L';' || script[paramStart - 1] == L'"' ||
+         script[paramStart - 1] == L'\'';
+}
+
+static size_t find_param(std::wstring_view script, std::wstring_view key)
+{
+  size_t at = script.find(key);
+  while (at != std::wstring_view::npos && !is_param_start(script, at))
+    at = script.find(key, at + 1);
+
+  return at;
+}
+
+static std::wstring_view find_quoted_value(std::wstring_view script, std::wstring_view key)
+{
+  const size_t at = find_param(script, key);
+  if (at == std::wstring_view::npos)
+    return {};
+
+  const size_t from = at + key.size();
+  const size_t to = script.find(L'"', from);
+  if (to == std::wstring_view::npos)
+    return {};
+
+  return script.substr(from, to - from);
+}
+
+static std::wstring blk_escape(std::wstring_view name)
+{
+  std::wstring res = replace_all(std::wstring(name), L"~", L"~~");
+  res = replace_all(res, L"\"", L"~\"");
+  res = replace_all(res, L"\r", L"~r");
+  return replace_all(res, L"\n", L"~n");
+}
+
 class ExportENCB : public ENodeCB
 {
 public:
   TimeValue time;
   Tab<INode *> node;
-  Tab<bool> nodeExp; // used in a2d export to denote nodes that should be exported; 'node' contains all nodes
   std::vector<ExpMat> mat;
   std::vector<std::unordered_set<Mtl *>> mtls;
   Tab<int> matIDtoMatIdx;
   std::vector<std::wstring> tex;
-  std::unordered_map<std::wstring, int> texIndexMap; // lowercase key for case-insensitive O(1) lookup
-  std::vector<std::wstring> klabel;
-  std::unordered_map<std::wstring, int> klabelIndexMap; // lowercase key for case-insensitive O(1) lookup
-  Tab<ExpNoteTrack *> ntrack;
+  std::unordered_map<std::wstring, int, CaseInsensitiveHashW, CaseInsensitiveEqualW> texIndexMap;
   std::vector<EMat> matList;
-  std::unordered_map<DWORD, std::wstring> wcmap;
+  std::unordered_set<std::wstring> matNames;
+  std::unordered_set<DWORD> wcset;
+  int autoMatNameCounter;
   std::unordered_map<INode *, int> nodeIdMap;
-  int max_pkeys, max_rkeys, max_skeys;
-  INode *max_pkeys_n, *max_rkeys_n, *max_skeys_n;
-  INodeTab nonort_nodes;
   INode *nodeOrigin;
   INode *useIdentityTransformForNode;
-  char nonort, nofaces;
+  char nofaces;
   bool hasDegenerateTriangles;
   bool hasNoSmoothing;
   bool hasBigMeshes;
   bool hasNonDagorMaterials;
   bool hasNonDagorLights;
   bool hasSubSubMaterials;
-  bool a2dExported;
 
-  std::wstring tex_slot[DAGTEXNUM];
-  std::unordered_map<std::wstring, std::vector<std::wstring>> shaderParamsMap;
-
-  ExportENCB(TimeValue t, bool a2d)
+  explicit ExportENCB(TimeValue t)
   {
     time = t;
-    max_pkeys = max_rkeys = max_skeys = 0;
-    max_pkeys_n = max_rkeys_n = max_skeys_n = NULL;
-    nonort = 0;
     nofaces = 0;
     hasDegenerateTriangles = false;
     hasNoSmoothing = false;
@@ -1163,82 +849,7 @@ public:
     hasSubSubMaterials = false;
     nodeOrigin = NULL;
     useIdentityTransformForNode = nullptr;
-    a2dExported = a2d;
-  }
-
-  ~ExportENCB() override
-  {
-    for (int i = 0; i < ntrack.Count(); ++i)
-      if (ntrack[i])
-        delete (ntrack[i]);
-  }
-
-  int add_klabel(const TCHAR *n)
-  {
-    if (!n)
-      return -1;
-    if (!n[0])
-      return -1;
-    std::wstring key(n);
-    std::transform(key.begin(), key.end(), key.begin(), towlower);
-    auto it = klabelIndexMap.find(key);
-    if (it != klabelIndexMap.end())
-      return it->second;
-    assert(klabel.size() != 0xFFFF);
-    if (klabel.size() >= 0xFFFF)
-      return -1;
-    int idx = static_cast<int>(klabel.size());
-    klabel.emplace_back(n);
-    klabelIndexMap.emplace(std::move(key), idx);
-    return idx;
-  }
-
-  int get_notetrack(INode *n, Tab<TimeValue> &gk)
-  {
-    for (; n; n = n->GetParentNode())
-    {
-      int id = -1;
-      for (int i = 0; i < ntrack.Count(); ++i)
-        if (ntrack[i]->node == n)
-          return i;
-      if (n->HasNoteTracks())
-      {
-        int num = n->NumNoteTracks();
-        if (num > 0)
-        {
-          for (int ti = 0; ti < num; ++ti)
-          {
-            DefNoteTrack *nt = (DefNoteTrack *)n->GetNoteTrack(ti);
-            if (!nt)
-              continue;
-            for (int i = 0; i < nt->keys.Count(); ++i)
-            {
-              gk.Append(1, &nt->keys[i]->time);
-              if (nt->keys[i]->note.length())
-              {
-                if (id < 0)
-                {
-                  assert(ntrack.Count() != 0xFFFF);
-                  id = ntrack.Count();
-                  ExpNoteTrack *tr = new ExpNoteTrack(n);
-                  assert(tr);
-                  ntrack.Append(1, &tr);
-                }
-                ExpKeyLabel k;
-                k.t = nt->keys[i]->time;
-                k.id = add_klabel(nt->keys[i]->note);
-                ntrack[id]->kl.Append(1, &k);
-              }
-            }
-          }
-        }
-      }
-      if (id >= 0)
-      {
-        return id;
-      }
-    }
-    return -1;
+    autoMatNameCounter = 0;
   }
 
   int add_tex(const TCHAR *fn)
@@ -1247,9 +858,7 @@ public:
       return -1;
     if (!fn[0])
       return -1;
-    std::wstring key(fn);
-    std::transform(key.begin(), key.end(), key.begin(), towlower);
-    auto it = texIndexMap.find(key);
+    auto it = texIndexMap.find(std::wstring_view(fn));
     if (it != texIndexMap.end())
       return it->second;
     assert(tex.size() != 0xFFFF);
@@ -1257,7 +866,7 @@ public:
       return -1;
     int idx = static_cast<int>(tex.size());
     tex.emplace_back(fn);
-    texIndexMap.emplace(std::move(key), idx);
+    texIndexMap.emplace(fn, idx);
     return idx;
   }
 
@@ -1265,16 +874,10 @@ public:
   {
     auto split_lines = [](std::wstring_view s) {
       std::vector<std::wstring> lines;
-      for (size_t pos = 0; pos <= s.size();)
-      {
-        size_t end = s.find(L"\r\n", pos);
-        if (end == std::wstring::npos)
-          end = s.size();
-        if (end > pos)
-          lines.emplace_back(s.substr(pos, end - pos));
-        pos = end + 2;
-      }
-      std::sort(lines.begin(), lines.end());
+      for (auto sub :
+        s | std::views::split(std::wstring_view(L"\r\n")) | std::views::filter([](auto &&sub) { return !std::ranges::empty(sub); }))
+        lines.emplace_back(sub.begin(), sub.end());
+      std::ranges::sort(lines);
       return lines;
     };
 
@@ -1315,7 +918,7 @@ public:
       Class_ID cid = em.mtl->ClassID();
       if (cid == Class_ID(DMTL_CLASS_ID, 0))
       {
-        INTERVAL("DagorMat", dagorMatElapsed, TimerIntervalType::GATHER);
+        INTERVAL(dagorMatElapsed, TimerIntervalType::GATHER);
         explogWarning(_T("'%s' has standard material '%s'\r\n"), em.node->GetName(), em.name.data());
         hasNonDagorMaterials = true;
 
@@ -1367,7 +970,7 @@ public:
 
       if (cid == DagorMat_CID || cid == DagorMat2_CID)
       {
-        INTERVAL("DagorMat", dagorMatElapsed, TimerIntervalType::GATHER);
+        INTERVAL(dagorMatElapsed, TimerIntervalType::GATHER);
 
         assert(mat.size() != 0xFFFF);
         if (mat.size() >= 0xFFFF)
@@ -1414,10 +1017,12 @@ public:
     }
   }
 
+  static bool isPlaceholderMat(const ExpMat &m) { return !m.mtl; }
+
   bool equal_dagormats(const ExpMat &mat_a, const ExpMat &mat_b)
   {
-    if (mat_a.mtl == mat_b.mtl)
-      return true;
+    if (isPlaceholderMat(mat_a) || isPlaceholderMat(mat_b))
+      return false;
 
     if (mat_a.classname.empty())
       return false;
@@ -1431,10 +1036,10 @@ public:
       return false;
 
     if (is_proxy_a)
-      return !_tcsicmp(mat_a.classname.c_str(), mat_b.classname.c_str());
+      return iequal(mat_a.classname, mat_b.classname);
     else
     {
-      if (_tcsicmp(mat_a.classname.c_str(), mat_b.classname.c_str()))
+      if (!iequal(mat_a.classname, mat_b.classname))
         return false;
     }
 
@@ -1460,7 +1065,7 @@ public:
       // FIXME special symbols
       const std::wstring tex_a = fs::path(tex[texid_a]).stem().wstring();
       const std::wstring tex_b = fs::path(tex[texid_b]).stem().wstring();
-      if (_tcsicmp(tex_a.c_str(), tex_b.c_str()))
+      if (!iequal(tex_a, tex_b))
         return false;
     }
 
@@ -1493,10 +1098,10 @@ public:
 
   std::wstring makeUniqueMatName()
   {
-    for (int i = 0;; ++i)
+    for (;;)
     {
-      std::wstring name = format_str(_T("autoNamedMat_%d"), i);
-      if (std::find_if(matList.begin(), matList.end(), [&name](EMat &em) { return em.name == name; }) == matList.end())
+      std::wstring name = std::format(_T("autoNamedMat_{}"), autoMatNameCounter++);
+      if (matNames.find(name) == matNames.end())
         return name;
     }
   }
@@ -1525,29 +1130,31 @@ public:
       }
 
       for (int i = 0; i < num_sub_mtls; ++i)
-        add_mtl(node, mtl->GetSubMtl(i), true);
+        if (Mtl *sub_mtl = mtl->GetSubMtl(i))
+          add_mtl(node, sub_mtl, true);
+
+      auto it = std::ranges::find_if(matList, [mtl](EMat &em) { return em.mtl == mtl; });
+      if (it != matList.end())
+        return;
     }
     else // mtl == 0
     {
-      if (wcmap.find(wirecolor) != wcmap.end())
+      if (wcset.find(wirecolor) != wcset.end())
         return;
 
       mtl_name = makeUniqueMatName();
-      wcmap.emplace(wirecolor, mtl_name);
+      wcset.emplace(wirecolor);
     }
 
-    auto it = std::find_if(matList.begin(), matList.end(), [mtl](EMat &em) { return em.mtl == mtl; });
-    if (it != matList.end())
-      return;
-
     matList.emplace_back(EMat(mtl_name, mtl, node, wirecolor));
+    matNames.insert(mtl_name);
   }
 
   int proc(INode *n) override
   {
     if (!n)
       return ECB_CONT;
-    if (_tcsicmp(n->GetName(), _T("ORIGIN")) == 0)
+    if (iequal(n->GetName(), L"ORIGIN"))
     {
       if ((util.expflg & EXP_SEL) && !n->Selected())
       {
@@ -1568,82 +1175,65 @@ public:
       return ECB_CONT; // don't export origin itself
     }
 
-    if (a2dExported)
+    if (!(util.expflg & EXP_HID))
     {
-      bool vis = true;
-
-      if (!(util.expflg & EXP_HID))
-        if (n->IsNodeHidden())
-          vis = false;
-      if (util.expflg & EXP_SEL)
-        if (!n->Selected())
-          vis = false;
-      assert(nodeExp.Count() != 0xFFFF);
-      nodeExp.Append(1, &vis);
+      if (n->IsNodeHidden())
+        return ECB_CONT;
     }
-    else
+    if (util.expflg & EXP_SEL)
+      if (!n->Selected())
+        return ECB_CONT;
     {
-
-      if (!(util.expflg & EXP_HID))
-      {
-        if (n->IsNodeHidden())
-          return ECB_CONT;
-      }
-      if (util.expflg & EXP_SEL)
-        if (!n->Selected())
-          return ECB_CONT;
-      {
-        INTERVAL("add_mtl", mtlElapsed, TimerIntervalType::ACC);
+      INTERVAL(mtlElapsed, TimerIntervalType::ACC);
 #ifdef TIMER
-        ++procNodeCount;
+      ++procNodeCount;
 #endif
-        if ((util.expflg & EXP_MAT) && !(util.expflg & EXP_OBJECTS))
-        {
-          INTERVAL("proc add_mtl", procAddMtl, TimerIntervalType::ACC);
-          add_mtl(n, n->GetMtl(), 0, n->GetWireColor());
-        }
+      if ((util.expflg & EXP_MAT) && !(util.expflg & EXP_OBJECTS))
+      {
+        INTERVAL(procAddMtl, TimerIntervalType::ACC);
+        add_mtl(n, n->GetMtl(), 0, n->GetWireColor());
       }
+    }
 
-      if (!(util.expflg & EXP_OBJECTS))
+    if (!(util.expflg & EXP_OBJECTS))
+      return ECB_CONT;
+
+    Object *obj = n->EvalWorldState(time).obj;
+    if (obj)
+    {
+      SClass_ID scid = obj->SuperClassID();
+      Class_ID cid = obj->ClassID();
+
+      if (scid == GEOMOBJECT_CLASS_ID && cid == Class_ID(TARGET_CLASS_ID, 0) && !(util.expflg & EXP_CAM))
         return ECB_CONT;
 
-      Object *obj = n->EvalWorldState(time).obj;
-      if (obj)
+      if (cid == Dummy_CID)
+        obj = NULL;
+      else if (scid == LIGHT_CLASS_ID)
       {
-        SClass_ID scid = obj->SuperClassID();
-        Class_ID cid = obj->ClassID();
-
-        if (scid == GEOMOBJECT_CLASS_ID && cid == Class_ID(TARGET_CLASS_ID, 0) && !(util.expflg & EXP_CAM))
-          return ECB_CONT;
-
-        if (cid == Dummy_CID)
-          obj = NULL;
-        else if (scid == LIGHT_CLASS_ID)
-        {
-          if (!(util.expflg & EXP_LT))
-            if (!n->NumberOfChildren())
-              return ECB_CONT;
-        }
-      }
-      if (!obj)
-      {
-        if (!(util.expflg & EXP_HLP))
+        if (!(util.expflg & EXP_LT))
           if (!n->NumberOfChildren())
             return ECB_CONT;
       }
+    }
+    if (!obj)
+    {
+      if (!(util.expflg & EXP_HLP))
+        if (!n->NumberOfChildren())
+          return ECB_CONT;
+    }
 
-      if (n->Renderable() && !n->GetMtl() && !n->IsGroupHead())
+    if (n->Renderable() && !n->GetMtl() && !n->IsGroupHead())
+    {
+      explogWarning(_T( "'%s' has no material\r\n"), n->GetName());
+      hasNonDagorMaterials = true;
+    }
+    {
+      INTERVAL(mtlElapsed, TimerIntervalType::ACC);
+      if (util.expflg & EXP_MAT)
       {
-        explogWarning(_T( "'%s' has no material\r\n"), n->GetName());
-        hasNonDagorMaterials = true;
-      }
-      {
-        INTERVAL("add_mtl", mtlElapsed, TimerIntervalType::ACC);
-        if (util.expflg & EXP_MAT)
-        {
-          INTERVAL("proc add_mtl", procAddMtl, TimerIntervalType::ACC);
-          add_mtl(n, n->GetMtl(), 0, n->GetWireColor());
-        }
+        INTERVAL(procAddMtl, TimerIntervalType::ACC);
+        add_mtl(n, n->GetMtl(), 0, n->GetWireColor());
       }
     }
 
@@ -1662,15 +1252,18 @@ public:
     auto it = nodeIdMap.find(n);
     return it != nodeIdMap.end() ? it->second : -1;
   }
+  int getPlaceholderMatId(DWORD wc)
+  {
+    for (int i = 0; i < (int)mat.size(); ++i)
+      if (isPlaceholderMat(mat[i]) && mat[i].wirecolor == wc)
+        return i;
+    return -1;
+  }
+
   int getmatid(Mtl *m, DWORD wc = 0xFFFFFF)
   {
     if (!m)
-    {
-      for (int i = 0; i < mtls.size(); ++i)
-        if (mtls[i].empty() && mat[i].wirecolor == wc)
-          return i;
-      return -1;
-    }
+      return getPlaceholderMatId(wc);
     for (int i = 0; i < mtls.size(); ++i)
       if (mtls[i].find(m) != mtls[i].end())
         return i;
@@ -1680,16 +1273,19 @@ public:
   int getusedmatid(Mtl *m, DWORD wc = 0xFFFFFF)
   {
     if (!m)
-    {
-      for (int i = 0; i < (int)mat.size(); ++i)
-        if (mat[i].mtl == NULL && mat[i].wirecolor == wc)
-          return i;
-      return -1;
-    }
+      return getPlaceholderMatId(wc);
     for (int i = 0; i < (int)mat.size(); ++i)
       if (mat[i].mtl == m)
         return i;
     return -1;
+  }
+
+  static MtlID resolve_face_mtl(MtlID face_mtl_id, const Tab<int> &sub_mtl_id_lut, int single_mtl_idx)
+  {
+    if (sub_mtl_id_lut.Count())
+      return (MtlID)sub_mtl_id_lut[face_mtl_slot(face_mtl_id, sub_mtl_id_lut.Count())];
+
+    return single_mtl_idx >= 0 ? (MtlID)single_mtl_idx : face_mtl_id;
   }
 
 #define wr(p, l)                   \
@@ -1714,6 +1310,36 @@ public:
     Point3 &vertex1, Point3 &vertex2, Point3 &vertex3);
 
   bool useMOpt() const { return (util.expflg & EXP_MATOPT) && (util.expflg & EXP_MESH); }
+
+  std::wstring_view findMergeSurvivorName(std::wstring_view named) const
+  {
+    for (int i = 0; i < (int)mtls.size(); ++i)
+    {
+      if (matIDtoMatIdx[i] < 0)
+        continue;
+
+      if (named == mat[i].name)
+        return {};
+
+      if (std::ranges::any_of(mtls[i], [named](Mtl *m) { return m && named == m->GetName().data(); }))
+        return mat[i].name;
+    }
+
+    return {};
+  }
+
+  void rewriteApexInteriorMaterial(std::wstring &script) const
+  {
+    static constexpr std::wstring_view key = L"apex_interior_material:t=\"";
+
+    const std::wstring_view named = find_quoted_value(script, key);
+    if (named.empty())
+      return;
+
+    const std::wstring_view survivor = findMergeSurvivorName(named);
+    if (!survivor.empty())
+      script.replace(named.data() - script.data(), named.size(), blk_escape(survivor));
+  }
 
   int save_node(ExpNode *enod, FILE *h)
   {
@@ -1775,34 +1401,15 @@ public:
 
       // TODO: create a check for presence of billboards
 
-      std::string scr = wideToStr(trimmed);
       if (useMOpt())
-      {
-        for (int i = 0; i < mtls.size(); ++i)
-        {
-          std::string mat_i_name = wideToStr(mat[i].name);
-          size_t pos = scr.find("apex_interior_material:t=\"");
-          if (pos != std::string::npos)
-          {
-            for (std::unordered_set<Mtl *>::iterator mtlIt = mtls[i].begin(); mtlIt != mtls[i].end(); ++mtlIt)
-              if (*mtlIt)
-              {
-                std::string matName = wideToStr((*mtlIt)->GetName());
-                if (matName == mat_i_name)
-                  continue;
-                size_t posVal = scr.find(matName.c_str(), pos, matName.length());
-                if (posVal != std::string::npos)
-                  scr.replace(posVal, matName.length(), mat_i_name);
-              }
-          }
-        }
-      }
+        rewriteApexInteriorMaterial(trimmed);
+
+      std::string scr = wideToStr(trimmed);
       bblk(DAG_NODE_SCRIPT);
       wr(scr.c_str(), scr.length());
       eblk;
     }
     Tab<int> subMatIdLUT;
-    int unusedSlotIdx = -1;
     if (util.expflg & EXP_MAT)
     {
       Mtl *mtl = n->GetMtl();
@@ -1811,19 +1418,24 @@ public:
         num = mtl->NumSubMtls();
       if (num)
       {
-        bblk(DAG_NODE_MATER);
         Tab<int> uniqueMatIdx;
         subMatIdLUT.SetCount(num);
-        for (int j = 0; j < subMatIdLUT.Count(); ++j)
-          subMatIdLUT[j] = -1;
+        // a slot we cannot export points at the first one we can
+        for (int j = 0; j < num; ++j)
+          subMatIdLUT[j] = 0;
+
         for (int j = 0; j < num; ++j)
         {
-          int id = getmatid(mtl->GetSubMtl(j));
+          Mtl *sub_mtl = mtl->GetSubMtl(j);
+          if (!sub_mtl)
+            continue;
+
+          int id = getmatid(sub_mtl);
           if (id < 0 || matIDtoMatIdx[id] < 0)
             continue;
 
           bool found = false;
-          for (unsigned short x = 0; x < uniqueMatIdx.Count(); ++x)
+          for (int x = 0; x < uniqueMatIdx.Count(); ++x)
             if (uniqueMatIdx[x] == matIDtoMatIdx[id])
             {
               found = true;
@@ -1832,15 +1444,20 @@ public:
             }
           if (!found)
           {
-            uniqueMatIdx.SetCount(uniqueMatIdx.Count() + 1);
-            uniqueMatIdx[uniqueMatIdx.Count() - 1] = matIDtoMatIdx[id];
-            if (mtls[matIDtoMatIdx[id]].empty())
-              unusedSlotIdx = matIDtoMatIdx[id];
+            uniqueMatIdx.Append(1, &matIDtoMatIdx[id]);
             subMatIdLUT[j] = uniqueMatIdx.Count() - 1;
-            wr(&matIDtoMatIdx[id], 2);
           }
         }
-        eblk;
+
+        if (uniqueMatIdx.Count())
+        {
+          bblk(DAG_NODE_MATER);
+          for (int x = 0; x < uniqueMatIdx.Count(); ++x)
+            wr(&uniqueMatIdx[x], 2);
+          eblk;
+        }
+        else
+          subMatIdLUT.SetCount(0);
       }
       else
       {
@@ -1856,84 +1473,32 @@ public:
       }
     }
     {
-      MyExpTMAnimCB cb(n, pnode, nodeOrigin);
-      Tab<PosKey> pos, scl;
-      Tab<RotKey> rot;
-      ushort ntid = 0xFFFF;
-      pos.SetCount(1);
-      rot.SetCount(1);
-      scl.SetCount(1);
-      pos[0].t = rot[0].t = scl[0].t = time;
-      if (pos.Count() > max_pkeys)
+      Matrix3 ntm = get_scaled_stretch_node_tm(n, time);
+      adjwtm(ntm);
+      bblk(DAG_NODE_TM);
+      Matrix3 ptm;
+      if (n == useIdentityTransformForNode)
       {
-        max_pkeys = pos.Count();
-        max_pkeys_n = n;
-      }
-      if (rot.Count() > max_rkeys)
-      {
-        max_rkeys = rot.Count();
-        max_rkeys_n = n;
-      }
-      if (scl.Count() > max_skeys)
-      {
-        max_skeys = scl.Count();
-        max_skeys_n = n;
-      }
-
-      {
-        Matrix3 ntm = get_scaled_stretch_node_tm(n, pos[0].t);
+        ntm.IdentityMatrix();
         adjwtm(ntm);
-        bblk(DAG_NODE_TM);
-        Matrix3 ptm;
-        if (n == useIdentityTransformForNode)
-        {
-          ntm.IdentityMatrix();
-          adjwtm(ntm);
 
-          ptm.IdentityMatrix();
-        }
-        else if (pnode)
-        {
-          ptm = get_scaled_stretch_node_tm(pnode, pos[0].t);
-          if (!pnode->IsRootNode())
-            adjwtm(ptm);
-        }
-        else if (nodeOrigin)
-        {
-          ptm = originTm;
-        }
-        else
-          ptm.IdentityMatrix();
-        ptm = ntm * Inverse(ptm);
-        wr(ptm.GetAddr(), 4 * 3 * 4);
-        eblk;
+        ptm.IdentityMatrix();
       }
-      if (pos.Count() == 1 && rot.Count() == 1 && scl.Count() == 1)
+      else if (pnode)
       {
-        if (ntid < ntrack.Count())
-        {
-          bblk(DAG_NODE_NOTETRACK);
-          wr(&ntid, 2);
-          eblk;
-        }
+        ptm = get_scaled_stretch_node_tm(pnode, time);
+        if (!pnode->IsRootNode())
+          adjwtm(ptm);
+      }
+      else if (nodeOrigin)
+      {
+        ptm = originTm;
       }
       else
-      {
-        if (cb.nonort)
-        {
-          nonort_nodes.Append(1, &n);
-          nonort = 1;
-        }
-        bblk(DAG_NODE_ANIM);
-        wr(&ntid, 2);
-        if (!save_pos_anim(h, pos))
-          return 0;
-        if (!save_rot_anim(h, rot))
-          return 0;
-        if (!save_pos_anim(h, scl))
-          return 0;
-        eblk;
-      }
+        ptm.IdentityMatrix();
+      ptm = ntm * Inverse(ptm);
+      wr(ptm.GetAddr(), 4 * 3 * 4);
+      eblk;
     }
     const ObjectState &os = n->EvalWorldState(time);
     if (os.obj)
@@ -2166,6 +1731,13 @@ public:
                 if (ntv > maxntv)
                   maxntv = ntv;
               }
+          Mtl *mtl = n->GetMtl();
+          const int subMtlNum = mtl ? mtl->NumSubMtls() : 0;
+          int singleMatIdx = -1;
+          if (mtl && !subMtlNum)
+            if (int id = getmatid(mtl); id >= 0)
+              singleMatIdx = (MtlID)matIDtoMatIdx[id];
+
           if (m.numVerts >= 0x10000 || m.numFaces >= 0x10000 || maxntv >= 0x10000)
           {
             hasBigMeshes = true;
@@ -2182,30 +1754,7 @@ public:
               f.v[v1] = m.faces[i].v[1];
               f.v[v2] = m.faces[i].v[2];
               f.smgr = m.faces[i].smGroup;
-              MtlID mid = m.faces[i].getMatID();
-              if (n->GetMtl())
-              {
-                Mtl *mtl = n->GetMtl();
-                int num = mtl->NumSubMtls();
-                if (num)
-                {
-                  if (subMatIdLUT.Count())
-                  {
-                    int remapped = subMatIdLUT[mid % num];
-                    if (remapped < 0 && unusedSlotIdx >= 0)
-                      remapped = unusedSlotIdx;
-                    mid = (MtlID)remapped;
-                  }
-                }
-                else
-                {
-                  int id = getmatid(mtl);
-                  if (id >= 0)
-                    mid = matIDtoMatIdx[id];
-                }
-              }
-
-              f.mat = mid;
+              f.mat = resolve_face_mtl(m.faces[i].getMatID(), subMatIdLUT, singleMatIdx);
               wr(&f, sizeof(f));
 
               hasDegenerateTriangles |= checkDegenerateTriangle(n, otm, m.faces[i].v[0], m.faces[i].v[1], m.faces[i].v[2],
@@ -2261,29 +1810,7 @@ public:
               f.v[v1] = (unsigned short)m.faces[i].v[1];
               f.v[v2] = (unsigned short)m.faces[i].v[2];
               f.smgr = m.faces[i].smGroup;
-              MtlID mid = m.faces[i].getMatID();
-              if (n->GetMtl())
-              {
-                Mtl *mtl = n->GetMtl();
-                int num = mtl->NumSubMtls();
-                if (num)
-                {
-                  if (subMatIdLUT.Count())
-                  {
-                    int remapped = subMatIdLUT[mid % num];
-                    if (remapped < 0 && unusedSlotIdx >= 0)
-                      remapped = unusedSlotIdx;
-                    mid = (MtlID)remapped;
-                  }
-                }
-                else
-                {
-                  int id = getmatid(mtl);
-                  if (id >= 0)
-                    mid = matIDtoMatIdx[id];
-                }
-              }
-              f.mat = mid;
+              f.mat = resolve_face_mtl(m.faces[i].getMatID(), subMatIdLUT, singleMatIdx);
               wr(&f, sizeof(f));
 
               hasDegenerateTriangles |= checkDegenerateTriangle(n, otm, m.faces[i].v[0], m.faces[i].v[1], m.faces[i].v[2],
@@ -2370,9 +1897,19 @@ public:
                 for (int vertex = 0; vertex < 3; vertex++)
                   fngr[face][vid[vertex]] = normalSpec->Face(face).GetNormalID(vertex);
 
+              const Matrix3 normal_tm = AffineTranspose(Inverse(otm));
+              Point3 *normals = normalSpec->GetNormalArray();
+              for (int i = 0; i < numNormals; ++i)
+              {
+                const Point3 src = normals[i];
+                const Point3 n = VectorTransform(normal_tm, src);
+                const float len = Length(n);
+                normals[i] = (len > 0 && std::isfinite(len)) ? n / len : src;
+              }
+
               bblk(DAG_OBJ_NORMALS);
               wr(&numNormals, 4);
-              wr(normalSpec->GetNormalArray(), numNormals * 12);
+              wr(normals, numNormals * 12);
               wr(fngr.Addr(0), m.numFaces * 3 * 4);
               eblk;
             }
@@ -2729,31 +2266,24 @@ public:
               if (tri != os.obj)
                 tri->DeleteMe();
 
-              for (int j = 0; j < m.numFaces; ++j)
+              // mirrors the subMatIdLUT default in save_node: a slot it cannot export points at the first one it can
+              Tab<int> slotMat;
+              slotMat.SetCount(mat_num);
+              int firstMat = -1;
+              for (int j = 0; j < mat_num; ++j)
               {
-                int mat = m.faces[j].getMatID();
-                if (mat_num == 1)
-#if defined(MAX_RELEASE_R26) && MAX_RELEASE >= MAX_RELEASE_R26
-                  mat = m.GetMtlIndex();
-#else
-                  mat = m.mtlIndex;
-#endif
-                if (mat >= 0)
-                {
-                  mat %= mat_num;
-                  int tempMat = getusedmatid(mtl->GetSubMtl(mat));
-                  if (tempMat >= 0)
-                    matUsed[tempMat] = true;
-                  else
-                  {
-                    tempMat = getmatid(mtl->GetSubMtl(mat));
-                    if (tempMat >= 0)
-                      matUsed[tempMat] = true;
-                    else if (mat < matUsed.Count())
-                      matUsed[mat] = true;
-                  }
-                }
+                Mtl *sub_mtl = mtl->GetSubMtl(j);
+                slotMat[j] = sub_mtl ? getusedmatid(sub_mtl) : -1;
+                if (firstMat < 0)
+                  firstMat = slotMat[j];
               }
+              for (int j = 0; j < mat_num; ++j)
+                if (slotMat[j] < 0)
+                  slotMat[j] = firstMat;
+
+              if (firstMat >= 0)
+                for (int j = 0; j < m.numFaces; ++j)
+                  matUsed[slotMat[face_mtl_slot(m.faces[j].getMatID(), mat_num)]] = true;
             }
           }
         }
@@ -2776,8 +2306,7 @@ public:
       explog(_T("proc node mtl count: %d\r\n"), procNodeCount);
       explog(_T("proc add mtl: %g\r\n"), procAddMtl);
       explog(_T("dagorMatElapsed: %g\r\n"), dagorMatElapsed);
-      explog(_T("dagorMatEarlyExitElapsed: %g\r\n"), dagorMatEarlyExitElapsed);
-      explog(_T("mtls: %d mat: %d\r\n"), mtls.size(), (int)mat.size());
+      explog(_T("mtls: %d mat: %d\r\n"), (int)mtls.size(), (int)mat.size());
 #endif
       std::wstring unused_mtls, unused_tex;
 
@@ -2836,11 +2365,7 @@ public:
       tex = std::move(new_tex);
       texIndexMap.clear();
       for (int j = 0; j < static_cast<int>(tex.size()); ++j)
-      {
-        std::wstring key = tex[j];
-        std::transform(key.begin(), key.end(), key.begin(), towlower);
-        texIndexMap.emplace(std::move(key), j);
-      }
+        texIndexMap.emplace(tex[j], j);
 
       if (!unused_mtls.empty())
         explog(_T("these materials are UNUSED:%s\r\n"), unused_mtls.data());
@@ -2939,41 +2464,6 @@ public:
       eblk;
     }
 
-    // save key labels
-    if (!klabel.empty())
-    {
-      bblk(DAG_KEYLABELS);
-      int num = static_cast<int>(klabel.size());
-      if (num > 0xFFFF)
-        num = 0xFFFF;
-      wr(&num, 2);
-      for (int i = 0; i < num; ++i)
-      {
-        int l = static_cast<int>(klabel[i].size());
-        if (l > 255)
-          l = 255;
-        wr(&l, 1);
-        if (l)
-          wr(klabel[i].c_str(), l);
-      }
-      eblk;
-    }
-
-    // save note tracks
-    for (int i = 0; i < ntrack.Count(); ++i)
-    {
-      bblk(DAG_NOTETRACK);
-      int num = ntrack[i]->kl.Count();
-      for (int j = 0; j < num; ++j)
-      {
-        DagNoteKey k;
-        k.id = ntrack[i]->kl[j].id;
-        k.t = ntrack[i]->kl[j].t;
-        wr(&k, sizeof(k));
-      }
-      eblk;
-    }
-
     // save nodes
     {
       Tab<ExpNode *> en;
@@ -3022,655 +2512,10 @@ public:
     return 1;
   }
 
-  //
-  // Export animation in Anim-v2 format
-  //
-  struct AnimDataHeader
-  {
-    unsigned label;    // MAKE4C('A','N','I','M')
-    unsigned ver;      // 0x200
-    unsigned hdrSize;  // =sizeof(AnimDataHeader)
-    unsigned reserved; // 0x00000000
-
-    unsigned namePoolSize;      // size of name pool, in bytes
-    unsigned timeNum;           // number of entries in time pool
-    unsigned keyPoolSize;       // size of key pool, in bytes
-    unsigned totalAnimLabelNum; // number of keys in note track (time labels)
-    unsigned dataTypeNum;       // number of data type records
-  };
-  struct DataTypeHeader
-  {
-    unsigned dataType;         // id of data type, analogue for channelType: POINT3, QUAT, REAL
-    unsigned offsetInKeyPool;  // offset in bytes from the beginning of key pool
-    unsigned offsetInTimePool; // offset in elements from the beginning of time pool
-    unsigned channelNum;       // number of channels of this data type (see below)
-  };
-
-  struct ChannelParams
-  {
-    unsigned channelType;
-    Tab<unsigned> keyNums;
-    Tab<int> nodeNameIds;
-    Tab<float> nodeWeights;
-  };
-
-  enum
-  {
-    DATATYPE_POINT3 = 0x577084E5u,
-    DATATYPE_QUAT = 0x39056464u,
-    DATATYPE_REAL = 0xEE0BD66Au,
-  };
-
-  enum
-  {
-    CHTYPE_POSITION = 0xE66CF0CCu,
-    CHTYPE_SCALE = 0x48D43D77u,
-    CHTYPE_ORIGIN_LIN_VEL = 0x31DE5F48u,
-    CHTYPE_ORIGIN_ANG_VEL = 0x09FD7093u,
-    CHTYPE_ROTATION = 0x8D490AE4u,
-  };
-
-  struct AnimKeyQuat
-  {
-    float pw, bw;
-    float sinpw, sinbw;
-    Quat p, b0, b1;
-  };
-  struct AnimKeyLabel
-  {
-    union
-    {
-      char *name;
-      int idx;
-    };
-    int time;
-  };
-
-  static void make_postrack(AnimKeyPoint3 *k, PosKey *s, int num)
-  {
-    for (; num > 1; ++k, ++s, --num)
-    {
-      k->p = s->p;
-      k->k1 = (s->o - s->p) * 3;
-      k->k2 = (s->p + s[1].i - s->o * 2) * 3;
-      k->k3 = (s->o - s[1].i) * 3 + s[1].p - s->p;
-    }
-    k->p = s->p;
-  }
-  static void make_rottrack(AnimKeyQuat *k, RotKey *s, int num)
-  {
-    std::vector<char> h(num * 2 - 1);
-    char *x = h.data() + num - 1;
-
-    int i;
-    for (i = 0; i < num - 1; ++i)
-    {
-      k[i].p = Conjugate(s[i].p);
-      Quat b0 = Conjugate(s[i].o), b1 = Conjugate(s[i + 1].i);
-      Quat sip = Conjugate(s[i].p), sipn = Conjugate(s[i + 1].p);
-
-      float f = b0.x * b1.x + b0.y * b1.y + b0.z * b1.z + b0.w * b1.w;
-      if (f < 0)
-      {
-        b1 = -b1;
-        f = -f;
-      }
-      k[i].b0 = b0;
-      k[i].b1 = b1;
-      if (f >= 1)
-        k[i].sinbw = k[i].bw = 0;
-      else
-        k[i].sinbw = sinf(k[i].bw = acosf(f));
-
-      f = sip.x * sipn.x + sip.y * sipn.y + sip.z * sipn.z + sip.w * sipn.w;
-      h[i] = f < 0 ? 1 : 0;
-      k[i].pw = f;
-    }
-    k[i].p = Conjugate(s[i].p);
-    k[i].pw = 0;
-
-    memset(x, 0, num);
-
-    for (;;)
-    {
-      for (i = 0; i < num - 1; ++i)
-        if (h[i])
-          break;
-      if (i >= num - 1)
-        break;
-      for (i = 1; i < num - 1; ++i)
-        if (h[i - 1] && h[i])
-        {
-          h[i - 1] = h[i] = 0;
-          x[i] ^= 1;
-        }
-      if (h[0])
-      {
-        h[0] = 0;
-        x[0] ^= 1;
-      }
-      for (i = 1; i < num - 1; ++i)
-        if (h[i])
-        {
-          h[i - 1] ^= 1;
-          h[i] = 0;
-          x[i] ^= 1;
-        }
-    }
-
-    for (i = 0; i < num; ++i)
-      if (x[i])
-      {
-        k[i].p = -k[i].p;
-        k[i].pw = -k[i].pw;
-        if (i > 0)
-          k[i - 1].pw = -k[i - 1].pw;
-      }
-    for (i = 0; i < num; ++i)
-    {
-      if (k[i].pw >= 1)
-        k[i].sinpw = k[i].pw = 0;
-      else
-        k[i].sinpw = sinf(k[i].pw = acosf(k[i].pw));
-    }
-  }
-
-  int save_anim2(FILE *fp, Interface *ip)
-  {
-    // pools data
-    std::vector<char> namesPool;
-    Tab<int> originLinVelT;
-    Tab<int> originAngVelT;
-    Tab<AnimKeyPoint3> originLinVel;
-    Tab<AnimKeyPoint3> originAngVel;
-    Tab<AnimChanPoint3 *> pos;
-    Tab<AnimChanPoint3 *> scl;
-    Tab<AnimChanQuat *> rot;
-    Tab<AnimKeyLabel> noteTrackKeys;
-
-    // get nodes for export
-    Tab<INode *> exportNodes;
-    for (int i = 0; i < node.Count(); ++i)
-      if (nodeExp[i])
-        exportNodes.Append(1, &node[i]);
-
-    // process data to prepare for writing
-    getNoteTrackKeys(exportNodes, noteTrackKeys);
-
-    getOriginVelocities(originLinVel, originAngVel, originLinVelT, originAngVelT);
-
-    Tab<int> additionalIds;
-    std::vector<std::string> additionalNames;
-    int linVelId = -1, angVelId = -1;
-    if (originLinVel.Count())
-    {
-      linVelId = (int)additionalNames.size();
-      additionalNames.push_back(origin_lin_vel_node_name);
-    }
-    if (originAngVel.Count())
-    {
-      angVelId = (int)additionalNames.size();
-      additionalNames.push_back(origin_ang_vel_node_name);
-    }
-
-    unsigned namePoolSize = 0;
-    std::vector<int> nameIdx;
-    getNamePool(exportNodes, noteTrackKeys, namesPool, nameIdx, namePoolSize, additionalNames, additionalIds);
-
-    if (!getAnimations(node, nodeExp, exportNodes, pos, rot, scl))
-      return 0;
-
-    unsigned keyPoolSize = 0;
-    unsigned timeNum = 0;
-    unsigned keyNum;
-    float nodeWeight = 1.0f;
-
-    // Point3
-    unsigned maxSizePoint3AnimKey = 0;
-    DataTypeHeader point3DataTypeHeader;
-    point3DataTypeHeader.dataType = DATATYPE_POINT3;
-    point3DataTypeHeader.offsetInKeyPool = 0;
-    point3DataTypeHeader.offsetInTimePool = 0;
-    point3DataTypeHeader.channelNum = 0;
-
-    ChannelParams originLinVelCannelParams;
-    if (originLinVel.Count())
-    {
-      originLinVelCannelParams.channelType = CHTYPE_ORIGIN_LIN_VEL;
-      originLinVelCannelParams.keyNums.Append(1, &(keyNum = originLinVel.Count()));
-      originLinVelCannelParams.nodeNameIds.Append(1, &additionalIds[linVelId]);
-      originLinVelCannelParams.nodeWeights.Append(1, &nodeWeight);
-      if (maxSizePoint3AnimKey < originLinVel.Count())
-        maxSizePoint3AnimKey = originLinVel.Count();
-      keyPoolSize += sizeof(AnimKeyPoint3) * originLinVel.Count();
-      timeNum += originLinVel.Count();
-      ++point3DataTypeHeader.channelNum;
-    }
-
-    ChannelParams originAngVelCannelParams;
-    if (originAngVel.Count())
-    {
-      originAngVelCannelParams.channelType = CHTYPE_ORIGIN_ANG_VEL;
-      originAngVelCannelParams.keyNums.Append(1, &(keyNum = originAngVel.Count()));
-      originAngVelCannelParams.nodeNameIds.Append(1, &additionalIds[angVelId]);
-      originAngVelCannelParams.nodeWeights.Append(1, &nodeWeight);
-      if (maxSizePoint3AnimKey < originAngVel.Count())
-        maxSizePoint3AnimKey = originAngVel.Count();
-      keyPoolSize += sizeof(AnimKeyPoint3) * originAngVel.Count();
-      timeNum += originAngVel.Count();
-      ++point3DataTypeHeader.channelNum;
-    }
-
-    ChannelParams posCannelParams;
-    ChannelParams sclCannelParams;
-    posCannelParams.channelType = CHTYPE_POSITION;
-    sclCannelParams.channelType = CHTYPE_SCALE;
-    for (int i = 0; i < exportNodes.Count(); ++i)
-    {
-      if ((keyNum = pos[i]->key.Count()) > 0)
-      {
-        posCannelParams.keyNums.Append(1, &keyNum);
-        posCannelParams.nodeNameIds.Append(1, &nameIdx[i]);
-        posCannelParams.nodeWeights.Append(1, &nodeWeight);
-        if (maxSizePoint3AnimKey < keyNum)
-          maxSizePoint3AnimKey = keyNum;
-        keyPoolSize += sizeof(AnimKeyPoint3) * keyNum;
-        timeNum += keyNum;
-      }
-      if ((keyNum = scl[i]->key.Count()) > 0)
-      {
-        sclCannelParams.keyNums.Append(1, &keyNum);
-        sclCannelParams.nodeNameIds.Append(1, &nameIdx[i]);
-        sclCannelParams.nodeWeights.Append(1, &nodeWeight);
-        if (maxSizePoint3AnimKey < keyNum)
-          maxSizePoint3AnimKey = keyNum;
-        keyPoolSize += sizeof(AnimKeyPoint3) * keyNum;
-        timeNum += keyNum;
-      }
-    }
-    if (posCannelParams.keyNums.Count())
-      ++point3DataTypeHeader.channelNum;
-    if (sclCannelParams.keyNums.Count())
-      ++point3DataTypeHeader.channelNum;
-
-    // Quat
-    unsigned maxSizeQuatAnimKey = 0;
-    DataTypeHeader quatDataTypeHeader;
-    quatDataTypeHeader.dataType = DATATYPE_QUAT;
-    quatDataTypeHeader.offsetInKeyPool = keyPoolSize;
-    quatDataTypeHeader.offsetInTimePool = timeNum;
-    quatDataTypeHeader.channelNum = 0;
-
-    ChannelParams rotCannelParams;
-    rotCannelParams.channelType = CHTYPE_ROTATION;
-    for (int i = 0; i < exportNodes.Count(); ++i)
-    {
-      if ((keyNum = rot[i]->key.Count()) > 0)
-      {
-        rotCannelParams.keyNums.Append(1, &keyNum);
-        rotCannelParams.nodeNameIds.Append(1, &nameIdx[i]);
-        rotCannelParams.nodeWeights.Append(1, &nodeWeight);
-        if (maxSizeQuatAnimKey < keyNum)
-          maxSizeQuatAnimKey = keyNum;
-        keyPoolSize += sizeof(AnimKeyQuat) * keyNum;
-        timeNum += keyNum;
-      }
-    }
-    if (rotCannelParams.keyNums.Count())
-      ++quatDataTypeHeader.channelNum;
-
-    AnimDataHeader hdr;
-    memset(&hdr, 0, sizeof(hdr));
-    hdr.label = 'MINA';
-    hdr.ver = 0x200;
-    hdr.hdrSize = sizeof(hdr);
-
-    hdr.namePoolSize = namePoolSize;
-    hdr.timeNum = timeNum;
-    hdr.keyPoolSize = keyPoolSize;
-    hdr.totalAnimLabelNum = noteTrackKeys.Count();
-    hdr.dataTypeNum = 0; // Point3, Quot
-    if (point3DataTypeHeader.channelNum)
-      ++hdr.dataTypeNum;
-    if (quatDataTypeHeader.channelNum)
-      ++hdr.dataTypeNum;
-
-    //
-    // write file
-    //
-    fwrite(&hdr, sizeof(hdr), 1, fp);
-
-    // write names pool
-    fwrite(namesPool.data(), hdr.namePoolSize, 1, fp);
-
-    // write times pool
-    if (originLinVelT.Count())
-      fwrite(originLinVelT.Addr(0), sizeof(int), originLinVelT.Count(), fp);
-
-    if (originAngVelT.Count())
-      fwrite(originAngVelT.Addr(0), sizeof(int), originAngVelT.Count(), fp);
-
-    for (int i = 0; i < exportNodes.Count(); ++i)
-      for (int j = 0; j < pos[i]->key.Count(); ++j)
-        fwrite(&pos[i]->key[j].t, sizeof(int), 1, fp);
-
-    for (int i = 0; i < exportNodes.Count(); ++i)
-      for (int j = 0; j < scl[i]->key.Count(); ++j)
-        fwrite(&scl[i]->key[j].t, sizeof(int), 1, fp);
-
-    for (int i = 0; i < exportNodes.Count(); ++i)
-      for (int j = 0; j < rot[i]->key.Count(); ++j)
-        fwrite(&rot[i]->key[j].t, sizeof(int), 1, fp);
-
-    // write keys pool
-    //  write pos keys
-    std::vector<AnimKeyPoint3> point3AnimKey(maxSizePoint3AnimKey);
-    //   write origin velocitiy keys
-    if (originLinVel.Count())
-      fwrite(originLinVel.Addr(0), sizeof(AnimKeyPoint3), originLinVel.Count(), fp);
-
-    if (originAngVel.Count())
-      fwrite(originAngVel.Addr(0), sizeof(AnimKeyPoint3), originAngVel.Count(), fp);
-
-    //   write per-node pos keys
-    for (int i = 0; i < exportNodes.Count(); ++i)
-    {
-      if (!pos[i]->key.Count())
-        continue;
-      memset(point3AnimKey.data(), 0, sizeof(AnimKeyPoint3) * maxSizePoint3AnimKey);
-      make_postrack(point3AnimKey.data(), pos[i]->key.Addr(0), pos[i]->key.Count());
-      fwrite(point3AnimKey.data(), sizeof(AnimKeyPoint3), pos[i]->key.Count(), fp);
-    }
-
-    //  write scl keys
-    for (int i = 0; i < exportNodes.Count(); ++i)
-    {
-      if (!scl[i]->key.Count())
-        continue;
-      memset(point3AnimKey.data(), 0, sizeof(AnimKeyPoint3) * maxSizePoint3AnimKey);
-      make_postrack(point3AnimKey.data(), scl[i]->key.Addr(0), scl[i]->key.Count());
-      fwrite(point3AnimKey.data(), sizeof(AnimKeyPoint3), scl[i]->key.Count(), fp);
-    }
-
-    //  write rot keys
-    std::vector<AnimKeyQuat> quatAnimKey(maxSizeQuatAnimKey);
-    for (int i = 0; i < exportNodes.Count(); ++i)
-    {
-      if (!rot[i]->key.Count())
-        continue;
-      memset(quatAnimKey.data(), 0, sizeof(AnimKeyQuat) * maxSizeQuatAnimKey);
-      make_rottrack(quatAnimKey.data(), rot[i]->key.Addr(0), rot[i]->key.Count());
-      fwrite(quatAnimKey.data(), sizeof(AnimKeyQuat), rot[i]->key.Count(), fp);
-    }
-
-    // write note track pool
-    if (noteTrackKeys.Count())
-    {
-      for (int i = 0; i < noteTrackKeys.Count(); i++)
-      {
-        fwrite(&noteTrackKeys[i].idx, sizeof(int), 1, fp);
-        fwrite(&noteTrackKeys[i].time, sizeof(int), 1, fp);
-      }
-    }
-    else
-      explogWarning(_T("Warning: NoteTrack not used\n" ));
-
-    // write data of animation
-    //  write point3 data type
-    fwrite(&point3DataTypeHeader, sizeof(point3DataTypeHeader), 1, fp);
-    writeChannel(originLinVelCannelParams, fp);
-    writeChannel(originAngVelCannelParams, fp);
-    writeChannel(posCannelParams, fp);
-    writeChannel(sclCannelParams, fp);
-
-    //  write quat data type
-    fwrite(&quatDataTypeHeader, sizeof(quatDataTypeHeader), 1, fp);
-    writeChannel(rotCannelParams, fp);
-
-    explog(_T(" originLinVelKeyNum=%d\r\n originAngVelKeyNum=%d\r\n"),
-      originLinVelCannelParams.keyNums.Count() ? originLinVelCannelParams.keyNums[0] : 0,
-      originAngVelCannelParams.keyNums.Count() ? originAngVelCannelParams.keyNums[0] : 0);
-
-    explog(_T(" keyPosNum=%d\r\n keySclNum=%d\r\n keyRotNum=%d\r\n"), getKeyNumInChannel(posCannelParams),
-      getKeyNumInChannel(sclCannelParams), getKeyNumInChannel(rotCannelParams));
-
-    explog(_T(" posNodeNum=%d\r\n sclNodeNum=%d\r\n rotNodeNum=%d\r\n"), posCannelParams.keyNums.Count(),
-      sclCannelParams.keyNums.Count(), rotCannelParams.keyNums.Count());
-
-    explog(_T(" namePoolSz=%d\r\n"), namePoolSize);
-    explog(_T(" timePoolSz=%d\r\n"), timeNum * sizeof(int));
-    explog(_T(" keyPoolSz=%d\r\n"), keyPoolSize);
-
-    for (int i = pos.Count(); --i >= 0;)
-      delete pos[i];
-    for (int i = scl.Count(); --i >= 0;)
-      delete scl[i];
-    for (int i = rot.Count(); --i >= 0;)
-      delete rot[i];
-
-    return 1;
-  }
-
 #undef wr
 #undef bblk
 #undef eblk
-
-private:
-  void getNoteTrackKeys(Tab<INode *> &exportNodes, Tab<AnimKeyLabel> &noteTrackKeys);
-
-  void getNamePool(Tab<INode *> &exportNodes, Tab<AnimKeyLabel> &noteTrackKeys, std::vector<char> &namesPool,
-    std::vector<int> &nameIdx, unsigned &namePoolSize, std::vector<std::string> &additionalNames, Tab<int> &additionalIds);
-
-  bool getAnimations(Tab<INode *> &node, Tab<bool> &nodeExp, Tab<INode *> &exportNodes, Tab<AnimChanPoint3 *> &pos,
-    Tab<AnimChanQuat *> &rot, Tab<AnimChanPoint3 *> &scl);
-
-  void getOriginVelocities(Tab<AnimKeyPoint3> &originLinVel, Tab<AnimKeyPoint3> &originAngVel, Tab<int> &originLinVelT,
-    Tab<int> &originAngVelT);
-
-  void writeChannel(const ChannelParams &params, FILE *fp);
-
-  int getKeyNumInChannel(const ChannelParams &params);
 };
-
-int ExportENCB::getKeyNumInChannel(const ChannelParams &params)
-{
-  int count = 0;
-  for (int i = params.keyNums.Count(); --i >= 0;)
-    count += params.keyNums[i];
-  return count;
-}
-
-void ExportENCB::getNoteTrackKeys(Tab<INode *> &exportNodes, Tab<AnimKeyLabel> &noteTrackKeys)
-{
-  DefNoteTrack *noteTrack = NULL;
-  for (int i = 0; i < exportNodes.Count(); ++i)
-  {
-    if (!exportNodes[i]->HasNoteTracks())
-      continue;
-    for (int j = 0; j < exportNodes[i]->NumNoteTracks(); ++j)
-    {
-      if ((noteTrack = (DefNoteTrack *)exportNodes[i]->GetNoteTrack(j)) == NULL)
-        continue;
-      for (int k = 0; k < noteTrack->keys.Count(); ++k)
-      {
-        NoteKey *key = noteTrack->keys[k];
-        if ((util.expflg & EXP_ARNG) && (key->time < util.astart || key->time > util.aend))
-          continue;
-        AnimKeyLabel label;
-        label.name = _strdup(wideToStr(key->note).c_str());
-        label.time = key->time;
-        noteTrackKeys.Append(1, &label, 32);
-      }
-    }
-  }
-}
-
-void ExportENCB::getNamePool(Tab<INode *> &exportNodes, Tab<AnimKeyLabel> &noteTrackKeys, std::vector<char> &namesPool,
-  std::vector<int> &nameIdx, unsigned &namePoolSize, std::vector<std::string> &additionalNames, Tab<int> &additionalIds)
-{
-  additionalIds.SetCount((int)additionalNames.size());
-  // prepare nodes name pool
-  namePoolSize = 1;
-  int len;
-  for (int i = 0; i < exportNodes.Count(); ++i)
-    if ((len = exportNodes[i]->GetName() ? (int)_tcslen(exportNodes[i]->GetName()) : 0) != 0)
-      namePoolSize += len + 1;
-  for (int i = 0; i < noteTrackKeys.Count(); ++i)
-    if ((len = (int)strlen(noteTrackKeys[i].name)) != 0)
-      namePoolSize += len + 1;
-  for (size_t i = 0; i < additionalNames.size(); ++i)
-    if ((len = (int)additionalNames[i].size()) != 0)
-      namePoolSize += len + 1;
-  namePoolSize = (namePoolSize + 7) & ~7;
-
-  namesPool.assign(namePoolSize, '\0');
-  nameIdx.assign(exportNodes.Count(), 0);
-
-  namePoolSize = 1;
-  for (int i = 0; i < exportNodes.Count(); ++i)
-  {
-    std::string name = wideToStr(exportNodes[i]->GetName());
-    if ((len = (int)name.size()) == 0)
-      nameIdx[i] = 0;
-    else
-    {
-      nameIdx[i] = namePoolSize;
-      char *poolName = namesPool.data() + namePoolSize;
-      strcpy(poolName, name.c_str());
-      namePoolSize += len + 1;
-    }
-  }
-  for (int i = 0; i < noteTrackKeys.Count(); ++i)
-  {
-    char *name = noteTrackKeys[i].name;
-    if ((len = (int)strlen(name)) == 0)
-      noteTrackKeys[i].idx = 0;
-    else
-    {
-      noteTrackKeys[i].idx = namePoolSize;
-      char *poolName = namesPool.data() + namePoolSize;
-      strcpy(poolName, name);
-      namePoolSize += len + 1;
-    }
-    free(name);
-  }
-  for (int i = 0; i < (int)additionalNames.size(); ++i)
-  {
-    const std::string &name = additionalNames[i];
-    if ((len = (int)name.size()) == 0)
-      additionalIds[i] = 0;
-    else
-    {
-      additionalIds[i] = namePoolSize;
-      char *poolName = namesPool.data() + namePoolSize;
-      strcpy(poolName, name.c_str());
-      namePoolSize += len + 1;
-    }
-  }
-
-  namePoolSize = (namePoolSize + 7) & ~7;
-}
-
-bool ExportENCB::getAnimations(Tab<INode *> &node, Tab<bool> &nodeExp, Tab<INode *> &exportNodes, Tab<AnimChanPoint3 *> &pos,
-  Tab<AnimChanQuat *> &rot, Tab<AnimChanPoint3 *> &scl)
-{
-  // build exp nodes
-  Tab<ExpNode *> en;
-  en.SetCount(node.Count());
-  for (int i = 0; i < en.Count(); ++i)
-  {
-    en[i] = new ExpNode(i);
-    assert(en[i]);
-  }
-
-  ExpNode *root = new ExpNode(-1);
-  assert(root);
-  for (int i = 0; i < node.Count(); ++i)
-  {
-    uint pid = getnodeid(node[i]->GetParentNode());
-    if (pid < node.Count())
-      en[pid]->add_child(en[i]);
-    else
-      root->add_child(en[i]);
-  }
-
-  AnimChanPoint3 *animChanPoint3;
-  AnimChanQuat *animChanQuat;
-  const int exportNodeCount = exportNodes.Count();
-  pos.SetCount(exportNodeCount);
-  pos.ZeroCount();
-  scl.SetCount(exportNodeCount);
-  scl.ZeroCount();
-  rot.SetCount(exportNodeCount);
-  rot.ZeroCount();
-
-  // get animations
-  Tab<ExpTMAnimCB *> acb;
-  for (int i = 0; i < node.Count(); ++i)
-  {
-    if (!nodeExp[i])
-      continue;
-
-    pos.Append(1, &(animChanPoint3 = new AnimChanPoint3));
-    scl.Append(1, &(animChanPoint3 = new AnimChanPoint3));
-    rot.Append(1, &(animChanQuat = new AnimChanQuat));
-
-    INode *parentNode = NULL;
-    uint pid = en[i]->parent->id;
-    if (pid < node.Count())
-      parentNode = node[pid];
-
-    ExpTMAnimCB *expAnim = new MyExpTMAnimCB(node[i], parentNode, nodeOrigin);
-    acb.Append(1, &expAnim);
-  }
-
-  bool ret = get_tm_anim_2(pos, rot, scl, (util.expflg & EXP_ARNG) ? Interval(util.astart, util.aend) : FOREVER, exportNodes, acb,
-    util.poseps, cosf(util.roteps), util.scleps, cosf(HALFPI - util.orteps), util.expflg);
-
-  for (int i = acb.Count(); --i >= 0;)
-    delete acb[i];
-  delete root;
-
-  return ret;
-}
-
-void ExportENCB::getOriginVelocities(Tab<AnimKeyPoint3> &originLinVel, Tab<AnimKeyPoint3> &originAngVel, Tab<int> &originLinVelT,
-  Tab<int> &originAngVelT)
-{
-  // get origin velocities
-  originLinVel.ZeroCount();
-  originAngVel.ZeroCount();
-  originLinVelT.ZeroCount();
-  originAngVelT.ZeroCount();
-  if (nodeOrigin)
-  {
-    MyExpTMAnimCB *cb = new MyExpTMAnimCB(nodeOrigin, NULL, NULL);
-    if (!get_node_vel(originLinVel, originAngVel, originLinVelT, originAngVelT,
-          (util.expflg & EXP_ARNG) ? Interval(util.astart, util.aend) : FOREVER, *cb, util.poseps2, cosf(util.roteps2), util.expflg))
-    {
-      explogWarning(_T( "cannot get velocity of origin\r\n"));
-      debug("cannot get velocity of origin");
-      originLinVel.ZeroCount();
-      originAngVel.ZeroCount();
-      originLinVelT.ZeroCount();
-      originAngVelT.ZeroCount();
-    }
-    delete cb;
-  }
-}
-
-void ExportENCB::writeChannel(const ChannelParams &params, FILE *fp)
-{
-  unsigned nodeNum = params.keyNums.Count();
-  if (nodeNum)
-  {
-    fwrite(&params.channelType, sizeof(unsigned), 1, fp);
-    fwrite(&nodeNum, sizeof(unsigned), 1, fp);
-    fwrite(params.keyNums.Addr(0), sizeof(unsigned), params.keyNums.Count(), fp);
-    fwrite(params.nodeNameIds.Addr(0), sizeof(int), params.nodeNameIds.Count(), fp);
-    fwrite(params.nodeWeights.Addr(0), sizeof(float), params.nodeWeights.Count(), fp);
-  }
-}
 
 
 void ExpUtil::errorMessage(const TCHAR *msg)
@@ -3707,37 +2552,37 @@ static bool find_co_layers(const fs::path &fname, std::vector<std::wstring> &fna
   std::wstring formatted_name;
   for (int i = 0; i < 16; i++)
   {
-    formatted_name = format_str(_T("LOD%02d"), i);
+    formatted_name = std::format(_T("LOD{:02}"), i);
     l = manager->GetLayer(formatted_name.c_str());
     if (!l)
     {
-      formatted_name = format_str(_T("lod%02d"), i);
+      formatted_name = std::format(_T("lod{:02}"), i);
       l = manager->GetLayer(formatted_name.c_str());
       if (!l)
       {
-        formatted_name = format_str(_T("Lod%02d"), i);
+        formatted_name = std::format(_T("Lod{:02}"), i);
         l = manager->GetLayer(formatted_name.c_str());
       }
     }
     if (l && l->HasObjects())
     {
       fnames.push_back(formatted_name);
-      formatted_name = format_str(_T("%s.lod%02d.dag"), base.c_str(), i);
+      formatted_name = std::format(_T("{}.lod{:02}.dag"), base.c_str(), i);
       fnames.push_back(formatted_name);
     }
   }
 
   for (int i = 0; i < 16; i++)
   {
-    matched_layer_name = format_str(_T("DESTR_LOD%02d"), i);
+    matched_layer_name = std::format(_T("DESTR_LOD{:02}"), i);
     l = manager->GetLayer(matched_layer_name.c_str());
     if (!l)
     {
-      matched_layer_name = format_str(_T("destr_lod%02d"), i);
+      matched_layer_name = std::format(_T("destr_lod{:02}"), i);
       l = manager->GetLayer(matched_layer_name.c_str());
       if (!l)
       {
-        matched_layer_name = format_str(_T("Destr_lod%02d"), i);
+        matched_layer_name = std::format(_T("Destr_lod{:02}"), i);
         l = manager->GetLayer(matched_layer_name.c_str());
       }
     }
@@ -3745,7 +2590,7 @@ static bool find_co_layers(const fs::path &fname, std::vector<std::wstring> &fna
     if (l && l->HasObjects())
     {
       fnames.push_back(matched_layer_name);
-      formatted_name = format_str(_T("%s_destr.lod%02d.dag"), base.c_str(), i);
+      formatted_name = std::format(_T("{}_destr.lod{:02}.dag"), base.c_str(), i);
       fnames.push_back(formatted_name);
     }
   }
@@ -3765,72 +2610,72 @@ static bool find_co_layers(const fs::path &fname, std::vector<std::wstring> &fna
   if (l && l->HasObjects())
   {
     fnames.push_back(matched_layer_name);
-    formatted_name = format_str(_T("%s_dm.dag"), base.c_str());
+    formatted_name = std::format(_T("{}_dm.dag"), base.c_str());
     fnames.push_back(formatted_name);
   }
 
   for (int i = 0; i < 16; i++)
   {
-    formatted_name = format_str(_T("DMG_LOD%02d"), i);
+    formatted_name = std::format(_T("DMG_LOD{:02}"), i);
     l = manager->GetLayer(formatted_name.c_str());
     if (!l)
     {
-      formatted_name = format_str(_T("dmg_lod%02d"), i);
+      formatted_name = std::format(_T("dmg_lod{:02}"), i);
       l = manager->GetLayer(formatted_name.c_str());
       if (!l)
       {
-        formatted_name = format_str(_T("Dmg_lod%02d"), i);
+        formatted_name = std::format(_T("Dmg_lod{:02}"), i);
         l = manager->GetLayer(formatted_name.c_str());
       }
     }
     if (l && l->HasObjects())
     {
       fnames.push_back(formatted_name);
-      formatted_name = format_str(_T("%s_dmg.lod%02d.dag"), base.c_str(), i);
+      formatted_name = std::format(_T("{}_dmg.lod{:02}.dag"), base.c_str(), i);
       fnames.push_back(formatted_name);
     }
   }
 
   for (int i = 0; i < 16; i++)
   {
-    formatted_name = format_str(_T("DMG2_LOD%02d"), i);
+    formatted_name = std::format(_T("DMG2_LOD{:02}"), i);
     l = manager->GetLayer(formatted_name.c_str());
     if (!l)
     {
-      formatted_name = format_str(_T("dmg2_lod%02d"), i);
+      formatted_name = std::format(_T("dmg2_lod{:02}"), i);
       l = manager->GetLayer(formatted_name.c_str());
       if (!l)
       {
-        formatted_name = format_str(_T("Dmg2_lod%02d"), i);
+        formatted_name = std::format(_T("Dmg2_lod{:02}"), i);
         l = manager->GetLayer(formatted_name.c_str());
       }
     }
     if (l && l->HasObjects())
     {
       fnames.push_back(formatted_name);
-      formatted_name = format_str(_T("%s_dmg2.lod%02d.dag"), base.c_str(), i);
+      formatted_name = std::format(_T("{}_dmg2.lod{:02}.dag"), base.c_str(), i);
       fnames.push_back(formatted_name);
     }
   }
 
   for (int i = 0; i < 16; i++)
   {
-    formatted_name = format_str(_T("EXPL_LOD%02d"), i);
+    formatted_name = std::format(_T("EXPL_LOD{:02}"), i);
     l = manager->GetLayer(formatted_name.c_str());
     if (!l)
     {
-      formatted_name = format_str(_T("expl_lod%02d"), i);
+      formatted_name = std::format(_T("expl_lod{:02}"), i);
       l = manager->GetLayer(formatted_name.c_str());
       if (!l)
       {
-        formatted_name = format_str(_T("Expl_lod%02d"), i);
+        formatted_name = std::format(_T("Expl_lod{:02}"), i);
         l = manager->GetLayer(formatted_name.c_str());
       }
     }
     if (l && l->HasObjects())
     {
       fnames.push_back(formatted_name);
-      formatted_name = format_str(_T("%s_expl.lod%02d.dag"), base.c_str(), i);
+      formatted_name = std::format(_T("{}_expl.lod{:02}.dag"), base.c_str(), i);
       fnames.push_back(formatted_name);
     }
   }
@@ -3846,7 +2691,7 @@ static bool find_co_layers(const fs::path &fname, std::vector<std::wstring> &fna
   if (l && l->HasObjects())
   {
     fnames.push_back(matched_layer_name);
-    formatted_name = format_str(_T("%s_xray.dag"), base.c_str());
+    formatted_name = std::format(_T("{}_xray.dag"), base.c_str());
     fnames.push_back(formatted_name);
   }
 
@@ -3910,7 +2755,7 @@ BOOL ExpUtil::export_dag()
 
 BOOL ExpUtil::export_one_dag(const fs::path &exp_fn)
 {
-  ExportENCB cb(ip->GetTime(), false);
+  ExportENCB cb(ip->GetTime());
   enum_nodes(ip->GetRootNode(), &cb);
 
   if (!cb.node.Count())
@@ -3924,8 +2769,6 @@ BOOL ExpUtil::export_one_dag(const fs::path &exp_fn)
 
 BOOL ExpUtil::export_one_dag_cb(ExportENCB &cb, const fs::path &exp_fn)
 {
-  INamedSelectionSetManager *IPNSS = INamedSelectionSetManager::GetInstance();
-
   checkDupesAndSpaces(cb.node);
 
   FILE *h = _tfopen(exp_fn.c_str(), _T ("wb"));
@@ -3941,29 +2784,9 @@ BOOL ExpUtil::export_one_dag_cb(ExportENCB &cb, const fs::path &exp_fn)
     return false;
   }
   fclose(h);
-  explog(_T ("%d pos keys max\r\n"), cb.max_pkeys);
-  if (cb.max_pkeys_n)
-    explog(_T ("  for \"%s\"\r\n"), cb.max_pkeys_n->GetName());
-  explog(_T ("%d rot keys max\r\n"), cb.max_rkeys);
-  if (cb.max_rkeys_n)
-    explog(_T ("  for \"%s\"\r\n"), cb.max_rkeys_n->GetName());
-  explog(_T ("%d scl keys max\r\n"), cb.max_skeys);
-  if (cb.max_skeys_n)
-    explog(_T ("  for \"%s\"\r\n"), cb.max_skeys_n->GetName());
   explog(_T ("%d nodes\r\n"), cb.node.Count());
-  explog(_T ("%d materials\r\n"), cb.mat.size());
-  explog(_T ("%d textures\r\n"), cb.tex.size());
-  explog(_T ("%d key labels\r\n"), cb.klabel.size());
-  explog(_T ("%d note tracks\r\n"), cb.ntrack.Count());
-  MSTR nonortn = TSTR(GetString(IDS_NONORT_SELSET));
-  if (cb.nonort)
-  {
-    warningMessage(GetString(IDS_NONORT_ANIM));
-    IPNSS->AddNewNamedSelSet(cb.nonort_nodes, nonortn);
-    explogWarning(_T ("%d nodes with bad animation\r\n"), cb.nonort_nodes.Count());
-  }
-  else
-    IPNSS->RemoveNamedSelSet(nonortn);
+  explog(_T ("%d materials\r\n"), (int)cb.mat.size());
+  explog(_T ("%d textures\r\n"), (int)cb.tex.size());
   if (cb.nofaces)
   {
     warningMessage(GetString(IDS_NOFACES_NODES));
@@ -3994,56 +2817,6 @@ BOOL ExpUtil::export_one_dag_cb(ExportENCB &cb, const fs::path &exp_fn)
     warningMessage(GetString(IDS_SUB_SUB_MATERIALS));
   }
   return true;
-}
-void ExpUtil::export_anim_v2()
-{
-  DagorLogWindowAutoShower logWindowAutoShower(/*clear_log = */ true);
-  explog(_T ("Exporting Anim v2 to file <%s>...\r\n"), exp_anim2_fname.c_str());
-  int t0 = timeGetTime();
-
-  ExportENCB cb(ip->GetTime(), true);
-  enum_nodes(ip->GetRootNode(), &cb);
-  t0 = timeGetTime() - t0;
-  explog(_T (" enum node: %d ms\r\n"), t0);
-
-  checkDupesAndSpaces(cb.node);
-
-  // save_anim2 function is not fast but writes the file directly as it goes.
-  // If we are saving an a2d opened in AssetViewer we are highly likely to crash because AV will
-  // trigger on first file flush, try to read not yet fully written file and fail. To avoid this we
-  // export to a temp file and then copy it to the final destination.
-  // Copying does not produce partial file and avoids the crash.
-  wchar_t path[MAX_PATH];
-  GetTempFileName(L".", L"a2d", 0, path);
-  FILE *tmpFile = _tfopen(path, _T ("wb"));
-
-  if (!tmpFile)
-  {
-    errorMessage(GetString(IDS_FILE_CREATE_ERR));
-    return;
-  }
-  t0 = timeGetTime();
-  if (!cb.save_anim2(tmpFile, ip))
-  {
-    errorMessage(GetString(IDS_FILE_WRITE_ERR));
-    fclose(tmpFile);
-    std::error_code ec;
-    fs::remove(path, ec);
-    return;
-  }
-
-  fclose(tmpFile);
-  std::error_code ec;
-  fs::copy_file(path, exp_anim2_fname, fs::copy_options::overwrite_existing, ec);
-  if (ec)
-    errorMessage(GetString(IDS_FILE_CREATE_ERR));
-  fs::remove(path, ec);
-
-  t0 = timeGetTime() - t0;
-  explog(_T (" save anim2: %d ms\r\n"), t0);
-
-  explog(_T (" %d nodes\r\n"), cb.node.Count());
-  explog(_T ("Success!\r\n"));
 }
 static bool FolderOpenDialog(fs::path &path, HWND)
 {
@@ -4108,7 +2881,7 @@ void ExpUtil::exportObjectsAsDagsInternal(const fs::path &folder, INode &node)
       continue;
     }
 
-    ExportENCB cb(ip->GetTime(), false);
+    ExportENCB cb(ip->GetTime());
 
     if (childNode->IsGroupHead())
       enum_nodes_by_node(childNode, &cb);
@@ -4167,7 +2940,7 @@ void ExpUtil::exportLayerAsDag(const fs::path &folder, ILayer &layer)
   ILayerProperties *layerProperties = (ILayerProperties *)layer.GetInterface(LAYERPROPERTIES_INTERFACE);
   if (layerProperties)
   {
-    ExportENCB cb(ip->GetTime(), false);
+    ExportENCB cb(ip->GetTime());
 
     // ILayerProperties::Nodes returns with all nodes belonging to a layer, regardless of the hierarchy,
     // so there is no need to call enum_nodes.
@@ -4269,293 +3042,6 @@ void ExpUtil::exportLayersAsDags()
   }
 }
 
-class CameraNodeEnumerator : public ENodeCB
-{
-public:
-  Interface *ip;
-  struct Cam
-  {
-    INode *cameraNode;
-    CameraObject *camera;
-    INode *hero;
-    int keyNum;
-    bool animated;
-  };
-  Tab<Cam> cam;
-  int keyNum;
-
-  CameraNodeEnumerator(Interface *_ip) : ip(_ip), keyNum(0) {}
-  ~CameraNodeEnumerator() override = default;
-
-  int proc(INode *node) override
-  {
-    if (node->IsHidden())
-      return ECB_CONT;
-
-    Object *obj = node->GetObjectRef();
-    if (!obj)
-      return ECB_CONT;
-
-    if (obj->SuperClassID() != CAMERA_CLASS_ID)
-      return ECB_CONT;
-
-    int j;
-
-    std::wstring s = format_str(_T("%s_hero"), node->GetName());
-
-    Cam c;
-    c.cameraNode = node;
-    c.camera = (CameraObject *)obj;
-    c.hero = ip->GetINodeByName(s.c_str());
-    c.keyNum = 0;
-    c.animated = false;
-
-    if (!node->HasNoteTracks())
-      c.keyNum = 1;
-    else
-    {
-      for (j = 0; j < node->NumNoteTracks(); j++)
-      {
-        DefNoteTrack *_nt = (DefNoteTrack *)node->GetNoteTrack(j);
-        if (!_nt)
-          continue;
-        c.keyNum += _nt->keys.Count();
-        if (c.keyNum > 1)
-          c.animated = true;
-      }
-      if (c.keyNum < 1)
-        c.keyNum = 1;
-    }
-
-    keyNum += c.keyNum;
-
-    cam.Append(1, &c);
-    return ECB_CONT;
-  }
-
-  void export_cameras(FILE *fp)
-  {
-    struct AdvCameraFileHdr
-    {
-      unsigned label;
-      unsigned ver;
-      unsigned hdrSize;
-      unsigned cameraNum;
-      unsigned namePoolSz;
-      unsigned keyPoolSz;
-    };
-    struct AdvCameraDataRec
-    {
-      unsigned nameIdx;
-      unsigned keyNum;
-      unsigned keyIdx;
-      unsigned flags;
-
-      enum
-      {
-        F_Animated = 0x0001
-      };
-    };
-    struct AdvCameraKey
-    {
-      Quat rot;
-      Point3 pos;
-      Point3 heroPos;
-      float w, fov, wFollow;
-    };
-    AdvCameraFileHdr hdr;
-    int i, j;
-
-    hdr.label = 'MACa';
-    hdr.ver = 0x100;
-    hdr.hdrSize = sizeof(hdr);
-    hdr.cameraNum = cam.Count();
-    hdr.namePoolSz = 0;
-    hdr.keyPoolSz = keyNum;
-
-    for (i = 0; i < hdr.cameraNum; i++)
-      hdr.namePoolSz += (int)_tcslen(cam[i].cameraNode->GetName()) + 1;
-
-    int nmpool_used = hdr.namePoolSz;
-    hdr.namePoolSz = (hdr.namePoolSz + 7) & ~7;
-
-    fwrite(&hdr, 1, sizeof(hdr), fp);
-
-    std::vector<AdvCameraDataRec> data(hdr.cameraNum);
-    std::vector<AdvCameraKey> key(hdr.keyPoolSz);
-
-    // store names
-    for (i = 0; i < hdr.cameraNum; i++)
-    {
-      std::string s = wideToStr(cam[i].cameraNode->GetName());
-      fwrite(s.c_str(), 1, s.length() + 1, fp);
-    }
-    for (i = nmpool_used; i < hdr.namePoolSz; i++)
-      fwrite("\0", 1, 1, fp);
-
-    // build structures
-    hdr.namePoolSz = 0;
-    keyNum = 0;
-    for (i = 0; i < hdr.cameraNum; i++)
-    {
-      AdvCameraDataRec &drec = data[i];
-      drec.nameIdx = hdr.namePoolSz;
-      drec.keyNum = cam[i].keyNum;
-      drec.keyIdx = keyNum;
-      drec.flags = 0;
-
-      hdr.namePoolSz += (int)_tcslen(cam[i].cameraNode->GetName()) + 1;
-      keyNum += cam[i].keyNum;
-
-      if (cam[i].animated)
-      {
-        int idx = drec.keyIdx;
-        drec.flags |= AdvCameraDataRec::F_Animated;
-
-        for (j = 0; j < cam[i].cameraNode->NumNoteTracks(); j++)
-        {
-          DefNoteTrack *_nt = (DefNoteTrack *)cam[i].cameraNode->GetNoteTrack(j);
-          if (!_nt)
-            continue;
-          for (int k = 0; k < _nt->keys.Count(); k++)
-          {
-            AdvCameraKey &krec = key[idx];
-            NoteKey *nk = _nt->keys[k];
-            std::string wnote = wideToStr(nk->note);
-
-            const char *wt = strchr(wnote.c_str(), '@');
-            if (wt)
-              wt++;
-
-            getRotPos(cam[i].cameraNode, krec.pos, krec.rot, nk->time);
-            if (cam[i].hero)
-              getPos(cam[i].hero, cam[i].cameraNode->GetParentNode(), krec.heroPos, nk->time);
-            else
-              krec.heroPos = Point3(0, 0, 0);
-
-            if (wt)
-              krec.w = atof(wt);
-            else
-              krec.w = 1.0;
-            krec.fov = 1.0 / tan(cam[i].camera->GetFOV(nk->time) / 2);
-            debug("krec.fov=%.3f (%.3f deg)", krec.fov, cam[i].camera->GetFOV(nk->time) * 180 / PI);
-
-            if (_strnicmp(wnote.c_str(), "follow", 6) == 0)
-              krec.wFollow = 1.0;
-            else if (_strnicmp(wnote.c_str(), "still", 5) == 0)
-              krec.wFollow = 0.0;
-
-            idx++;
-          }
-        }
-        if (idx - drec.keyIdx != drec.keyNum)
-          debug(L"node %s: idx=%d drec.keyIdx=%d drec.keyNum=%d", cam[i].cameraNode->GetName(), idx, drec.keyIdx, drec.keyNum);
-      }
-      else
-      {
-        AdvCameraKey &krec = key[drec.keyIdx];
-        getRotPos(cam[i].cameraNode, krec.pos, krec.rot, 0);
-        if (cam[i].hero)
-          getPos(cam[i].hero, cam[i].cameraNode->GetParentNode(), krec.heroPos, 0);
-        else
-          krec.heroPos = Point3(0, 0, 0);
-        krec.w = 1.0;
-        krec.fov = 1.0 / tan(cam[i].camera->GetFOV(0) / 2);
-        krec.wFollow = 0.0;
-      }
-    }
-
-    // store keys
-    fwrite(key.data(), hdr.keyPoolSz, sizeof(AdvCameraKey), fp);
-
-    // store cameras
-    fwrite(data.data(), hdr.cameraNum, sizeof(AdvCameraDataRec), fp);
-  }
-
-  void getPos(INode *node, INode *parent, Point3 &pos, TimeValue t)
-  {
-    Matrix3 m;
-    interp_tm(node, parent, t, m);
-    pos = m.GetRow(3);
-  }
-  void getRotPos(INode *node, Point3 &pos, Quat &rot, TimeValue t)
-  {
-    Matrix3 m;
-    interp_tm(node, t, m);
-    Point3 ax = m.GetRow(0), ay = m.GetRow(1), az = m.GetRow(2);
-    pos = m.GetRow(3);
-    float lx = Length(ax), ly = Length(ay), lz = Length(az);
-    if (m.Parity())
-      lz = -lz;
-    if (lx != 0)
-      m.SetRow(0, ax /= lx);
-    if (ly != 0)
-      m.SetRow(1, ay /= ly);
-    if (lz != 0)
-      m.SetRow(2, az /= lz);
-    rot = Quat(m);
-    rot = Conjugate(rot);
-  }
-  void interp_tm(INode *node, TimeValue t, Matrix3 &m)
-  {
-    INode *pnode = node->GetParentNode();
-    Matrix3 ntm = get_scaled_stretch_node_tm(node, t);
-    Matrix3 ptm;
-
-    adjwtm(ntm);
-    if (pnode)
-    {
-      ptm = get_scaled_stretch_node_tm(pnode, t);
-      if (!pnode->IsRootNode())
-        adjwtm(ptm);
-      m = ntm * Inverse(ptm);
-    }
-    else
-      m = ntm;
-  }
-  void interp_tm(INode *node, INode *pnode, TimeValue t, Matrix3 &m)
-  {
-    Matrix3 ntm = get_scaled_stretch_node_tm(node, t);
-    Matrix3 ptm;
-
-    adjwtm(ntm);
-    if (pnode)
-    {
-      ptm = get_scaled_stretch_node_tm(pnode, t);
-      if (!pnode->IsRootNode())
-        adjwtm(ptm);
-      m = ntm * Inverse(ptm);
-    }
-    else
-      m = ntm;
-  }
-};
-
-
-void ExpUtil::export_camera_v1()
-{
-  DagorLogWindowAutoShower logWindowAutoShower(/*clear_log = */ true);
-  explog(_T ("Exporting Adv. Camera file <%s>...\r\n"), exp_camera_fname.c_str());
-  int t0;
-
-  CameraNodeEnumerator cne(ip);
-  enum_nodes(ip->GetRootNode(), &cne);
-
-  FILE *h = _tfopen(exp_camera_fname.c_str(), _T ("wb"));
-  if (!h)
-  {
-    errorMessage(GetString(IDS_FILE_CREATE_ERR));
-    return;
-  }
-  t0 = timeGetTime();
-  cne.export_cameras(h);
-  t0 = timeGetTime() - t0;
-  explog(_T (" save adv.camera: %d ms\r\n"), t0);
-
-  explog(_T ("Success!\r\n"));
-  fclose(h);
-}
-
 
 void ExpUtil::exportPhysics()
 {
@@ -4597,6 +3083,10 @@ void ExpUtil::checkDupesAndSpaces(Tab<INode *> &node_list)
 {
   bool hasDupes = false;
   bool hasEmptyNames = false;
+
+  std::unordered_map<std::wstring_view, bool, CaseInsensitiveHashW, CaseInsensitiveEqualW> seenNames;
+  seenNames.reserve(node_list.Count());
+
   for (int i = 0; i < node_list.Count(); ++i)
   {
     if (!(expflg & EXP_HID) && node_list[i]->IsNodeHidden())
@@ -4605,38 +3095,38 @@ void ExpUtil::checkDupesAndSpaces(Tab<INode *> &node_list)
     if ((expflg & EXP_SEL) && !node_list[i]->Selected())
       continue;
 
-    if (node_list[i]->GetName()[0] == 0)
+    const wchar_t *name = node_list[i]->GetName();
+
+    if (name[0] == 0)
     {
-      explogWarning(_T("node with empty name\r\n"));
+      explogWarning(L"node with empty name\r\n");
       hasEmptyNames = true;
     }
 
-    for (int j = i + 1; j < node_list.Count(); ++j)
+    auto [it, inserted] = seenNames.emplace(name, false);
+    if (!inserted)
     {
-      if (!(expflg & EXP_HID) && node_list[j]->IsNodeHidden())
-        continue;
-
-      if ((expflg & EXP_SEL) && !node_list[j]->Selected())
-        continue;
-
-      if (!_tcsicmp(node_list[i]->GetName(), node_list[j]->GetName()))
+      const wchar_t *duplicateNameFmt = L"duplicate node name \"%s\"\r\n";
+      if (!it->second)
       {
-        explogWarning(_T ("duplicate node name \"%s\"\r\n"), node_list[i]->GetName());
-        hasDupes = true;
+        explogWarning(duplicateNameFmt, it->first.data());
+        it->second = true;
       }
+      explogWarning(duplicateNameFmt, name);
+      hasDupes = true;
     }
   }
 
   if (hasDupes)
   {
-    ip->DisplayTempPrompt(_T("There are duplicate node names."), ERRMSG_DELAY);
-    warningMessage(_T("There are nodes with the same names.\n See log for details."), _T("Duplicate names"));
+    ip->DisplayTempPrompt(L"There are duplicate node names.", ERRMSG_DELAY);
+    warningMessage(L"There are nodes with the same names.\n See log for details.", L"Duplicate names");
   }
 
   if (hasEmptyNames)
   {
-    ip->DisplayTempPrompt(_T("There is a node with empty name."), ERRMSG_DELAY);
-    warningMessage(_T("There is a node with empty name.\n See log for details."), _T("Empty name"));
+    ip->DisplayTempPrompt(L"There is a node with empty name.", ERRMSG_DELAY);
+    warningMessage(L"There is a node with empty name.\n See log for details.", L"Empty name");
   }
 }
 
@@ -4646,16 +3136,15 @@ void ExpUtil::export_instances()
   DagorLogWindowAutoShower logWindowAutoShower(/*clear_log = */ true);
   explog(_T("Exporting instances placement file <%s>...\r\n"), exp_instances_fname.c_str());
 
-  ExportENCB cb(ip->GetTime(), false);
+  ExportENCB cb(ip->GetTime());
   enum_nodes(ip->GetRootNode(), &cb);
 
-  FILE *h = _tfopen(exp_instances_fname.c_str(), _T("wb"));
-  if (!h)
+  std::ofstream os(exp_instances_fname, std::ios::binary);
+  if (!os)
   {
     errorMessage(GetString(IDS_FILE_CREATE_ERR));
     return;
   }
-
 
   // Find base ground plane.
 
@@ -4669,20 +3158,20 @@ void ExpUtil::export_instances()
     if (!cb.node[nodeNo]->GetParentNode() || !cb.node[nodeNo]->GetParentNode()->IsRootNode())
       continue;
 
-    if (_tcsncicmp(cb.node[nodeNo]->GetName(), _T("GroundPlane"), _tcslen(_T("GroundPlane"))))
+    if (!istarts_with(cb.node[nodeNo]->GetName(), _T("GroundPlane")))
       continue;
 
     float newPlaneOffsetX;
     if (!cb.node[nodeNo]->GetUserPropFloat(_T("PlaneOffsetX:r"), newPlaneOffsetX))
     {
-      errorMessage(format_str(_T("'%s': invalid PlaneOffsetX:r"), cb.node[nodeNo]->GetName()).c_str());
+      errorMessage(std::format(_T("'{}': invalid PlaneOffsetX:r"), cb.node[nodeNo]->GetName()).c_str());
       return;
     }
 
     float newPlaneOffsetZ;
     if (!cb.node[nodeNo]->GetUserPropFloat(_T("PlaneOffsetZ:r"), newPlaneOffsetZ))
     {
-      errorMessage(format_str(_T("'%s': invalid PlaneOffsetZ:r"), cb.node[nodeNo]->GetName()).c_str());
+      errorMessage(std::format(_T("'{}': invalid PlaneOffsetZ:r"), cb.node[nodeNo]->GetName()).c_str());
       return;
     }
 
@@ -4693,7 +3182,7 @@ void ExpUtil::export_instances()
 
       if (!cb.node[nodeNo]->GetUserPropFloat(_T("PlaneSize:r"), planeSize))
       {
-        errorMessage(format_str(_T("'%s': invalid PlaneSize:r"), cb.node[nodeNo]->GetName()).c_str());
+        errorMessage(std::format(_T("'{}': invalid PlaneSize:r"), cb.node[nodeNo]->GetName()).c_str());
         return;
       }
 
@@ -4718,9 +3207,8 @@ void ExpUtil::export_instances()
   unsigned int planeNo =
     (unsigned int)floorf(planeOffsetZ / planeSize + 0.5f) * numTexturesWidth + (unsigned int)floorf(planeOffsetX / planeSize + 0.5f);
 
-  fprintf(h,
-    "Version:i=20070810\r\nPlaneOffsetX:r=%f\r\nPlaneOffsetZ:r=%f\r\nPlaneSize:r=%f\r\n"
-    "numTexturesWidth:i=%d\r\nnumTexturesHeight:i=%d\r\n\r\n",
+  os << std::format("Version:i=20070810\r\nPlaneOffsetX:r={:f}\r\nPlaneOffsetZ:r={:f}\r\nPlaneSize:r={:f}\r\n"
+                    "numTexturesWidth:i={}\r\nnumTexturesHeight:i={}\r\n\r\n",
     planeOffsetX, planeOffsetZ, planeSize, numTexturesWidth, numTexturesHeight);
 
 
@@ -4733,7 +3221,7 @@ void ExpUtil::export_instances()
       continue;
 
     std::string name = wideToStr(cb.node[nodeNo]->GetName());
-    if (!_strnicmp(name.c_str(), "GroundPlane", strlen("GroundPlane")))
+    if (istarts_with(name, "GroundPlane"))
       continue;
 
     while (name.length() > 0 && isdigit((unsigned char)name[name.length() - 1]))
@@ -4747,20 +3235,25 @@ void ExpUtil::export_instances()
     tm.SetTrans(tm.GetTrans() * masterScale + Point3(offsetX, offsetZ, 0.f));
     const Matrix3 m = tm;
 
-    fprintf(h,
-      "object{\r\n"
-      "  name:t=\"%s\"\r\n"
-      "  numericName:t=\"%s %u\"\r\n"
-      "  matrix:m=[[%f, %f, %f] [%f, %f, %f] [%f, %f, %f] [%f, %f, %f]]\r\n"
-      "}\r\n",
-      name.c_str(), name.c_str(), planeNo * 100000 + numExportedNodes, m[0][0], m[0][2], m[0][1], m[2][0], m[2][2], m[2][1], m[1][0],
-      m[1][2], m[1][1], m[3][0], m[3][2], m[3][1]);
+    os << std::format("object{{\r\n"
+                      "  name:t=\"{}\"\r\n"
+                      "  numericName:t=\"{} {}\"\r\n"
+                      "  matrix:m=[[{:f}, {:f}, {:f}] [{:f}, {:f}, {:f}] [{:f}, {:f}, {:f}] [{:f}, {:f}, {:f}]]\r\n"
+                      "}}\r\n",
+      name, name, planeNo * 100000 + numExportedNodes, m[0][0], m[0][2], m[0][1], m[2][0], m[2][2], m[2][1], m[1][0], m[1][2], m[1][1],
+      m[3][0], m[3][2], m[3][1]);
 
     numExportedNodes++;
   }
 
+  os.close();
+  if (!os)
+  {
+    errorMessage(GetString(IDS_FILE_WRITE_ERR));
+    return;
+  }
+
   explog(_T("Success!\r\n"));
-  fclose(h);
 }
 
 
@@ -4833,18 +3326,12 @@ public:
   DECLARE_DESCRIPTOR(IDagorExportUtil)
   BEGIN_FUNCTION_MAP FN_4(fun_export, TYPE_BOOL, export_dag, TYPE_STRING, TYPE_INTERVAL, TYPE_BOOL, TYPE_BOOL) END_FUNCTION_MAP
 
-    BOOL export_dag(const TCHAR *fn, Interval ival, bool selectedOnly, bool suppressPrompts)
+    // `range` is a stub. It used to set the animation range and nothing reads it any more, but it is a
+    // positional parameter, so it is kept to avoid breaking the maxscripts that pass it.
+    BOOL export_dag(const TCHAR *fn, Interval /*range*/, bool selectedOnly, bool suppressPrompts)
   {
-    if (ival.Empty())
-    {
-      util.expflg &= ~EXP_ARNG;
-    }
-    else
-    {
-      util.expflg |= EXP_ARNG;
-      util.astart = ival.Start();
-      util.aend = ival.End();
-    }
+    const int bkExpflg = util.expflg;
+    const bool bkSuppressPrompts = util.suppressPrompts;
 
     if (selectedOnly)
       util.expflg |= EXP_SEL;
@@ -4857,7 +3344,9 @@ public:
     util.update_ui();
     BOOL result = util.export_dag();
 
-    util.suppressPrompts = false;
+    util.suppressPrompts = bkSuppressPrompts;
+    util.expflg = bkExpflg;
+    util.update_ui();
 
     return result;
   }

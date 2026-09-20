@@ -3,6 +3,7 @@
 #include <libTools/shaderResBuilder/shSkinMeshData.h>
 #include <libTools/util/makeBindump.h>
 #include <shaders/dag_shaders.h>
+#include <shaders/dag_clothSimChannels.h>
 #include <math/dag_mesh.h>
 #include <math/dag_meshBones.h>
 #include <generic/dag_tabUtils.h>
@@ -245,12 +246,61 @@ ShaderSkinnedMeshData::~ShaderSkinnedMeshData()
 ShaderSkinnedMeshData *ShaderSkinnedMeshData::clone() { return new ShaderSkinnedMeshData(*this); }
 
 
+// Probe the picked variant: cloth_skinning only drives an interval, so getIntVariable cannot read it.
+static bool material_uses_cloth_skinning(ShaderMaterial **shmat_tab, int mat_count)
+{
+  class ClothChanCB : public ShaderChannelsEnumCB
+  {
+  public:
+    bool clothIndex = false, clothWeight = false;
+    void enum_shader_channel(int u, int ui, int, int, int, ChannelModifier, int) override
+    {
+      if (u != SCUSAGE_EXTRA)
+        return;
+      clothIndex |= (ui == CLOTH_SKINNING_INDEX_EXTRA_CHANNEL);
+      clothWeight |= (ui == CLOTH_SKINNING_WEIGHT_EXTRA_CHANNEL);
+    }
+  } cb;
+
+  for (int i = 0; i < mat_count; i++)
+    if (shmat_tab[i])
+    {
+      int flags = 0;
+      shmat_tab[i]->enum_channels(cb, flags);
+    }
+  return cb.clothIndex && cb.clothWeight;
+}
+
+static bool material_uses_cloth_sim_weights(ShaderMaterial **shmat_tab, int mat_count)
+{
+  class WeightChanCB : public ShaderChannelsEnumCB
+  {
+  public:
+    bool found = false;
+    void enum_shader_channel(int u, int ui, int, int, int, ChannelModifier, int) override
+    {
+      found |= (u == SCUSAGE_EXTRA && ui == CLOTH_SIM_WEIGHT_EXTRA_CHANNEL);
+    }
+  } cb;
+
+  for (int i = 0; i < mat_count; i++)
+    if (shmat_tab[i])
+    {
+      int flags = 0;
+      shmat_tab[i]->enum_channels(cb, flags);
+    }
+  return cb.found;
+}
+
 // build mesh data
 bool ShaderSkinnedMeshData::build(Mesh &mesh, MeshBones &mesh_bones, ShaderMaterial **shmat_tab, int mat_count, int max_hw_vpr_const,
-  NameMap *name_map, bool pack_vcolor_to_bones)
+  NameMap *name_map, bool pack_vcolor_to_bones, int uv_err_lod, const char *uv_err_node)
 {
   if (!name_map || !shmat_tab || !mat_count)
     return false;
+
+  const bool build_cloth_skinning_channels = material_uses_cloth_skinning(shmat_tab, mat_count);
+  const bool build_cloth_sim_weight_channel = material_uses_cloth_sim_weights(shmat_tab, mat_count);
 
 #if OUTPUT_DEBUG_LEVEL >= 2
   debug("SkinnedMeshDataImpl::build started");
@@ -775,6 +825,91 @@ bool ShaderSkinnedMeshData::build(Mesh &mesh, MeshBones &mesh_bones, ShaderMater
     }
   }
 
+  if (build_cloth_skinning_channels)
+  {
+    // Face corners index the channel space (dataTable), not mesh verts. Placeholders; skinProxyLod fills them.
+    auto addClothSkinningChannels = [&mesh, &matTab, &dataTable]() {
+      const int indexId = mesh.add_extra_channel(MeshData::CHT_FLOAT4, SCUSAGE_EXTRA, CLOTH_SKINNING_INDEX_EXTRA_CHANNEL);
+      const int weightId = mesh.add_extra_channel(MeshData::CHT_E3DCOLOR, SCUSAGE_EXTRA, CLOTH_SKINNING_WEIGHT_EXTRA_CHANNEL);
+      if (indexId < 0 || weightId < 0)
+        return false;
+
+      MeshData::ExtraChannel &indexCh = mesh.getMeshData().extra[indexId];
+      MeshData::ExtraChannel &weightCh = mesh.getMeshData().extra[weightId];
+      indexCh.resize_verts(dataTable.size());
+      weightCh.resize_verts(dataTable.size());
+      mem_set_0(indexCh.vt);
+      mem_set_0(weightCh.vt);
+
+      dag::ConstSpan<Face> faces = mesh.getFace();
+      for (int i = 0; i < indexCh.fc.size(); i++)
+        for (int j = 0; j < 3; j++)
+          indexCh.fc[i].t[j] = weightCh.fc[i].t[j] = matTab[faces[i].mat].channelIndices[faces[i].v[j]];
+      return true;
+    };
+    if (!addClothSkinningChannels())
+      logerr("cloth skinning for '%s': the mesh already has extra[%d] or extra[%d]", shmat_tab[0]->getShaderClassName(),
+        (int)CLOTH_SKINNING_INDEX_EXTRA_CHANNEL, (int)CLOTH_SKINNING_WEIGHT_EXTRA_CHANNEL);
+  }
+
+  if (build_cloth_sim_weight_channel)
+  {
+    // Moved out of vcol, which already means wind on a cloth render material. One value per MESH VERTEX: per
+    // bone-channel entry gives a rigid region one colour (MINIMIZE_CHANNEL_DATA), per corner tears at a seam.
+    auto addClothSimWeightChannel = [&mesh]() -> const char * {
+      const int id = mesh.add_extra_channel(MeshData::CHT_E3DCOLOR, SCUSAGE_EXTRA, CLOTH_SIM_WEIGHT_EXTRA_CHANNEL);
+      if (id < 0)
+        return "cannot add the cloth sim weight extra channel (already present?)";
+      MeshData::ExtraChannel &ch = mesh.getMeshData().extra[id];
+      const int vertCount = mesh.getVert().size();
+      ch.resize_verts(vertCount);
+      mem_set_0(ch.vt);
+      E3DCOLOR *dst = (E3DCOLOR *)&ch.vt[0];
+
+      dag::ConstSpan<Face> faces = mesh.getFace();
+      dag::ConstSpan<Color4> cverts = mesh.getCVert();
+      dag::ConstSpan<TFace> cfaces = mesh.getCFace();
+      // The channel must exist once the material declares it, painted or not.
+      const bool painted = !cverts.empty() && cfaces.size() == faces.size();
+      auto toByte = [](float v) { return (unsigned char)clamp((int)(v * 255.0f + 0.5f), 0, 255); };
+      for (int i = 0; i < ch.fc.size(); i++)
+        for (int j = 0; j < 3; j++)
+        {
+          ch.fc[i].t[j] = faces[i].v[j];
+          if (painted)
+          {
+            const Color4 &c = cverts[cfaces[i].t[j]];
+            dst[faces[i].v[j]] = E3DCOLOR(toByte(c.r), toByte(c.g), toByte(c.b), 255);
+          }
+        }
+      if (!painted)
+        return "the sim mesh carries no painted vertex colour (R inverse mass, G max distance, B backstop), so "
+               "every weight reads as zero";
+
+      // a==255 marks a face-referenced vertex; unreferenced slots keep the zero fill and read as kinematic.
+      int kinematicCount = 0, leashedCount = 0, referencedCount = 0;
+      for (int i = 0; i < vertCount; i++)
+      {
+        if (dst[i].a != 255)
+          continue;
+        referencedCount++;
+        kinematicCount += dst[i].r == 0 || dst[i].g == 0;
+        leashedCount += dst[i].g != 255;
+      }
+      // Both, not either: a trouser cuff is held by leashes alone.
+      if (!kinematicCount && !leashedCount)
+        return "no vertex is kinematic (R or G painted 0) and none is leashed (G below 255), so nothing attaches "
+               "the garment to the character";
+      if (kinematicCount == referencedCount)
+        logwarn("cloth sim mesh is 100%% kinematic (%d vertices): every vertex is painted R=0 or G=0, so it will "
+                "rigidly follow the skinned pose and never simulate",
+          referencedCount);
+      return nullptr;
+    };
+    if (const char *err = addClothSimWeightChannel())
+      logerr("cloth sim weights for '%s': %s", shmat_tab[0]->getShaderClassName(), err);
+  }
+
   // prepare materials
   //  for (i = 0; i < matTab.size(); i++)
   //  {
@@ -788,7 +923,7 @@ bool ShaderSkinnedMeshData::build(Mesh &mesh, MeshBones &mesh_bones, ShaderMater
   for (i = 0; i < matTab.size(); i++)
     shmat.push_back(matTab[i].shMat);
 
-  meshData.build(mesh, shmat.data(), numMat, IdentColorConvert::object);
+  meshData.build(mesh, shmat.data(), numMat, IdentColorConvert::object, false, 128, uv_err_lod, uv_err_node);
 
   // convert material data
   clear_and_shrink(materialDescTab);

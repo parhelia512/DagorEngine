@@ -923,6 +923,9 @@ bool d3d::is_inited() { return isInitialized && initVideoDone; }
 
 bool d3d::init_driver()
 {
+#if _TARGET_PC_WIN
+  TimelineSyncPartAddressWaitable::initWinFutex();
+#endif
   if (d3d::is_inited())
   {
     D3D_CONTRACT_ERROR("Driver is already created");

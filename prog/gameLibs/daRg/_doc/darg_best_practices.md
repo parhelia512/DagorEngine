@@ -24,7 +24,8 @@ return a description" is a bug waiting to fire at unpredictable times.
 ### Do not create timers, subscriptions, or requests in a builder body
 
 Seen repeatedly, with severe symptoms: leaked subscribers accumulating
-until the framework's subscriber cap throws, per-frame rebuild loops,
+until the FRP subscriber-queue cap logs an error and drops calls, per-frame
+rebuild loops,
 timers re-armed on every rebuild, duplicate network requests.
 
 ```quirrel
@@ -192,7 +193,8 @@ produce the description) does not belong in `watch` at all.
 
 ### `watch` entries must be observables
 
-A plain value, enum, or function in a `watch` array throws. Also make sure
+A plain value, enum, or function in a `watch` array is reported as a traced
+script error and skipped, so the element never updates on it. Also make sure
 a prop that may be "value or observable" is detected and unwrapped with
 `.get()` plus added to `watch` when it is one.
 
@@ -218,8 +220,9 @@ state("newValue")                 state.set("newValue")   // calling throws
 obs?.get().field                  obs.get()?.field        // guard the value
 ```
 
-`.value` reads and call-to-set are deprecated APIs; new code must use
-`.get()`, `.set()`, `.modify()`.
+`.value` reads are deprecated (error log in debug builds); `.value` writes
+and calling the observable throw. New code uses `.get()`, `.set()`,
+`.modify()`.
 
 ### Never mutate the contents of an observable without `.mutate`
 
@@ -266,9 +269,10 @@ eventbus_subscribe("state.update", function(v) {
 })
 ```
 
-Likewise, a Computed that returns a freshly built array every recompute
-defeats change detection downstream; return the previous value when
-content is equal (see the identity-stable Computed pattern above).
+A Computed result is compared one level deep by value, so a fresh array of
+the same primitives is not a change. A fresh array of fresh tables is, and
+re-runs every dependent; return the previous value when content is equal
+(see the identity-stable Computed pattern above).
 
 ### `Watched`/`WatchedRo` store a value, not a producer
 
@@ -310,23 +314,30 @@ function refresh() {
 let timeLeft = Computed(@() max(endTime.get() - now.get(), 0))
 ```
 
-### Read dependencies unconditionally
+### Name every source observable in the Computed body
 
-Dependencies are tracked from the `.get()` calls that actually execute.
-A `.get()` behind `&&`/`||` short-circuit or an early return may never run
-on first evaluation, so the Computed never subscribes and never recomputes
-when that source changes. Hoist reads to the top:
+Sources are fixed when the Computed is constructed: the observables among
+the free variables and literals of its function, including lambdas nested
+in it. `.get()` calls are not traced at run time, so a source that is read
+only inside a named helper function is invisible. Such a Computed has no
+sources and is rejected with "Computed must have at least one source
+observable"; with other sources present it silently never recomputes when
+the hidden one changes. Read the observable in the Computed itself:
 
 ```quirrel
-// WRONG: flag.get() skipped when the first operand decides
-let list = Computed(@() squads.get().map(@(s) s.kind != "special" || flag.get()))
+function isModified(name) {
+  return modifiedComps.get()?[name] == true
+}
+
+// WRONG: modifiedComps is a free variable of isModified, not of the Computed
+let modified = Computed(@() isModified(compName))
 
 // RIGHT
-let list = Computed(function() {
-  let allowSpecial = flag.get()
-  return squads.get().map(@(s) s.kind != "special" || allowSpecial)
-})
+let modified = Computed(@() modifiedComps.get() != null && isModified(compName))
 ```
+
+A read behind `&&`/`||` or an early return still registers the source, so
+short-circuits are safe here.
 
 ### Time-dependent Computeds need a time dependency
 
@@ -337,8 +348,8 @@ for cooldowns, countdowns and expiry gating.
 
 ### keepref Computeds that exist only to drive subscriptions
 
-A Computed referenced only by its own `.subscribe(...)` has no strong
-reference and is garbage-collected; its subscriber silently stops firing.
+A Computed referenced only by its own `.subscribe(...)` has no owner and is
+freed with its last script reference; its subscriber silently stops firing.
 
 ```quirrel
 // WRONG: collected at some point, callback stops firing
@@ -368,8 +379,8 @@ Also: null-guard inputs inside Computeds (state is often empty at startup;
 guard divisors too), and hoist a Computed that depends only on module
 observables out of per-item factories so it is created once.
 
-Review checklist: side effects in Computed bodies; `.get()` behind
-short-circuits; clock reads with no ticker; `Computed(...).subscribe(...)`
+Review checklist: side effects in Computed bodies; sources read only
+inside helper functions; clock reads with no ticker; `Computed(...).subscribe(...)`
 without keepref; multiple subscribers writing one output; Computeds
 allocated per row.
 
@@ -408,12 +419,15 @@ onAttach = function() {
 
 ### Timers: unique ids, atomic rescheduling, cleared on teardown
 
-Duplicate-timer-id throws and leaked timers were seen repeatedly. Rules:
-give timers explicit unique ids (auto-derived closure identity collides);
-use `gui_scene.resetTimeout(t, cb)` instead of a clear+set pair; clear in
-the branch that decides not to schedule; clear in `onDetach`/teardown so a
-late fire cannot touch dead state; `clearTimer` takes the exact id or
-callback used to schedule (not `callee()` of something else).
+Duplicate-timer-id throws and leaked timers were seen repeatedly. Without
+an explicit id the callback closure is the id: scheduling the same closure
+object twice throws "Duplicate timer id", and a fresh closure of the same
+lambda logs an error and adds a second timer. Rules: give timers explicit
+unique ids; use `gui_scene.resetTimeout(t, cb)` instead of a clear+set pair
+(it re-arms the existing timer in place); clear in the branch that decides
+not to schedule; clear in `onDetach`/teardown so a late fire cannot touch
+dead state (daRg does not clear timers on detach); `clearTimer` takes the
+id, or the callback when no id was given.
 
 ### Keep subscriber callbacks cheap
 
@@ -429,9 +443,11 @@ list into one pass, precompute lookup tables, and early-exit searches.
 
 ### Element identity: use stable keys
 
-Without a stable `key`, rebuilds recreate elements: animations restart or
-never play in sequence, fade-outs (`playFadeOut`) do not run, input focus
-and scroll state jump. Key animated components by their data identity.
+Without a stable `key`, keyless siblings match by position and behavior
+list, so the wrong element is reused or recreated: animations restart or
+never play in sequence, fade-outs (`playFadeOut`) play on the wrong item,
+input focus and scroll state jump. Key animated components by their data
+identity.
 Conversely, distinct concurrent windows must not share one key, and
 element-local state that must survive navigation (scroll position) has to
 be lifted into an observable and saved/restored in onDetach/onAttach.
@@ -456,7 +472,9 @@ padding = [0, 5, 0, 5]                padding = const [0, 5, 0, 5]
 transform = {}                        transform = true   // cheapest way to enable transforms
 ```
 
-Prefer `const` over `static` (compile-time vs first-use memoization).
+Prefer `const` over `static`: `const` is folded at compile time (pure calls
+with constant arguments fold too), `static` is evaluated on first use and
+cached. Both freeze a container result.
 Hoist components that do not depend on builder inputs to module scope.
 
 ### Do not hold `Picture` objects at module scope
@@ -503,10 +521,13 @@ numbers. Inversely, `if (arr)` is always true; test `arr.len()`. Do not
 use `""` as a sentinel for "no callback": `?.` treats it as present; use
 `null`.
 
-### `&&`/`||` produce booleans, not "value or nothing"
+### `&&`/`||` return an operand, not null
+
+`a && b` is `a` when `a` is falsy (`false`, `null`, `0`, `0.0`), else `b`;
+`a || b` is `a` when truthy, else `b`. A guard leaks through as the result:
 
 ```quirrel
-// WRONG: id is `false` when invalid, then id + 1 throws
+// WRONG: id is `false` when isValid is false, then id + 1 throws
 let id = isValid && ids?[owner]
 // RIGHT
 let id = isValid ? ids?[owner] : null
@@ -582,10 +603,12 @@ use an array when duplicates are valid.
 - `?[0]` for possibly-empty arrays; `?? default` after `parse_json`.
 - Destructure optional config with defaults:
   `let { imgPath = null, color = defColor } = cfg.get() ?? {}`.
-- A `{}` default protects only against a missing block, not raw slot
-  reads: `cfg?.block.field` still throws if `block` exists without
-  `field`; guard each fallible step.
-- Guard every nullable link in a chain (`a?.b` does not protect `.c`).
+- `?.`/`?[` make the rest of the chain null-safe: `cfg?.block.field` is
+  null when `cfg`, `block`, or `field` is missing. Links before the first
+  `?.` are unguarded: `cfg.block?.field` throws when `block` is absent, and
+  `(cfg ?? {}).block.field` throws on the missing `block`.
+- `?.` suppresses the missing-slot error; it does not test for null, so a
+  `""` or `{}` "no value" sentinel passes through it.
 - Key types must match: integer and string keys never collide
   (`tbl[1]` vs `tbl["1"]`), a silent never-matches bug.
 
@@ -608,14 +631,16 @@ use an array when duplicates are valid.
 - `ROBJ_TEXTAREA` must have a bounded or flex width to wrap; without one
   it overflows or collapses. Multiline text needs an explicit size mode
   (e.g. `size = [flex(), SIZE_TO_CONTENT]`).
-- A text element sized `flex()` on the cross axis can collapse to zero
-  when there is no free space; size to content unless a fill is intended.
+- `flex()` on the cross axis of a `SIZE_TO_CONTENT` parent collapses to
+  zero: the child takes 100% of a parent that has no size yet, and gives
+  no content size back. Size to content unless a fill is intended.
 - Cap text inputs with `maxChars`.
 
 ### Size-mode pitfalls
 
 - Do not mix a `SIZE_TO_CONTENT` `minWidth` with `flex()` when you want
-  equal columns; the content minimum overrides flex distribution.
+  equal columns; the content minimum is a floor, and the other columns
+  split what is left.
 - To keep an element square on a non-square parent, drive both axes from
   the same reference (same percent axis or measured shorter side).
 - Clamp dpi-scaled sizes to at least 1px: `hdpxi`/rounding can yield 0 at
@@ -739,9 +764,9 @@ FRP API use
 - [ ] `mutate` for in-place edits, `modify` for replacement; copies before
       sorting `.get()` results.
 - [ ] Equality guard before `.set` of tables from repeated events.
-- [ ] Computeds pure and cheap; dependencies read unconditionally;
-      time-dependent Computeds driven by a ticker; keepref on
-      subscribe-only Computeds.
+- [ ] Computeds pure and cheap; every source read in the body, not only
+      in a helper; time-dependent Computeds driven by a ticker; keepref
+      on subscribe-only Computeds.
 
 Lifecycle
 - [ ] subscribe/unsubscribe with the same reference, paired in
@@ -768,11 +793,8 @@ Layout/perf
 ## Appendix: evidence
 
 Rules above are generalized from analyzed fix commits in several
-production daRg codebases (about 1070 fix/optimization commits reviewed;
-intermediate analysis lives in `_analysis/` next to this file, with
-per-commit findings in `_analysis/findings/per_commit_findings.md`).
-Representative commits per theme (short hashes, see
-`_analysis/commits/INDEX.md`):
+production daRg codebases (about 1070 fix/optimization commits reviewed).
+Representative commits per theme (short hashes in this repository):
 
 - Builder purity: 2ed45a93b97b, a1f61caa2acb, 3b2ecb34165b, cc8808ec0318,
   eb7a35f9c1bf, fa1694093fc1, 088a55fb51c4, 8262cc7f9b4e

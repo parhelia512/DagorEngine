@@ -64,6 +64,14 @@ struct RiExtraPoolsVec : private dag::Vector<RiExtraPool>
   // custom atomic insert() in order to avoid to read partially constructed pool data
   void interlocked_insert(int id) DAG_TS_REQUIRES(rendinst::ccExtra);
 
+  void interlocked_set_was_not_saved_to_elems(int id)
+  {
+    using Bits = decltype(poolWasNotSavedToElems);
+    using Word = Bits::element_type;
+    interlocked_or(reinterpret_cast<volatile Word &>(poolWasNotSavedToElems.data()[id / Bits::kBitCount]),
+      Word(1) << (id % Bits::kBitCount));
+  }
+
   eastl::bitvector<> poolWasNotSavedToElems;
 };
 extern RiExtraPoolsVec riExtra;
@@ -83,6 +91,8 @@ void termRIGenExtra();
 
 bool isRIGenExtraObstacle(const char *nm);
 bool isRIGenExtraUsedInDestr(const char *nm);
+// riExtra{<name>{}} description from the registered riConfig, or null; never a legacy dmg{} block
+const DataBlock *getRIGenExtraBlockByName(const char *ri_res_name);
 void update_deferred_push_res();
 bool rayHitRIGenExtraCollidable(const Point3 &p0, const Point3 &norm_dir, float len, rendinst::RendInstDesc &ri_desc,
   const MaterialRayStrat &strategy, float min_r);

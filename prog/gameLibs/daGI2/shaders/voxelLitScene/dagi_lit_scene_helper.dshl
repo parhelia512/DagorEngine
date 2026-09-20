@@ -84,7 +84,11 @@ endmacro
 
 
 define_macro_if_not_defined PROJECT_GET_SKY_RADIANCE_AT(code)
-  (code) { envi_probe_specular@smpCube = envi_probe_specular; }//todo: use pre-averaged octahedral of a reasonable resolution!
+  (code) { envi_probe_specular@texCube = envi_probe_specular; }//todo: use pre-averaged octahedral of a reasonable resolution!
+  INIT_GLOBAL_LINEAR_WRAP_SAMPLER(code)
+  hlsl(code) {
+    #define envi_probe_specular_samplerstate global_linear_wrap_sampler
+  }
   hlsl(code) {
     //when ray miss the scene
     float3 dagi_get_sky_radiance_at(float3 worldPosAt, float3 rayDir)

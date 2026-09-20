@@ -13,6 +13,7 @@ class BBox2;
 #include <3d/dag_resPtr.h>
 #include <render/toroidalHelper.h>
 #include <render/toroidal_update.h>
+#include <climits>
 
 
 class ClipmapShadow
@@ -31,17 +32,18 @@ protected:
   Color4 worldToToroidal[NUM_CLIPMAP_SHADOW_CASCADES];
   Point2 uvOffset[NUM_CLIPMAP_SHADOW_CASCADES];
 
-  ToroidalGatherCallback::RegionTab regions[NUM_CLIPMAP_SHADOW_CASCADES];
-  Tab<ToroidalQuadRegion> quadRegions[NUM_CLIPMAP_SHADOW_CASCADES];
+  Tab<ToroidalQuadRegion> deferredRegions[NUM_CLIPMAP_SHADOW_CASCADES];
 
   TMatrix lookDownVtm = TMatrix::IDENT;
+
+  int asyncUpdateDrawsBudget = INT_MAX;
 
   void setUpSampler() const;
 
 public:
   ClipmapShadow() {}
   ~ClipmapShadow() { close(); }
-  void init(int textureSize);
+  void init(int textureSize, int async_update_draws_budget);
   void setDistance(float distance, float delta, float near_cascade_scale);
   void close();
   bool update(float min_height, float max_height, const Point3 &view_pos);

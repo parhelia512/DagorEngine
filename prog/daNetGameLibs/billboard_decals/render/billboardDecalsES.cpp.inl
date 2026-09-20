@@ -54,7 +54,7 @@ void erase_all_billboard_decals()
 }
 
 ECS_TAG(render)
-ECS_ON_EVENT(AfterDeviceReset)
+ECS_ON_EVENT(EventAfterDeviceReset)
 static void bullet_holes_after_device_reset_es(const ecs::Event &, BillboardDecalsPtr &billboard_decals__mgr)
 {
   if (billboard_decals__mgr)
@@ -78,7 +78,7 @@ static inline void bullet_holes_render_es(const ecs::Event &, BillboardDecalsPtr
 
 
 ECS_TAG(render)
-ECS_ON_EVENT(OnLevelLoaded)
+ECS_ON_EVENT(EventRenderSceneLoaded)
 static void bullet_holes_on_level_loaded_es(const ecs::Event &,
   BillboardDecalsPtr &billboard_decals__mgr,
   int billboard_decals__maxDecals,

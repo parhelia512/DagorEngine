@@ -35,4 +35,4 @@ app.select_asset "microdetail_00_generic_noise_a_tex_n"
 wait.time 500
 app.select_asset "cdk_color_tex_palette"
 wait.time 500
-app.terminate 0
+app.exit

@@ -1072,9 +1072,6 @@ shader tile_ssr_compute
       half smoothness;
       unpack_material(screenCoord, normal, linear_roughness, smoothness);
 
-      // The material may come from the far-texel vote (downsampled_far_normals in daNetGame),
-      // yet the ray must start on the close depth the HiZ pyramid is built from.
-      // TODO: checkerboard depth + proper fullres reconstruction instead of texel voting.
       float rawDepth = tex2Dlod(src_depth_tex, float4(curViewTc, 0, 0)).x;
 
       float w = linearize_z(rawDepth, zn_zfar.zw);
@@ -1121,6 +1118,9 @@ shader tile_ssr_compute
           NEEDSSR = false;
       #endif
 
+      float4 backSurfaceBeginPos;
+      float3 backSurfaceEndPos;
+
       float4 newFrame = 0;
       bool hitSky;
       half confidence_a;
@@ -1128,9 +1128,6 @@ shader tile_ssr_compute
       float3 R = getReflectionRayDir(-normalize(viewVect), calcN, screenCoord.xy, calcRoughness);
       {
         float stepOfs = interleavedGradientNoiseFramed(screenCoord.xy, uint(SSRParams.z)&7) - 0.25 +  1 + calcRoughness;
-
-        float4 backSurfaceBeginPos;
-        float3 backSurfaceEndPos;
         #if SSR_TRACEWATER == 1
           float4 hit_uv_z_fade = hierarchRayMarch(curViewTc, R, calcRoughness, w, cameraToPoint, stepOfs, globtm_no_ofs_psf, water_level- ssr_world_view_pos.y+cameraToPoint.y + world_view_pos.y+cameraToPoint.y, backSurfaceBeginPos, backSurfaceEndPos);
         #else
@@ -1177,7 +1174,16 @@ shader tile_ssr_compute
 
             if (!hitSky)
             {
-              get_alternate_reflections(alternateRefl, reflectionDistance, screenCoord, R, cameraToPoint, normal, false, false);
+              float3 alternateReflectionsStart = cameraToPoint;
+              #ifdef SSR_FFX
+                // instead of raymarching from start point, we pass already traced area in screen space. By this we avoid false-positive trace of thin objects in SDF
+                const float linearZLastHit = ssr_linearize_z(backSurfaceEndPos.z);
+                float3 cameraToLastHitPoint = getViewVecOptimized(backSurfaceEndPos.xy) * linearZLastHit;
+                alternateReflectionsStart = cameraToLastHitPoint;
+              #endif
+
+              get_alternate_reflections(alternateRefl, reflectionDistance, screenCoord, R, alternateReflectionsStart, normal, false, false);
+
               if (alternateRefl.a > 0)
               {
                 float len = length(reflectionDistance*R + cameraToPoint);

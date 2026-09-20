@@ -69,7 +69,7 @@ class BasicStreamingSceneManager : public IStreamingSceneManager
       ::enable_tex_mgr_mt(true, 0);
     }
 
-    const char *getJobName(bool &) const override { return "LevelStreamJob"; }
+    const char *getJobName(bool &) const override { return DAPROFILER_STRING("LevelStreamJob"); }
 
     virtual void doJob()
     {

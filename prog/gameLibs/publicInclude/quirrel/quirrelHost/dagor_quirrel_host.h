@@ -18,4 +18,8 @@
 #endif
 #define assert G_ASSERT //-V1059
 
+#if DAGOR_DBGLEVEL <= 0 && (!defined(SQ_STORE_DOC_OBJECTS) || SQ_STORE_DOC_OBJECTS)
+#error Release builds cannot store Quirrel docstrings
+#endif
+
 #endif // !__EMSCRIPTEN__

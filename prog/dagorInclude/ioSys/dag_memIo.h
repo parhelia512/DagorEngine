@@ -6,6 +6,7 @@
 
 #include <ioSys/dag_baseIo.h>
 #include <dag/dag_vector.h>
+#include <util/dag_compilerDefs.h>
 
 #include <supp/dag_define_KRNLIMP.h>
 
@@ -21,7 +22,7 @@
 
 
 /// Callback to write into dynamically allocated memory buffer.
-class DynamicMemGeneralSaveCB : public IBaseSave
+class DAGOR_WARN_IF_UNUSED DynamicMemGeneralSaveCB : public IBaseSave
 {
 public:
   KRNLIMP DynamicMemGeneralSaveCB(IMemAlloc *_allocator, size_t sz = 0, size_t quant = 64 << 10);
@@ -59,7 +60,7 @@ protected:
 
 /// Constrained save to memory region (without any allocations and reallocations)
 /// if memory region size is exceeded during write operations exception is thrown
-class ConstrainedMemSaveCB : public DynamicMemGeneralSaveCB
+class DAGOR_WARN_IF_UNUSED ConstrainedMemSaveCB : public DynamicMemGeneralSaveCB
 {
 public:
   ConstrainedMemSaveCB(void *data, int sz) : DynamicMemGeneralSaveCB(nullptr, 0, 0) { setDestMem(data, sz); }
@@ -74,7 +75,7 @@ public:
 
 
 /// Callback for reading from memory buffer. Allocates memory from #globmem allocator.
-class MemGeneralLoadCB : public IBaseLoad
+class DAGOR_WARN_IF_UNUSED MemGeneralLoadCB : public IBaseLoad
 {
 public:
   /// Allocates buffer and copies data to it.
@@ -119,7 +120,7 @@ protected:
 
 
 /// In-place (no copy) load from memory interface (fully inline).
-class InPlaceMemLoadCB : public MemGeneralLoadCB
+class DAGOR_WARN_IF_UNUSED InPlaceMemLoadCB : public MemGeneralLoadCB
 {
 public:
   InPlaceMemLoadCB(const void *ptr, int sz) : MemGeneralLoadCB(NULL, 0)

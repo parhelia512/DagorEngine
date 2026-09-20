@@ -116,7 +116,7 @@ static bool process_supports(supports_stat &s, PreshaderCompilationContext &ctx)
       return false;
     }
 
-    bool found = (b == outNcTable.globConstBlk);
+    bool found = false;
     for (int j = 0; j < outNcTable.suppBlk.size(); j++)
       if (outNcTable.suppBlk[j] == b)
       {
@@ -138,65 +138,55 @@ static bool process_supports(supports_stat &s, PreshaderCompilationContext &ctx)
     if (b->shConst.multidrawCbuf)
       outNcTable.multidrawCbuf = true;
 
-    if (b->layerLevel == ShaderBlockLevel::GLOBAL_CONST)
-      outNcTable.globConstBlk = b;
-    else
-    {
-      bool ok = true;
-      for_each_hlsl_reg_space([&](HlslRegisterSpace space) {
-        auto vr = outNcTable.vertexRegAllocators[space].reserveAllFrom(b->shConst.vertexRegAllocators[space]);
-        auto pcr = outNcTable.pixelOrComputeRegAllocators[space].reserveAllFrom(b->shConst.pixelOrComputeRegAllocators[space]);
+    bool ok = true;
+    for_each_hlsl_reg_space([&](HlslRegisterSpace space) {
+      auto vr = outNcTable.vertexRegAllocators[space].reserveAllFrom(b->shConst.vertexRegAllocators[space]);
+      auto pcr = outNcTable.pixelOrComputeRegAllocators[space].reserveAllFrom(b->shConst.pixelOrComputeRegAllocators[space]);
 
-        auto reportFailure = [&](ShaderStage stage) {
-          auto propsField = stage == STAGE_VS ? &NamedConstBlock::vertexProps : &NamedConstBlock::pixelProps;
-          auto regAllocsField =
-            stage == STAGE_VS ? &NamedConstBlock::vertexRegAllocators : &NamedConstBlock::pixelOrComputeRegAllocators;
-          auto errorMsg = string_f("Registers in supported blocks overlap at space %c for %s shader\n", HLSL_RSPACE_ALL_SYMBOLS[space],
-            SHADER_STAGE_NAMES[stage]);
-          errorMsg.append_sprintf("Trying to support block %s. ", b->name.c_str());
-          errorMsg += get_reg_alloc_dump((b->shConst.*regAllocsField)[stage], space,
-            b->shConst.makeInfoProvider(propsField, space, parser.get_lexer()));
+      auto reportFailure = [&](ShaderStage stage) {
+        auto propsField = stage == STAGE_VS ? &NamedConstBlock::vertexProps : &NamedConstBlock::pixelProps;
+        auto regAllocsField =
+          stage == STAGE_VS ? &NamedConstBlock::vertexRegAllocators : &NamedConstBlock::pixelOrComputeRegAllocators;
+        auto errorMsg = string_f("Registers in supported blocks overlap at space %c for %s shader\n", HLSL_RSPACE_ALL_SYMBOLS[space],
+          SHADER_STAGE_NAMES[stage]);
+        errorMsg.append_sprintf("Trying to support block %s. ", b->name.c_str());
+        errorMsg += get_reg_alloc_dump((b->shConst.*regAllocsField)[stage], space,
+          b->shConst.makeInfoProvider(propsField, space, parser.get_lexer()));
 
-          errorMsg.append("\nConflicting blocks:\n");
-          eastl::vector_set<const ShaderStateBlock *> conflictingBlocks{};
-          auto collectBlocks = [&](const NamedConstBlock &consts, auto &&self) -> void {
-            auto processOneBlock = [&](const auto *blk) {
-              auto regalloc = (blk->shConst.*regAllocsField)[space]; // Copy out to simulate collision
-              if (auto allocRes = regalloc.reserveAllFrom((b->shConst.*regAllocsField)[space]); !allocRes)
-              {
-                conflictingBlocks.insert(blk);
-                errorMsg.append_sprintf("%s, ", blk->name.c_str());
-                errorMsg += get_reg_alloc_dump((blk->shConst.*regAllocsField)[stage], space,
-                  blk->shConst.makeInfoProvider(propsField, space, parser.get_lexer()));
-              }
-            };
-            for (const auto &blk : consts.suppBlk)
+        errorMsg.append("\nConflicting blocks:\n");
+        eastl::vector_set<const ShaderStateBlock *> conflictingBlocks{};
+        auto collectBlocks = [&](const NamedConstBlock &consts, auto &&self) -> void {
+          auto processOneBlock = [&](const auto *blk) {
+            auto regalloc = (blk->shConst.*regAllocsField)[space]; // Copy out to simulate collision
+            if (auto allocRes = regalloc.reserveAllFrom((b->shConst.*regAllocsField)[space]); !allocRes)
             {
-              if (conflictingBlocks.find(blk.get()) != conflictingBlocks.end())
-                continue;
-              self(blk->shConst, self);
-              processOneBlock(blk.get());
-            }
-            if (consts.globConstBlk && conflictingBlocks.find(consts.globConstBlk) == conflictingBlocks.end())
-            {
-              self(consts.globConstBlk->shConst, self);
-              processOneBlock(consts.globConstBlk);
+              conflictingBlocks.insert(blk);
+              errorMsg.append_sprintf("%s, ", blk->name.c_str());
+              errorMsg += get_reg_alloc_dump((blk->shConst.*regAllocsField)[stage], space,
+                blk->shConst.makeInfoProvider(propsField, space, parser.get_lexer()));
             }
           };
-
-          collectBlocks(outNcTable, collectBlocks);
+          for (const auto &blk : consts.suppBlk)
+          {
+            if (conflictingBlocks.find(blk.get()) != conflictingBlocks.end())
+              continue;
+            self(blk->shConst, self);
+            processOneBlock(blk.get());
+          }
         };
 
-        if (!vr)
-          reportFailure(STAGE_VS);
-        if (!pcr)
-          reportFailure(ctx.input->isCompute ? STAGE_CS : STAGE_PS);
-        ok &= vr && pcr;
-      });
-      if (!ok)
-        return false;
-      outNcTable.suppBlk.push_back(b);
-    }
+        collectBlocks(outNcTable, collectBlocks);
+      };
+
+      if (!vr)
+        reportFailure(STAGE_VS);
+      if (!pcr)
+        reportFailure(ctx.input->isCompute ? STAGE_CS : STAGE_PS);
+      ok &= vr && pcr;
+    });
+    if (!ok)
+      return false;
+    outNcTable.suppBlk.push_back(b);
   }
 
   return true;
@@ -223,7 +213,7 @@ static bool compile_stat(const PreshaderStat &stat, PreshaderCompilationContext 
 
   const semantic::NamedConstDefInfo &def = *parsedDefMaybe;
 
-  if (ctx.input->isCompute && !def.isDynamic && vctx.shCtx().blockLevel() != ShaderBlockLevel::GLOBAL_CONST)
+  if (ctx.input->isCompute && !def.isDynamic)
   {
     report_error(parser, stat.stat, "Found static preshader var '%s'. Compute shaders can't have static preshader vars", def.baseName);
     return false;
@@ -280,8 +270,8 @@ static bool compile_stat(const PreshaderStat &stat, PreshaderCompilationContext 
     const String &varName = def.mangledName;
     const HlslRegisterSpace reg_space = def.regSpace;
 
-    const auto hnd = outNcTable.addConst(stage, varName, var, parser.get_lexer(), reg_space, registers_count, hardcoded_reg,
-      def.isDynamic, vctx.shCtx().blockLevel() == ShaderBlockLevel::GLOBAL_CONST);
+    const auto hnd =
+      outNcTable.addConst(stage, varName, var, parser.get_lexer(), reg_space, registers_count, hardcoded_reg, def.isDynamic);
     if (is_error(hnd))
     {
       return false;
@@ -297,16 +287,15 @@ static bool compile_stat(const PreshaderStat &stat, PreshaderCompilationContext 
       else
       {
         report_debug_message(parser, *var,
-          "Redeclaration for variable <%s> for %s is skipped. If it's declaration differs from previous, this is UB.", varName.c_str(),
-          def.isDynamic ? "global const block" : "static cbuf");
+          "Redeclaration for variable <%s> for static cbuf is skipped. If it's declaration differs from previous, this is UB.",
+          varName.c_str());
       }
       return true;
     }
 
     const int reg = outNcTable.getSlot(hnd).regIndex;
 
-    auto builtHlslMaybe =
-      assembly::build_hlsl_decl_for_named_const(def, vctx, reg, ctx.varMerger.constVarsMaps, ctx.varMerger.bufferedVarsMap);
+    auto builtHlslMaybe = assembly::build_hlsl_decl_for_named_const(def, vctx, reg, ctx.varMerger.constVarsMaps);
     if (!builtHlslMaybe)
       return false;
 
@@ -338,11 +327,9 @@ static bool compile_stat(const PreshaderStat &stat, PreshaderCompilationContext 
 
   if (def.pairSamplerTmpDecl)
   {
-    G_ASSERT(vctx.shCtx().blockLevel() != ShaderBlockLevel::GLOBAL_CONST);
-
-    const String samplerConstName{0, "%s%s", def.mangledName.c_str(), def.pairSamplerBindSuffix};
+    const String samplerConstName{0, "%s_samplerstate", def.mangledName.c_str()};
     const auto hnd = outNcTable.addConst(def.stage, samplerConstName, def.varTerm, parser.get_lexer(), HLSL_RSPACE_S, 1,
-      def.hardcodedRegister, def.isDynamic, false);
+      def.hardcodedRegister, def.isDynamic);
     if (is_error(hnd))
     {
       return false;
@@ -355,7 +342,7 @@ static bool compile_stat(const PreshaderStat &stat, PreshaderCompilationContext 
     }
 
     const int reg = outNcTable.getSlot(hnd).regIndex;
-    String hlsl = assembly::build_hlsl_for_pair_sampler(def.mangledName.c_str(), def.pairSamplerIsShadow, reg);
+    String hlsl = assembly::build_hlsl_for_pair_sampler(def.mangledName.c_str(), reg);
     outNcTable.addHlslDecl(hnd, eastl::move(hlsl), {});
 
     if (def.isDynamic && def.hardcodedRegister == -1)
@@ -448,7 +435,7 @@ static bool process_stat(const PreshaderStat &stat, PreshaderCompilationContext 
     return colorExpr.isDynamic();
   };
 
-  if (vctx.shCtx().blockLevel() != ShaderBlockLevel::GLOBAL_CONST && exprIsDynamic())
+  if (exprIsDynamic())
     ctx.varMerger.addConstStat(*st, stage);
   else
     ctx.varMerger.addBufferedStat(*st, stage);
@@ -626,8 +613,7 @@ eastl::optional<PreshaderCompilationOutput> compile_variant_preshader(const Pres
 
   // Concervatively reserve 0 for implicit cbuf (as it may be used via hlsl-hardcoded regs)
   // @TODO: try and collect hardcoded regs from parsed code blocks to factor them into the allocators
-  if (vctx.shCtx().blockLevel() != ShaderBlockLevel::GLOBAL_CONST)
-    CHECK(reserve_special_cbuffer_at(HlslSlotSemantic::RESERVED_FOR_IMPLICIT_CONST_CBUF, 0, ctx));
+  CHECK(reserve_special_cbuffer_at(HlslSlotSemantic::RESERVED_FOR_IMPLICIT_CONST_CBUF, 0, ctx));
 
   // Then, reserve material const buf if we have static consts (or remove reservation if we don't)
   if (vctx.shCtx().blockLevel() == ShaderBlockLevel::SHADER) // static cbuf is only used by shaders, not blocks
@@ -652,9 +638,6 @@ eastl::optional<PreshaderCompilationOutput> compile_variant_preshader(const Pres
     CHECK(reserve_special_cbuffer_at(HlslSlotSemantic::RESERVED_FOR_IMMEDIATE_CBUF, IMMEDIATE_CB_REGISTER, ctx,
       true /* allow_out_of_range */));
   }
-
-  // Reserve special global consts block slot even if such a block was declared to avoid spurious unbinds
-  CHECK(reserve_special_cbuffer_at(HlslSlotSemantic::RESERVED_FOR_GLOBAL_CONST_CBUF, GLOBAL_CONST_BUF_REGISTER, ctx));
 
   if (!vctx.tgtCtx().refinedBlockLayout().empty())
   {

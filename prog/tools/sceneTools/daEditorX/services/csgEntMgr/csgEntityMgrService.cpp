@@ -55,7 +55,7 @@ static int csgEntityClassId = -1;
 static int rendinstClassId = -1, prefabClassId = -1, compositClassId = -1;
 static int rendEntGeomMask = -1;
 static int collisionSubtypeMask = -1;
-static int polyTileMask = -1;
+static int polyTileSubTypeId = -1;
 static bool registeredNotifier = false;
 
 class CsgEntity;
@@ -136,6 +136,11 @@ public:
     //   geom->setTm(tm);
   }
   void getTm(TMatrix &_tm) const override { _tm = tm; }
+  void setEditLayerIdx(int t) override
+  {
+    VirtualCsgEntity::setEditLayerIdx(t);
+    applyEditLayerIdxToEntities();
+  }
   void destroy() override
   {
     pool->delEntity(this);
@@ -417,6 +422,9 @@ public:
           generatePerimeterGeom(*a->props.getBlock(i), p, y0 + foundation_ofs + floor_thickness, floor_ht, genGeom, entList,
             getPerInstanceSeed(), seed, main_ang, editLayerIdx);
     }
+
+    // all generators put their objects in entList, but not all of them set the layer index
+    applyEditLayerIdxToEntities();
 
     geom = new (midmem) GeomObject;
 
@@ -892,7 +900,7 @@ public:
         if (objs[selObj].ent)
         {
           objs[selObj].ent->setTm(TMatrix::IDENT);
-          objs[selObj].ent->setSubtype(polyTileMask);
+          objs[selObj].ent->setSubtype(polyTileSubTypeId);
         }
         else
         {
@@ -1444,8 +1452,8 @@ public:
         }
 
       Tab<splineclass::SingleEntityPool> entPool;
-      objgenerator::generateBySpline(::toPrecSpline(path), NULL, 0, segCnt, adata, entPool, nullptr, false, polyTileMask, editLayerIdx,
-        seed, inst_seed);
+      objgenerator::generateBySpline(::toPrecSpline(path), NULL, 0, segCnt, adata, entPool, nullptr, false, polyTileSubTypeId,
+        editLayerIdx, seed, inst_seed);
 
       int obj_start = out_obj.size();
       for (int i = 0; i < entPool.size(); i++)
@@ -1586,8 +1594,8 @@ public:
         }
 
       Tab<splineclass::SingleEntityPool> entPool;
-      objgenerator::generateBySpline(::toPrecSpline(path), NULL, 0, segCnt, adata, entPool, nullptr, false, polyTileMask, editLayerIdx,
-        seed, inst_seed);
+      objgenerator::generateBySpline(::toPrecSpline(path), NULL, 0, segCnt, adata, entPool, nullptr, false, polyTileSubTypeId,
+        editLayerIdx, seed, inst_seed);
 
       int obj_start = out_obj.size();
       for (int i = 0; i < entPool.size(); i++)
@@ -1700,8 +1708,8 @@ public:
       }
 
     Tab<splineclass::SingleEntityPool> entPool;
-    objgenerator::generateBySpline(::toPrecSpline(path), NULL, 0, segCnt, adata, entPool, nullptr, false, polyTileMask, editLayerIdx,
-      seed, inst_seed);
+    objgenerator::generateBySpline(::toPrecSpline(path), NULL, 0, segCnt, adata, entPool, nullptr, false, polyTileSubTypeId,
+      editLayerIdx, seed, inst_seed);
 
     int obj_start = out_obj.size();
     for (int i = 0; i < entPool.size(); i++)
@@ -1759,6 +1767,13 @@ public:
     entList.clear();
   }
 
+  void applyEditLayerIdxToEntities()
+  {
+    for (IObjEntity *e : entList)
+      if (e)
+        e->setEditLayerIdx(editLayerIdx);
+  }
+
 public:
   enum
   {
@@ -1800,7 +1815,7 @@ public:
     prefabClassId = IDaEditor3Engine::get().getAssetTypeId("prefab");
     compositClassId = IDaEditor3Engine::get().getAssetTypeId("composit");
     rendEntGeomMask = 1 << IDaEditor3Engine::get().registerEntitySubTypeId("rend_ent_geom");
-    polyTileMask = 1 << IDaEditor3Engine::get().registerEntitySubTypeId("poly_tile");
+    polyTileSubTypeId = IDaEditor3Engine::get().registerEntitySubTypeId("poly_tile");
     collisionSubtypeMask = 1 << IDaEditor3Engine::get().registerEntitySubTypeId("collision");
 
     visible = true;
@@ -1997,22 +2012,6 @@ public:
         if (ent[i]->geom->traceRay(p0, dir, maxt, norm))
           ret = true;
     return ret;
-  }
-  bool shadowRayHitTest(const Point3 &p0, const Point3 &dir, real maxt) override
-  {
-    if (maxt <= 0)
-      return false;
-
-    dag::ConstSpan<CsgEntity *> ent = entPool.getEntities();
-    int st_mask = IObjEntityFilter::getSubTypeMask(IObjEntityFilter::STMASK_TYPE_COLLISION);
-    bool ret = false;
-    for (int i = 0; i < ent.size(); i++)
-      if (ent[i] && ent[i]->geom && ent[i]->isNonVirtual() && ent[i]->checkSubtypeMask(st_mask) &&
-          ent[i]->getSubtype() != IObjEntity::ST_NOT_COLLIDABLE)
-        if (ent[i]->geom->shadowRayHitTest(p0, dir, maxt))
-          return true;
-
-    return false;
   }
   const char *getColliderName() const override { return getServiceFriendlyName(); }
   bool isColliderVisible() const override { return visible; }

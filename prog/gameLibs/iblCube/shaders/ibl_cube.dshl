@@ -1,0 +1,130 @@
+include "shader_global.dshl"
+include "postfx_inc.dshl"
+
+texture ibl_cube_source;
+float ibl_cube__bake_roughness = 0;
+
+shader ibl_cube_prefilter
+{
+  cull_mode = none;
+  z_test = false;
+  z_write = false;
+  no_ablend;
+
+  POSTFX_VS_TEXCOORD(0, texcoord)
+
+  (ps)
+  {
+    ibl_cube_source@tex2d = ibl_cube_source;
+    ibl_cube__bake_roughness@f1 = (ibl_cube__bake_roughness);
+  }
+
+  INIT_GLOBAL_LINEAR_WRAP_SAMPLER(ps)
+
+  hlsl(ps)
+  {
+    #define ibl_cube_source_samplerstate global_linear_wrap_sampler
+    #define IBL_PI 3.14159265358979
+    #define IBL_PREFILTER_SAMPLES 256
+
+    float3 ibl_equirect_uv_to_dir(float2 uv)
+    {
+      float phi = (uv.x - 0.5) * (2.0 * IBL_PI);
+      float theta = uv.y * IBL_PI;
+      float sinTheta = sin(theta);
+      return float3(sinTheta * sin(phi), cos(theta), sinTheta * cos(phi));
+    }
+
+    float2 ibl_dir_to_equirect_uv(float3 d)
+    {
+      float u = atan2(d.x, d.z) * (0.5 / IBL_PI) + 0.5;
+      float v = acos(clamp(d.y, -1.0, 1.0)) * (1.0 / IBL_PI);
+      return float2(u, v);
+    }
+
+    float3 ibl_sample_source(float3 dir)
+    {
+      return tex2Dlod(ibl_cube_source, float4(ibl_dir_to_equirect_uv(dir), 0, 0)).rgb;
+    }
+
+    float ibl_radical_inverse(uint bits)
+    {
+      bits = (bits << 16u) | (bits >> 16u);
+      bits = ((bits & 0x55555555u) << 1u) | ((bits & 0xAAAAAAAAu) >> 1u);
+      bits = ((bits & 0x33333333u) << 2u) | ((bits & 0xCCCCCCCCu) >> 2u);
+      bits = ((bits & 0x0F0F0F0Fu) << 4u) | ((bits & 0xF0F0F0F0u) >> 4u);
+      bits = ((bits & 0x00FF00FFu) << 8u) | ((bits & 0xFF00FF00u) >> 8u);
+      return float(bits) * 2.3283064365386963e-10;
+    }
+
+    uint ibl_hash_uint(uint v)
+    {
+      v ^= v >> 16;
+      v *= 0x7feb352du;
+      v ^= v >> 15;
+      v *= 0x846ca68bu;
+      v ^= v >> 16;
+      return v;
+    }
+
+    float ibl_hash_float(uint v) { return float(ibl_hash_uint(v)) * (1.0 / 4294967296.0); }
+
+    float3 ibl_sample_ggx_vndf(float3 viewDir, float alpha, float2 xi)
+    {
+      float3 viewStd = normalize(float3(viewDir.xy * alpha, viewDir.z));
+      float phi = 2.0 * IBL_PI * xi.x;
+      float z = (1.0 - xi.y) * (1.0 + viewStd.z) - viewStd.z;
+      float sine = sqrt(saturate(1.0 - z * z));
+      float3 cap = float3(sine * cos(phi), sine * sin(phi), z);
+      float3 normalStd = viewStd + cap;
+      return normalize(float3(normalStd.xy * alpha, max(normalStd.z, 1e-7)));
+    }
+
+    float ibl_smith_g1(float noX, float alpha)
+    {
+      float a2 = alpha * alpha;
+      return 2.0 * noX / max(1e-7, noX + sqrt(a2 + (1.0 - a2) * noX * noX));
+    }
+
+    float3 ibl_prefilter(float3 n, float roughness, uint2 pixel)
+    {
+      if (roughness < 1e-4)
+        return ibl_sample_source(n);
+
+      float3 v = n;                                   // prefilter assumes N = V
+      float3 up = abs(n.z) < 0.999 ? float3(0, 0, 1) : float3(1, 0, 0);
+      float3 tx = normalize(cross(up, n));
+      float3 ty = cross(n, tx);
+      float alpha = max(roughness * roughness, 0.0025);
+
+      uint seed = pixel.x ^ (pixel.y * 0x9e3779b9u) ^ uint(roughness * 65535.0);
+      float2 scramble = float2(ibl_hash_float(seed), ibl_hash_float(seed ^ 0x68bc21ebu));
+
+      float3 sum = 0;
+      float wsum = 0;
+      for (uint i = 0; i < IBL_PREFILTER_SAMPLES; ++i)
+      {
+        float2 xi = frac(float2((float(i) + 0.5) / float(IBL_PREFILTER_SAMPLES), ibl_radical_inverse(i)) + scramble);
+        float3 hLocal = ibl_sample_ggx_vndf(float3(0, 0, 1), alpha, xi);
+        float3 h = tx * hLocal.x + ty * hLocal.y + n * hLocal.z;
+        float3 l = 2.0 * dot(v, h) * h - v;
+        float ndotl = saturate(dot(n, l));
+        if (ndotl > 0.0)
+        {
+          float w = ibl_smith_g1(ndotl, alpha);
+          sum += ibl_sample_source(l) * w;
+          wsum += w;
+        }
+      }
+      return sum / max(wsum, 1e-6);
+    }
+
+    float4 ibl_cube_prefilter_ps(VsOutput input) : SV_Target
+    {
+      float3 dir = ibl_equirect_uv_to_dir(input.texcoord);
+      float3 c = ibl_prefilter(dir, ibl_cube__bake_roughness, uint2(input.pos.xy));
+      return float4(c, 1.0);
+    }
+  }
+  compile("target_ps", "ibl_cube_prefilter_ps");
+}

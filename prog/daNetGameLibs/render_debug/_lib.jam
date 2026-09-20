@@ -1,2 +1,6 @@
-gamePulls += framework_render_debug_pull daNetGameLibs_render_debug_DAS_pull_AOT ;
+gamePulls += framework_render_debug_pull ;
+# the das sources all live under render/ now, so on a renderless build there is no AOT pull to reference
+if $(HaveRenderer) = yes {
+  gamePulls += daNetGameLibs_render_debug_DAS_pull_AOT ;
+}
 UseProgLibs += daNetGameLibs/render_debug ;

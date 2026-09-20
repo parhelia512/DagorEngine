@@ -71,8 +71,14 @@ LensFlareRenderer::LensFlareData LensFlareRenderer::LensFlareData::parse_lens_fl
 {
   FRAMEMEM_REGION;
 
+  float maxComponentIntensity = 0;
+  for (const auto &element : config.elements)
+    if (element.sideCount > 2)
+      maxComponentIntensity = max(maxComponentIntensity, element.intensity * max(element.tint.x, max(element.tint.y, element.tint.z)));
+  maxComponentIntensity *= config.intensity;
+
   LensFlareData result = LensFlareData(config.name, {config.smoothScreenFadeoutDistance, config.useOcclusion, config.depthBias,
-                                                      -config.exposureReduction, config.spotlightConeAngleCos});
+                                                      -config.exposureReduction, config.spotlightConeAngleCos, maxComponentIntensity});
   HashMapWithFrameMem<RenderBlockKey, int> renderBlockIds;
   eastl::vector<eastl::vector<int, framemem_allocator>, framemem_allocator> elementsPerRenderBlock;
   HashMapWithFrameMem<int, int> sideCountToVPosOffset;
@@ -260,6 +266,22 @@ void LensFlareRenderer::init()
 
 void LensFlareRenderer::markConfigsDirty() { isDirty = true; }
 
+void LensFlareRenderer::updateFarDepthMipShaderVar()
+{
+  // A single texel at this mip level should cover the area in gbuffer depth, that's used by the occlusion test
+  const int depthMipLevel = get_bigger_log2(LENS_FLARE_OCCLUSION_DEPTH_TEXELS);
+  const int farDepthMipLevel = min(downSampledDepthMipCount ? downSampledDepthMipCount - 1 : depthMipLevel, depthMipLevel - 1);
+  ShaderGlobal::set_int(lens_flare_prepare_far_depth_mipVarId, farDepthMipLevel);
+}
+
+void LensFlareRenderer::setDownsampledFarDepthMipCount(int mipcount)
+{
+  if (downSampledDepthMipCount == mipcount)
+    return;
+  downSampledDepthMipCount = mipcount;
+  updateFarDepthMipShaderVar();
+}
+
 void LensFlareRenderer::prepareConfigBuffers(const eastl::vector<LensFlareConfig> &configs)
 {
   lensFlareBuf.close();
@@ -293,10 +315,7 @@ void LensFlareRenderer::prepareConfigBuffers(const eastl::vector<LensFlareConfig
   if (configs.empty())
     return;
 
-  // A single texel at this mip level should cover the area in gbuffer depth, that's used by the occlusion test
-  const int depthMipLevel = get_bigger_log2(LENS_FLARE_OCCLUSION_DEPTH_TEXELS);
-  const int farDepthMipLevel = min(downSampledDepthMipCount ? downSampledDepthMipCount - 1 : depthMipLevel, depthMipLevel - 1);
-  ShaderGlobal::set_int(lens_flare_prepare_far_depth_mipVarId, farDepthMipLevel);
+  updateFarDepthMipShaderVar();
 
   eastl::vector<uint16_t> indexBufferContent;
   eastl::vector<LensFlareVertex> vertexBufferContent;
@@ -499,6 +518,8 @@ void LensFlareRenderer::prepareManualFlare(const CachedFlareId &cached_flare_con
   data.flareConfigId = cached_flare_config_id.flareConfigId;
   data.lightPos = light_pos;
   data.depthBias = flareData.getParams().depthBias;
+  data.maxComponentIntensity = flareData.getParams().maxComponentIntensity;
+  data.pad0 = data.pad1 = data.pad2 = 0;
   // Spotlight cone angle is not uploaded here, since it only applies to spotlights
   data.flags = 0;
   if (is_sun)
@@ -645,7 +666,11 @@ bool LensFlareRenderer::endPreparingLights(const Point3 &camera_pos, const Point
     ShaderGlobal::set_float(lens_flare_prepare_dynamic_lights_depth_biasVarId, flareData.getParams().depthBias);
     ShaderGlobal::set_float(lens_flare_prepare_dynamic_lights_exposure_pow_paramVarId, flareData.getParams().exposurePowParam);
     ShaderGlobal::set_float(lens_flare_prepare_spot_lights_cone_angle_cosVarId, flareData.getParams().spotlightConeAngleCos);
+    ShaderGlobal::set_float(lens_flare_prepare_dynamic_lights_max_component_intensityVarId,
+      flareData.getParams().maxComponentIntensity);
   }
+
+  ShaderGlobal::set_float(lens_flare_min_visible_intensityVarId, minVisibleIntensity);
 
   if (numPreparedManualInstances > 0)
   {

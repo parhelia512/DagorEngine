@@ -10,6 +10,7 @@
 namespace PropPanel
 {
 
+class PropertyControlBase;
 class WindowControlEventHandler;
 
 class SpinEditControlStandalone
@@ -29,12 +30,16 @@ public:
   // floored getIntValue() (e.g. "10/3" shows 3, not 3.33). Set by the int spin edit and track bar.
   void setIntegerValues(bool yes) { integerValues = yes; }
 
+  // False while the control is disabled, even if ImGui's keyboard focus is still on the text input.
   bool isTextInputFocused() const { return textInputFocused; }
+
   void sendWcChangeIfVarChanged(WindowControlEventHandler &event_handler);
+
   // Fires onWcChangeFinished if a value change has been sent (via onWcChange) since the last finish.
   // Used to commit once when an interaction ends -- e.g. on spinner release rather than every frame
   // the spin button is held.
   void sendWcChangeFinishedIfPending(WindowControlEventHandler &event_handler);
+
   // Convenience for onImmediateFocusLoss: evaluate the in-progress text, then send the resulting
   // value change (if any) and finish it, so an immediate focus loss (tree select / panel rebuild)
   // commits like Enter / focus loss. Without the commitText() the typed text is never parsed on this
@@ -54,7 +59,10 @@ public:
 
   // tooltip_owner: if you use the spin control as a component of another control then pass the same tooltip owner for both of their
   // tooltips for correct behavior.
-  void updateImgui(WindowControlEventHandler &event_handler, const String *tooltip = nullptr, const void *tooltip_owner = nullptr);
+  // test_info_owner: the control the text input belongs to, for the test automation. See
+  // PropertyControlBase::setImguiTestItemInfo().
+  void updateImgui(WindowControlEventHandler &event_handler, const String *tooltip = nullptr, const void *tooltip_owner = nullptr,
+    const PropertyControlBase *test_info_owner = nullptr, const char *test_info_subcomponent_name = nullptr);
 
 private:
   enum class SpinnerButtonId

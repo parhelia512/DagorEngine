@@ -229,6 +229,7 @@ public:
     SND_BIND_FUN_EX(__is_valid_event_instance, "is_valid_event_instance", das::SideEffects::accessExternal);
 
     SND_BIND_FUN(has, das::SideEffects::modifyExternal);
+    SND_BIND_FUN(sound_banks_is_valid_event, das::SideEffects::accessExternal);
 
     SND_BIND_FUN_EX(set_pos, "set_pos", das::SideEffects::modifyExternal);
     SND_BIND_FUN_EX(__set_pos, "set_pos", das::SideEffects::modifyExternal);

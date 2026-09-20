@@ -3,14 +3,23 @@
 #include "bvh_debug.h"
 #include "shaders/dag_shaderVar.h"
 
-#if DAGOR_DBGLEVEL > 0
+// The memory report also builds in force-logs retail: its target is player-machine GPU OOM logs.
+#if DAGOR_DBGLEVEL > 0 || DAGOR_FORCE_LOGS
 
 #include "bvh_context.h"
-#include "bvh_tlas_debug.h"
+#include "bvh_omm.h"
 #include <bvh/bvh_processors.h>
-#include <shaders/dag_computeShaders.h>
 #include <perfMon/dag_statDrv.h>
+#include <math/dag_mathBase.h>
+#include <debug/dag_debug.h>
+#include <string.h>
+#include <stdio.h>
+
+#if DAGOR_DBGLEVEL > 0
+#include "bvh_tlas_debug.h"
+#include <shaders/dag_computeShaders.h>
 #include <math/integer/dag_IPoint2.h>
+#include <math/dag_color.h>
 #include <imgui/imgui.h>
 #include <gui/dag_imgui.h>
 #include <gui/dag_imguiUtil.h>
@@ -21,8 +30,7 @@
 #include <drv/3d/dag_renderTarget.h>
 #include <3d/dag_lockSbuffer.h>
 #include <gui/dag_stdGuiRender.h>
-#include <string.h>
-#include <stdio.h>
+#endif
 
 namespace bvh
 {
@@ -53,21 +61,68 @@ namespace bvh::smoke_tracers
 {
 void get_memory_statistics(int &count, int64_t &vb, int64_t &blas);
 } // namespace bvh::smoke_tracers
+namespace bvh::voxel_activity
+{
+extern bool freeze;
+extern bool cull;
+} // namespace bvh::voxel_activity
 
 namespace bvh
 {
 
-RtMemoryOverhead get_rt_memory_overhead(ContextId context_id)
+namespace
 {
-  RtMemoryOverhead o;
-  if (context_id == bvh::InvalidContextId)
-    return o;
+// Hand-rolled timed acquire: the spin lock has no timed variant. Write mode, because
+// worker jobs insert into the unique*/flag buffer maps under a SHARED objectsLock, so
+// only exclusive ownership makes the gather safe. A self-held write lock counts as
+// owned via ownsWrite, so the OOM report works from under its own write lock.
+struct DAG_TS_SCOPED_CAPABILITY TryObjectWriteLock
+{
+  TryObjectWriteLock(WriteOwnerRwSpinLock &lock, int timeout_ms) DAG_TS_ACQUIRE(lock) :
+    alreadyOwned(lock.ownsWrite()), savedLock(nullptr)
+  {
+    for (int i = 0; !alreadyOwned && i <= timeout_ms; sleep_msec(1), ++i)
+      if (lock.tryLockWrite())
+      {
+        savedLock = &lock;
+        break;
+      }
+  }
+  ~TryObjectWriteLock() DAG_TS_RELEASE()
+  {
+    if (savedLock)
+      savedLock->unlockWrite();
+  }
+  bool owns() const { return alreadyOwned || savedLock; }
 
-  TIME_PROFILE(bvh::get_rt_memory_overhead);
-  Context::BvhObjectReadLock objectsGuard(context_id->objectsLock);
-  WinAutoLock lock(context_id->tidyUpTreesLock);
-  WinAutoLock lock2(context_id->tidyUpSkinsLock);
+  TryObjectWriteLock(const TryObjectWriteLock &) = delete;
+  TryObjectWriteLock &operator=(const TryObjectWriteLock &) = delete;
 
+private:
+  const bool alreadyOwned;
+  WriteOwnerRwSpinLock *savedLock;
+};
+
+struct TryAutoLock
+{
+  TryAutoLock(WinCritSec &lock, int timeout_ms) : savedLock(lock.timedLock(timeout_ms) ? &lock : nullptr) {}
+  ~TryAutoLock()
+  {
+    if (savedLock)
+      savedLock->unlock();
+  }
+  bool owns() const { return savedLock != nullptr; }
+
+  TryAutoLock(const TryAutoLock &) = delete;
+  TryAutoLock &operator=(const TryAutoLock &) = delete;
+
+private:
+  WinCritSec *savedLock;
+};
+} // namespace
+
+static void gather_rt_memory_overhead(ContextId context_id, RtMemoryOverhead &o) DAG_TS_REQUIRES_SHARED(context_id->objectsLock)
+{
   int blasCount = 0;
   int64_t blasTotalBytes = 0;
   auto as = [&](auto &a) -> int64_t {
@@ -79,22 +134,28 @@ RtMemoryOverhead get_rt_memory_overhead(ContextId context_id)
     return sz;
   };
   auto bs = [](auto &b) -> int64_t { return b ? (int64_t)b->getSize() : (int64_t)0; };
-  int ommCount = 0;
-  int64_t ommAS = 0, ommArrayData = 0, ommDescArray = 0, ommIndexBuffer = 0, ommPending = 0;
-  auto addOmmSlot = [&](const Mesh::OmmSlot &slot) {
-    if (slot.omm)
+  // From the cache, not a per-mesh walk: idle entries outlive the meshes that linked them. The idle
+  // count lags the drops queued since the last eviction pass.
+  int ommCount = 0, ommEntryCount = 0, ommIdleEntryCount = 0, ommRecycledCount = 0;
+  int64_t ommAS = 0, ommArrayData = 0, ommDescArray = 0, ommIndexBuffer = 0, ommPending = 0, ommIdleBytes = 0, ommRecycled = 0;
+  for (const auto &cached : context_id->ommCache)
+  {
+    const OmmCacheEntry &entry = cached.second;
+    ommEntryCount++;
+    if (entry.refCount == 0)
+    {
+      ommIdleEntryCount++;
+      ommIdleBytes += omm_entry_bytes(entry);
+    }
+    if (entry.omm)
     {
       ommCount++;
-      ommAS += slot.omm.getASSize();
+      ommAS += entry.omm.getASSize();
     }
-    ommArrayData += bs(slot.bakeResult.arrayData);
-    ommDescArray += bs(slot.bakeResult.descArray);
-    ommIndexBuffer += bs(slot.bakeResult.indexBuffer);
-  };
-  auto addOmmMesh = [&](const Mesh &mesh) {
-    for (const Mesh::OmmSlot &slot : mesh.ommSlots)
-      addOmmSlot(slot);
-  };
+    ommArrayData += bs(entry.bakeResult.arrayData);
+    ommDescArray += bs(entry.bakeResult.descArray);
+    ommIndexBuffer += bs(entry.bakeResult.indexBuffer);
+  }
   // TLAS size only, must not feed the BLAS accumulators above.
   auto tas = [](auto &a) -> int64_t { return a ? (int64_t)d3d::get_raytrace_acceleration_structure_size(a.get()) : (int64_t)0; };
 
@@ -181,7 +242,6 @@ RtMemoryOverhead get_rt_memory_overhead(ContextId context_id)
       }
       if (tagGeom)
         *tagGeom += proc + src + ahs;
-      addOmmMesh(mesh);
     }
   }
   for (auto &object : context_id->impostors)
@@ -192,28 +252,36 @@ RtMemoryOverhead get_rt_memory_overhead(ContextId context_id)
     {
       staticProcGeom += bs(mesh.geometry.processedVertexBuffer);
       staticSrcGeom += context_id->getSourceBufferSize(mesh.geometry.heapIndex, mesh.geometry.bufferRegion);
-      addOmmMesh(mesh);
     }
   }
+  ommPending += bs(context_id->ommContext.globalConstantBuffer);
+  ommPending += bs(context_id->ommContext.localConstantBuffer);
   for (const render::omm::PendingBake &bake : context_id->ommContext.pendingBakes)
   {
+    // The pool survives the slot close, so a free slot can still hold VRAM.
+    ommPending += bs(bake.pool.outOmmDescArrayHistogram);
+    ommPending += bs(bake.pool.outOmmIndexHistogram);
+    ommPending += bs(bake.pool.outPostDispatchInfo);
+    ommPending += bs(bake.pool.readbackOmmDescArrayHistogram);
+    ommPending += bs(bake.pool.readbackOmmIndexHistogram);
+    ommPending += bs(bake.pool.readbackPostDispatchInfo);
+    for (const UniqueBuf &buffer : bake.pool.transientPoolBuffers)
+      ommPending += bs(buffer);
+
     if (bake.state == render::omm::PendingBakeState::Free)
       continue;
 
     ommPending += bs(bake.outOmmArrayData);
     ommPending += bs(bake.outOmmDescArray);
-    ommPending += bs(bake.outOmmDescArrayHistogram);
     ommPending += bs(bake.outOmmIndexBuffer);
-    ommPending += bs(bake.outOmmIndexHistogram);
-    ommPending += bs(bake.outPostDispatchInfo);
-    ommPending += bs(bake.readbackOmmDescArrayHistogram);
-    ommPending += bs(bake.readbackOmmIndexHistogram);
-    ommPending += bs(bake.readbackPostDispatchInfo);
-    for (const UniqueBuf &buffer : bake.transientPoolBuffers)
-      ommPending += bs(buffer);
-    for (const UniqueBuf &buffer : bake.constantBuffers)
-      ommPending += bs(buffer);
   }
+  for (const render::omm::BufferRecycleStore *store :
+    {&context_id->ommContext.recycledArrayDataBuffers, &context_id->ommContext.recycledOutputBuffers})
+    for (uint32_t i = 0; i < store->count; ++i)
+    {
+      ommRecycled += bs(store->buffers[i]);
+      ommRecycledCount++;
+    }
   for (auto &[tag, b] : staticBlasByTag)
     o.add("Static shared BLAS", tag, b, note("x%d vb %dM", staticCntByTag[tag], int(staticGeomByTag[tag] >> 20)));
   o.add("Static shared BLAS", "impostor", impostorBlas, note("x%d", impostorCnt));
@@ -271,13 +339,14 @@ RtMemoryOverhead get_rt_memory_overhead(ContextId context_id)
         riExTreeCnt++;
       }
   int64_t flagBlas = 0, flagGeom = 0;
-  for (auto &uu : context_id->uniqueRiExtraFlagBuffers)
-    for (auto &u : uu.second)
-    {
-      flagBlas += as(u.second.blas);
-      flagGeom += u.second.buffer.size;
-      flagCnt++;
-    }
+  for (auto &lod : context_id->uniqueRiExtraFlagBuffers)
+    for (auto &uu : lod)
+      for (auto &u : uu.second.elems)
+      {
+        flagBlas += as(u.second.blas);
+        flagGeom += u.second.buffer.size;
+        flagCnt++;
+      }
   int64_t statTreeBlas = 0, statTreeGeom = 0;
   for (auto &[id, tree] : context_id->stationaryTreeBuffers)
   {
@@ -293,29 +362,36 @@ RtMemoryOverhead get_rt_memory_overhead(ContextId context_id)
   o.add("Unique BLAS", "stationary tree", statTreeBlas, note("x%d vb %dM", statTreeCnt, int(statTreeGeom >> 20)));
 
   // 3) Unique BLAS caches (recycled free pool).
-  int64_t skinCache = 0, rigenTreeCache = 0, riExTreeCache = 0;
-  int skinCacheCnt = 0, rigenTreeCacheCnt = 0, riExTreeCacheCnt = 0;
+  int64_t skinCache = 0, rigenTreeCache = 0, riExTreeCache = 0, riExFlagCache = 0;
+  int skinCacheCnt = 0, rigenTreeCacheCnt = 0, riExTreeCacheCnt = 0, riExFlagCacheCnt = 0;
   for (auto &uu : context_id->freeUniqueSkinBLASes)
-    for (auto &blas : uu.second.blases)
+    for (auto &pooled : uu.second.blases)
     {
-      skinCache += as(blas);
+      skinCache += as(pooled.blas);
       skinCacheCnt++;
     }
   for (auto &uu : context_id->freeUniqueTreeBLASes)
-    for (auto &blas : uu.second.blases)
+    for (auto &pooled : uu.second.blases)
     {
-      rigenTreeCache += as(blas);
+      rigenTreeCache += as(pooled.blas);
       rigenTreeCacheCnt++;
     }
   for (auto &uu : context_id->freeUniqueRiExtraTreeBLASes)
-    for (auto &blas : uu.second.blases)
+    for (auto &pooled : uu.second.blases)
     {
-      riExTreeCache += as(blas);
+      riExTreeCache += as(pooled.blas);
       riExTreeCacheCnt++;
+    }
+  for (auto &uu : context_id->freeUniqueRiExtraFlagBLASes)
+    for (auto &pooled : uu.second.blases)
+    {
+      riExFlagCache += as(pooled.blas);
+      riExFlagCacheCnt++;
     }
   o.add("Unique BLAS cache", "skin", skinCache, note("x%d", skinCacheCnt));
   o.add("Unique BLAS cache", "RiGen tree", rigenTreeCache, note("x%d", rigenTreeCacheCnt));
   o.add("Unique BLAS cache", "RiEx tree", riExTreeCache, note("x%d", riExTreeCacheCnt));
+  o.add("Unique BLAS cache", "flag", riExFlagCache, note("x%d", riExFlagCacheCnt));
 
   // 4) Landscape BLAS + geometry.
   int64_t terrainBlas = 0, terrainGeom = 0;
@@ -362,6 +438,10 @@ RtMemoryOverhead get_rt_memory_overhead(ContextId context_id)
   o.add("Opacity micromaps", "desc array", ommDescArray);
   o.add("Opacity micromaps", "index buffer", ommIndexBuffer);
   o.add("Opacity micromaps", "pending bake", ommPending);
+  o.add("Opacity micromaps", "recycle stores", ommRecycled, note("x%d", ommRecycledCount));
+  // A subset of the OMM buffer items, thus this item adds no bytes of its own.
+  o.add("Opacity micromaps", "of which cache idle", 0,
+    note("%dK in x%d idle of x%d entries", int(ommIdleBytes >> 10), ommIdleEntryCount, ommEntryCount));
 
   // 6) TLAS.
   o.add("TLAS", "main", tas(context_id->tlasMain));
@@ -440,10 +520,80 @@ RtMemoryOverhead get_rt_memory_overhead(ContextId context_id)
   o.blasCount = blasCount;
   o.lastLodBlasBytes = lastLodBlasBytes;
   o.lastLodBlasCount = lastLodBlasCount;
+}
 
+RtMemoryOverhead get_rt_memory_overhead(ContextId context_id)
+{
+  RtMemoryOverhead o;
+  if (context_id == bvh::InvalidContextId)
+    return o;
+
+  TIME_PROFILE(bvh::get_rt_memory_overhead);
+  Context::BvhObjectReadLock objectsGuard(context_id->objectsLock);
+  WinAutoLock riGuard(context_id->tidyUpRendinstsLock);
+  WinAutoLock skinsGuard(context_id->tidyUpSkinsLock);
+
+  gather_rt_memory_overhead(context_id, o);
   return o;
 }
+
+static void log_gathered_rt_memory_overhead(const RtMemoryOverhead &overhead)
+{
+  auto mb = [](int64_t v) { return int(v == 0 ? 0 : eastl::max((v + 1024 * 1024 - 1) / (1024 * 1024), (int64_t)1)); };
+  logdbg("BVH RT memory overhead (real, RT-only)");
+  overhead.forEachCategory([](const eastl::string &) {},
+    [&](const RtMemoryOverhead::Item &it) {
+      if (it.note.empty())
+        logdbg("    %s / %s: %d MB", it.category.c_str(), it.sub.c_str(), mb(it.bytes));
+      else
+        logdbg("    %s / %s: %d MB  [%s]", it.category.c_str(), it.sub.c_str(), mb(it.bytes), it.note.c_str());
+    },
+    [&](const eastl::string &cat, int64_t sum) { logdbg("  = %s: %d MB", cat.c_str(), mb(sum)); });
+  logdbg("-------------------------");
+  logdbg("RT overhead total: %d MB", mb(overhead.total));
+  logdbg("BLAS total: %d MB  (x%d)", mb(overhead.blasTotalBytes), overhead.blasCount);
+  logdbg("Last-LOD BLAS (streaming floor): %d MB  (x%d)", mb(overhead.lastLodBlasBytes), overhead.lastLodBlasCount);
+  logdbg("-------------------------");
+}
+
+void log_rt_memory_overhead(ContextId context_id)
+{
+  if (context_id == bvh::InvalidContextId)
+    return;
+  log_gathered_rt_memory_overhead(get_rt_memory_overhead(context_id));
+}
+
+void try_log_rt_memory_overhead(ContextId context_id)
+{
+  if (context_id == bvh::InvalidContextId)
+    return;
+
+  RtMemoryOverhead overhead;
+  {
+    TIME_PROFILE(bvh::try_gather_rt_memory_overhead);
+    // One deadline shared by all acquisitions: the caller stalls the failing allocation's
+    // thread, and closeBVH and device reset wait on it. At 0ms budget each guard still makes
+    // one non-blocking attempt, so uncontended locks succeed and contended ones skip.
+    constexpr int lockWaitMs = 100;
+    const int deadlineMs = get_time_msec() + lockWaitMs;
+    const auto remaining = [&] { return eastl::max(deadlineMs - get_time_msec(), 0); };
+    TryObjectWriteLock objectsGuard(context_id->objectsLock, remaining());
+    TryAutoLock riGuard(context_id->tidyUpRendinstsLock, remaining());
+    TryAutoLock skinsGuard(context_id->tidyUpSkinsLock, remaining());
+    TryAutoLock processBuffersGuard(context_id->processBufferAllocatorLock, remaining());
+    // Holders mutate on the CPU, so reading without the locks is not safe; losing the report is.
+    if (!objectsGuard.owns() || !riGuard.owns() || !skinsGuard.owns() || !processBuffersGuard.owns())
+    {
+      logdbg("BVH RT memory overhead: locks are held by other threads, skipping the report.");
+      return;
+    }
+    gather_rt_memory_overhead(context_id, overhead);
+  }
+  log_gathered_rt_memory_overhead(overhead);
+}
 } // namespace bvh
+
+#if DAGOR_DBGLEVEL > 0
 
 static eastl::unordered_set<bvh::ContextId> context_ids;
 static bvh::ContextId debugged_context_id = bvh::InvalidContextId;
@@ -463,6 +613,9 @@ static bool do_super_sampling = true;
 static bool use_atmosphere = true;
 static bool show_back_view = false;
 static bool disable_ahs_with_omm = false;
+static bool preview_open = true;
+static float camera_yaw_offset = 0;
+static float camera_pitch_offset = 0;
 
 static UniqueBuf lod_by_meta_buf;
 static eastl::vector<uint32_t> lod_by_meta_cpu;
@@ -513,6 +666,7 @@ inline const char *operator!(bvh::DebugMode mode)
     case bvh::DebugMode::NaN: return "NaN";
     case bvh::DebugMode::Lod: return "LOD (RI)";
     case bvh::DebugMode::LruCollision: return "LRU collision";
+    case bvh::DebugMode::VoxelActivity: return "Voxel activity";
     default: return "Unknown";
   }
 }
@@ -618,52 +772,126 @@ static void imguiWindow()
 
   // the LRU collision view needs the pc-only inline ray query path in bvh_debug.dshl
 #if _TARGET_PC_WIN || _TARGET_PC_LINUX
-  constexpr bvh::DebugMode lastDebugMode = bvh::DebugMode::LruCollision;
+  constexpr bvh::DebugMode lastDebugMode = bvh::DebugMode::VoxelActivity;
 #else
   constexpr bvh::DebugMode lastDebugMode = bvh::DebugMode::Lod;
 #endif
   ImGuiDagor::EnumCombo("Debug mode", bvh::DebugMode::None, lastDebugMode, debug_mode, &operator!);
 
-  ImGui::Checkbox("Super sampling", &do_super_sampling);
-  ImGui::SameLine();
-  ImGui::Checkbox("Use atmosphere", &use_atmosphere);
-  ImGui::SameLine();
-  ImGui::Checkbox("Back view", &show_back_view);
-  if (d3d::get_driver_desc().caps.hasRayTraceOpacityMicroMapTriangleArrays ||
-      d3d::get_driver_desc().caps.hasNvidiaRayTraceOpacityMicroMapTriangleArrays)
+  if (const auto &va = debugged_context_id->voxelActivity; va.activeValue > 0)
   {
-    ImGui::SameLine();
-    ImGui::Checkbox("OMM for AHS", &disable_ahs_with_omm);
-  }
-
-  ImGui::SameLine();
-  ImGui::SetNextItemWidth(-FLT_MIN);
-  if (ImGui::Button("Make capture"))
-    console::command("render.pix_capture_n_frames");
-
-  int availableWidth = max(ImGui::GetContentRegionAvail().x * (do_super_sampling ? 2 : 1), 10.0f);
-
-  if (availableWidth != last_available_width)
-    resolution_change_cooldown = debugTex ? 50 : 0;
-
-  if (resolution_change_cooldown > 0)
-    resolution_change_cooldown--;
-  else
-    target_width = availableWidth;
-
-  last_available_width = availableWidth;
-
-  if (debug_mode == bvh::DebugMode::IntersectionCount)
-  {
-    ImGui::Separator();
-    ImGui::SliderFloat("Intersection count threshold", &intersection_count_threshold, 0.f, 256.f);
+    ImGui::Text("Voxel activity: %dx%dx%d voxels of %.1fm, active value %d, origin (%d, %d, %d)", va.dims.x, va.dims.y, va.dims.z,
+      va.voxelSize, va.activeValue, va.originVoxel.x, va.originVoxel.y, va.originVoxel.z);
+    ImGui::Checkbox("Freeze voxel activity", &bvh::voxel_activity::freeze);
+    if (bvh::voxel_activity::freeze)
+    {
+      ImGui::SameLine();
+      ImGui::TextDisabled("(no decay, marks or scrolling)");
+    }
+    ImGui::Checkbox("Cull placement in dead voxels", &bvh::voxel_activity::cull);
+    if (!bvh::voxel_activity::cull)
+      ImGui::TextDisabled("Placement culling: off, everything is placed");
+    else if (!va.cpu.valid)
+      ImGui::TextDisabled("Placement culling: waiting for the first readback");
+    else
+    {
+      const uint32_t considered = va.statRiGenConsidered + va.statRiExConsidered + va.statDynConsidered;
+      const uint32_t culled = va.statRiGenCulled + va.statRiExCulled + va.statDynCulled;
+      ImGui::Text("Placement: %u of %u instances in the TLAS (%.1f%% culled)", considered - culled, considered,
+        considered ? 100.f * culled / considered : 0.f);
+      ImGui::Text("  riGen/impostor: %u of %u, riEx: %u of %u, dyn: %u of %u", va.statRiGenConsidered - va.statRiGenCulled,
+        va.statRiGenConsidered, va.statRiExConsidered - va.statRiExCulled, va.statRiExConsidered,
+        va.statDynConsidered - va.statDynCulled, va.statDynConsidered);
+    }
   }
 
   ImGui::Separator();
   bvh::debug::draw_tlas_debug_imgui();
 
-  if (debug_mode != bvh::DebugMode::None && debugTex)
-    ImGuiDagor::Image(debugTex.getTexId(), d3d::get_screen_aspect_ratio());
+  preview_open = ImGui::CollapsingHeader("Preview", ImGuiTreeNodeFlags_DefaultOpen);
+  if (preview_open)
+  {
+    ImGui::Checkbox("Super sampling", &do_super_sampling);
+    ImGui::SameLine();
+    ImGui::Checkbox("Use atmosphere", &use_atmosphere);
+    ImGui::SameLine();
+    ImGui::Checkbox("Back view", &show_back_view);
+    if (d3d::get_driver_desc().caps.hasRayTraceOpacityMicroMapTriangleArrays ||
+        d3d::get_driver_desc().caps.hasNvidiaRayTraceOpacityMicroMapTriangleArrays)
+    {
+      ImGui::SameLine();
+      ImGui::Checkbox("OMM for AHS", &disable_ahs_with_omm);
+    }
+
+    ImGui::SameLine();
+    ImGui::SetNextItemWidth(-FLT_MIN);
+    if (ImGui::Button("Make capture"))
+      console::command("render.pix_capture_n_frames");
+
+    int availableWidth = max(ImGui::GetContentRegionAvail().x * (do_super_sampling ? 2 : 1), 10.0f);
+
+    if (availableWidth != last_available_width)
+      resolution_change_cooldown = debugTex ? 50 : 0;
+
+    if (resolution_change_cooldown > 0)
+      resolution_change_cooldown--;
+    else
+      target_width = availableWidth;
+
+    last_available_width = availableWidth;
+
+    if (debug_mode == bvh::DebugMode::IntersectionCount)
+    {
+      ImGui::Separator();
+      ImGui::SliderFloat("Intersection count threshold", &intersection_count_threshold, 0.f, 256.f);
+    }
+
+    if (debug_mode != bvh::DebugMode::None && debugTex)
+    {
+      ImGui::TextDisabled("Left drag rotates the view, double click resets it. Yaw: %.0f deg, pitch: %.0f deg",
+        RadToDeg(camera_yaw_offset), RadToDeg(camera_pitch_offset));
+
+      const float aspect = d3d::get_screen_aspect_ratio();
+      const int imageWidth = max(int(ImGui::GetContentRegionAvail().x), 1);
+      const int imageHeight = max(int(imageWidth / aspect), 1);
+      const ImVec2 imagePos = ImGui::GetCursorScreenPos();
+
+      // an invisible button over the image captures the drag, so it does not move the window
+      ImGui::InvisibleButton("bvh_preview_rotate", ImVec2(imageWidth, imageHeight));
+      if (ImGui::IsItemActive())
+      {
+        constexpr float rotateSpeed = 0.005f; // radians per pixel
+        camera_yaw_offset += ImGui::GetIO().MouseDelta.x * rotateSpeed;
+        camera_pitch_offset += ImGui::GetIO().MouseDelta.y * rotateSpeed;
+      }
+      if (ImGui::IsItemHovered() && ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left))
+        camera_yaw_offset = camera_pitch_offset = 0;
+
+      // re-clamped every frame, base pitch included: at the poles the yaw axis is
+      // parallel to the view and the control degenerates into roll. A zero offset
+      // is exempt: an untouched preview must match the base view exactly
+      if (camera_pitch_offset != 0)
+      {
+        static int viewVecLTVarId = get_shader_variable_id("view_vecLT", true);
+        static int viewVecRTVarId = get_shader_variable_id("view_vecRT", true);
+        static int viewVecLBVarId = get_shader_variable_id("view_vecLB", true);
+        static int viewVecRBVarId = get_shader_variable_id("view_vecRB", true);
+        const Color4 forward = ShaderGlobal::get_float4(viewVecLTVarId) + ShaderGlobal::get_float4(viewVecRTVarId) +
+                               ShaderGlobal::get_float4(viewVecLBVarId) + ShaderGlobal::get_float4(viewVecRBVarId);
+        const float len = sqrtf(forward.r * forward.r + forward.g * forward.g + forward.b * forward.b);
+        if (len > 1e-6f)
+        {
+          constexpr float pitchLimit = HALFPI - 0.02f;
+          const float basePitch = asinf(clamp(forward.g / len, -1.f, 1.f)); // positive looks up
+          // a positive offset pitches down, so the total pitch is basePitch - offset
+          camera_pitch_offset = clamp(camera_pitch_offset, basePitch - pitchLimit, basePitch + pitchLimit);
+        }
+      }
+
+      ImGui::SetCursorScreenPos(imagePos);
+      ImGuiDagor::Image(debugTex.getTexId(), imageWidth, imageHeight);
+    }
+  }
 }
 
 REGISTER_IMGUI_WINDOW("Render", "BVH", imguiWindow);
@@ -742,7 +970,7 @@ static void update_lod_debug_buffer(ContextId context_id)
     }
   }
   {
-    WinAutoLock treesLock(context_id->tidyUpTreesLock);
+    WinAutoLock riLock(context_id->tidyUpRendinstsLock);
     for (int lod = 0; lod < Context::maxUniqueLods; ++lod)
     {
       for (auto &uu : context_id->uniqueTreeBuffers[lod])
@@ -751,12 +979,12 @@ static void update_lod_debug_buffer(ContextId context_id)
       for (auto &uu : context_id->uniqueRiExtraTreeBuffers[lod])
         for (auto &u : uu.second.elems)
           markMeta(u.second.metaAllocId, lod);
+      for (auto &uu : context_id->uniqueRiExtraFlagBuffers[lod])
+        for (auto &u : uu.second.elems)
+          markMeta(u.second.metaAllocId, lod);
     }
     for (auto &[id, tree] : context_id->stationaryTreeBuffers)
       markMeta(tree.metaAllocId, int((id >> 28) & 0xF));
-    for (auto &[id, flagElems] : context_id->uniqueRiExtraFlagBuffers)
-      for (auto &u : flagElems)
-        markMeta(u.second.metaAllocId, int((id >> 28) & 0xF));
   }
 
   if (auto upload = lock_sbuffer<uint32_t>(lod_by_meta_buf.getBuf(), 0, metaCount, VBLOCK_WRITEONLY | VBLOCK_DISCARD))
@@ -778,6 +1006,9 @@ void render_debug_context(ContextId context_id, float min_t)
     return;
 
   if (imgui_get_state() == ImGuiState::OFF)
+    return;
+
+  if (!preview_open)
     return;
 
   TIME_D3D_PROFILE(bvh_debug);
@@ -825,7 +1056,9 @@ void render_debug_context(ContextId context_id, float min_t)
   static int bvh_debug_intersection_count_thresholdVarId = get_shader_variable_id("bvh_debug_intersection_count_threshold", true);
   static int bvh_debug_min_tVarId = get_shader_variable_id("bvh_debug_min_t", true);
   static int bvh_debug_back_viewVarId = get_shader_variable_id("bvh_debug_back_view", true);
+  static int bvh_debug_view_rotationVarId = get_shader_variable_id("bvh_debug_view_rotation", true);
   static int bvh_disable_ahs_with_ommVarId = get_shader_variable_id("bvh_disable_ahs_with_omm", true);
+  static int bvh_debug_voxel_activity_active_valueVarId = get_shader_variable_id("bvh_debug_voxel_activity_active_value", true);
 
   ShaderGlobal::set_texture(bvh_debug_target, debug_mode == DebugMode::Lit ? intermediateDebugTex.getTexId() : debugTex.getTexId());
   ShaderGlobal::set_int(bvh_debug_mode, *debug_mode - *DebugMode::Lit);
@@ -834,16 +1067,14 @@ void render_debug_context(ContextId context_id, float min_t)
   ShaderGlobal::set_float(bvh_debug_intersection_count_thresholdVarId, intersection_count_threshold);
   ShaderGlobal::set_float(bvh_debug_min_tVarId, min_t);
   ShaderGlobal::set_int(bvh_debug_back_viewVarId, show_back_view ? 1 : 0);
+  ShaderGlobal::set_float4(bvh_debug_view_rotationVarId, camera_yaw_offset, camera_pitch_offset);
   ShaderGlobal::set_int(bvh_disable_ahs_with_ommVarId, disable_ahs_with_omm ? 1 : 0);
+  ShaderGlobal::set_int(bvh_debug_voxel_activity_active_valueVarId, debugged_context_id->voxelActivity.activeValue);
 
   if (debug_mode == DebugMode::Lod)
     update_lod_debug_buffer(debugged_context_id);
 
-  d3d::set_cs_constbuffer_register_count(192);
-
   debugShader->dispatchThreads(ti.w, ti.h, 1);
-
-  d3d::set_cs_constbuffer_register_count(0);
 
   bvh::unbind_resources();
 
@@ -959,6 +1190,23 @@ void render_rt_mem_overlay(ContextId context_id)
 
 } // namespace bvh
 
+#else // DAGOR_DBGLEVEL > 0
+
+namespace bvh
+{
+void render_rt_mem_overlay(ContextId) {}
+} // namespace bvh
+
+namespace bvh::debug
+{
+void init(ContextId) {}
+void teardown(ContextId) {}
+void render_debug_context(ContextId, float) {}
+void teardown() {}
+} // namespace bvh::debug
+
+#endif // DAGOR_DBGLEVEL > 0
+
 #else
 
 #include <bvh/bvh.h>
@@ -966,6 +1214,8 @@ void render_rt_mem_overlay(ContextId context_id)
 namespace bvh
 {
 RtMemoryOverhead get_rt_memory_overhead(ContextId) { return RtMemoryOverhead{}; }
+void log_rt_memory_overhead(ContextId) {}
+void try_log_rt_memory_overhead(ContextId) {}
 void render_rt_mem_overlay(ContextId) {}
 } // namespace bvh
 

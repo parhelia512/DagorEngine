@@ -4,7 +4,9 @@
 //
 #pragma once
 
-namespace d3d
+#include <drv/3d/dag_multi_interface.h>
+
+namespace d3d _MULTI_INTERFACE
 {
 
 /**
@@ -25,7 +27,7 @@ bool start_capture(const char *name, const char *savepath);
  * Commands made since the last call to start_capture() will be flushed.
  */
 void stop_capture();
-} // namespace d3d
+} // namespace d3d _MULTI_INTERFACE
 
 #if _TARGET_D3D_MULTI
 #include <drv/3d/dag_interface_table.h>

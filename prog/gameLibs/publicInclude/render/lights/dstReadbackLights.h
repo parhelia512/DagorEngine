@@ -6,7 +6,7 @@
 
 #include <render/lights/shadowSystem.h>
 #include <render/lights/spotLightsManager.h>
-#include <EASTL/fixed_function.h>
+#include <generic/dag_functionRef.h>
 #include <EASTL/unique_ptr.h>
 
 #include <shaders/dag_computeShaders.h>
@@ -25,13 +25,13 @@ class DistanceReadbackLights
   int lastNonOptId;
   bool processing;
 
-  using RenderStaticCallback = void(mat44f_cref globTm, mat44f_cref projTm, const TMatrix &viewItm, int updateIndex, int frustumIndex,
-    DynamicShadowRenderGPUObjects render_gpu_objects);
-  void dispatchQuery(eastl::fixed_function<sizeof(void *) * 2, RenderStaticCallback> render_static);
+  using RenderStaticCallback = dag::FunctionRef<void(mat44f_cref globTm, mat44f_cref projTm, const TMatrix &viewItm, int updateIndex,
+    int frustumIndex, DynamicShadowRenderGPUObjects render_gpu_objects) const>;
+  void dispatchQuery(RenderStaticCallback render_static);
   void completeQuery();
 
 public:
   DistanceReadbackLights(ShadowSystem *shadowSystem, SpotLightsManager *spotLights, const LightsResourcesManager *lights_res_mgr);
-  void update(eastl::fixed_function<sizeof(void *) * 2, RenderStaticCallback> render_static);
+  void update(RenderStaticCallback render_static);
   void afterResetDevice();
 };

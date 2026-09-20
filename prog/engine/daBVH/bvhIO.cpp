@@ -116,9 +116,17 @@ static void writeSubtree(IGenSave &cwr, const uint8_t *blas, int o, int verts_of
 }
 
 bool serializeQuadBLAS(IGenSave &cwr, const uint8_t *blas, int tree_bytes, int verts_ofs, int vert_count, bbox3f local_box,
-  int leaf_size, int vert_stride)
+  int leaf_size, int vert_stride, dag::ConstSpan<uint16_t> leaf_edge_flags)
 {
   G_ASSERT_RETURN(blas != nullptr && tree_bytes > 0 && vert_count > 0, false);
+  if (!leaf_edge_flags.empty()) // the section is one word per leaf, in the wire tree order
+  {
+    int leafCount = 0;
+    for (int o = 0; o < tree_bytes; o += (rd32(blas, o + 12) & QUAD_LEAF_FLAG) ? leaf_size : BVH_BLAS_NODE_SIZE)
+      leafCount += (rd32(blas, o + 12) & QUAD_LEAF_FLAG) ? 1 : 0;
+    if ((int)leaf_edge_flags.size() != leafCount)
+      return false;
+  }
   // Checked in release too: past a debug-only assert an oversized fanout would narrow into a leaf
   // marker and commit a stream the reader misparses.
   for (int o = 0; o < tree_bytes; o += srcSubtreeBytes(blas, o, leaf_size))
@@ -135,21 +143,19 @@ bool serializeQuadBLAS(IGenSave &cwr, const uint8_t *blas, int tree_bytes, int v
 
   BlasIoHeader h = {};
   h.magic = BVH_IO_MAGIC;
-  h.version = BVH_IO_VERSION;
+  h.version = !leaf_edge_flags.empty() ? BVH_IO_VERSION : 1; // a flag-less stream stays readable by version 1 readers
   h.vertStride = uint8_t(vert_stride);
   h.leafSize = uint8_t(leaf_size);
   h.treeBytes = uint32_t(tree_bytes);
   h.vertCount = uint32_t(vert_count);
-  alignas(16) float t[4];
-  v_st(t, local_box.bmin);
-  h.bmin[0] = t[0];
-  h.bmin[1] = t[1];
-  h.bmin[2] = t[2];
-  v_st(t, local_box.bmax);
-  h.bmax[0] = t[0];
-  h.bmax[1] = t[1];
-  h.bmax[2] = t[2];
+  v_stu_p3(h.bmin, local_box.bmin);
+  v_stu_p3(h.bmax, local_box.bmax);
   cwr.write(&h, sizeof(h));
+  if (!leaf_edge_flags.empty())
+  {
+    const uint32_t ioFlags = BVH_IO_FLAG_EDGE_FLAGS;
+    cwr.write(&ioFlags, 4);
+  }
 
   // Verts first (verbatim vert21) so deserialize can rebuild leaf boxes during the single tree pass.
   cwr.write(blas + verts_ofs, vert_count * vert_stride);
@@ -157,7 +163,23 @@ bool serializeQuadBLAS(IGenSave &cwr, const uint8_t *blas, int tree_bytes, int v
   // Tree as a pre-order forest of the suppressed root's children (matches writeDoubleQuadBVH2's layout).
   for (int o = 0; o < tree_bytes; o += srcSubtreeBytes(blas, o, leaf_size))
     writeSubtree(cwr, blas, o, verts_ofs, vert_count, vert_stride, leaf_size, 0);
+  if (!leaf_edge_flags.empty())
+    cwr.write(leaf_edge_flags.data(), (int)leaf_edge_flags.size() * 2);
   return true;
+}
+
+// Shared by both deserializers: version acceptance and the version >= 2 io-flags word.
+static uint32_t bvhIoReadFlags(IGenLoad &crd, const BlasIoHeader &h)
+{
+  if (h.magic != BVH_IO_MAGIC || h.version < 1 || h.version > BVH_IO_VERSION)
+    DAGOR_THROW(IGenLoad::LoadException("bvhIO: bad BLAS magic/version", -1)); // decompressor streams fatal on tell()
+  if (h.version < 2)
+    return 0;
+  uint32_t ioFlags = 0;
+  crd.read(&ioFlags, 4);
+  if (ioFlags & ~BVH_IO_FLAG_EDGE_FLAGS)
+    DAGOR_THROW(IGenLoad::LoadException("bvhIO: unknown io flags", -1));
+  return ioFlags;
 }
 
 // ============================================================================
@@ -255,6 +277,7 @@ struct Rebuilder
   int leafSize = BVH_BLAS_LEAF_SIZE;
   uint32_t vertCount = 0;
   int dstO = 0;
+  int leafCount = 0; // sizes the edge-flags section the stackless layout has no slots for
   // Set by node() to the just-parsed subtree: true if it is a RAW no-hit leaf, or a chain of 1-child
   // internals terminating in one. The top-level loop uses it to refuse such a shape as the whole BLAS.
   bool subtreeIsRawChain = false;
@@ -296,6 +319,7 @@ struct Rebuilder
       memcpy(dst + leafOfs + 4, &w2, 4);
       memcpy(dst + leafOfs + 8, &w3, 4);
       dstO += leafSize;
+      ++leafCount;
       return box;
     }
 
@@ -325,8 +349,7 @@ BlasDeserializeResult deserializeQuadBLAS(IGenLoad &crd, dag::Vector<uint8_t> &o
 {
   BlasIoHeader h;
   crd.read(&h, sizeof(h));
-  if (h.magic != BVH_IO_MAGIC || h.version != BVH_IO_VERSION)
-    DAGOR_THROW(IGenLoad::LoadException("bvhIO: bad BLAS magic/version", -1)); // decompressor streams fatal on tell()
+  const uint32_t ioFlags = bvhIoReadFlags(crd, h);
   if (h.vertStride != 8 || h.leafSize != BVH_BLAS_LEAF_SIZE)
     DAGOR_THROW(IGenLoad::LoadException("bvhIO: unsupported BLAS layout", -1));
 
@@ -371,13 +394,15 @@ BlasDeserializeResult deserializeQuadBLAS(IGenLoad &crd, dag::Vector<uint8_t> &o
   // refuses it, so refuse it here too (matches deserializeQuadBLASToSoA4's degenerate-root rejection).
   if (topCount == 1 && rootRaw)
     DAGOR_THROW(IGenLoad::LoadException("bvhIO: no-hit leaf as whole-BLAS root", crd.tell()));
+  if (ioFlags & BVH_IO_FLAG_EDGE_FLAGS) // the stackless layout has no flags slots: consume and drop
+    crd.seekrel(rb.leafCount * 2);
 
   BlasDeserializeResult res;
   res.treeBytes = int(treeBytes);
   res.vertsOfs = int(vertsOfs);
   res.vertCount = int(h.vertCount);
-  res.box.bmin = v_make_vec4f(h.bmin[0], h.bmin[1], h.bmin[2], 0.f);
-  res.box.bmax = v_make_vec4f(h.bmax[0], h.bmax[1], h.bmax[2], 0.f);
+  res.box.bmin = v_ldu_p3_safe(h.bmin);
+  res.box.bmax = v_ldu_p3_safe(h.bmax);
   return res;
 }
 
@@ -407,14 +432,17 @@ struct Soa4Node // -V730 box is set before every read
   uint32_t w0 = 0;                 // leaf skip word (bit 31 = QUAD_LEAF_FLAG)
   uint32_t w1 = 0, w2 = 0, w3 = 0; // leaf words as on disk: w1 low 24 = base VERTEX INDEX, high 8 = o3A high
   uint32_t vertIdx = 0;            // decoded base vertex (leaf, non-RAW)
+  int leafOrd = -1;                // wire leaf ordinal: indexes the edge-flags section
   uint8_t marker = 0;              // 0 full / SHORT_LEAF_MARKER / SHORT_LEAF_FLIP_MARKER / RAW_LEAF_MARKER (leaf only)
   bool isLeaf = false;
 };
 
+// The core of both overloads: parse the wire tree, size the SoA4 tree like Builder::sizeTree and emit it
+// into a caller-placed region; the overloads decide where the verts and the tree land.
 struct Soa4Deserializer
 {
   IGenLoad &crd;
-  const uint8_t *verts = nullptr; // buffered disk verts (they arrive before the tree)
+  const uint8_t *verts = nullptr; // the disk verts (they arrive before the tree)
   uint32_t vertCount = 0;
   int vertStride = 8;
   int stacklessTreeBytes = 0; // h.treeBytes: the equivalent stackless tree size; bounds the parse
@@ -424,10 +452,13 @@ struct Soa4Deserializer
   // counts for the SoA4 size formula (mirror soa4::Builder::sizeTree)
   int leafCount = 0, shortMarkerCount = 0, internalCount = 0, oneChildInternalCount = 0;
 
+  dag::Vector<uint16_t> wireWords; // the edge-flags section, consumed into the slots during emit
+  bool wantWireWords = false;
+  bool withFlags = true; // the flags slots are laid out (soa4::Builder's with_flags)
   // emit state
-  dag::Vector<uint8_t> *out = nullptr;
-  int vertsOfs = 0;
-  int treeBytesLimit = 0;   // sized SoA4 tree region; every emitted block must stay inside it
+  uint8_t *out = nullptr;   // the tree region
+  int treeBytes = 0;        // the sized SoA4 tree region (parseAndSize); every emitted block must stay inside it
+  int vertsOfs = 0;         // the final vert21 region offset: align8(treeBytes)
   bool shortEnabled = true; // short bodies need the [tree][verts] span within the 23-bit base reach
   bool failed = false;
 
@@ -451,6 +482,7 @@ struct Soa4Deserializer
       const int idx = (int)nodes.size();
       Soa4Node nd;
       nd.isLeaf = true;
+      nd.leafOrd = leafCount;
       nd.marker = cc;
       nd.subtreeEnd = idx + 1;
       nd.w0 = body[0];
@@ -544,17 +576,14 @@ struct Soa4Deserializer
   }
 
   // Quantize a float box through writeQuadBox (the same path the stackless rebuild uses) and scatter its
-  // uint16s into child lane `i` of SoA node `p` (axis stride s2), exactly as soa4::Builder::emitSpan does.
-  static void writeSoaBoxLane(uint8_t *p, int s2, int i, bbox3f box)
+  // uint16s into child lane `i` of SoA node `p` (child count n), exactly as soa4::Builder::emitSpan does.
+  static void writeSoaBoxLane(uint8_t *p, int n, int i, bbox3f box)
   {
     alignas(16) uint8_t hdr[BVH_BLAS_NODE_SIZE]; // [min.x|max.x][min.y|max.y][min.z|max.z][skip]
     writeQuadBox(hdr, 0, box.bmin, box.bmax, v_splats(1.f), v_zero(), 0u, /*useHalves*/ false);
-    *(uint16_t *)(p + 0 * s2 + i * 2) = *(const uint16_t *)(hdr + 0);
-    *(uint16_t *)(p + 1 * s2 + i * 2) = *(const uint16_t *)(hdr + 4);
-    *(uint16_t *)(p + 2 * s2 + i * 2) = *(const uint16_t *)(hdr + 8);
-    *(uint16_t *)(p + 3 * s2 + i * 2) = *(const uint16_t *)(hdr + 2);
-    *(uint16_t *)(p + 4 * s2 + i * 2) = *(const uint16_t *)(hdr + 6);
-    *(uint16_t *)(p + 5 * s2 + i * 2) = *(const uint16_t *)(hdr + 10);
+    const uint16_t mn[3] = {*(const uint16_t *)(hdr + 0), *(const uint16_t *)(hdr + 4), *(const uint16_t *)(hdr + 8)};
+    const uint16_t mx[3] = {*(const uint16_t *)(hdr + 2), *(const uint16_t *)(hdr + 6), *(const uint16_t *)(hdr + 10)};
+    soa4::storeLaneBoxU16(p, n, i, mn, mx);
   }
 
   // Emit leaf `idx`'s inline body at `body_ofs`, re-pointing the quad-A apex base to the final vert
@@ -562,7 +591,7 @@ struct Soa4Deserializer
   void emitLeafBody(int body_ofs, int idx, bool is_short)
   {
     const Soa4Node &nd = nodes[idx];
-    uint32_t *b = (uint32_t *)(out->data() + body_ofs);
+    uint32_t *b = (uint32_t *)(out + body_ofs);
     if (nd.marker == RAW_LEAF_MARKER) // degenerate no-hit leaf: full body, verbatim, never re-pointed
     {
       b[0] = nd.w1;
@@ -584,6 +613,12 @@ struct Soa4Deserializer
     }
     else
     {
+      // the flags words can grow vertsOfs past what the serialized stream's base range promised
+      if (DAGOR_UNLIKELY((uint32_t)(newRelBase >> QUAD_BASE_ALIGN_SHIFT) > QUAD_BASE_MASK))
+      {
+        failed = true;
+        return;
+      }
       b[0] = o3Ahi | ((uint32_t)(newRelBase >> QUAD_BASE_ALIGN_SHIFT) & QUAD_BASE_MASK);
       b[1] = nd.w2;
       b[2] = nd.w3;
@@ -640,13 +675,13 @@ struct Soa4Deserializer
       }
       return emitSpan(cbuf, cn, cur, depth + 1);
     }
-    const int size = 16 * n + 12 * fullK + 4 * shortK;
+    const int size = 16 * n + 12 * fullK + 4 * shortK + (withFlags ? soa4::nodeFlagsBytes(n) : 0);
     const int nodeOfs = cur;
     // Node offsets must fit the child-ref [25:2] field and the 23-bit LeafRef parent field, and the
     // whole block must land inside the sized tree region -- every count/offset in the stream is data,
     // so never write past the buffer even if the analytic size disagreed (the cur != treeBytes
-    // reconciliation in build() only runs after the fact).
-    if (DAGOR_UNLIKELY((uint32_t)nodeOfs >= (1u << 25) || nodeOfs + size > treeBytesLimit))
+    // reconciliation in emitTree() only runs after the fact).
+    if (DAGOR_UNLIKELY((uint32_t)nodeOfs >= soa4::NODE_OFS_LIMIT || nodeOfs + size > treeBytes))
     {
       failed = true;
       return 0;
@@ -654,11 +689,11 @@ struct Soa4Deserializer
     const int s2 = n * 2; // bytes per SoA axis-array
     cur += size;
     int bodyOfs = nodeOfs + 16 * n; // inline leaf bodies follow the child words, in lane order
-    uint8_t *p = out->data() + nodeOfs;
+    uint8_t *p = out + nodeOfs;
     for (int i = 0; i < n; ++i)
     {
       const int ri = childRes[i];
-      writeSoaBoxLane(p, s2, i, nodes[ri].box);
+      writeSoaBoxLane(p, n, i, nodes[ri].box);
       uint32_t word;
       if (nodes[ri].isLeaf)
       {
@@ -679,14 +714,22 @@ struct Soa4Deserializer
       }
       *(uint32_t *)(p + 6 * s2 + i * 4) = word;
     }
-    return (uint32_t)nodeOfs | (uint32_t)(n - 1) | (shortMask << soa4::PTR_SHORT_SHIFT);
+    if (withFlags)
+    {
+      uint8_t *fw = out + bodyOfs; // the flags words: from the wire, else zeroed
+      memset(fw, 0, soa4::nodeFlagsBytes(n));
+      if (wantWireWords)
+        for (int i = 0; i < n; ++i)
+          if (nodes[childRes[i]].isLeaf)
+            *(uint16_t *)(fw + 2 * i) = wireWords[nodes[childRes[i]].leafOrd];
+    }
+    return soa4::makeNodeRef((uint32_t)nodeOfs, n, shortMask);
   }
 
-  // Two passes over the parsed table: analytic size (mirrors Builder::sizeTree), then one pre-order emit.
-  Soa4DeserializeResult build()
+  // Parse the whole wire tree, the flags section included, and size the SoA4 tree like Builder::sizeTree.
+  // False, no throw, on a valid tree the SoA4 encoding cannot represent.
+  bool parseAndSize()
   {
-    Soa4DeserializeResult res; // res.root defaults to invalid()
-
     stacklessOfs = 0;
     // Every parsed node advances stacklessOfs (overrun bails), so nodes <= treeBytes/16; reserve
     // for the legitimate leaf-dominated case (28 stackless bytes each) to avoid doubling churn.
@@ -695,39 +738,60 @@ struct Soa4Deserializer
       topLevel.push_back(parseNode(0));
     if (stacklessOfs != stacklessTreeBytes)
       bvhIoBail(crd, "bvhIO: tree stream inconsistent with header");
+    if (wantWireWords) // read before any soft-fail return, so the stream stays consistently consumed
+    {
+      wireWords.resize(leafCount); // a completed parse always yields at least one leaf
+      crd.read(wireWords.data(), leafCount * 2);
+    }
 
     // The LeafRef encoding carries a 23-bit (32MB) parent node offset -- a larger tree is not
     // representable. Not corrupt input, so return an invalid root rather than throw (matches Builder).
     if ((int64_t)stacklessTreeBytes + soa4::LEAF_BYTES > (int64_t)soa4::LEAF_ENTRY_OFS_MASK)
-      return res;
+      return false;
     const int64_t vertBytes = (int64_t)vertCount * vertStride;
     // Short bodies address verts through a 23-bit base: only safe when the whole [tree][verts] span fits
-    // it. Gate on the stackless size (>= the SoA4 tree), byte-for-byte as Builder does with blasSize.
+    // it. Gate on the stackless size, byte-for-byte as Builder does with blasSize; the flags
+    // words can push the SoA4 side past it, and the per-write base guards bound that side.
     shortEnabled = (int64_t)stacklessTreeBytes + soa4::LEAF_BYTES + vertBytes <= (int64_t)(soa4::SHORT_W1_FLIP - 1)
                                                                                    << QUAD_BASE_ALIGN_SHIFT;
 
-    // SoA4 tree bytes = 16*slots + 12*Lfull + 4*Lshort, slots = L + I - P1 (see Builder::sizeTree): every
+    // SoA4 tree bytes = 16*slots + 12*Lfull + 4*Lshort + the flags words, slots = L + I - P1 (see Builder::sizeTree): every
     // leaf/internal is a child slot of exactly one span except the promoted lone child of a 1-child span.
     const int Ls = shortEnabled ? shortMarkerCount : 0;
     const int P1 = oneChildInternalCount + (topLevel.size() == 1 ? 1 : 0);
     const int slots = leafCount + internalCount - P1;
-    const int treeBytes = slots > 0 ? 16 * slots + 12 * (leafCount - Ls) + 4 * Ls : (int)soa4::LEAF_BYTES;
-    treeBytesLimit = treeBytes;      // the emit write-bound (mirrors soa4::Builder)
+    // as Builder::sizeTree: an emitted node (2+ children) pays for flags words, a promoted 1-child node does not
+    int flagsBytes = 0;
+    if (withFlags)
+    {
+      flagsBytes = topLevel.size() >= 2 ? soa4::nodeFlagsBytes((int)topLevel.size()) : 0; // the implicit root
+      for (const Soa4Node &nd : nodes)
+        if (!nd.isLeaf && nd.childCount >= 2) // a 1-child node is promoted away, no words
+          flagsBytes += soa4::nodeFlagsBytes(nd.childCount);
+    }
+    treeBytes = slots > 0 ? 16 * slots + 12 * (leafCount - Ls) + 4 * Ls + flagsBytes : (int)soa4::LEAF_BYTES;
     vertsOfs = (treeBytes + 7) & ~7; // 8-align the vert21 region (tree blocks are only 4-aligned)
-    out->resize_noinit(size_t(vertsOfs) + size_t(vertBytes));
-    if (vertsOfs > treeBytes)
-      memset(out->data() + treeBytes, 0, size_t(vertsOfs - treeBytes)); // defined pad: byte-reproducible
+    return true;
+  }
 
+  // One pre-order emit into dst[0, treeBytes); the pad up to vertsOfs is zeroed so the bytes are
+  // reproducible. An invalid root on a tree the SoA4 encoding cannot represent.
+  soa4::RootRef emitTree(uint8_t *dst)
+  {
+    soa4::RootRef root; // invalid until the emit reconciles
+    out = dst;
+    if (vertsOfs > treeBytes)
+      memset(out + treeBytes, 0, size_t(vertsOfs - treeBytes));
     int cur = 0;
     uint32_t rootRef = emitSpan(topLevel.data(), (int)topLevel.size(), cur, 0);
     if (failed)
-      return res;
+      return root;
     if (rootRef & QUAD_LEAF_FLAG)
     {
-      // Degenerate whole-BLAS-is-one-leaf (never for real meshes): a lone 16B [W0 W1 W2 W3] block,
+      // Degenerate whole-BLAS-is-one-leaf (never for real meshes): a lone [W0 W1 W2 W3][flags] block,
       // referenced with tag 0 and handled by the dedicated pop path in the SoA4 traversals.
-      if (DAGOR_UNLIKELY(cur + soa4::LEAF_BYTES > treeBytesLimit)) // never write past the sized buffer
-        return res;
+      if (DAGOR_UNLIKELY(cur + soa4::LEAF_BYTES > treeBytes)) // never write past the sized buffer
+        return root;
       const Soa4Node &nd = nodes[(int)(rootRef & ~QUAD_LEAF_FLAG)];
       // A RAW no-hit leaf can never form a root: the boxless root block would hand its body to the
       // vertex-decoding walkers, and an empty single-no-hit-leaf BLAS is meaningless. Covers lone
@@ -735,23 +799,21 @@ struct Soa4Deserializer
       if (nd.marker == RAW_LEAF_MARKER)
         bvhIoBail(crd, "bvhIO: no-hit leaf as whole-BLAS root");
       const int newRelBase = (vertsOfs + (int)nd.vertIdx * vertStride) - (cur + 4);
-      uint32_t *w = (uint32_t *)(out->data() + cur);
+      if (DAGOR_UNLIKELY((uint32_t)(newRelBase >> QUAD_BASE_ALIGN_SHIFT) > QUAD_BASE_MASK)) // see emitLeafBody's guard
+        return root;
+      uint32_t *w = (uint32_t *)(out + cur);
       w[0] = nd.w0;
       w[1] = (nd.w1 & ~QUAD_BASE_MASK) | ((uint32_t)(newRelBase >> QUAD_BASE_ALIGN_SHIFT) & QUAD_BASE_MASK);
       w[2] = nd.w2;
       w[3] = nd.w3;
-      rootRef = (uint32_t)cur; // tag 0
+      w[4] = wantWireWords ? wireWords[nd.leafOrd] : 0u; // the flags word and its pad, present in both layouts
+      rootRef = (uint32_t)cur;                           // tag 0
       cur += soa4::LEAF_BYTES;
     }
     if (cur != treeBytes) // emit/sizing mismatch: structural corruption, refuse the buffer
-      return res;
-    memcpy(out->data() + vertsOfs, verts, size_t(vertBytes));
-
-    res.root.v = (int32_t)rootRef;
-    res.treeBytes = treeBytes;
-    res.vertsOfs = vertsOfs;
-    res.vertCount = (int)vertCount;
-    return res;
+      return root;
+    root.v = (int32_t)rootRef;
+    return root;
   }
 };
 } // namespace
@@ -795,42 +857,98 @@ struct CountingLoad final : public IGenLoad
   int getBlockLevel() override { return 0; }
 };
 
+// The header, the io flags and the 64-bit size gate before any allocation or read; the SoA4 tree is
+// never larger than the stackless one this bounds.
+static BlasIoHeader soa4ReadHeader(CountingLoad &crd, Soa4Deserializer &d, Soa4FlagSlots slots)
+{
+  BlasIoHeader h;
+  crd.read(&h, sizeof(h));
+  const uint32_t ioFlags = bvhIoReadFlags(crd, h);
+  if (h.vertStride != 8 || h.leafSize != BVH_BLAS_LEAF_SIZE)
+    DAGOR_THROW(IGenLoad::LoadException("bvhIO: unsupported BLAS layout", -1));
+  const int64_t treeBytes = h.treeBytes;
+  const int64_t vertsOfs = (treeBytes + 7) & ~int64_t(7);
+  if (treeBytes <= 0 || h.vertCount == 0 || vertsOfs + int64_t(h.vertCount) * h.vertStride > BVH_IO_MAX_BLAS_BYTES)
+    DAGOR_THROW(IGenLoad::LoadException("bvhIO: BLAS size out of range", -1));
+  d.wantWireWords = (ioFlags & BVH_IO_FLAG_EDGE_FLAGS) != 0;
+  d.withFlags = slots == Soa4FlagSlots::Always || d.wantWireWords;
+  d.vertCount = h.vertCount;
+  d.vertStride = h.vertStride;
+  d.stacklessTreeBytes = int(treeBytes);
+  return h;
+}
+
+static Soa4DeserializeResult soa4Result(const Soa4Deserializer &d, const BlasIoHeader &h, soa4::RootRef root, int64_t consumed)
+{
+  Soa4DeserializeResult res;
+  if (root.valid())
+  {
+    res.root = root;
+    res.treeBytes = d.treeBytes;
+    res.vertsOfs = d.vertsOfs;
+    res.vertCount = (int)d.vertCount;
+  }
+  res.edgeFlags = d.wantWireWords && root.valid();
+  res.box.bmin = v_ldu_p3_safe(h.bmin);
+  res.box.bmax = v_ldu_p3_safe(h.bmax);
+  res.serializedBytes = int(consumed); // header + verts + the variable-length wire tree
+  return res;
+}
+
 Soa4DeserializeResult deserializeQuadBLASToSoA4(IGenLoad &in_crd, dag::Vector<uint8_t> &out)
 {
   CountingLoad crd(in_crd);
-  BlasIoHeader h;
-  crd.read(&h, sizeof(h));
-  if (h.magic != BVH_IO_MAGIC || h.version != BVH_IO_VERSION)
-    DAGOR_THROW(IGenLoad::LoadException("bvhIO: bad BLAS magic/version", -1)); // decompressor streams fatal on tell()
-  if (h.vertStride != 8 || h.leafSize != BVH_BLAS_LEAF_SIZE)
-    DAGOR_THROW(IGenLoad::LoadException("bvhIO: unsupported BLAS layout", -1));
-
-  const int vertStride = h.vertStride;
-  // Reject an absurd header BEFORE allocating, in 64-bit, exactly as deserializeQuadBLAS does (the SoA4
-  // tree is never larger than the stackless one this bounds).
-  const int64_t treeBytes = h.treeBytes;
-  const int64_t vertsOfs = (treeBytes + 7) & ~int64_t(7);
-  const int64_t vertBytes = int64_t(h.vertCount) * vertStride;
-  if (treeBytes <= 0 || h.vertCount == 0 || vertsOfs + vertBytes > BVH_IO_MAX_BLAS_BYTES)
-    DAGOR_THROW(IGenLoad::LoadException("bvhIO: BLAS size out of range", -1));
-
-  // Verts arrive before the tree; buffer them (a fraction of the stackless detour's peak) so leaf boxes
-  // can be rebuilt during the single parse.
+  Soa4Deserializer d(crd);
+  const BlasIoHeader h = soa4ReadHeader(crd, d, Soa4FlagSlots::Always);
+  const int vertBytes = int(h.vertCount) * 8; // fits int by the size cap
+  // The verts precede the tree on the wire and their final offset is known only after the parse.
   dag::Vector<uint8_t> vertsBuf;
   vertsBuf.resize(size_t(vertBytes));
-  crd.read(vertsBuf.data(), int(vertBytes)); // tight on disk; fits int by the cap
-
-  Soa4Deserializer d(crd);
+  crd.read(vertsBuf.data(), vertBytes);
   d.verts = vertsBuf.data();
-  d.vertCount = h.vertCount;
-  d.vertStride = vertStride;
-  d.stacklessTreeBytes = int(treeBytes);
-  d.out = &out;
-  Soa4DeserializeResult res = d.build();
-  res.box.bmin = v_make_vec4f(h.bmin[0], h.bmin[1], h.bmin[2], 0.f);
-  res.box.bmax = v_make_vec4f(h.bmax[0], h.bmax[1], h.bmax[2], 0.f);
-  res.serializedBytes = int(crd.consumed); // header + verts + the variable-length wire tree
-  return res;
+  soa4::RootRef root;
+  if (d.parseAndSize())
+  {
+    out.resize_noinit(size_t(d.vertsOfs) + size_t(vertBytes));
+    root = d.emitTree(out.data());
+    if (root.valid())
+      memcpy(out.data() + d.vertsOfs, vertsBuf.data(), size_t(vertBytes));
+  }
+  return soa4Result(d, h, root, crd.consumed);
+}
+
+Soa4DeserializeResult deserializeQuadBLASToSoA4(IGenLoad &in_crd, dag::Span<uint8_t> dst, Soa4FlagSlots slots)
+{
+  CountingLoad crd(in_crd);
+  Soa4Deserializer d(crd);
+  const BlasIoHeader h = soa4ReadHeader(crd, d, slots);
+  const int vertBytes = int(h.vertCount) * 8;
+  // the parse reads the verts from the span's tail; the fit check keeps the emitted tree short of them
+  if (uint32_t(vertBytes) > dst.size())
+    bvhIoBail(crd, "bvhIO: verts exceed the span");
+  uint8_t *tailVerts = dst.data() + dst.size() - uint32_t(vertBytes);
+  crd.read(tailVerts, vertBytes);
+  d.verts = tailVerts;
+  soa4::RootRef root;
+  if (d.parseAndSize())
+  {
+    if (uint32_t(d.vertsOfs) + uint32_t(vertBytes) > dst.size())
+      bvhIoBail(crd, "bvhIO: SoA4 tree exceeds the span");
+    root = d.emitTree(dst.data());
+    if (root.valid())
+      memmove(dst.data() + d.vertsOfs, tailVerts, size_t(vertBytes));
+  }
+  return soa4Result(d, h, root, crd.consumed);
+}
+
+void collectLeafEdgeFlags(const uint8_t *tree, soa4::RootRef root, dag::Vector<uint16_t> &out)
+{
+  soa4::iterateLeafRefs(
+    tree, root, [](vec3f, vec3f) { return true; },
+    [&](vec3f, vec3f, soa4::LeafRef leaf, const soa4::LeafLoc &) {
+      out.push_back(soa4::leafEdgeFlags(tree, leaf));
+      return false;
+    });
 }
 
 } // namespace build_bvh

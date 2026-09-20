@@ -169,6 +169,7 @@ void BhvTextAreaEdit::recalc_content(const Element *elem, int /*axis*/, const Po
   {
     FormatParams params = {};
     fill_textarea_format_params(elem, elem_size, params);
+    params.breakLongWords = false; // cursor code maps lines to parsed blocks by identity, fragments break that
     fmtText->format(params);
   }
 

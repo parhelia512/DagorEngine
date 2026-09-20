@@ -6,10 +6,11 @@
 
 #include <util/dag_inttypes.h>
 #include <drv/3d/dag_consts.h>
+#include <drv/3d/dag_multi_interface.h>
 
 class Sbuffer;
 
-namespace d3d
+namespace d3d _MULTI_INTERFACE
 {
 /**
  * @brief Dispatches a compute shader with the specified thread group dimensions.
@@ -45,7 +46,7 @@ bool dispatch(uint32_t thread_group_x, uint32_t thread_group_y, uint32_t thread_
  * @return True if the dispatch was successful, false otherwise.
  */
 bool dispatch_indirect(Sbuffer *args, uint32_t byte_offset = 0, GpuPipeline gpu_pipeline = GpuPipeline::GRAPHICS);
-} // namespace d3d
+} // namespace d3d _MULTI_INTERFACE
 
 #if _TARGET_D3D_MULTI
 #include <drv/3d/dag_interface_table.h>

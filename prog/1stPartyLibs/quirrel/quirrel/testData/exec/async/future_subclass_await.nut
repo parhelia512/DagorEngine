@@ -12,7 +12,7 @@ class MyFuture(Future) {}   // inherits Future's constructor
 let f = MyFuture()
 async function awaiter() {
     let v = await f
-    print("await subclass, value == 7: " + (v == 7) + "\n")
+    println($"await subclass, value == 7: {v == 7}")
 }
 async function producer() {
     f.resolve(7)

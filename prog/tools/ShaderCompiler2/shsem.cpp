@@ -450,6 +450,14 @@ static eastl::optional<EvaluatedShaderVariant> evalShaderVariant(shader_decl *sh
   return res;
 }
 
+static void gatherLocalVars(shader_decl *sh, Parser &parser, const ShaderVariant::VariantInfo &variant, shc::ShaderContext &ctx)
+{
+  ShaderSemCode stubSemCode{ctx.tgtCtx()};
+  shc::VariantContext variantCtx = ctx.makeVariantContext(variant, stubSemCode, nullptr, false);
+  GatherVariantLocalVarsCB cb{variantCtx};
+  eval_shader(*sh, cb, parser);
+}
+
 static bool validate_cs(const ShaderClass &sclass, ShaderSemCode *ssc, int staticVariantCount)
 {
   bool has_cs = false, has_non_cs = false, has_void = false;
@@ -617,13 +625,14 @@ static void add_shader(shader_decl *sh, Parser &parser, Terminal *shname, shc::T
     sclass.shInitCode.clear();
 
     ShaderVariant::VariantSrc *staticVariant = staticVariants.getVariant(i);
+    sh_set_current_variant(staticVariant);
     if (!shc::isValidVariant(staticVariant, NULL))
     {
+      gatherLocalVars(sh, parser, ShaderVariant::VariantInfo{*staticVariant, nullptr}, shContext);
+      sclass.shInitCode.clear(); // discard stub-color init opcodes gathered from this invalid variant's body
       staticVariant->codeId = shc::shouldMarkInvalidAsNull() ? -1 : -2;
       continue;
     }
-
-    sh_set_current_variant(staticVariant);
 
     // empty class for storage
     eastl::unique_ptr<ShaderSemCode> ssc{};
@@ -731,15 +740,20 @@ static void add_shader(shader_decl *sh, Parser &parser, Terminal *shname, shc::T
         // for each dynamic variant:
         for (int d = 0; d < dynamicVariantCount; d++)
         {
-          if (!shc::isValidVariant(staticVariant, dynamicVariants.getVariant(d)))
-          {
-            if (!shc::shouldMarkInvalidAsNull())
-              invalidVariants.addInt(d);
-            continue;
-          }
-
           ShaderVariant::VariantSrc *dynamicVariant = dynamicVariants.getVariant(d);
           sh_set_current_dyn_variant(dynamicVariant);
+
+          if (!shc::isValidVariant(staticVariant, dynamicVariant))
+          {
+            // discard init code for invalid variants
+            int shInitCodeSizeBeforeInvalidVariant = sclass.shInitCode.size();
+            gatherLocalVars(sh, parser, ShaderVariant::VariantInfo(*staticVariant, dynamicVariant), shContext);
+            sclass.shInitCode.resize(shInitCodeSizeBeforeInvalidVariant);
+            if (!shc::shouldMarkInvalidAsNull())
+              invalidVariants.addInt(d);
+            sh_set_current_dyn_variant(nullptr);
+            continue;
+          }
 
           auto evaluatedVariantMaybe =
             evalShaderVariant(sh, parser, ShaderVariant::VariantInfo(*staticVariant, dynamicVariant), shContext);
@@ -1053,9 +1067,7 @@ void add_block(block_decl *bl, Parser &parser, shc::TargetContext &ctx)
     return;
 
   ShaderBlockLevel level = ShaderBlockLevel::UNDEFINED;
-  if (strcmp(bl->block_scope->text, "global_const") == 0)
-    level = ShaderBlockLevel::GLOBAL_CONST;
-  else if (strcmp(bl->block_scope->text, "frame") == 0)
+  if (strcmp(bl->block_scope->text, "frame") == 0)
     level = ShaderBlockLevel::FRAME;
   else if (strcmp(bl->block_scope->text, "scene") == 0)
     level = ShaderBlockLevel::SCENE;
@@ -1118,7 +1130,6 @@ void add_block(block_decl *bl, Parser &parser, shc::TargetContext &ctx)
   {
     REPORT_ERR("cannot add block", bl->name);
     delete blk;
-    return;
   }
 }
 

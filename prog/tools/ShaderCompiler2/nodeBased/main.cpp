@@ -71,6 +71,7 @@ static void showUsage()
          "  -singleInputJson:<graph file name> - set single graph file name (.json)\n"
          "  -singleOutputBin:<prefix of compiled shaders> - file name without extension\n"
          "  -dshlShaderName:<name for runtime usage> - sets shader name for dshl build, required\n"
+         "  -fsh:<version> - target shader model authored on the asset (e.g. 6.0); defaults to 5.0\n"
          "  -listTargets - show all available build targets\n"
          "  -target:<build target> - set build target\n"
          "  -optionalGraphs:<graph filename[;other graph filename]> - names for optional graphs for permutations compilation\n");
@@ -90,6 +91,7 @@ struct Settings
   String dshlShaderName;
   NodeBasedShaderManager::PLATFORM platformId;
   String optionalGraphs;
+  String fsh;
 };
 
 static Settings settings;
@@ -136,6 +138,9 @@ void processArguments(int argc, char **argv)
 
     if (strncmp(argv[i], "-dshlShaderName:", 16) == 0)
       settings.dshlShaderName.setStr(argv[i] + 16);
+
+    if (strncmp(argv[i], "-fsh:", 5) == 0)
+      settings.fsh.setStr(argv[i] + 5);
   }
 
   if (settings.verbose)
@@ -473,6 +478,9 @@ int DagorWinMain(bool)
   }
 
   shaderBlk.setStr("shader_name", "\n" + settings.dshlShaderName);
+  // fsh forwarded from the asset's virtual resource lands in shader_blk, where getShaderModelFsh reads it.
+  if (!settings.fsh.empty())
+    shaderBlk.setStr("fsh", settings.fsh);
   // @TODO: remove this lib-level dependency -- header should be enough, the substitution code is trivial
   dshl = ShaderGraphRecompiler::substituteDshl(shaderType, shaderBlk);
 
@@ -491,11 +499,12 @@ int DagorWinMain(bool)
             includePath:t="%s/../../../prog/gameLibs/publicInclude"
           }
           Compile {
-            fsh:t = 5.0
+            fsh:t = %s
             additional_dump:b = yes
           }
         )",
-    settings.singleOutputBin, exePath, outputDshl, exePath, exePath, exePath, exePath, exePath);
+    settings.singleOutputBin, exePath, outputDshl, exePath, exePath, exePath, exePath, exePath,
+    NodeBasedShaderManager::getShaderModelFsh(shaderBlk));
 
   FINALLY([&] {
     dd_erase(outputDshl.str());

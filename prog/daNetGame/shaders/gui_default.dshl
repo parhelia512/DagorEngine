@@ -227,9 +227,9 @@ shader gui_default
       float2 glyphSizeTexels = abs(float2(v.glyphSize)) + 1.0; // I don't know why it's encoded as glyphSize - 1. So have to add 1.
       float2 glyphTcSize = glyphSizeTexels * invFontTexSize;
       bool2 cornerMask = v.glyphSize > 0;
-      float2 offsetTexels = cornerMask ? extentRightBottomTexels : extentLeftTopTexels;
+      float2 offsetTexels = select(cornerMask, extentRightBottomTexels, extentLeftTopTexels);
 
-      o.glyphTcBox.xy = tc - (cornerMask ? glyphTcSize : 0.0);
+      o.glyphTcBox.xy = tc - select(cornerMask, glyphTcSize, 0.0);
       o.glyphTcBox.zw = o.glyphTcBox.xy + glyphTcSize;
 
       o.tc += offsetTexels * invFontTexSize;
@@ -392,7 +392,7 @@ shader gui_default
     ##else
       half select(half4 tc_xyxy, half4 box_ltrb, half inside, half outside)
       {
-        return all(tc_xyxy > box_ltrb ? bool4(1,1,0,0) : bool4(0,0,1,1)) ? inside : outside;
+        return all(select(tc_xyxy > box_ltrb, bool4(1,1,0,0), bool4(0,0,1,1))) ? inside : outside;
       }
       #define stepCount 3
       float GaussianBlur( float2 centreUV, float pixelXOffset, float4 box)

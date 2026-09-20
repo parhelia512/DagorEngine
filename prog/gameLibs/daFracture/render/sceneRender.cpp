@@ -162,7 +162,7 @@ void render_ri_meshes(const MeshRenderList &list, RenderPass render_pass)
       if (re.shElem != curSElem)
       {
         curSElem = re.shElem;
-        curDynVarsState = shaders::get_dynamic_variant_state(re.shElem->native());
+        curDynVarsState = get_dynamic_variant_states(re.shElem->native());
         curIsMultidraw = is_packed_material(curDynVarsState.const_state);
         if (curIsMultidraw)
           // TODO: calculate actual tex level in MeshRenderList::prepare
@@ -240,7 +240,7 @@ void render_ri_meshes(const MeshRenderList &list, RenderPass render_pass)
       if (curSElem != re.shElem)
       {
         flush(i);
-        set_states_for_variant(re.shElem->native(), md.dynVarsState.variant, md.dynVarsState.program, md.dynVarsState.state_index);
+        set_states_for_variant(re.shElem->native(), md.dynVarsState);
         curSElem = re.shElem;
       }
       if (curVb != re.vb)

@@ -63,7 +63,7 @@ macro USE_WATER_HEIGHTMAP(stage)
         {
           float2 tc = worldPosXZ * world_to_water_heightmap_tex.zw + world_to_water_heightmap_tex.xy;
           BRANCH
-          if (all(tc >= 0 && tc <= 1))
+          if (all(and(tc >= 0, tc <= 1)))
           {
             float h = tex2Dlod(water_heightmap_tex, float4(tc, 0, 0)).r;
             height = max(height, h * water_heightmap_min_max.z + water_heightmap_min_max.w);

@@ -98,7 +98,7 @@ struct LoadNbsVolfogJob final : public cpujobs::IJob
     highHeight(high_height)
   {}
 
-  const char *getJobName(bool &) const override { return "LoadNbsVolfogJob"; }
+  const char *getJobName(bool &) const override { return DAPROFILER_STRING("LoadNbsVolfogJob"); }
 
   void doJob() override
   {
@@ -132,8 +132,8 @@ void volfog_load_from_resources(
   logerr("Tried to load volFog graph with name %s, but was not found in gameResources, loading failed", root_graph);
 }
 
-ECS_ON_EVENT(OnLevelLoaded)
-static void nbs_volfog_init_es(const OnLevelLoaded &,
+ECS_ON_EVENT(EventRenderSceneLoaded)
+static void nbs_volfog_init_es(const EventRenderSceneLoaded &,
   const ecs::string &volfog_nbs__rootGraph,
   const float volfog_nbs__low_range,
   const float volfog_nbs__high_range,
@@ -153,7 +153,7 @@ struct LoadNbsEnviCoverJob final : public cpujobs::IJob
 
   LoadNbsEnviCoverJob(eastl::string &&res_name, const char *root_graph) : resName(res_name), rootGraph(root_graph) {}
 
-  const char *getJobName(bool &) const override { return "LoadNbsEnviCoverJob"; }
+  const char *getJobName(bool &) const override { return DAPROFILER_STRING("LoadNbsEnviCoverJob"); }
 
   void doJob() override
   {
@@ -174,8 +174,8 @@ struct LoadNbsEnviCoverJob final : public cpujobs::IJob
   }
 };
 
-ECS_ON_EVENT(OnLevelLoaded)
-static void nbs_envi_cover_init_es(const OnLevelLoaded &, const ecs::string &envi_cover_nbs__rootGraph)
+ECS_ON_EVENT(EventRenderSceneLoaded)
+static void nbs_envi_cover_init_es(const EventRenderSceneLoaded &, const ecs::string &envi_cover_nbs__rootGraph)
 {
   eastl::string fullName = node_based_shader_get_resource_name(envi_cover_nbs__rootGraph.c_str());
   if (get_resource_type_id(fullName.c_str()) == LShaderGameResClassId)
@@ -221,7 +221,7 @@ struct LoadNbsCloudsJob final : public cpujobs::IJob
 
   LoadNbsCloudsJob(eastl::string &&res_name, const char *root_graph) : resName(res_name), rootGraph(root_graph) {}
 
-  const char *getJobName(bool &) const override { return "LoadNbsCloudsJob"; }
+  const char *getJobName(bool &) const override { return DAPROFILER_STRING("LoadNbsCloudsJob"); }
 
   void doJob() override
   {
@@ -242,8 +242,8 @@ struct LoadNbsCloudsJob final : public cpujobs::IJob
   }
 };
 
-ECS_ON_EVENT(OnLevelLoaded)
-static void nbs_clouds_init_es(const OnLevelLoaded &, const ecs::string &clouds_nbs__rootGraph)
+ECS_ON_EVENT(EventRenderSceneLoaded)
+static void nbs_clouds_init_es(const EventRenderSceneLoaded &, const ecs::string &clouds_nbs__rootGraph)
 {
   eastl::string fullName = node_based_shader_get_resource_name(clouds_nbs__rootGraph.c_str());
   if (get_resource_type_id(fullName.c_str()) == LShaderGameResClassId)

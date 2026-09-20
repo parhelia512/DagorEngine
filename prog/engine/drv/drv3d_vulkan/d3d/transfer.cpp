@@ -6,8 +6,23 @@
 #include "global_lock.h"
 #include "device_context.h"
 #include "texture.h"
+#include <texResizeGeneric.h>
 
 using namespace drv3d_vulkan;
+
+int d3d::update_sub_region(BaseTexture *src, int src_subres_idx, int src_x, int src_y, int src_z, int src_w, int src_h, int src_d,
+  BaseTexture *dst, int dst_subres_idx, int dst_x, int dst_y, int dst_z)
+{
+  return cast_to_texture_base(dst)->updateSubRegionInternal(src, src_subres_idx, src_x, src_y, src_z, src_w, src_h, src_d,
+    dst_subres_idx, dst_x, dst_y, dst_z, false);
+}
+
+int d3d::update_sub_region_no_order(BaseTexture *src, int src_subres_idx, int src_x, int src_y, int src_z, int src_w, int src_h,
+  int src_d, BaseTexture *dst, int dst_subres_idx, int dst_x, int dst_y, int dst_z)
+{
+  return cast_to_texture_base(dst)->updateSubRegionInternal(src, src_subres_idx, src_x, src_y, src_z, src_w, src_h, src_d,
+    dst_subres_idx, dst_x, dst_y, dst_z, true);
+}
 
 bool d3d::stretch_rect(BaseTexture *src, BaseTexture *dst, const RectInt *rsrc, const RectInt *rdst)
 {
@@ -100,3 +115,5 @@ bool d3d::stretch_rect(BaseTexture *src, BaseTexture *dst, const RectInt *rsrc, 
   Globals::ctx.dispatchCmd<CmdBlitImage>({srcImg, dstImg, blit, /*whole_subres*/ rdst == nullptr});
   return true;
 }
+
+IMPLEMENT_D3D_TEX_RESIZE_API_USING_GENERIC()

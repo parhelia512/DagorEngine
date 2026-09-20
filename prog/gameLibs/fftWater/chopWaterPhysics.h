@@ -52,7 +52,7 @@ protected:
   ChopWaterGenerator &chopGen;
 
 public:
-  const char *getJobName(bool &) const override { return "water_phys_chop"; }
+  const char *getJobName(bool &) const override { return DAPROFILER_STRING("water_phys_chop"); }
   virtual void doJob(); // from IJob
 
   void calcWaveHeight();

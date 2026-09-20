@@ -35,7 +35,7 @@ var LINK_WHOLE_LIB = false // when true, standalone exe links against the whole 
 // invalidates cached DLLs (e.g. edits to llvm_jit.das, llvm_macro.das, llvm_jit_common.das,
 // runtime helper ABI, default target triple). Cache filenames fold this in, so a bump
 // makes every previously written DLL miss the cache on the next run and get GC'd.
-let LLVM_JIT_CODEGEN_VERSION : uint64 = 0x4bul   // block annotationData resolved via jit_ad_by_sid instead of a baked glob (0x4a: shuffle: native aarch64 tbl1 arm + lattice >> lowering)
+let LLVM_JIT_CODEGEN_VERSION : uint64 = 0x4cul   // every string argument of an extern is substituted, not just the ones which asked (0x4b: block annotationData resolved via jit_ad_by_sid instead of a baked glob)
 
 let JIT_FNV_PRIME : uint64 = 1099511628211ul
 
@@ -328,9 +328,6 @@ def public run_jit(prog : Program?; var ctx : Context?) : bool {  // nolint:STYL
     // Emit builtin-accessor globals internal + null in object mode (re-resolved by
     // the emit_aot_object_globinit ctor); reset after this run.
     g_emit_aot_object_globals = emit_aot_object
-    if (emit_aot_object) {
-        g_aot_func_globs |> clear()
-    }
     defer() { g_emit_aot_object_globals = false; }
     let use_dll = prog.policies.jit_dll_mode && das_is_dll_build() && !gen_exe && !compile_only && !emit_aot_object
     let opt_level = cli_opts.opt_level |> unwrap_or(prog.policies.jit_opt_level)
@@ -527,14 +524,17 @@ def public run_jit(prog : Program?; var ctx : Context?) : bool {  // nolint:STYL
                 panic("Internal jit error. Failed to get IR for functions {fn_names}.\n")
             }
             // Offline AOT object: build the self-registration + glob-re-resolution ctors (llvm_aot pass).
-            var aot_ctor : LLVMOpaqueValue? = null
-            var aot_dtor : LLVMOpaqueValue? = null
+            // The ctor goes to .init_array directly, not to llvm.global_ctors: the C API leaves
+            // UseInitArray off, so an ELF global_ctors lands in legacy .ctors, which lld and mold
+            // never run (and ld.bfd folds into .init_array, which would run the ctor twice).
             if (emit_aot_object) {
-                var pair = build_llvm_aot_ctors(g_ctx, g_mod, g_prim_t, funcs, uids, prog)
-                aot_ctor = pair._0
-                aot_dtor = pair._1
+                let aot_ctor = build_llvm_aot_ctors(g_ctx, g_mod, g_prim_t, funcs, uids, prog)._0
+                emit_aot_pull_anchor(g_prim_t, base_name(output_path))
+                if (aot_ctor != null) {
+                    emit_aot_init_array_entry(g_prim_t, aot_ctor, base_name(output_path))
+                }
             }
-            generate_global_ctors_dtors(g_prim_t, emit_aot_object ? false : !(use_dll || gen_exe), aot_ctor, aot_dtor)
+            generate_global_ctors_dtors(g_prim_t, emit_aot_object ? false : !(use_dll || gen_exe))
             if (g_jit_fast_math) {
                 apply_fast_math_to_module(g_mod)   // EXPERIMENT: stamp all FP ops fast (non-bit-exact ceiling)
             }

@@ -102,7 +102,7 @@ public:
 
   void resetStaticMemos();
 
-  bool addNativeModule(const char *module_name, const Sqrat::Object &exports, const char *module_doc_string = nullptr);
+  bool addNativeModule(const char *module_name, const Sqrat::Object &exports);
 
   // called before each reload runs the new modules, and from the dtor with is_closing.
   // Kept across reloads, unlike the script handlers of on_module_unload(); dups ignored

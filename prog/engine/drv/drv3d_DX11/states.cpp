@@ -769,7 +769,6 @@ void TextureFetchState::flush(bool force, uint32_t hdg_bits)
   ID3D11ShaderResourceView *views[MAX_RESOURCES];
   ID3D11SamplerState *states[MAX_RESOURCES];
 
-  G_STATIC_ASSERT(MAX_VS_SAMPLERS <= MAX_PS_SAMPLERS);
   SlotRange viewRange, samplerRange;
   if (resources[STAGE_PS].flush(STAGE_PS, force, views, states, viewRange, samplerRange))
   {
@@ -1269,7 +1268,7 @@ bool d3d::set_tex(unsigned shader_stage, unsigned slot, BaseTexture *tex)
   return true;
 }
 
-NO_UBSAN void d3d::set_sampler(unsigned shader_stage, unsigned slot, d3d::SamplerHandle sampler)
+void d3d::set_sampler(unsigned shader_stage, unsigned slot, d3d::SamplerHandle sampler)
 {
   ResAutoLock resLock;
   TextureFetchState::Resources &resources = g_render_state.texFetchState.resources[shader_stage];
@@ -1286,7 +1285,7 @@ NO_UBSAN void d3d::set_sampler(unsigned shader_stage, unsigned slot, d3d::Sample
   g_render_state.modified = true;
 }
 
-NO_UBSAN uint32_t d3d::register_bindless_sampler(SamplerHandle)
+uint32_t d3d::register_bindless_sampler(SamplerHandle)
 {
   G_ASSERTF(false, "d3d::register_bindless_sampler called on API without support");
   return 0;

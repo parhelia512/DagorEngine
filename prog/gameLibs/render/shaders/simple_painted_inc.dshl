@@ -70,6 +70,8 @@ macro SIMPLE_PAINTED_PS_IMPL(is_writing_gbuffer, use_translucency, use_sheen, ha
       #endif
       #ifdef VOXELIZE_DISCARD_PRIM
         VOXELIZE_DISCARD_PRIM
+      #else
+        VOXEL_BAKER_PRE_DISCARD
       #endif
       #ifndef IS_DYNAMIC
         #define IS_DYNAMIC 0
@@ -195,7 +197,7 @@ macro SIMPLE_PAINTED_PS_IMPL(is_writing_gbuffer, use_translucency, use_sheen, ha
           alpha = diffuseColor.a;
         ##endif
 
-        const float depth = voxel_baker_depth(worldPos, GET_SCREEN_POS(input.pos).xy);
+        VOXEL_BAKER_DEPTH(worldPos, GET_SCREEN_POS(input.pos).xy);
         return baker_output_from_gbuffer(gbuffer, depth, alpha,
           coloringMul, palRow, palIndex);
 #else

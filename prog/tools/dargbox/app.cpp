@@ -163,7 +163,7 @@ das::Context *get_context(int stack_size) { return new das::Context(stack_size);
 
 das::smart_ptr<das::FileAccess> get_file_access(char *pak)
 {
-  if (pak)
+  if (pak && *pak)
   {
     das::ModuleGroup libGroup;
     das::TextWriter logs;

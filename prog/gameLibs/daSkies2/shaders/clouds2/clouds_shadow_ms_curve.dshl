@@ -1,0 +1,15 @@
+//the multiple scattering brightening receivers apply on top of the last-octave
+//transmittance (hardcoded ms attenuation and contribution instead of 2 pow).
+macro CLOUDS_SHADOW_MS_CURVE(code)
+  hlsl(code) {
+    #ifndef CLOUDS_SHADOW_MS_CURVE_DEFINED
+    #define CLOUDS_SHADOW_MS_CURVE_DEFINED 1
+    half clouds_shadow_ms_curve(half t)
+    {
+      t *= t;
+      half t3 = t*t*t;
+      return t*(0.4h + t3*0.6h);
+    }
+    #endif
+  }
+endmacro

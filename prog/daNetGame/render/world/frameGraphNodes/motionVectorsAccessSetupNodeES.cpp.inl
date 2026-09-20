@@ -5,7 +5,7 @@
 #include <render/daFrameGraph/daFG.h>
 
 #include <render/renderEvent.h>
-#include <render/world/cameraParams.h>
+#include <render/cameraParams.h>
 #include <render/motionVectorAccess.h>
 #include <render/world/frameGraphHelpers.h>
 

@@ -88,8 +88,6 @@ static void processShaderBlocks(dag::Span<ShaderStateBlock *> blocks, SharedStor
   for (int i = 0; i < blocks.size(); i++)
   {
     G_ASSERT(blocks[i]);
-    if (blocks[i]->layerLevel == ShaderBlockLevel::GLOBAL_CONST)
-      continue;
     G_ASSERT(blocks[i]->layerLevel != ShaderBlockLevel::UNDEFINED && blocks[i]->layerLevel < ShaderBlockLevel::SHADER);
     blk_count[size_t(blocks[i]->layerLevel)]++;
     fast_sort(blocks[i]->shConst.suppBlk,
@@ -122,11 +120,6 @@ static void processShaderBlocks(dag::Span<ShaderStateBlock *> blocks, SharedStor
   memset(blk_count, 0, sizeof(blk_count));
   for (int i = 0; i < blocks.size(); i++)
   {
-    if (blocks[i]->layerLevel == ShaderBlockLevel::GLOBAL_CONST)
-    {
-      blocks[i]->btd.uidMask = blocks[i]->btd.uidVal = 0;
-      continue;
-    }
     auto layer = size_t(blocks[i]->layerLevel);
     blocks[i]->btd.uidMask = ((1 << bit_per_layer[layer]) - 1) << sum_shift[layer];
     blocks[i]->btd.uidVal = blk_count[layer] << sum_shift[layer];
@@ -138,7 +131,7 @@ static void processShaderBlocks(dag::Span<ShaderStateBlock *> blocks, SharedStor
   for (int i = 0; i < blocks.size(); i++)
   {
     auto layer = blocks[i]->layerLevel;
-    if (layer == ShaderBlockLevel::FRAME || layer == ShaderBlockLevel::GLOBAL_CONST)
+    if (layer == ShaderBlockLevel::FRAME)
     {
       blocks[i]->btd.suppMask = 0;
       blocks[i]->btd.suppListOfs = -1;
@@ -2026,12 +2019,8 @@ bool make_scripted_shaders_dump(const char *dump_name, const char *cache_filenam
   sh_debug(SHLOG_NORMAL, "[INFO] Calculated checksum in %gms", get_time_usec(reft) / 1000.);
   reft = ref_time_ticks();
 
-  {
-    eastl::string logHash{};
-    for (uint8_t byte : mapped->header.checksumHash)
-      logHash.append_sprintf("%02x", byte);
-    finalReport.aprintf(0, "Scripted shaders bindump:\n  | version : %d\n  | csum    : %s\n", mapped->header.version, logHash.c_str());
-  }
+  finalReport.aprintf(0, "Scripted shaders bindump:\n  | version : %d\n  | csum    : %s\n", mapped->header.version,
+    hash_string(mapped->header.checksumHash).c_str());
 
   sh_debug(SHLOG_INFO, "  %d vars (%d global vars), storage=%d", vars.vars.size(), vars.varLists[0].v.size(),
     vars.storage.size() * sizeof(vars.storage[0]));
@@ -2059,8 +2048,73 @@ bool make_scripted_shaders_dump(const char *dump_name, const char *cache_filenam
 
   fileWriter.seekto(0);
   fileWriter.write(contentWriter.mData.data(), contentWriter.mData.size());
+  fileWriter.close();
 
   sh_debug(SHLOG_NORMAL, "[INFO] Saved bindump in %gms", get_time_usec(reft) / 1000.);
+
+  // Due to issues with files in some releases (and bindump is one of the first loaded => it gets hit with it), let's give in to
+  // paranoia and double check ourselves
+  {
+    reft = ref_time_ticks();
+    try
+    {
+      FullFileLoadCB crd{dump_name};
+      if (!crd.fileHandle)
+      {
+        sh_debug(SHLOG_FATAL, "Generated bindump file is unreadable! Something went wrong when writing it");
+        return false;
+      }
+      Tab<uint8_t> loadedData(df_length(crd.fileHandle));
+      crd.read(loadedData.data(), loadedData.size());
+      auto mappedDump = bindump::map<shader_layout::ScriptedShadersBinDumpCompressed>(loadedData.data());
+      if (!mappedDump)
+      {
+        sh_debug(SHLOG_FATAL, "Generated bindump file is not mappable! Something went wrong when writing it");
+        return false;
+      }
+
+      const auto &header = mappedDump->header;
+
+      if (header.magicPart1 != _MAKE4C('VSPS') || header.magicPart2 != _MAKE4C('dump') || header.version != SHADER_BINDUMP_VER)
+      {
+        sh_debug(SHLOG_FATAL,
+          "Generated bindump file contains invalid magic=%x|%x version=%d (expected magic=%x|%x version=%d)! Something went wrong "
+          "when writing it",
+          header.magicPart1, header.magicPart2, header.version, _MAKE4C('VSPS'), _MAKE4C('dump'), SHADER_BINDUMP_VER);
+        return false;
+      }
+
+      static_assert(sizeof(csum.data) == sizeof(header.checksumHash));
+      if (memcmp(header.checksumHash, csum.data, sizeof(csum.data)) != 0)
+      {
+        sh_debug(SHLOG_FATAL,
+          "Generated bindump file contains invalid checksum=%s (expected checksum=%s)! Something went wrong "
+          "when writing it",
+          hash_string(header.checksumHash).c_str(), hash_string(csum.data).c_str());
+        return false;
+      }
+
+      static_assert(offsetof(eastl::remove_pointer_t<decltype(mappedDump)>, scriptedShadersBindumpCompressed) == sizeof(header));
+      auto loadedContent = dag::ConstSpan<uint8_t>{loadedData.data(), loadedData.size()}.subspan(sizeof(header));
+
+      const CryptoHash loadedCsum = blake3_csum(loadedContent.data(), loadedContent.size());
+
+      static_assert(sizeof(loadedCsum.data) == sizeof(header.checksumHash));
+      if (memcmp(header.checksumHash, loadedCsum.data, sizeof(loadedCsum.data)) != 0)
+      {
+        sh_debug(SHLOG_FATAL, "Generated corrupted bindump file! Content checksum=%s does not match header checksum=%s",
+          hash_string(loadedCsum.data).c_str(), hash_string(header.checksumHash).c_str());
+        return false;
+      }
+    }
+    catch (...)
+    {
+      sh_debug(SHLOG_FATAL, "Generated bindump file is unreadable! Something went wrong when writing it");
+      return false;
+    }
+    sh_debug(SHLOG_NORMAL, "[INFO] Validated bindump file in %gms", get_time_usec(reft) / 1000.);
+  }
+
   sh_debug(SHLOG_NORMAL, "%s", finalReport.c_str());
 
   return true;

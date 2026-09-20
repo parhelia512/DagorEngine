@@ -277,6 +277,29 @@ inline void anim_graph_getStRec(const ::AnimV20::AnimationGraph &animGraph,
   context->invoke(block, &arg, nullptr, at);
 }
 
+inline int anim_graph_getStateChanCount(const ::AnimV20::AnimationGraph &animGraph) { return animGraph.getStDest().size(); }
+
+inline ::AnimV20::IAnimBlendNode *anim_graph_getStateChanFifo(const ::AnimV20::AnimationGraph &animGraph, int chan_idx)
+{
+  return animGraph.getStDest()[chan_idx].fifo.get();
+}
+
+inline int anim_graph_getStateChanNodemaskOfs(const ::AnimV20::AnimationGraph &animGraph, int chan_idx)
+{
+  return animGraph.getStDest()[chan_idx].defNodemaskIdx;
+}
+
+inline ::AnimV20::AnimationGraph::StateRec *anim_graph_getStateRec(::AnimV20::AnimationGraph &animGraph, int state_idx, int chan_idx)
+{
+  dag::Span<::AnimV20::AnimationGraph::StateRec> state = animGraph.getStateRW(state_idx);
+  return uint32_t(chan_idx) < state.size() ? &state[chan_idx] : nullptr;
+}
+
+inline const char *anim_get_fifo_morph_type_name(::AnimV20::FifoMorphType morph_type)
+{
+  return ::AnimV20::fifoMorphTypeNames[morph_type];
+}
+
 inline float AnimBlendCtrl_ParametricSwitcherItemAnim_getStart(const ::AnimV20::AnimBlendCtrl_ParametricSwitcher::ItemAnim &item)
 {
   return item.range[0];
@@ -406,6 +429,31 @@ inline ::AnimV20::AnimData *AnimBlendNodeLeaf_get_anim(T &anim)
 inline ::AnimV20::AnimData *AnimData_get_source_anim_data(const ::AnimV20::AnimData &anim_data)
 {
   return anim_data.getSourceAnimData();
+}
+
+inline float AnimData_duration(const ::AnimV20::AnimData &anim_data) { return anim_data.getDuration(); }
+
+inline int AnimData_note_count(const ::AnimV20::AnimData &anim_data) { return (int)anim_data.dumpData.noteTrack.size(); }
+
+inline const char *AnimData_note_name(const ::AnimV20::AnimData &anim_data, int idx) { return anim_data.dumpData.noteTrack[idx].name; }
+
+inline float AnimData_note_time(const ::AnimV20::AnimData &anim_data, int idx)
+{
+  return float(anim_data.dumpData.noteTrack[idx].time) / float(::AnimV20::TIME_TicksPerSec);
+}
+
+inline int AnimData_node_count(const ::AnimV20::AnimData &anim_data) { return (int)anim_data.anim.rot.nodeNum; }
+
+inline const char *AnimData_node_name(const ::AnimV20::AnimData &anim_data, int node_idx)
+{
+  return anim_data.anim.rot.nodeName[node_idx];
+}
+
+inline void AnimData_sample_node(const ::AnimV20::AnimData &anim_data, int node_idx, float time, das::float3x4 &out_tm)
+{
+  TMatrix tm = TMatrix::IDENT;
+  anim_data.sampleNodeTm(dag::Index16(node_idx), time, tm);
+  out_tm = dag::bit_cast<das::float3x4>(tm);
 }
 
 inline ::AnimV20::IAnimBlendNode *IAnimBlendNodePtr_get(IAnimBlendNodePtr &node_ptr) { return node_ptr.get(); }

@@ -61,7 +61,7 @@
 #include <ui/uiRender.h>
 #include <render/world/dynModelRenderPass.h>
 #include <render/world/frameGraphHelpers.h>
-#include <render/world/cameraInCamera.h>
+#include <render/cameraInCamera/cameraInCamera.h>
 #include "depthBounds.h"
 #include <render/world/bvh.h>
 #include "main/level.h"
@@ -137,7 +137,7 @@ static struct StaticShadowsLandmeshCullingJob final : public cpujobs::IJob
 
   void clear() { clear_and_shrink(cullingData.heightmapData.patches); }
 
-  const char *getJobName(bool &) const override { return "static_shadow_lmesh_cull"; }
+  const char *getJobName(bool &) const override { return DAPROFILER_STRING("static_shadow_lmesh_cull"); }
 
   virtual void doJob() override { landmesh::frustum_cull(*lmeshMgr, cullDesc, cullingData); }
 } static_shadows_lmesh_cull_job;
@@ -260,23 +260,11 @@ void ShadowsManager::initShadowsDownsampleNode()
         .atStage(dafg::Stage::POST_RASTER)
         .useAs(dafg::Usage::DEPTH_ATTACHMENT)
         .handle();
-    {
-      d3d::SamplerInfo smpInfo;
-      smpInfo.filter_mode = d3d::FilterMode::Compare;
-      smpInfo.mip_map_mode = d3d::MipMapMode::Point;
-      smpInfo.address_mode_u = smpInfo.address_mode_v = smpInfo.address_mode_w = d3d::AddressMode::Clamp;
-      registry.create("downsampled_shadows_sampler").blob<d3d::SamplerHandle>(d3d::request_sampler(smpInfo));
-    }
     registry.requestState().setFrameBlock("global_frame");
-    d3d::SamplerInfo smpInfo;
-    smpInfo.filter_mode = d3d::FilterMode::Point;
-    smpInfo.address_mode_u = smpInfo.address_mode_v = smpInfo.address_mode_w = d3d::AddressMode::Clamp;
-    d3d::SamplerHandle csmSampler = d3d::request_sampler(smpInfo);
 
     auto csmTextureHndl = registry.readTexHndlPs("csm_texture");
 
-    return [this, downsampledShadowsHndl, csmSamplerVarId = get_shader_variable_id("shadow_cascade_depth_tex_samplerstate"),
-             csmSampler, csmTextureHndl]() {
+    return [this, downsampledShadowsHndl, csmTextureHndl]() {
       csm->setCascadesToShader();
 
       const BaseTexture *csm_shadows = csmTextureHndl.get();
@@ -284,8 +272,6 @@ void ShadowsManager::initShadowsDownsampleNode()
       // TODO: shouldn't this be an assertion?
       if (!csm_shadows)
         return;
-      d3d::SamplerHandle previousCsmSampler = ShaderGlobal::get_sampler(csmSamplerVarId);
-      ShaderGlobal::set_sampler(csmSamplerVarId, csmSampler);
 
       G_ASSERT_RETURN(shadowsDownsample.getElem(), );
 
@@ -295,7 +281,6 @@ void ShadowsManager::initShadowsDownsampleNode()
       d3d::set_render_target({downsampledShadowsHndl.get(), 0, 0}, DepthAccess::RW, {});
 
       shadowsDownsample.render();
-      ShaderGlobal::set_sampler(csmSamplerVarId, previousCsmSampler);
       shaders::overrides::reset();
     };
   });
@@ -525,23 +510,37 @@ void ShadowsManager::combineShadows(const dafg::multiplexing::Index multiplex_in
   combine_shadows.render();
 }
 
+static bool are_ri_visibility_lods_loaded(const RiGenVisibility *visibility, bool any_lod_quality_fine)
+{
+  return any_lod_quality_fine ? rendinst::isRiGenVisibilityResLoadingFinished(visibility)
+                              : rendinst::isRiGenVisibilityForcedLodLoaded(visibility);
+}
+
 struct StaticShadowCullJob final : public cpujobs::IJob
 {
   mat44f cullTm;
   Point3 viewPos;
   bool readyToRenderWithFinalQuality = false;
   RiGenVisibility *visibility = nullptr;
+  mat44f culledTm = {};
+  bool culledThisFrame = false;
 
   StaticShadowCullJob() = default;
   StaticShadowCullJob(const StaticShadowCullJob &) = delete;
   ~StaticShadowCullJob() { rendinst::destroyRIGenVisibility(visibility); }
 
-  const char *getJobName(bool &) const override { return "staticShadowVisibility"; }
+  const char *getJobName(bool &) const override { return DAPROFILER_STRING("staticShadowVisibility"); }
 
   void doJob() override
   {
+    culledThisFrame = false;
+    if (!are_ri_visibility_lods_loaded(visibility, is_bvh_enabled()) && memcmp(&cullTm, &culledTm, sizeof(cullTm)) == 0)
+      return;
+
     rendinst::prepareRIGenExtraVisibility(cullTm, viewPos, *visibility, true, nullptr);
     rendinst::prepareRIGenVisibility(Frustum(cullTm), viewPos, visibility, true, nullptr);
+    culledTm = cullTm;
+    culledThisFrame = true;
   }
 };
 DAG_DECLARE_RELOCATABLE(StaticShadowCullJob);
@@ -585,13 +584,11 @@ struct ShadowsManager::StaticShadowCallback final : public IStaticShadowsCB
     threadpool::wait(&job);
     RiGenVisibility *rendinstStaticShadowVisibility = job.visibility;
     bool anyLodQualityFine = is_bvh_enabled();
-    auto riGenLodVisibilitycheck =
-      anyLodQualityFine ? rendinst::isRiGenVisibilityResLoadingFinished : rendinst::isRiGenVisibilityForcedLodLoaded;
-    bool riLodsLoaded = riGenLodVisibilitycheck(rendinstStaticShadowVisibility);
+    bool riLodsLoaded = are_ri_visibility_lods_loaded(rendinstStaticShadowVisibility, anyLodQualityFine);
     if (!riLodsLoaded && !anyLodQualityFine)
       rendinst::riGenVisibilityScheduleForcedLodLoading(rendinstStaticShadowVisibility);
-    job.readyToRenderWithFinalQuality =
-      riLodsLoaded && (!rendinst::rendinstGlobalShadows || rendinst::render::isRIGenGlobalShadowTexturesReady());
+    job.readyToRenderWithFinalQuality = job.culledThisFrame && riLodsLoaded &&
+                                        (!rendinst::rendinstGlobalShadows || rendinst::render::isRIGenGlobalShadowTexturesReady());
     return job.readyToRenderWithFinalQuality;
   }
 
@@ -708,12 +705,6 @@ void ShadowsManager::resetShadowsVisibilityTesting()
 }
 
 BaseTexture *ShadowsManager::getStaticShadowsTex() { return staticShadows ? staticShadows->getTex().getBaseTex() : nullptr; }
-
-void ShadowsManager::restoreShadowSampler()
-{
-  if (staticShadows)
-    staticShadows->restoreShadowSampler();
-}
 
 bool ShadowsManager::insideStaticShadows(const Point3 &pos, float radius) const
 {
@@ -908,6 +899,9 @@ void ShadowsManager::initStaticShadow()
   debug("static shadowsQuality = %d, cascades = %d, isTimeDynamic = %d", eastl::to_underlying(shadowsQuality), cascades,
     (int)isTimeDynamic);
   staticShadows = eastl::make_unique<ToroidalStaticShadows>(toroidalShadowsRes, cascades, staticShadowDistance, 512.f, true);
+  // Shares RI_EXTRA_VB_CTX_MAIN on purpose: a dedicated context would cost another 64 * rendinstExtraMaxCnt bytes of vb
+  staticShadowsRiexBuilder = eastl::make_unique<rendinst::render::RiExtraRendererBuilder>(RI_EXTRA_VB_CTX_MAIN,
+    rendinst::RenderPass::ToShadow, rendinst::OptimizeDepthPass::Yes);
   staticShadows->enableTextureSpaceAlignment(true);
 
   if (isTimeDynamic)
@@ -1072,6 +1066,7 @@ void ShadowsManager::closeStaticShadow()
   shaders::overrides::destroy(staticShadowsOverride);
   shaders::overrides::destroy(staticShadowsOverrideFlipCull);
   staticShadows.reset();
+  staticShadowsRiexBuilder.reset();
   closeAllStaticShadowsVisibility();
   staticShadowRenderNode = {};
 }
@@ -1457,21 +1452,25 @@ void ShadowsManager::renderStaticShadowsRegion(
   shadowInfoProvider.renderStaticSceneForShadowPass(RENDER_STATIC_SHADOW, camera_pos, view_itm, cullingFrustum);
 
   {
-    SCENE_LAYER_GUARD(rendinstDepthSceneBlockId);
 
     auto &job = static_shadow_jobs[cascade][region];
     G_ASSERT(job.done);
     RiGenVisibility *rendinstStaticShadowVisibility = job.visibility;
 
+    rendinst::render::RiExtraRenderer *riexRenderer = staticShadowsRiexBuilder->buildNow(*rendinstStaticShadowVisibility,
+      globalFrameBlockId, rendinstDepthSceneBlockId, TexStreamingContext(0));
+
+    SCENE_LAYER_GUARD(rendinstDepthSceneBlockId);
     // ccw + bias
     rendinst::render::renderRIGen(rendinst::RenderPass::ToShadow, rendinstStaticShadowVisibility, view_itm,
-      rendinst::LayerFlag::Opaque | rendinst::LayerFlag::NotExtra, rendinst::OptimizeDepthPass::No);
+      rendinst::LayerFlag::Opaque | rendinst::LayerFlag::NotExtra, rendinst::OptimizeDepthPass::No, 1, rendinst::AtestStage::All,
+      riexRenderer);
 
     // cw
     shaders::overrides::reset();
     shaders::overrides::set(staticShadowsOverrideFlipCull.get());
     rendinst::render::renderRIGen(rendinst::RenderPass::ToShadow, rendinstStaticShadowVisibility, view_itm,
-      rendinst::LayerFlag::Opaque, rendinst::OptimizeDepthPass::No);
+      rendinst::LayerFlag::Opaque, rendinst::OptimizeDepthPass::No, 1, rendinst::AtestStage::All, riexRenderer);
     shaders::overrides::reset();
     shaders::overrides::set(staticShadowsOverride.get());
   }
@@ -1501,7 +1500,13 @@ void ShadowsManager::updateShadowsQFromSun()
 {
   shadowsQuality = settingsShadowQuality;
   if (is_rtsm_enabled())
-    shadowsQuality = ShadowsQuality::SHADOWS_MEDIUM;
+  {
+    // TODO: This is a hack that uses CSM to have dynamic object shadows in RTSM, when they are not in BVH.
+    // It relies on static objects not getting rendered into CSM on low quality.
+    // It also can introduce light leaks in reflections due to static shadow accuracy issues.
+    shadowsQuality = is_bvh_dyn_models_enabled() ? ShadowsQuality::SHADOWS_MEDIUM : ShadowsQuality::SHADOWS_LOW;
+    return;
+  }
   if (!get_daskies() || shadowsQuality <= ShadowsQuality::SHADOWS_LOW)
     return;
 

@@ -9,6 +9,7 @@
 #include <EASTL/algorithm.h>
 #include <EASTL/type_traits.h>
 #include <util/dag_hash.h>
+#include <util/dag_compilerDefs.h>
 #include <ska_hash_map/flat_hash_map2.hpp>
 
 
@@ -32,7 +33,7 @@ inline bool operator==(const char *a, const eastl::string_view &b) { return strc
 //  * Better (arguably) hash function (FNV1 instead of djb)
 //
 template <typename Str = eastl::string>
-class FastHashNameMapT
+class DAGOR_WARN_IF_UNUSED FastHashNameMapT
 {
 public:
   using NameIdsType = ska::flat_hash_map<Str, int, HashFNV1A<Str>>;

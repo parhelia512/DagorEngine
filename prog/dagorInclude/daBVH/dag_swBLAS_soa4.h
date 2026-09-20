@@ -9,16 +9,17 @@
 // The stackless layout (dag_swBLAS_ray.h, also the GPU upload format) stores ONE box per node
 // ("[3x(min|max<<16)][skip]") with children laid consecutively and a skip word jumping a whole
 // subtree. SoA4 instead stores, per internal node, its N (2..4) CHILD boxes already transposed to
-// SoA plus one child WORD per child, then the leaf children's bodies inline -- 16*N + 12*fullLK +
-// 4*shortLK bytes:
+// SoA plus one child WORD per child, then the leaf children's bodies inline, then one edge flags
+// word per child lane -- 16*N + 12*fullLK + 4*shortLK + (2*N rounded up to 4) bytes:
 //   uint16 minX[N], minY[N], minZ[N], maxX[N], maxY[N], maxZ[N];  // 12*N B: the N child boxes (SoA)
 //   uint32 word[N];  // leaf child -> its W0 verbatim; internal child -> child node ref (see below)
 //   bodies[LK];      // leaf bodies in child-lane order: full = 12B (W1 W2 W3), short = 4B
+//   uint16 flags[N]; // Jolt's active edges of the lane's leaf (see leafFlagsOfs), 0 for an internal lane; padded to 4
 // The two word cases cannot collide: a leaf's W0 always has bit 31 set (QUAD_LEAF_FLAG) while node
 // offsets stay below 32 MB (bit 31 clear). An internal child ref packs, besides the offset,
 // everything needed to decode the TARGET node before reading it:
 //   bits [1:0]   = N-1 of the target node (2/3/4 children; 0 is reserved for the degenerate
-//                  whole-BLAS-is-one-leaf root, a lone 16-byte [W0 W1 W2 W3] block)
+//                  whole-BLAS-is-one-leaf root, a lone 20-byte [W0 W1 W2 W3][flags pad] block)
 //   bits [25:2]  = target node byte offset (4-aligned)
 //   bits [29:26] = target node's SHORT-leaf lane mask
 // SHORT leaf: a single-quad leaf (no quad B) stores a 4-byte body instead of 12 -- its source W2/W3
@@ -27,9 +28,9 @@
 // at conversion). Quad-B fields are implied zero, which the shared hasB sentinel (o1B == o2B)
 // already reads as "no quad B".
 // A full leaf costs 12 (box) + 4 (W0 word) + 12 (body) = 28 bytes == stackless; a short leaf costs
-// 20; an internal child 16 == stackless -- so the SoA4 tree is stackless size minus 8 bytes per
-// singleton. The buffer layout is [tree][pad to 8][vert21 verts], same as stackless; the vert
-// region is byte-identical, so vertex-index attribution (blasNodeRanges etc.) is layout-neutral.
+// 20; an internal child 16 == stackless; the flags words add 2 per lane, rounded to 4 per node.
+// The buffer layout is [tree][pad to 8][vert21 verts], same as stackless; the vert
+// region is byte-identical, so vertex-index attribution (per-node vert21 streams etc.) is layout-neutral.
 //
 // Why: the SIMD slab test wants child boxes in SoA in one cache line. The stackless path reads N
 // scattered 16B nodes and transposes at runtime; SoA4 removes both. A leaf child needs no pointer
@@ -44,7 +45,7 @@
 
 namespace soa4
 {
-static constexpr int LEAF_BYTES = 16;    // degenerate whole-BLAS-is-one-leaf root block: [W0 W1 W2 W3]
+static constexpr int LEAF_BYTES = 20;    // degenerate whole-BLAS-is-one-leaf root block: [W0 W1 W2 W3][flags u16, pad u16]
 static constexpr uint32_t TAG_MASK = 3u; // child word low 2 bits: 1/2/3 = internal node w/ 2/3/4 kids (0 = degenerate root leaf)
 static constexpr uint32_t PTR_OFS_MASK = 0x03FFFFFCu; // internal word bits [25:2]: target node byte offset
 static constexpr uint32_t PTR_SHORT_SHIFT = 26;       // internal word bits [29:26]: target node's short-leaf lane mask
@@ -73,6 +74,9 @@ static constexpr uint32_t LEAF_ENTRY_FLAG = 0x80000000u;
 static constexpr uint32_t LEAF_ENTRY_SHORT_SHIFT = 27;
 static constexpr uint32_t LEAF_ENTRY_N_SHIFT = 25;
 static constexpr uint32_t LEAF_ENTRY_OFS_MASK = 0x01FFFFFCu;
+// Node-offset envelope every emitter refuses at (LEAF_ENTRY_OFS_MASK + 4): half the 26-bit ref
+// field, kept so LeafRef parents stay addressable.
+static constexpr uint32_t NODE_OFS_LIMIT = 1u << 25;
 
 static __forceinline LeafRef makeLeafRef(uint32_t node_ptr, int lane)
 {
@@ -80,6 +84,31 @@ static __forceinline LeafRef makeLeafRef(uint32_t node_ptr, int lane)
          ((node_ptr & TAG_MASK) << LEAF_ENTRY_N_SHIFT) | (node_ptr & LEAF_ENTRY_OFS_MASK) | (uint32_t)lane;
 }
 static __forceinline LeafRef makeRootLeafRef(uint32_t block_ofs) { return LEAF_ENTRY_FLAG | block_ofs; } // count field 0
+
+// One home of the (node_index << 2) | lane location key: the parent back-link emitFromSah
+// packs into parent_packed, and the leaf-location key its consumers record.
+static __forceinline uint32_t packNodeLane(uint32_t node_index, int lane) { return (node_index << 2) | (uint32_t)lane; }
+static __forceinline uint32_t nodeLaneNode(uint32_t key) { return key >> 2; }
+static __forceinline int nodeLaneLane(uint32_t key) { return (int)(key & 3u); }
+
+// The one home of the internal child-ref word: node block offset, 2-bit children tag, and the
+// short-leaf lane mask. Emitters without 4 B short leaf bodies pass short_mask 0.
+static __forceinline uint32_t makeNodeRef(uint32_t node_ofs, int n, uint32_t short_mask)
+{
+  return (node_ofs & PTR_OFS_MASK) | (uint32_t)(n - 1) | (short_mask << PTR_SHORT_SHIFT);
+}
+
+// The one home of the lane-strided box store: six u16 axis arrays (min xyz then max xyz), each
+// n-strided, one lane per child.
+static __forceinline void storeLaneBoxU16(uint8_t *node, int n, int lane, const uint16_t mn[3], const uint16_t mx[3])
+{
+  uint16_t *a = (uint16_t *)node;
+  for (int k = 0; k < 3; ++k)
+  {
+    a[k * n + lane] = mn[k];
+    a[(3 + k) * n + lane] = mx[k];
+  }
+}
 
 // Load 4 contiguous uint16 (one SoA box-axis array) as float lanes {p0,p1,p2,p3}. For an N<4 node the top
 // 4-N lanes read into the next axis array (harmless: traversal only uses lanes [0,N), and every node's
@@ -105,6 +134,63 @@ static __forceinline int leafBodyOfs(int node_ofs, int n, unsigned leaf_all, uns
   return node_ofs + 16 * n + 4 * (int)__popcount(below) + 8 * (int)__popcount(below & ~short_mask);
 }
 
+// The edge flags words of a node: one uint16 per child lane after the leaf bodies, 2*n bytes rounded
+// up to 4 so the next block stays 4-aligned. A lane's word holds Jolt's active-edge bits of its
+// leaf's triangles: triangle k (expandQuadLeafTris order, at most four) owns bits 3k..3k+2, bit e
+// set = the edge from corner e to corner (e + 1) % 3 is active (soa4::computeEdgeFlags fills them; the
+// emitters zero them). A root leaf block keeps its word after W3. A producer may build a tree
+// without the tails altogether (buildFromStackless with_flags = false) for a chunk whose consumers
+// never read flags; leafFlagsOfs and leafEdgeFlags are meaningful only on with-flags trees.
+static constexpr int nodeFlagsBytes(int n) { return (2 * n + 3) & ~3; }
+static __forceinline int leafFlagsOfs(int node_ofs, int n, unsigned leaf_all, unsigned short_mask, int lane)
+{
+  return leafBodyOfs(node_ofs, n, leaf_all, short_mask, n) + 2 * lane;
+}
+// The parent-node fields a LeafRef names: its offset, child count and leaf-lane mask; returns the
+// child words. One home for leafFlagsOfs and decodeLeafRef.
+static __forceinline const uint32_t *leafRefParent(const uint8_t *data, LeafRef ref, int &parent, int &n, unsigned &leaf_all)
+{
+  parent = (int)(ref & LEAF_ENTRY_OFS_MASK);
+  n = (int)((ref >> LEAF_ENTRY_N_SHIFT) & 3) + 1;
+  const uint32_t *w = (const uint32_t *)(data + parent + 12 * n);
+  leaf_all = (unsigned)v_signmask(v_cast_vec4f(v_ldui((const int *)w))) & ((1u << n) - 1);
+  return w;
+}
+static __forceinline int leafFlagsOfs(const uint8_t *data, LeafRef ref)
+{
+  if (((ref >> LEAF_ENTRY_N_SHIFT) & 3) == 0)
+    return (int)(ref & LEAF_ENTRY_OFS_MASK) + LEAF_BYTES - nodeFlagsBytes(1); // the root block flags word, after W0..W3
+  int parent, N;
+  unsigned leafAll;
+  leafRefParent(data, ref, parent, N, leafAll);
+  return leafFlagsOfs(parent, N, leafAll, (ref >> LEAF_ENTRY_SHORT_SHIFT) & 15u, (int)(ref & TAG_MASK));
+}
+static __forceinline uint16_t leafEdgeFlags(const uint8_t *data, LeafRef ref)
+{
+  return *(const uint16_t *)(data + leafFlagsOfs(data, ref));
+}
+
+// A chunk as a reader holds it: the tree (with its flags words), the vert21 dequantization
+// (vert21 * invScale + bmin) and the triangle count. The owner of the bytes keeps them alive.
+struct ChunkRef
+{
+  const uint8_t *tree = nullptr;
+  uint32_t treeBytes = 0;
+  RootRef root;
+  vec3f bmin = v_zero(), invScale = v_zero();
+  uint32_t triCount = 0;
+};
+
+// Fills the tree's edge flags words (leafFlagsOfs) for every leaf triangle with Jolt's active-edge
+// rule (MeshShape::sFindActiveEdges at the default 5 degree threshold: a boundary or 3+ triangle
+// edge is active, a shared concave edge is not, a shared convex or back-to-back one past the
+// threshold is; a collapsed triangle's shared edges are inactive), on the dequantized verts
+// (vert21 * inv_scale + bmin) welded by position. verts_ofs: the vert21 stream from the tree base.
+// The producers only zero the words (a zero word is also a legitimate all-inactive leaf), so
+// whoever builds a tree for a flags reader runs this pass on it before the tree is served: the
+// collision loader per node chunk, the land tracer per cell.
+void computeEdgeFlags(uint8_t *tree, RootRef root, uint32_t verts_ofs, unsigned vert_count, vec3f bmin, vec3f inv_scale);
+
 // Resolved location of the leaf a LeafRef points at (one node read; no vertex decode).
 struct LeafLoc
 {
@@ -125,12 +211,11 @@ static __forceinline LeafLoc decodeLeafRef(const uint8_t *data, LeafRef ref)
     l.isShort = false;
     return l;
   }
-  const int parent = (int)(ref & LEAF_ENTRY_OFS_MASK);
   const int lane = (int)(ref & TAG_MASK);
-  const int N = Nf + 1;
   const unsigned shortMask = (ref >> LEAF_ENTRY_SHORT_SHIFT) & 15u;
-  const uint32_t *w = (const uint32_t *)(data + parent + 12 * N);
-  const unsigned leafAll = (unsigned)v_signmask(v_cast_vec4f(v_ldui((const int *)w))) & ((1u << N) - 1);
+  int parent, N;
+  unsigned leafAll;
+  const uint32_t *w = leafRefParent(data, ref, parent, N, leafAll);
   l.bodyOfs = leafBodyOfs(parent, N, leafAll, shortMask, lane);
   l.w0 = w[lane];
   l.isShort = (shortMask >> lane) & 1;
@@ -177,8 +262,7 @@ static __forceinline bool rayLeafFields_SoA(RayData &r, int body_ofs, const Quad
   vec4f ts = rayTriangle4_SoA<CullCCW>(r.rayOrigin, r.rayDir, c0x, c0y, c0z, c1x, c1y, c1z, c2x, c2y, c2z, us, vs);
   // Branchless best-lane pick, as in swblas_rayLeaf_SoA (lowest equal lane == scalar < tie-break;
   // flip-case duplicate scratch lanes 2,3 carry the same t as 0,1 and lose the tie by lane order).
-  vec4f m2 = v_min(ts, v_perm_zwxy(ts));
-  vec4f tMin = v_min(m2, v_perm_yzwx(m2));
+  vec4f tMin = v_hmin(ts);
   if (v_extract_x(tMin) >= r.t)
     return false;
   const int bestLane = (int)__bsf_unsafe((unsigned)v_truemask(v_cmp_eq(ts, tMin)));
@@ -537,8 +621,8 @@ static __forceinline void laneBox(const uint8_t *n, int s2, int lane, vec3f &bmi
   bmax = v_make_vec4f(u16(3), u16(4), u16(5), 0.f);
 }
 
-// Box of the degenerate single-leaf root, rebuilt from the leaf's own vert21 verts (the 16-byte
-// root block stores no box). Quantized with the writeQuadBox rule (floor min / ceil max onto the
+// Box of the degenerate single-leaf root, rebuilt from the leaf's own vert21 verts (the root
+// block stores no box). Quantized with the writeQuadBox rule (floor min / ceil max onto the
 // u16 lattice), so it matches the box a stackless walk would test wherever that box was itself
 // rebuilt from the packed verts (the bvhIO load path); any residual slack contains no vertex, so
 // exact tests downstream cannot diverge.

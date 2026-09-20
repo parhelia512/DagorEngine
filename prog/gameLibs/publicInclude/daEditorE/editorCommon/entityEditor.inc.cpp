@@ -19,6 +19,7 @@
 #include <memory/dag_framemem.h>
 #include <osApiWrappers/dag_direct.h>
 #include <osApiWrappers/dag_files.h>
+#include <startup/dag_globalSettings.h>
 #include <bindQuirrelEx/bindQuirrelEx.h>
 #include <daEditorE/editorCommon/inGameEditor.h>
 #include <util/dag_convar.h>
@@ -146,13 +147,13 @@ public:
   void restore([[maybe_unused]] bool save_redo_data) override
   {
     ecs::g_scenes->setScenePrettyName(sceneId, lastName);
-    sqeventbus::send_event("entity_editor.onEcsScenesStateChanged");
+    invalidate_scene_tree();
   }
 
   void redo() override
   {
     ecs::g_scenes->setScenePrettyName(sceneId, newName);
-    sqeventbus::send_event("entity_editor.onEcsScenesStateChanged");
+    invalidate_scene_tree();
   }
 
   size_t size() override { return sizeof(*this); }
@@ -176,13 +177,13 @@ public:
   void restore([[maybe_unused]] bool save_redo_data) override
   {
     ecs::g_scenes->setScenePivot(sceneId, lastPivot);
-    sqeventbus::send_event("entity_editor.onEcsScenesStateChanged");
+    invalidate_scene_tree();
   }
 
   void redo() override
   {
     ecs::g_scenes->setScenePivot(sceneId, newPivot);
-    sqeventbus::send_event("entity_editor.onEcsScenesStateChanged");
+    invalidate_scene_tree();
   }
 
   size_t size() override { return sizeof(*this); }
@@ -206,13 +207,13 @@ public:
   void restore([[maybe_unused]] bool save_redo_data) override
   {
     ecs::g_scenes->setSceneTransformable(sceneId, lastValue);
-    sqeventbus::send_event("entity_editor.onEcsScenesStateChanged");
+    invalidate_scene_tree();
   }
 
   void redo() override
   {
     ecs::g_scenes->setSceneTransformable(sceneId, !lastValue);
-    sqeventbus::send_event("entity_editor.onEcsScenesStateChanged");
+    invalidate_scene_tree();
   }
 
   size_t size() override { return sizeof(*this); }
@@ -271,17 +272,67 @@ uint64_t calc_save_priority(const char *template_name, const EntityObjEditor::Sa
   return rules.size();
 }
 
+// df_get_abs_fname must not be used here: it resolves vromfs entries too, and a vromfs-backed path is
+// readable but can never be opened for writing.
+bool resolve_scene_save_path(const char *fpath, String &out_path)
+{
+  if (const char *realFn = df_get_real_name(fpath))
+  {
+    out_path = realFn;
+    return true;
+  }
+
+  if (!dd_file_exist(fpath))
+  {
+    out_path = fpath; // new scene, let df_open pick a base path
+    return true;
+  }
+
+  // The game runs on addon vroms, so the scene is served from a vromfs instead of the addon source it
+  // was built from. Write to that source; later addons override earlier ones, so scan backwards.
+  const DataBlock &addons = *dgs_get_settings()->getBlockByNameEx("addonBasePath");
+  const int addonNid = addons.getNameId("addon");
+  for (int i = addons.blockCount() - 1; i >= 0; --i)
+  {
+    const DataBlock &addon = *addons.getBlock(i);
+    if (addon.getBlockNameId() != addonNid)
+    {
+      continue;
+    }
+    for (int j = 0, je = addon.paramCount(); j < je; ++j)
+    {
+      // an addon may declare src, src1, src2...
+      if (addon.getParamType(j) != DataBlock::TYPE_STRING || strncmp(addon.getParamName(j), "src", 3) != 0)
+      {
+        continue;
+      }
+      const String candidate(0, "%s/%s", addon.getStr(j), fpath);
+      if (const char *realFn = df_get_real_name(candidate))
+      {
+        out_path = realFn;
+        return true;
+      }
+    }
+  }
+
+  return false;
+}
+
 bool saveSceneToBlk(const char *fpath, const ecs::Scene::SceneRecord &record, EntityObjEditor &editor)
 {
+  String savePath;
+  if (!resolve_scene_save_path(fpath, savePath))
+  {
+    logerr("daEd4: cannot save '%s': the game was launched on addon vroms and no addon source holds this scene. "
+           "Launch it with -config:debug/useAddonVromSrc:b=yes to edit addon sources",
+      fpath);
+    return false;
+  }
+
   DataBlock blk;
   EntityObjEditor::writeSceneToBlk(blk, record, editor);
 
-  if (dd_file_exist(fpath))
-  {
-    fpath = df_get_abs_fname(fpath);
-  }
-
-  return blk.saveToTextFile(fpath);
+  return blk.saveToTextFile(savePath);
 }
 
 class SceneAddUndoRedo : public UndoRedoObject
@@ -303,7 +354,7 @@ public:
   {
     editor.removeScene(sceneId);
 
-    sqeventbus::send_event("entity_editor.onEcsScenesStateChanged");
+    invalidate_scene_tree();
   }
 
   void redo() override
@@ -320,7 +371,7 @@ public:
         }
       }
     }
-    sqeventbus::send_event("entity_editor.onEcsScenesStateChanged");
+    invalidate_scene_tree();
   }
 
   size_t size() override { return sizeof(*this); }
@@ -351,13 +402,13 @@ public:
   {
     ecs::g_scenes->setSceneOrder(sceneId, oldOrder);
 
-    sqeventbus::send_event("entity_editor.onEcsScenesStateChanged");
+    invalidate_scene_tree();
   }
 
   void redo() override
   {
     ecs::g_scenes->setSceneOrder(sceneId, newOrder);
-    sqeventbus::send_event("entity_editor.onEcsScenesStateChanged");
+    invalidate_scene_tree();
   }
 
   size_t size() override { return sizeof(*this); }
@@ -385,13 +436,13 @@ public:
   void restore([[maybe_unused]] bool save_redo_data) override
   {
     ecs::g_scenes->setEntityOrder(eid, oldOrder);
-    sqeventbus::send_event("entity_editor.onEcsScenesStateChanged");
+    invalidate_scene_tree();
   }
 
   void redo() override
   {
     ecs::g_scenes->setEntityOrder(eid, newOrder);
-    sqeventbus::send_event("entity_editor.onEcsScenesStateChanged");
+    invalidate_scene_tree();
   }
 
   size_t size() override { return sizeof(*this); }
@@ -421,13 +472,13 @@ public:
   {
     ecs::g_scenes->setNewParent(sceneId, oldParent);
     ecs::g_scenes->setSceneOrder(sceneId, order);
-    sqeventbus::send_event("entity_editor.onEcsScenesStateChanged");
+    invalidate_scene_tree();
   }
 
   void redo() override
   {
     ecs::g_scenes->setNewParent(sceneId, newParent);
-    sqeventbus::send_event("entity_editor.onEcsScenesStateChanged");
+    invalidate_scene_tree();
   }
 
   size_t size() override { return sizeof(*this); }
@@ -463,13 +514,13 @@ public:
   {
     ecs::g_scenes->setEntityParent(oldParent, {eid});
     ecs::g_scenes->setEntityOrder(eid, order);
-    sqeventbus::send_event("entity_editor.onEcsScenesStateChanged");
+    invalidate_scene_tree();
   }
 
   void redo() override
   {
     ecs::g_scenes->setEntityParent(newParent, {eid});
-    sqeventbus::send_event("entity_editor.onEcsScenesStateChanged");
+    invalidate_scene_tree();
   }
 
   size_t size() override { return sizeof(*this); }
@@ -750,8 +801,8 @@ inline void EntityObjEditor::forEachSceneObj(F fn)
 
 EntityObjEditor::~EntityObjEditor()
 {
+  selectNewObjEntity(NULL);    //-V1053
   setCreateBySampleMode(NULL); //-V1053
-  selectNewObjEntity(NULL);
   del_con_proc(this);
   delete hierarchicalUndoGroup;
 }
@@ -869,7 +920,7 @@ void EntityObjEditor::addScene(ecs::Scene::SceneId sid)
     auto sceneObj = new SceneObj(srecord->id);
     addObject(sceneObj, false);
 
-    sqeventbus::send_event("entity_editor.onEcsScenesStateChanged");
+    invalidate_scene_tree();
   }
 }
 
@@ -887,7 +938,7 @@ void EntityObjEditor::removeScene(ecs::Scene::SceneId sid)
     EditableObject *sceneObj = it->second;
     removeObject(sceneObj, false);
 
-    sqeventbus::send_event("entity_editor.onEcsScenesStateChanged");
+    invalidate_scene_tree();
   }
 }
 
@@ -965,6 +1016,7 @@ void EntityObjEditor::setWorkMode(const char *mode)
       if (!is_scene_entity(o))
         o->hideObject(show_only_scene);
     });
+    invalidate_scene_tree();
   }
 }
 
@@ -975,9 +1027,9 @@ void EntityObjEditor::setEditMode(int cm)
 
   if (getEditMode() == CM_OBJED_MODE_CREATE_ENTITY)
   {
+    selectNewObjEntity(NULL);
     setCreateBySampleMode(NULL);
     objCreator.reset();
-    selectNewObjEntity(NULL);
   }
 
   ObjectEditor::setEditMode(cm);
@@ -993,10 +1045,19 @@ void EntityObjEditor::setEditMode(int cm)
   }
   else
   {
+    selectNewObjEntity(NULL);
     setCreateBySampleMode(NULL);
     objCreator.reset();
-    selectNewObjEntity(NULL);
   }
+}
+
+// A cancelled preview must vanish silently. Without this the ri_extra on_disappear
+// handler treats the entity death as gameplay destruction and leaves debris and fx.
+static void destroy_preview_entity(ecs::EntityId eid)
+{
+  if (bool *riDestroyed = g_entity_mgr->getNullableRW<bool>(eid, ECS_HASH("ri_extra__destroyed")))
+    *riDestroyed = true;
+  g_entity_mgr->destroyEntity(eid);
 }
 
 void EntityObjEditor::selectNewObjEntity(const char *name)
@@ -1033,7 +1094,7 @@ void EntityObjEditor::selectNewObjEntity(const char *name)
       else
       {
         if (o->getEid() != ecs::INVALID_ENTITY_ID)
-          g_entity_mgr->destroyEntity(o->getEid());
+          destroy_preview_entity(o->getEid());
 
         EntCreateData cd(previewTemplateName, &tm);
         isCreatingSampleEntity = true;
@@ -1049,7 +1110,7 @@ void EntityObjEditor::selectNewObjEntity(const char *name)
       TMatrix tm = o->getWtm();
 
       if (o->getEid() != ecs::INVALID_ENTITY_ID)
-        g_entity_mgr->destroyEntity(o->getEid());
+        destroy_preview_entity(o->getEid());
 
       o->resetEid();
       o->setWtm(tm);
@@ -1150,9 +1211,9 @@ bool EntityObjEditor::cancelCreateMode()
     if (newEntObj->getEid() != ecs::INVALID_ENTITY_ID)
       wasSample = true;
 
+  selectNewObjEntity(NULL);
   setCreateBySampleMode(NULL);
   objCreator.reset();
-  selectNewObjEntity(NULL);
 
   if (wasSample)
   {
@@ -1336,11 +1397,12 @@ void EntityObjEditor::hideUnmarkedEntities(Sqrat::Array eids_arr)
   }
 }
 
+bool EntityObjEditor::isEntityListed(EntityObj *o) const { return !showOnlySceneEntities || is_scene_entity(o); }
+
 void EntityObjEditor::unhideAll()
 {
-  bool showAll = !showOnlySceneEntities;
-  forEachEntityObj([&showAll](EntityObj *o) {
-    if (showAll || is_scene_entity(o))
+  forEachEntityObj([this](EntityObj *o) {
+    if (isEntityListed(o))
       o->hideObject(false);
   });
 
@@ -1362,9 +1424,9 @@ void EntityObjEditor::setupNewScene(const char *fpath)
     sceneInit = true;
   else
   {
+    selectNewObjEntity(NULL);
     setCreateBySampleMode(NULL);
     objCreator.reset();
-    selectNewObjEntity(NULL);
 
     clear_and_shrink(objects);
     clear_and_shrink(selection);
@@ -1378,6 +1440,7 @@ void EntityObjEditor::setupNewScene(const char *fpath)
     sceneIdToEObj.clear();
     objsToRemove.clear();
     DAEDITOR4.undoSys.clear();
+    invalidate_scene_tree();
   }
 }
 
@@ -1448,6 +1511,35 @@ void EntityObjEditor::saveMainSceneCopy(const char *fpath, const char *reason)
   }
 }
 
+void EntityObjEditor::requestSaveMainSceneCopy(const char *fpath, const char *reason)
+{
+  WinAutoLock lock(pendingSceneCopyCritSec);
+  pendingSceneCopyPath = fpath;
+  pendingSceneCopyReason = reason;
+}
+
+void EntityObjEditor::dropPendingSaveMainSceneCopy()
+{
+  WinAutoLock lock(pendingSceneCopyCritSec);
+  if (!pendingSceneCopyPath.empty())
+    debug("daEd4: dropped pending scene copy save to '%s' (for %s)", pendingSceneCopyPath.str(), pendingSceneCopyReason.str());
+  pendingSceneCopyPath.clear();
+  pendingSceneCopyReason.clear();
+}
+
+void EntityObjEditor::savePendingMainSceneCopy()
+{
+  SimpleString fpath, reason;
+  {
+    WinAutoLock lock(pendingSceneCopyCritSec);
+    if (pendingSceneCopyPath.empty())
+      return;
+    fpath = eastl::move(pendingSceneCopyPath);
+    reason = eastl::move(pendingSceneCopyReason);
+  }
+  saveMainSceneCopy(fpath, reason);
+}
+
 void EntityObjEditor::saveMainScene()
 {
   ecs::Scene &saveScene = ecs::g_scenes->getActiveScene();
@@ -1463,13 +1555,12 @@ void EntityObjEditor::saveMainScene()
   if (saveSceneToBlk((*it)->path.c_str(), **it, *this))
   {
     visuallog::logmsg("daEd4: MAIN scene saved successfully");
+    (*it)->isDirty = false;
   }
   else
   {
-    logerr("daEd4: failed to save main scene %s. BLK save failed. Path %s", (*it)->path.c_str());
+    logerr("daEd4: failed to save main scene. BLK save failed. Path %s", (*it)->path.c_str());
   }
-
-  (*it)->isDirty = false;
 }
 
 void EntityObjEditor::saveDirtyScenes()
@@ -1488,7 +1579,7 @@ void EntityObjEditor::saveDirtyScenes()
 
     if (!saveSceneToBlk(record->path.c_str(), *record, *this))
     {
-      logerr("daEd4: failed to save %s scene. BLK save failed. Path %s", record->path.c_str());
+      logerr("daEd4: failed to save scene. BLK save failed. Path %s", record->path.c_str());
       hasErrors = true;
     }
     else
@@ -1515,7 +1606,7 @@ void EntityObjEditor::saveScenes(const eastl::vector<ecs::Scene::SceneId> scenes
     {
       if (!saveSceneToBlk(record->path.c_str(), *record, *this))
       {
-        logerr("daEd4: failed to save %s scene. BLK save failed. Path %s", record->path.c_str());
+        logerr("daEd4: failed to save scene. BLK save failed. Path %s", record->path.c_str());
         hasErrors = true;
       }
       else
@@ -1628,6 +1719,7 @@ bool EntityObjEditor::processCommand(const char *argv[], int argc)
       if (!is_scene_entity(o))
         o->hideObject(!show);
     });
+    invalidate_scene_tree();
   }
   return found;
 }
@@ -1670,6 +1762,7 @@ void EntityObjEditor::selectionChanged()
 void EntityObjEditor::update(float dt)
 {
   ObjectEditor::update(dt);
+  savePendingMainSceneCopy();
   if (objsToRemove.size())
   {
     removeObjects(objsToRemove.data(), objsToRemove.size(), false);
@@ -1879,7 +1972,7 @@ void EntityObjEditor::setSceneTransformable(ecs::Scene::SceneId scene_id, bool v
 
   DAEDITOR4.undoSys.accept("setSceneTransformable");
 
-  sqeventbus::send_event("entity_editor.onEcsScenesStateChanged");
+  invalidate_scene_tree();
 }
 
 Point3 EntityObjEditor::getScenePivot(ecs::Scene::SceneId scene_id) const { return ecs::g_scenes->getScenePivot(scene_id); }
@@ -1892,6 +1985,8 @@ void EntityObjEditor::setScenePivot(ecs::Scene::SceneId scene_id, const Point3 &
   ecs::g_scenes->setScenePivot(scene_id, pivot);
 
   DAEDITOR4.undoSys.accept("setScenePivot");
+
+  invalidate_scene_tree();
 }
 
 const char *EntityObjEditor::getScenePrettyName(ecs::Scene::SceneId scene_id) const
@@ -1908,7 +2003,7 @@ void EntityObjEditor::setScenePrettyName(ecs::Scene::SceneId scene_id, const cha
 
   DAEDITOR4.undoSys.accept("setScenePrettyName");
 
-  sqeventbus::send_event("entity_editor.onEcsScenesStateChanged");
+  invalidate_scene_tree();
 }
 
 void EntityObjEditor::setSceneNewParent(ecs::Scene::SceneId new_parent_id, Sqrat::Array items)
@@ -1938,7 +2033,7 @@ void EntityObjEditor::setSceneNewParent(ecs::Scene::SceneId new_parent_id, Sqrat
 
   DAEDITOR4.undoSys.accept("setSceneNewParent");
 
-  sqeventbus::send_event("entity_editor.onEcsScenesStateChanged");
+  invalidate_scene_tree();
 }
 
 void EntityObjEditor::setSceneNewParentAndOrder(ecs::Scene::SceneId new_parent_id, uint32_t order, Sqrat::Array items)
@@ -1987,7 +2082,7 @@ void EntityObjEditor::setSceneNewParentAndOrder(ecs::Scene::SceneId new_parent_i
 
   DAEDITOR4.undoSys.accept("setSceneParentAndOrder");
 
-  sqeventbus::send_event("entity_editor.onEcsScenesStateChanged");
+  invalidate_scene_tree();
 }
 
 void EntityObjEditor::setSceneOrder(ecs::Scene::SceneId id, uint32_t order)
@@ -1999,7 +2094,7 @@ void EntityObjEditor::setSceneOrder(ecs::Scene::SceneId id, uint32_t order)
 
   DAEDITOR4.undoSys.accept("setSceneOrder");
 
-  sqeventbus::send_event("entity_editor.onEcsScenesStateChanged");
+  invalidate_scene_tree();
 }
 
 uint32_t EntityObjEditor::getSceneOrder(ecs::Scene::SceneId id) const { return ecs::g_scenes->getSceneOrder(id); }
@@ -2014,29 +2109,31 @@ uint32_t EntityObjEditor::getSceneEntityCount(ecs::Scene::SceneId id) const
   return 0;
 }
 
+static Sqrat::Array scene_entries_to_sq_array(HSQUIRRELVM vm, const ecs::Scene::SceneRecord &record)
+{
+  Sqrat::Array res(vm, record.orderedEntries.size());
+  for (uint32_t i = 0; i < res.GetSize(); ++i)
+  {
+    Sqrat::Table table(vm);
+    if (record.orderedEntries[i].isEntity)
+    {
+      table.SetValue("eid", record.orderedEntries[i].eid);
+    }
+    else
+    {
+      table.SetValue("sid", record.orderedEntries[i].sid);
+    }
+    table.SetValue("isEntity", record.orderedEntries[i].isEntity);
+
+    res.SetValue(i, table);
+  }
+  return res;
+}
+
 Sqrat::Array EntityObjEditor::getSceneOrderedEntries(HSQUIRRELVM vm, ecs::Scene::SceneId id)
 {
   if (const ecs::Scene::SceneRecord *record = ecs::g_scenes->getActiveScene().getSceneRecordById(id))
-  {
-    Sqrat::Array res(vm, record->orderedEntries.size());
-    for (uint32_t i = 0; i < res.GetSize(); ++i)
-    {
-      Sqrat::Table table(vm);
-      if (record->orderedEntries[i].isEntity)
-      {
-        table.SetValue("eid", record->orderedEntries[i].eid);
-      }
-      else
-      {
-        table.SetValue("sid", record->orderedEntries[i].sid);
-      }
-      table.SetValue("isEntity", record->orderedEntries[i].isEntity);
-
-      res.SetValue(i, table);
-    }
-
-    return res;
-  }
+    return scene_entries_to_sq_array(vm, *record);
 
   return {};
 }
@@ -2455,11 +2552,10 @@ Sqrat::Array EntityObjEditor::getEntities(HSQUIRRELVM vm)
     }
   }
 
-  bool showAll = !showOnlySceneEntities;
   Tab<ecs::EntityId> entities(framemem_ptr());
   entities.reserve(objects.size());
-  forEachEntityObj([&showAll, &entities](EntityObj *o) {
-    if (showAll || is_scene_entity(o))
+  forEachEntityObj([this, &entities](EntityObj *o) {
+    if (isEntityListed(o))
       entities.push_back(o->getEid());
   });
 
@@ -2510,6 +2606,8 @@ static Sqrat::Table sceneRecordToSqTable(HSQUIRRELVM vm, const ecs::Scene::Scene
   ret.SetValue("parent", record.parent);
   ret.SetValue("hasParent", (bool)(record.parent != ecs::Scene::SceneRecord::NO_PARENT));
   ret.SetValue("id", record.id);
+  ret.SetValue("transformable", ecs::g_scenes->isSceneTransformable(record.id));
+  ret.SetValue("pivot", record.pivot);
   return ret;
 }
 
@@ -2521,6 +2619,32 @@ Sqrat::Array EntityObjEditor::getSceneImports(HSQUIRRELVM vm)
   for (int i = 0; i < scenes.size(); ++i)
     res.SetValue(SQInteger(i), sceneRecordToSqTable(vm, scenes[i]));
   return res;
+}
+
+Sqrat::Table EntityObjEditor::getSceneTree(HSQUIRRELVM vm, EntityObjEditor *editor)
+{
+  Sqrat::Array scenes(vm), freeEntities(vm);
+  Sqrat::Table entries(vm), entityCounts(vm);
+  if (editor)
+  {
+    for (const ecs::Scene::SceneRecord &record : ecs::g_scenes->getActiveScene().getAllScenes())
+    {
+      scenes.Append(sceneRecordToSqTable(vm, record));
+      entries.SetValue(SQInteger(record.id), scene_entries_to_sq_array(vm, record));
+      entityCounts.SetValue(SQInteger(record.id), SQInteger(record.entities.size()));
+    }
+    if (!editor->showOnlySceneEntities)
+      editor->forEachEntityObj([&](EntityObj *o) {
+        if (!is_scene_entity(o))
+          freeEntities.Append(o->getEid());
+      });
+  }
+  Sqrat::Table tree(vm);
+  tree.SetValue("scenes", scenes)
+    .SetValue("entries", entries)
+    .SetValue("entityCounts", entityCounts)
+    .SetValue("freeEntities", freeEntities);
+  return tree;
 }
 
 Sqrat::Table EntityObjEditor::getSceneRecord(HSQUIRRELVM vm)
@@ -3717,7 +3841,7 @@ void EntityObjEditor::gizmoStarted()
     cloneDelta = getPt();
   }
 
-  DAEDITOR4.undoSys.begin();
+  DAEDITOR4.undoSys.begin(true);
   if (cloneMode)
   {
     clear_and_shrink(cloneObjs);
@@ -3779,7 +3903,7 @@ void EntityObjEditor::register_script_class(HSQUIRRELVM vm)
     .Func("selectEntities", &EntityObjEditor::selectEntities)
     .Func("selectEcsTemplate", &EntityObjEditor::selectNewObjEntity)
     .Func("hasUnsavedChanges", &EntityObjEditor::hasUnsavedChanges)
-    .Func("saveMainSceneCopy", &EntityObjEditor::saveMainSceneCopy)
+    .Func("saveMainSceneCopy", &EntityObjEditor::requestSaveMainSceneCopy)
     .Func("saveMainScene", &EntityObjEditor::saveMainScene)
     .Func("saveDirtyScenes", &EntityObjEditor::saveDirtyScenes)
     .Func("saveScenes", &EntityObjEditor::saveScenesSq)

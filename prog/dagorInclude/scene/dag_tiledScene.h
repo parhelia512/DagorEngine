@@ -558,19 +558,37 @@ __forceinline void scene::TiledScene::internalFrustumCull(bbox3f_cref bbox, cons
   // distance (descending) at build, so the scan can STOP at the first node whose disappear distance falls
   // below the bound - the rest are provably out of range. Pass v_zero() for unsorted ranges (the
   // whole-tile fallback); the break can never fire there.
+  // Local copies of every per-node input: cullRun is not always inlined and visible_nodes is an
+  // opaque call, so captured member/by-ref reads (planes included) would otherwise reload from the
+  // closure on every node. The callback must not reallocate nodes or poolBox (TiledScene defers
+  // such writes while readers run).
   auto cullRun = [&](int rstart, int rend, bool intersect_frustum, vec4f leaf_dist_bound) {
     G_UNUSED(leaf_dist_bound);
+    const node_index *tileNodes = tile.nodes;
+    const mat44f *nodesData = nodes.data();
+    const bbox3f *poolBoxData = poolBox.data();
+    const uint32_t testFlags = test_flags, equalFlags = equal_flags;
+    const Occlusion *occl = occlusion;
+    const vec4f posDistScale = pos_distscale;
+    const vec4f distScaleW = v_splat_w(posDistScale);
+    const vec4f pl03X = plane03X, pl03Y = plane03Y, pl03Z = plane03Z, pl03W = plane03W;
+    const vec4f pl47X = plane47X, pl47Y = plane47Y, pl47Z = plane47Z, pl47W = plane47W;
+    // referenced only in some if-constexpr configurations
+    G_UNUSED(poolBoxData), G_UNUSED(occl), G_UNUSED(testFlags), G_UNUSED(equalFlags);
+    G_UNUSED(posDistScale), G_UNUSED(distScaleW);
+    G_UNUSED(pl03X), G_UNUSED(pl03Y), G_UNUSED(pl03Z), G_UNUSED(pl03W);
+    G_UNUSED(pl47X), G_UNUSED(pl47Y), G_UNUSED(pl47Z), G_UNUSED(pl47W);
     for (int i = rstart; i < rend; ++i)
     {
-      const node_index ni = tile.nodes[i];
+      const node_index ni = tileNodes[i];
       if (i + PREFETCH_AHEAD < rend) // issue the scattered matrix load several iters early to hide cold-load latency
-        prefetchNode(tile.nodes[i + PREFETCH_AHEAD]);
+        prefetchNodeData(nodesData, getNodeIndexInternal(tileNodes[i + PREFETCH_AHEAD]));
 #if DAGOR_DBGLEVEL > 1
       const mat44f &m = getNode(ni);
       G_FAST_ASSERT(!isInvalidIndex(getNodeIndex(ni)));
 #else
       const uint32_t index = getNodeIndexInternal(ni);
-      const mat44f &m = nodes.data()[index];
+      const mat44f &m = nodesData[index];
 #endif
 
       if constexpr (use_dist)
@@ -581,10 +599,12 @@ __forceinline void scene::TiledScene::internalFrustumCull(bbox3f_cref bbox, cons
           break;
       uint32_t poolFlags = get_node_pool_flags(m);
       if constexpr (use_flags)
-        if ((test_flags & poolFlags) != equal_flags)
+        if ((testFlags & poolFlags) != equalFlags)
           continue;
-      vec4f sphere = get_node_bsphere(m); // broad phase
-      vec4f sphereRad = v_splat_w(sphere);
+      // broad phase; bsphere without merging rad into center.w: every consumer below reads
+      // center.xyz and the separately splatted rad only
+      vec4f sphereRad = get_node_bsphere_vrad(m);
+      vec4f sphere = v_madd(m.col1, v_splat_w(m.col1), m.col3);
 
       // Cheap distance cull first: a node past its disappear distance is skipped without paying for the
       // 8-plane sphere-frustum test below. This is only a reorder - the visible set is unchanged, since a
@@ -593,7 +613,7 @@ __forceinline void scene::TiledScene::internalFrustumCull(bbox3f_cref bbox, cons
       if constexpr (use_dist)
       {
         // eucledian (not z) distance, to stay view independent
-        distToSphereSqScaled = v_mul_x(v_length3_sq_x(v_sub(pos_distscale, sphere)), v_splat_w(pos_distscale));
+        distToSphereSqScaled = v_mul_x(v_length3_sq_x(v_sub(posDistScale, sphere)), distScaleW);
         if (v_test_vec_x_lt(v_splat_w(m.col0), distToSphereSqScaled))
           continue;
       }
@@ -613,11 +633,9 @@ __forceinline void scene::TiledScene::internalFrustumCull(bbox3f_cref bbox, cons
           else
             checkSphere = !use_pools;
           if (checkSphere)
-            sphereVis =
-              v_is_visible_sphere(sphere, sphereRad, plane03X, plane03Y, plane03Z, plane03W, plane47X, plane47Y, plane47Z, plane47W);
+            sphereVis = v_is_visible_sphere(sphere, sphereRad, pl03X, pl03Y, pl03Z, pl03W, pl47X, pl47Y, pl47Z, pl47W);
           else
-            sphereVis =
-              v_sphere_intersect(sphere, sphereRad, plane03X, plane03Y, plane03Z, plane03W, plane47X, plane47Y, plane47Z, plane47W);
+            sphereVis = v_sphere_intersect(sphere, sphereRad, pl03X, pl03Y, pl03Z, pl03W, pl47X, pl47Y, pl47Z, pl47W);
         }
         if (!sphereVis)
           continue;
@@ -631,7 +649,7 @@ __forceinline void scene::TiledScene::internalFrustumCull(bbox3f_cref bbox, cons
           poolFlags &= 0xFFFF;
           G_FAST_ASSERT(poolFlags < poolBox.size());
           // precise distance check
-          bbox3f pool = poolBox.data()[poolFlags];
+          bbox3f pool = poolBoxData[poolFlags];
 
           if constexpr (use_occlusion)
           {
@@ -646,7 +664,7 @@ __forceinline void scene::TiledScene::internalFrustumCull(bbox3f_cref bbox, cons
             {
               mat44f clipTm;
               v_mat44_mul43(clipTm, globtm, m);
-              if (!occlusion->isVisibleBox(pool.bmin, pool.bmax, clipTm))
+              if (!occl->isVisibleBox(pool.bmin, pool.bmax, clipTm))
                 continue;
             }
           }
@@ -672,7 +690,7 @@ __forceinline void scene::TiledScene::internalFrustumCull(bbox3f_cref bbox, cons
       else
       {
         if constexpr (use_occlusion)
-          if (!occlusion->isVisibleSphere(sphere, v_splat_w(sphere)))
+          if (!occl->isVisibleSphere(sphere, sphereRad))
             continue;
       }
       if constexpr (use_dist)
@@ -694,10 +712,12 @@ __forceinline void scene::TiledScene::internalFrustumCull(bbox3f_cref bbox, cons
     const int32_t kdTreeLeftNode = tile.kdTreeLeftNode;
     G_FAST_ASSERT(kdTreeLeftNode >= 0);
     G_FAST_ASSERT(kdTreeLeftNode + kdTreeNodeCount <= kdNodes.size());
+    // hoisted for the same reason as in cullRun: the callback inside cullRun would force a reload per leaf
+    const kdtree::KDNode *kdNodesData = kdNodes.data();
     uint32_t start = 0, count = 0;
     for (int i = kdTreeLeftNode, ei = kdTreeLeftNode + kdTreeNodeCount; i < ei; ++i, start += count)
     {
-      const auto kdNode = kdNodes.data()[i];
+      const auto kdNode = kdNodesData[i];
       const uint32_t flags_nodes_count = v_extract_wi(v_cast_vec4i(kdNode.bmin_start));
       count = flags_nodes_count & 0xFFFF;
 #if DAGOR_DBGLEVEL > 1
@@ -802,6 +822,11 @@ __forceinline void scene::TiledScene::internalFrustumCull(bbox3f_cref bbox, cons
     visible.push_back(kdtree::VisibleLeaf(0, (intersectFrustum ? 0 : kdtree::fully_inside_node_flag) | tile.nodesCount));
   }
 
+  // hoisted for the loop below; same opaque-callback reasoning as in cullRun
+  const node_index *tileNodes = tile.nodes;
+  const mat44f *nodesData = nodes.data();
+  const bbox3f *poolBoxData = poolBox.data();
+  G_UNUSED(poolBoxData); // referenced only in some if-constexpr configurations
   for (auto vl : visible)
   {
     const bool intersectFrustum = !(vl.count & kdtree::fully_inside_node_flag);
@@ -815,14 +840,14 @@ __forceinline void scene::TiledScene::internalFrustumCull(bbox3f_cref bbox, cons
     {
       for (int i = vl.start; i < end; ++i)
       {
-        const node_index ni = tile.nodes[i];
+        const node_index ni = tileNodes[i];
         if (i + PREFETCH_AHEAD < end) // issue the scattered matrix load several iters early to hide cold-load latency
-          prefetchNode(tile.nodes[i + PREFETCH_AHEAD]);
+          prefetchNodeData(nodesData, getNodeIndexInternal(tileNodes[i + PREFETCH_AHEAD]));
 #if DAGOR_DBGLEVEL > 1
         const mat44f &m = getNode(ni);
 #else
         const uint32_t index = getNodeIndexInternal(ni);
-        const mat44f &m = nodes.data()[index];
+        const mat44f &m = nodesData[index];
 #endif
 
         uint32_t poolFlags = get_node_pool_flags(m);
@@ -838,7 +863,7 @@ __forceinline void scene::TiledScene::internalFrustumCull(bbox3f_cref bbox, cons
             // narrow check
             mat44f clipTm;
             v_mat44_mul43(clipTm, globtm, m);
-            bbox3f pool = poolBox.data()[poolFlags];
+            bbox3f pool = poolBoxData[poolFlags];
             if constexpr (use_occlusion)
             {
               if (!occlusion->isVisibleBox(pool.bmin, pool.bmax, clipTm))
@@ -847,8 +872,9 @@ __forceinline void scene::TiledScene::internalFrustumCull(bbox3f_cref bbox, cons
           }
           else
           {
-            vec4f sphere = get_node_bsphere(m);
-            if (!occlusion->isVisibleSphere(sphere, v_splat_w(sphere)))
+            vec4f sphereRad = get_node_bsphere_vrad(m);
+            vec4f sphere = v_madd(m.col1, v_splat_w(m.col1), m.col3);
+            if (!occlusion->isVisibleSphere(sphere, sphereRad))
               continue;
           }
         }
@@ -937,21 +963,11 @@ void scene::TiledScene::frustumCull(mat44f_cref globtm, vec4f pos_distscale, uin
 
   test_flags <<= 16;
   equal_flags <<= 16;
-  vec3f plane03X, plane03Y, plane03Z, plane03W;
-  vec3f plane47X, plane47Y, plane47Z, plane47W;
-  v_construct_camplanes(globtm, plane03X, plane03Y, plane03Z, plane03W, plane47X, plane47Y);
-  bbox3f frustumBox;
-  v_frustum_box_unsafe(frustumBox, plane03X, plane03Y, plane03Z, plane03W, plane47X, plane47Y);
-  plane03X = v_norm3(plane03X);
-  plane03Y = v_norm3(plane03Y);
-  plane03Z = v_norm3(plane03Z);
-  plane03W = v_norm3(plane03W);
-  plane47X = v_norm3(plane47X);
-  plane47Y = v_norm3(plane47Y);
-  v_mat44_transpose(plane03X, plane03Y, plane03Z, plane03W);
-
-  plane47Z = plane47X, plane47W = plane47Y; // we can use some useful planes instead of replicating
-  v_mat44_transpose(plane47X, plane47Y, plane47Z, plane47W);
+  // raw AoS planes stay inside the box helper; the sphere tests take the SoA set below
+  const bbox3f frustumBox = frustum_box_from_clip(globtm);
+  vec4f plane03X, plane03Y, plane03Z, plane03W;
+  vec4f plane47X, plane47Y, plane47Z, plane47W;
+  construct_camplanes_transposed(globtm, plane03X, plane03Y, plane03Z, plane03W, plane47X, plane47Y, plane47Z, plane47W);
   alignas(16) int regions[4];
   getBoxRegion(regions, frustumBox.bmin, frustumBox.bmax);
 
@@ -1038,23 +1054,11 @@ void scene::TiledScene::frustumCullTilesPass(mat44f_cref globtm, vec4f pos_dists
   octx.tilesPtr = (int *)framemem_ptr()->alloc(sizeof(int) * usedTilesCount);
   octx.tilesMax = usedTilesCount;
 
-  v_construct_camplanes(globtm, octx.plane03X, octx.plane03Y, octx.plane03Z, octx.plane03W, octx.plane47X, octx.plane47Y);
-  bbox3f frustumBox;
-  if (tile_cull_box)
-    frustumBox = *tile_cull_box;
-  else
-    v_frustum_box_unsafe(frustumBox, octx.plane03X, octx.plane03Y, octx.plane03Z, octx.plane03W, octx.plane47X, octx.plane47Y);
+  // raw AoS planes stay inside the box helper; the sphere tests take the SoA set below
+  const bbox3f frustumBox = tile_cull_box ? *tile_cull_box : frustum_box_from_clip(globtm);
 
-  octx.plane03X = v_norm3(octx.plane03X);
-  octx.plane03Y = v_norm3(octx.plane03Y);
-  octx.plane03Z = v_norm3(octx.plane03Z);
-  octx.plane03W = v_norm3(octx.plane03W);
-  octx.plane47X = v_norm3(octx.plane47X);
-  octx.plane47Y = v_norm3(octx.plane47Y);
-  v_mat44_transpose(octx.plane03X, octx.plane03Y, octx.plane03Z, octx.plane03W);
-
-  octx.plane47Z = octx.plane47X, octx.plane47W = octx.plane47Y; // we can use some useful planes instead of replicating
-  v_mat44_transpose(octx.plane47X, octx.plane47Y, octx.plane47Z, octx.plane47W);
+  construct_camplanes_transposed(globtm, octx.plane03X, octx.plane03Y, octx.plane03Z, octx.plane03W, octx.plane47X, octx.plane47Y,
+    octx.plane47Z, octx.plane47W);
 
   alignas(16) int regions[4];
   getBoxRegion(regions, frustumBox.bmin, frustumBox.bmax);
@@ -1138,12 +1142,13 @@ __forceinline void scene::TiledScene::internalBoxCull(bbox3f_cref bbox, const Ti
     const int32_t kdTreeLeftNode = tile.kdTreeLeftNode;
     G_FAST_ASSERT(kdTreeLeftNode >= 0);
     G_FAST_ASSERT(kdTreeLeftNode + kdTreeNodeCount <= kdNodes.size());
+    const kdtree::KDNode *kdNodesData = kdNodes.data(); // the grow path of `visible` is an opaque call
     uint32_t start = 0, count = 0;
     if (!tileFullyInside)
     {
       for (int i = kdTreeLeftNode, ei = kdTreeLeftNode + kdTreeNodeCount; i < ei; ++i, start += count)
       {
-        const auto kdNode = kdNodes.data()[i];
+        const auto kdNode = kdNodesData[i];
         const uint32_t flags_nodes_count = v_extract_wi(v_cast_vec4i(kdNode.bmin_start));
         count = flags_nodes_count & 0xFFFF;
 #if DAGOR_DBGLEVEL > 1
@@ -1177,7 +1182,7 @@ __forceinline void scene::TiledScene::internalBoxCull(bbox3f_cref bbox, const Ti
     {
       for (int i = kdTreeLeftNode, ei = kdTreeLeftNode + kdTreeNodeCount; i < ei; ++i, start += count)
       {
-        const auto kdNode = kdNodes.data()[i];
+        const auto kdNode = kdNodesData[i];
         const uint32_t flags_nodes_count = v_extract_wi(v_cast_vec4i(kdNode.bmin_start));
         count = flags_nodes_count & 0xFFFF;
 #if DAGOR_DBGLEVEL > 1
@@ -1214,6 +1219,18 @@ __forceinline void scene::TiledScene::internalBoxCull(bbox3f_cref bbox, const Ti
       (tileFullyInside ? kdtree::fully_inside_node_flag : 0) | uint32_t(tileData[&tile - tileCull.data()].nodes.size())));
   }
 
+  // Local copies stay in registers: visible_nodes is an opaque call, so these member/by-ref
+  // reads would otherwise repeat for every node. As a consequence the callback must not
+  // reallocate nodes or poolBox (TiledScene defers such writes while readers run).
+  const node_index *tileNodes = tile.nodes;
+  const mat44f *nodesData = nodes.data();
+  const bbox3f *poolBoxData = poolBox.data();
+  const uint32_t poolBoxCount = poolBox.size();
+
+  // Prefetch the node matrix several iterations ahead: it is a scattered cold load whose latency the
+  // short per-node test cannot hide at distance 1 (same as the frustum cull path).
+  constexpr int PREFETCH_AHEAD = 4;
+
   for (auto vl : visible)
   {
     const bool fullyInside = (vl.count & kdtree::fully_inside_node_flag);
@@ -1222,12 +1239,14 @@ __forceinline void scene::TiledScene::internalBoxCull(bbox3f_cref bbox, const Ti
     {
       for (int i = vl.start; i < end; ++i)
       {
-        const node_index ni = tile.nodes[i];
+        const node_index ni = tileNodes[i];
+        if (i + PREFETCH_AHEAD < end)
+          prefetchNodeData(nodesData, getNodeIndexInternal(tileNodes[i + PREFETCH_AHEAD]));
 #if DAGOR_DBGLEVEL > 1
         const mat44f &m = getNode(ni);
 #else
         const uint32_t index = getNodeIndexInternal(ni);
-        const mat44f &m = nodes.data()[index];
+        const mat44f &m = nodesData[index];
 #endif
 
         uint32_t poolFlags = get_node_pool_flags(m);
@@ -1241,20 +1260,24 @@ __forceinline void scene::TiledScene::internalBoxCull(bbox3f_cref bbox, const Ti
     {
       for (int i = vl.start; i < end; ++i)
       {
-        const node_index ni = tile.nodes[i];
+        const node_index ni = tileNodes[i];
+        if (i + PREFETCH_AHEAD < end)
+          prefetchNodeData(nodesData, getNodeIndexInternal(tileNodes[i + PREFETCH_AHEAD]));
 #if DAGOR_DBGLEVEL > 1
         const mat44f &m = getNode(ni);
         G_FAST_ASSERT(!isInvalidIndex(getNodeIndex(ni)));
 #else
         const uint32_t index = getNodeIndexInternal(ni);
-        const mat44f &m = nodes.data()[index];
+        const mat44f &m = nodesData[index];
 #endif
 
         uint32_t poolFlags = get_node_pool_flags(m);
         if (use_flags && ((test_flags & poolFlags) != equal_flags))
           continue;
-        vec4f sphere = get_node_bsphere(m); // broad phase
-        vec4f sphereRad = v_splat_w(sphere);
+        // broad phase; bsphere without merging rad into center.w: tests below use xyz and the
+        // splatted rad only
+        vec4f sphereRad = get_node_bsphere_vrad(m);
+        vec4f sphere = v_madd(m.col1, v_splat_w(m.col1), m.col3);
         bbox3f sphereBox;
         sphereBox.bmin = v_sub(sphere, sphereRad);
         sphereBox.bmax = v_add(sphere, sphereRad);
@@ -1263,16 +1286,15 @@ __forceinline void scene::TiledScene::internalBoxCull(bbox3f_cref bbox, const Ti
 
         if (!v_bbox3_test_box_inside(cullBox, sphereBox)) // if !fullyInside
         {
-          if (!v_bbox3_test_sph_intersect(cullBox, sphere, v_splat_w(v_mul(sphere, sphere))))
+          if (!v_bbox3_test_sph_intersect(cullBox, sphere, v_mul_x(sphereRad, sphereRad)))
             continue;
           if (use_pools)
           {
             poolFlags &= 0xFFFF;
-            if (poolFlags < poolBox.size())
+            if (poolFlags < poolBoxCount)
             {
               bbox3f transformed;
-              bbox3f pool = poolBox.data()[poolFlags];
-              v_bbox3_init(transformed, m, pool);
+              v_bbox3_init(transformed, m, poolBoxData[poolFlags]);
               if (!v_bbox3_test_box_intersect(transformed, cullBox))
                 continue;
             }

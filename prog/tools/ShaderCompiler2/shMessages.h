@@ -8,15 +8,10 @@
 struct ShaderMessages
 {
   SCFastNameMap strings;
-  eastl::bitvector<> nonFilenameMessages;
 
-  int addMessage(const char *message, bool file_name)
+  int addMessage(const char *message)
   {
     int id = strings.addNameId(message);
-    if (!file_name)
-      nonFilenameMessages.set(id, true);
     return id;
   }
-
-  bool isFilenameMessage(int id) const { return !nonFilenameMessages.test(id, false); }
 };

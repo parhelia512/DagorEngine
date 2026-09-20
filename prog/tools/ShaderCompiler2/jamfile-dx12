@@ -12,6 +12,8 @@ AddIncludes +=
   $(Root)/prog/gameLibs/publicInclude
 ;
 
+Sources += ver_obj_dxc.cpp ;
+
 UseProgLibs +=
   tools/ShaderCompiler2/dx12
 ;
@@ -37,13 +39,13 @@ local scarlett_dlls =
 ;
 
 for l in $(xbox_one_dlls) {
-  BundleCopy += @$(_DEVTOOL)/xbox.gdk.$(GdkVer)/$(GdkVer)/GXDK/bin/XboxOne/$(l) dxc-dx12/xbox_one/$(l) ;
-  ALWAYS $(_DEVTOOL)/xbox.gdk.$(GdkVer)/$(GdkVer)/GXDK/bin/XboxOne/$(l) ;
+  BundleCopy += @$(_DEVTOOL)/xbox.gdk.$(GdkVer)/$(GdkVer)/xbox/bin/gen8/$(l) dxc-dx12/xbox_one/$(l) ;
+  ALWAYS $(_DEVTOOL)/xbox.gdk.$(GdkVer)/$(GdkVer)/xbox/bin/gen8/$(l) ;
 }
 
 for l in $(scarlett_dlls) {
-  BundleCopy += @$(_DEVTOOL)/xbox.gdk.$(GdkVer)/$(GdkVer)/GXDK/bin/Scarlett/$(l) dxc-dx12/xbox_scarlett/$(l) ;
-  ALWAYS $(_DEVTOOL)/xbox.gdk.$(GdkVer)/$(GdkVer)/GXDK/bin/Scarlett/$(l) ;
+  BundleCopy += @$(_DEVTOOL)/xbox.gdk.$(GdkVer)/$(GdkVer)/xbox/bin/gen9/$(l) dxc-dx12/xbox_scarlett/$(l) ;
+  ALWAYS $(_DEVTOOL)/xbox.gdk.$(GdkVer)/$(GdkVer)/xbox/bin/gen9/$(l) ;
 }
 }
 

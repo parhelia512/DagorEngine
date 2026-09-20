@@ -2,4 +2,4 @@ wait.progress
 wait.time 500
 screenshot.create
 wait.time 500
-app.terminate 0
+app.exit

@@ -159,6 +159,9 @@ static bool gameres_update_desc(DataBlock &desc, const char *desc_fn, const char
         return false;
       }
       int processed_cnt = 0, replaced_cnt = 0;
+      // before the loop, not after: removeBlock renumbers every later block,
+      // so a lookup that runs while it is in progress reads the index against a desc it no longer describes
+      gameres_invalidate_ri_desc_index(desc);
       for (int j = 0; j < blk.blockCount(); j++)
       {
         unsigned pack_idx = blk.getBlock(j)->getIntByNameId(pack_nid, -1);
@@ -347,6 +350,13 @@ static bool gameres_console_handler(const char *argv[], int argc)
     auto pack_id = gameres_optional::get_pack_name_id(pack_name);
     if (!gameres_optional::update_gameres_from_ready_packs(make_span_const(&pack_id, 1)))
       console::print_d("unrecognized ext: %s", ext);
+    else
+    {
+      // the update leaves the descs mutable and the riDesc index dropped, and nothing would reoptimize them until the next run;
+      // a no-op when the update touched no desc
+      gameres_final_optimize_desc(gameres_rendinst_desc, "riDesc");
+      gameres_final_optimize_desc(gameres_dynmodel_desc, "dynModelDesc");
+    }
   }
   CONSOLE_CHECK_NAME("gameres", "list_missing_for_res", 2, 3)
   {

@@ -4,6 +4,8 @@ interval rtsm_render_mode : hard < 1, denoised < 2, denoised_translucent < 3, rr
 hlsl(cs) {
   #pragma hlsl2021
   #define NRD_INTERNAL
+
+  float4 cbuf0Sentinel: register(c33);
 }
 
 macro HANDLE_TRANSLUCENCY()

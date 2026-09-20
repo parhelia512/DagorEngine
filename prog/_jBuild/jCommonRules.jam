@@ -242,7 +242,7 @@ rule BuildValidJamString
 rule StrToCIdent
 {
   local ident = $(1) ;
-  local spec_sym = "\\~\\#\\@\\$\\:\\.\\-" ;
+  local spec_sym = "\\~\\#\\@\\$\\:\\./\\-" ;
   local match_str = ([^$(spec_sym)]*)([$(spec_sym)])(.*) ;
   local split = [ MATCH $(match_str) : $(ident) ] ;
   while $(split) {
@@ -272,9 +272,9 @@ if $(OS) = NT {
   {
     echo * copy file to:   $(file)
     set_filter nul /1 file\(s\) copied/
-    call_filtered $(ComSpec) /C copy /Y /B /V #\( "$(2)" "$(1)" )\# >nul
+    call_filtered $(ComSpec) /C copy /Y /B /V #\( "$(srcAbs:E=$(2))" "$(dstAbs:E=$(1))" )\# >nul
     clr_filters
-    if not exist $(1) set errorlevel=13
+    if not exist $(dstAbs:E=$(1)) set errorlevel=13
   }
 } else {
   actions together quietly raw_copy_file

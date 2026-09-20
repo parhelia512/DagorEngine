@@ -1,0 +1,165 @@
+_component {
+  name:t="tag_filtered_registered"
+  type:t="int"
+  _tags:t="nonexistent_test_tag"
+}
+
+_component {
+  name:t="plain_registered"
+  type:t="int"
+}
+
+_component {
+  name:t="failed_registered"
+  type:t="no_such_type_xyz"
+}
+
+tracksFailedRegistered {
+  tfr_own:i=0
+  _tracked:t="failed_registered"
+}
+
+tracksPlainComponent {
+  tpc_own:i=0
+  _tracked:t="plain_registered"
+}
+
+taggedCompProvider {
+  _group {
+    _tags:t="nonexistent_test_tag"
+    tag_filtered_comp:i=0
+  }
+}
+
+trackedTagFiltered {
+  _use:t="taggedCompProvider"
+  _tracked:t="tag_filtered_comp"
+}
+
+baseTracksChildComp {
+  base_own_comp:i=0
+  _tracked:t="child_declared_comp"
+}
+
+childDeclares {
+  _use:t="baseTracksChildComp"
+  child_declared_comp:i=0
+}
+
+typoTracked {
+  typo_own_comp:i=0
+  _tracked:t="never_declared_comp"
+}
+
+typoReplicated {
+  repl_own_comp:i=0
+  _replicated:t="never_declared_repl"
+}
+
+typoIgnored {
+  ignored_own_comp:i=0
+  _skipInitialReplication:t="never_declared_ignored"
+}
+
+typoTrackedTwo {
+  typo2_own_comp:i=0
+  _tracked:t="never_declared_a"
+  _tracked:t="never_declared_b"
+}
+
+tracksTagFilteredComponent {
+  tfc_own:i=0
+  _tracked:t="tag_filtered_registered"
+}
+
+tracksNoInfoDeclared {
+  noinfo_own:i=0
+  _tracked:t="noinfo_declared_comp"
+}
+
+tracksCodeRegistered {
+  tcr_own:i=0
+  _tracked:t="code_registered_comp"
+}
+
+neverInstantiatedTypo {
+  ni_own:i=0
+  _tracked:t="never_declared_never_instantiated"
+}
+
+parentWithDangling {
+  pwd_own:i=0
+  _tracked:t="never_declared_in_parent"
+}
+
+childOfDangling {
+  _use:t="parentWithDangling"
+  cod_own:i=0
+}
+
+childOfDangling2 {
+  _use:t="parentWithDangling"
+  cod2_own:i=0
+}
+
+grandParentWithDangling {
+  gpd_own:i=0
+  _tracked:t="never_declared_in_grandparent"
+}
+
+midParentOfDangling {
+  _use:t="grandParentWithDangling"
+  mpd_own:i=0
+}
+
+grandChildOfDangling {
+  _use:t="midParentOfDangling"
+  gcd_own:i=0
+}
+
+parentTracksCodeChildComp {
+  ptcc_own:i=0
+  _tracked:t="code_child_declared_comp"
+}
+
+parentWithDanglingRepl {
+  pwdr_own:i=0
+  _replicated:t="never_declared_repl_in_parent"
+}
+
+childOfDanglingRepl {
+  _use:t="parentWithDanglingRepl"
+  codr_own:i=0
+}
+
+tracksLateDeclared {
+  tld_own:i=0
+  _tracked:t="late_declared_comp"
+}
+
+tracksLateCodeRegistered {
+  tlcr_own:i=0
+  _tracked:t="late_code_registered_comp"
+}
+
+sameTemplTagSkipped {
+  skip_own_plain:i=0
+  _group {
+    _tags:t="nonexistent_test_tag"
+    tag_skipped_own:i=0
+  }
+  "tag_skipped_block:i" {
+    value:i=0
+    _tags:t="nonexistent_test_tag"
+  }
+  "loaded_block:i" {
+    value:i=0
+  }
+  _tracked:t="tag_skipped_own"
+  _tracked:t="tag_skipped_block"
+  _tracked:t="loaded_block"
+  _tracked:t="skip_own_plain"
+  _replicated:t="tag_skipped_own"
+  _replicated:t="skip_own_plain"
+  _skipInitialReplication:t="tag_skipped_own,skip_own_plain"
+}

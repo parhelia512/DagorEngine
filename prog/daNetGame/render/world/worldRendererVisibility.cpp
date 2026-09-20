@@ -16,7 +16,8 @@
 #include <ioSys/dag_dataBlock.h>
 #include <startup/dag_globalSettings.h>
 #include "depthAOAbove.h"
-#include <render/world/cameraInCamera.h>
+#include <render/cameraInCamera/cameraInCamera.h>
+#include <render/world/portalRenderer.h>
 #include <shaders/dag_shaderBlock.h>
 
 
@@ -39,6 +40,9 @@ static ShaderVariableInfo hmap_object_tess_active("hmap_object_tess_active", tru
 } // namespace var
 
 extern void wait_static_shadows_cull_jobs();
+extern void wait_scene_shadow_ri_cull_jobs();
+extern void close_scene_shadow_ri_visibility();
+extern void shrink_scene_shadow_ri_visibility();
 
 void WorldRenderer::prepareLightProbeRIVisibilityAsync(const mat44f &globtm, const Point3 &view_pos)
 {
@@ -51,8 +55,11 @@ void WorldRenderer::waitAllJobs()
   mainCameraVisibilityMgr.waitAllJobs();
   camcamVisibilityMgr.waitAllJobs();
   wait_static_shadows_cull_jobs();
+  wait_scene_shadow_ri_cull_jobs();
   if (depthAOAboveCtx)
     depthAOAboveCtx->waitCullJobs();
+  if (PortalRenderer *portalRenderer = portal_renderer_mgr::query_portal_renderer())
+    portalRenderer->waitVisibilityJob();
 }
 
 void WorldRenderer::toggleProbeReflectionQuality()
@@ -92,6 +99,7 @@ void WorldRenderer::closeRendinstVisibility()
     rendinst::destroyRIGenVisibility(eastl::exchange(rsv, nullptr));
   rendinst::destroyRIGenVisibility(eastl::exchange(rendinstHmapPatchesVisibility, nullptr));
   rendinst::destroyRIGenVisibility(eastl::exchange(rendinst_dynamic_shadow_visibility, nullptr));
+  close_scene_shadow_ri_visibility();
 }
 
 // visibility objects persist across levels; drop their mission-sized cull buffers
@@ -106,6 +114,7 @@ void WorldRenderer::shrinkRendinstVisibilities()
     rendinst::shrinkRIGenVisibility(rsv);
   rendinst::shrinkRIGenVisibility(rendinstHmapPatchesVisibility);
   rendinst::shrinkRIGenVisibility(rendinst_dynamic_shadow_visibility);
+  shrink_scene_shadow_ri_visibility();
 }
 
 void WorldRenderer::startVisibility()
@@ -171,6 +180,8 @@ void WorldRenderer::startGroundReflectionVisibility()
 
 void WorldRenderer::startLightsCullingJob()
 {
+  sceneShadowRenderData.clear();
+  sceneShadowRiGpuObjectsPending = rendinst::gpuobjects::has_pending();
   // there is no dynamic lights in compatibility/forward, so no need to visibility test them
   if (hasFeature(FeatureRenderFlags::CLUSTERED_LIGHTS))
   {

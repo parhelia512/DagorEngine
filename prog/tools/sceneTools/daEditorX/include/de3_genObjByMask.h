@@ -132,7 +132,7 @@ inline void generateTiledEntitiesInMaskedRect(landclass::TiledEntities &lcd, int
 
     for (real mx = tx0; mx < tx1; mx += dx)
       for (real my = ty0; my < ty1; my += dy)
-        if (mx >= rect[0].x && my >= rect[0].y && mx + dx <= rect[1].y && my + dy <= rect[1].y)
+        if (mx >= rect[0].x && my >= rect[0].y && mx + dx <= rect[1].x && my + dy <= rect[1].y)
         {
           for (int tmi = sep.tm.size() - 1; tmi >= 0; tmi--)
           {

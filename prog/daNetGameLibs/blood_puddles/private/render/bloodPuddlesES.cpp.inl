@@ -391,7 +391,6 @@ void BloodPuddles::startSplashEffect(const Point3 &pos, const Point3 &dir)
 
 void BloodPuddles::addSplash(const Point3 &pos, const Point3 &normal, const TMatrix &itm, int matrix_id, float size)
 {
-  const Point3 dir{0.0f, 0.0f, 0.0f};
   const bool projective = false;
   const bool isLandscape = false;
   const float strength = 1.0f;

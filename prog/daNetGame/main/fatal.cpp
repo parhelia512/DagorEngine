@@ -69,7 +69,7 @@ static bool mbox_user_allows_abort(const char *msg, const char *call_stack)
   char buf[4096];
   snprintf(buf, sizeof(buf), "%s\n%s", msg, call_stack);
   buf[sizeof(buf) - 1] = 0;
-  ScopeDetachAllWndComponents wndCompsGuard; // stop handling windows input events during fatal message box
+  ScopeSuspendWndProcComponents wndCompsGuard; // stop handling windows input events during fatal message box
   int result = os_message_box(buf, "GAME FATAL ERROR", GUI_MB_ABORT_RETRY_IGNORE | GUI_MB_ICON_ERROR | GUI_MB_NATIVE_DLG);
   debug("%s result = %d", __FUNCTION__, result);
   if (result == GUI_MB_BUTTON_2) // RETRY
@@ -231,7 +231,7 @@ static void on_video_error_fatal_action()
   const char *addressPrefix = get_localized_text("url/knowledgebase", "https://support.gaijin.net/hc/search?&query=");
   String address(1024, "%s%X", addressPrefix, 0x8111000B);
   String text(1024, "Visit <a href=\"%s\">%s</a>", address.str(), address.str());
-  ScopeDetachAllWndComponents wndCompsGuard; // stop handling windows input events during fatal message box
+  ScopeSuspendWndProcComponents wndCompsGuard; // stop handling windows input events during fatal message box
   os_message_box(text, get_localized_text("msgbox/critical_error_header"), GUI_MB_OK | GUI_MB_ICON_ERROR | GUI_MB_FOREGROUND);
   _exit(1);
 }

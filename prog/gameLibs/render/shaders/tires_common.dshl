@@ -1,14 +1,55 @@
+texture tires_diffuse_tex;
+texture tires_normal_tex;
+texture tires_drift_tex;
+buffer tire_tracks_data_vs;
+
+int tires_start_inst = 0;
+int tires_frame_count = 0;
+float tires_texture_width;
+
+float4 track_smoothness_reflectance = (0, 0, 0, 0);
+float tires_base_y = 200;
+
+float tires_tcY_step = 200;
+
 macro TIRES_COMMON()
+  (vs) {
+    tires_tcY_step@f1 = (tires_tcY_step);
+  }
+
   hlsl(vs) {
     static const int TIRE_TRACK_NODE_SIZE = 2; // See `TireTrackNode` struct
 
-    float2 decode_side_vector(uint side_vector)
+    float2 decode_float2(uint value)
     {
-      return float2(f16tof32(side_vector >> 16), f16tof32(side_vector));
+      return float2(f16tof32(value >> 16), f16tof32(value));
     }
+
     float2 decode_side_vector(float side_vector)
     {
-      return decode_side_vector(asuint(side_vector));
+      return decode_float2(asuint(side_vector));
+    }
+    // will be replaced to material + weight reads next commit
+    float decode_tcX(float tc_X)
+    {
+      return decode_float2(asuint(tc_X)).x;
+    }
+    float2 decode_omnidirblend_opacity(float omnidirblend_opacity)
+    {
+      return decode_float2(asuint(omnidirblend_opacity));
+    }
+    float2 decode_tcY_wetness(float tcY_wetness)
+    {
+      return decode_float2(asuint(tcY_wetness));
+    }
+
+    // we pack tcY as half, so on large travelled distances values on adjacent nodes became same due to precision
+    // so we "rewind" it on emitter when it reaches some limit. Problem is: during render we can have
+    // one node with tc's below limit, and next node with "rewind", producing wrong mapping. So we must handle this in shader
+    void fixTcYMapping(inout float current_tcY, in float next_tcY)
+    {
+      if (current_tcY > next_tcY)
+        current_tcY -= tires_tcY_step;
     }
   }
 endmacro

@@ -12,7 +12,7 @@
 #include <ioSys/dag_dataBlock.h>
 #include <startup/dag_globalSettings.h>
 #include <math/random/dag_random.h>
-#include "render/animatedSplashScreen.h"
+#include <animated_splash_screen_api.h>
 #include <daECS/core/entityManager.h>
 #include <daECS/core/entitySystem.h>
 #include <daECS/core/componentTypes.h>

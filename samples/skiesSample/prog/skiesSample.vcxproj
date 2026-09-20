@@ -12,7 +12,17 @@
     <NMakeIncludeSearchPath>$(NMakeIncludeSearchPath);$(CommonProgDir)samples\commonFramework</NMakeIncludeSearchPath>
   </PropertyGroup>
   <Import Project="$(MSBuildToolsDir)config.props" />
-  <PropertyGroup />
+  <PropertyGroup>
+    <JamOutArch Condition="'$(JamPlatformArch)' != ''">$(JamPlatformArch)</JamOutArch>
+    <JamOutArch Condition="'$(JamOutArch)' == '' and '$(JamPlatform)' == 'android'">arm64-v8a</JamOutArch>
+    <JamOutArch Condition="'$(JamOutArch)' == ''">x86_64</JamOutArch>
+    <ExeName Condition="'$(ExeName)' != ''">$(ProjectName)-$(JamPlatform)-$(JamOutArch)$(NameSuffix)$([System.IO.Path]::GetExtension('$(ExeName)'))</ExeName>
+    <JamOutput Condition="'$(JamOutput)' != ''">$(OutDir)$(ExeName)</JamOutput>
+    <NMakeOutput Condition="'$(NMakeOutput)' != ''">$(JamOutput)</NMakeOutput>
+    <LocalDebuggerCommand Condition="'$(LocalDebuggerCommand)' != ''">$(JamOutput)</LocalDebuggerCommand>
+    <AdditionalFiles Condition="'$(AdditionalFiles)' != ''">$(JamOutput)</AdditionalFiles>
+    <OriginalAdditionalFiles Condition="'$(OriginalAdditionalFiles)' != ''">$(AdditionalFiles)</OriginalAdditionalFiles>
+  </PropertyGroup>
   <Import Project="$(MSBuildToolsDir)common.targets" />
   <ItemGroup Label="Wildcard">
     <CppSource Include="**\*.cpp" />

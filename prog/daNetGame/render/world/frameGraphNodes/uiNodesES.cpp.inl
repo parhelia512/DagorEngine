@@ -27,13 +27,11 @@ static inline void makeBeforeUIControlNodes(dafg::NodeHandle &before_ui_begin, d
     registry.multiplex(dafg::multiplexing::Mode::Viewport);
     auto prevNs = registry.root();
     prevNs.renameTexture("frame_to_present", "frame");
-    return []() {};
   });
 
   before_ui_end = ns.registerNode("end", DAFG_PP_NODE_SRC, [](dafg::Registry registry) {
     registry.multiplex(dafg::multiplexing::Mode::Viewport);
     registry.renameTexture("frame", "frame_done");
-    return []() {};
   });
 }
 

@@ -62,7 +62,7 @@ macro USE_BIOMES(stage)
     {
       float4 baseWeights;
       int4 indices = getBiomeIndices(world_pos, baseWeights);
-      float4 indexComp = (indices == index.xxxx) || (indices == index.yyyy) || (indices == index.zzzz) || (indices == index.wwww);
+      float4 indexComp = or(or(or(indices == index.xxxx, indices == index.yyyy), indices == index.zzzz), indices == index.wwww);
       return dot(indexComp, baseWeights);
     }
   }

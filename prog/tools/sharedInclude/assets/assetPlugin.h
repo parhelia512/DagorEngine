@@ -13,12 +13,26 @@ class DagorAsset;
 class IDagorAssetExporter;
 class IDagorAssetRefProvider;
 
+// Host (main) module state that a plugin DLL needs, because the DLL plugin has its own copy of every static in the libs it links.
+class IDaBuildHost
+{
+public:
+  virtual void *__stdcall getExpCacheSharedData() = 0;
+  virtual const char *__stdcall getAppDir() = 0;
+};
 
 // daBuild plugin DLL interface
 class IDaBuildPlugin
 {
 public:
+  // Called by the host (main) module before init().
+  // The plugin links its own copy of the implementation. initGlobals() makes the plugin's global variables match the host's.
+  // "host": valid only for the duration of the call.
+  virtual void __stdcall initGlobals(IDaBuildHost &host);
+
+  // Do not call init() directly. Use dabuild_plugin_init() instead.
   virtual bool __stdcall init(const DataBlock &appblk) = 0;
+
   virtual void __stdcall destroy() = 0;
 
   virtual int __stdcall getExpCount() = 0;
@@ -30,6 +44,8 @@ public:
   virtual IDagorAssetRefProvider *__stdcall getRefProv(int idx) = 0;
 };
 
+// The plugin's globals must be ready before init() runs, so always initialize a plugin through this.
+bool dabuild_plugin_init(IDaBuildPlugin &plugin, const DataBlock &app_blk);
 
 //! root DLL function must be declared as:
 //!   extern "C" __declspec(dllexport) IDaBuildPlugin* __stdcall get_dabuild_plugin();

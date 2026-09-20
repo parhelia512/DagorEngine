@@ -1,3 +1,5 @@
+from "%sqstd/frp.nut" import WatchedRo
+
 return {
   DE4_MODE_SELECT = "DE4_MODE_SELECT"
   DE4_MODE_MOVE = "DE4_MODE_MOVE"
@@ -10,9 +12,22 @@ return {
   DE4_CMD_SELBYNAME = "DE4_CMD_SELBYNAME"
   DE4_CMD_SELFILTER = "DE4_CMD_SELFILTER"
   DE4_CMD_DEL = "DE4_CMD_DEL"
+  DE4_BASIS_WORLD = "DE4_BASIS_WORLD"
+  DE4_BASIS_LOCAL = "DE4_BASIS_LOCAL"
+  DE4_BASIS_PARENT = "DE4_BASIS_PARENT"
+  DE4_CENTER_PIVOT = "DE4_CENTER_PIVOT"
+  DE4_CENTER_SELECTION = "DE4_CENTER_SELECTION"
 
-  isFreeCamMode = @() false
-  getEditMode = @() "DE4_MODE_SCALE"
   setEditMode = @(_mode) null
+  setWorkMode = @(_mode) null
   setPointActionPreview = @(_shape, _param) null
+  setGizmoBasisType = @(_basis) null
+  setGizmoCenterType = @(_center) null
+
+  workMode = WatchedRo("")
+  editMode = WatchedRo("DE4_MODE_SCALE")
+  gizmoBasisType = WatchedRo("DE4_BASIS_WORLD")
+  gizmoCenterType = WatchedRo("DE4_CENTER_PIVOT")
+  editorIsActive = WatchedRo(false)
+  editorFreeCam = WatchedRo(false)
 }

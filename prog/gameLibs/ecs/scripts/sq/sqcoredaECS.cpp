@@ -4066,7 +4066,7 @@ void ecs_register_sq_binding(SqModules *module_mgr, bool create_systems, bool cr
     tblEcs.Func("start_es_loading", start_es_loading);
     tblEcs.Func("end_es_loading", end_es_loading);
   }
-  tblEcs.Func("has_tag", bind_dascript::ecs_has_tag);
+  tblEcs.Func("has_tag", bind_dascript::ecs_has_global_tag);
 
   G_ASSERT(g_entity_mgr);
   tblEcs.SetValue("g_entity_mgr", g_entity_mgr.get());

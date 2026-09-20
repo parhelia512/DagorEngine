@@ -57,7 +57,6 @@ public:
   void clear();
 
   const DataBlock &getShGlobVarsScheme() const { return shGlobVarsScheme; }
-  const DataBlock *findWspBlk(const char *app_blk_path);
 
   void getHmapSettings(bool &hmap_tiletex, bool &hmap_colortex, bool &hmap_lightmaptex, bool &hmap_usemeshsurface,
     bool &hmap_usenormalmap) const

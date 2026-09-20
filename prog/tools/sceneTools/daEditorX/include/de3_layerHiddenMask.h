@@ -19,8 +19,9 @@ public:
     if (index < 0 || index >= BIT_COUNT) [[unlikely]]
     {
       logerr("Invalid index in LayerHiddenMask::isHidden(%d).", index);
-      // Return the reserved, always hidden layer. See IObjEntityFilter::setLayerHiddenMask() in srvEngine.cpp.
-      return value.get(BIT_COUNT - 1);
+      // Report an invalid index as visible. Something that should not be there might be easier to notice than something
+      // that is missing.
+      return false;
     }
 
     return value.get(index);

@@ -13,6 +13,7 @@ struct PhysBodyCreationData
   float friction = -1.f, restitution = -1.f, rollingFriction = -1.f; //< not applied when < 0
   float linearDamping = 0.2f, angularDamping = 0.2f;
   void *userPtr = nullptr;
+  const char *debugName = nullptr;
   short materialId = 0; //< when < 0 (invalid) friction and restitution are not used from mat
   unsigned short group = 1u, mask = 0xFFFFu;
   bool useMotionState = true, autoMask = true, autoInertia = false;

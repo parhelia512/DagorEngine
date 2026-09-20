@@ -150,7 +150,7 @@ struct BakingData
     BakingData &baking;
     LoadingJob(BakingData &b) : baking(b) {}
 
-    const char *getJobName(bool & /*copystr*/) const override { return "BakingLoadingJob"; }
+    const char *getJobName(bool & /*copystr*/) const override { return DAPROFILER_STRING("BakingLoadingJob"); }
     void releaseJob() override { delete this; }
     void doJob() override
     {

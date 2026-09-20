@@ -1,0 +1,18 @@
+include "shader_global.dshl"
+include "loading_splash_common.dshl"
+
+shader loading_splash_planet,
+  loading_splash_planet_1,
+  loading_splash_planet_2,
+  loading_splash_planet_3,
+  loading_splash_planet_4
+{
+  LOADING_SPLASH_STATE()
+  LOADING_SPLASH_PS_OUTPUT(loading_splash_planet_1, loading_splash_planet_2, loading_splash_planet_3, loading_splash_planet_4)
+
+  hlsl(ps) {
+    #include "planet.glsl"
+  }
+
+  LOADING_SPLASH_PS_MAIN(loading_splash_planet, loading_splash_planet_1, loading_splash_planet_2, loading_splash_planet_3, loading_splash_planet_4)
+}

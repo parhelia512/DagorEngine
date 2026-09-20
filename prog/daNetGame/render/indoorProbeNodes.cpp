@@ -9,7 +9,7 @@
 #include <memory/dag_framemem.h>
 #include <shaders/dag_shaders.h>
 #include <util/dag_convar.h>
-#include <render/world/cameraParams.h>
+#include <render/cameraParams.h>
 #include <render/world/frameGraphHelpers.h>
 #include <render/world/cameraViewVisibilityManager.h>
 #include <render/daFrameGraph/daFG.h>

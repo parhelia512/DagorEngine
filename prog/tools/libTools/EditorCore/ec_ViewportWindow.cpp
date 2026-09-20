@@ -2554,6 +2554,8 @@ void ViewportWindow::onImguiDelayedCallback(void *user_data)
 
 void ViewportWindow::updateImgui(ImGuiID canvas_id, const Point2 &size, float item_spacing, bool vr_mode)
 {
+  imguiCanvasId = canvas_id;
+
   const ImVec2 imguiViewportSize = size;
   requestedViewportTextureSize = IPoint2(floorf(imguiViewportSize.x), floorf(imguiViewportSize.y));
 

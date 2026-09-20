@@ -169,6 +169,12 @@ public:
       "rendinst::getRIGenExtraName");
     das::addExtern<DAS_BIND_FUN(rendinst::getRIGenResName)>(*this, lib, "getRIGenResName", das::SideEffects::accessExternal,
       "rendinst::getRIGenResName");
+    das::addExtern<DAS_BIND_FUN(rendinst::getRIGenLayersCount)>(*this, lib, "rendinst_getRIGenLayersCount",
+      das::SideEffects::accessExternal, "rendinst::getRIGenLayersCount");
+    das::addExtern<DAS_BIND_FUN(rendinst::getRIGenPoolsCount)>(*this, lib, "rendinst_getRIGenPoolsCount",
+      das::SideEffects::accessExternal, "rendinst::getRIGenPoolsCount");
+    das::addExtern<DAS_BIND_FUN(rendinst::getRIGenResNameByPool)>(*this, lib, "rendinst_getRIGenResNameByPool",
+      das::SideEffects::accessExternal, "rendinst::getRIGenResNameByPool");
     das::addExtern<DAS_BIND_FUN(rendinst::getRIGenDestrName)>(*this, lib, "getRIGenDestrName", das::SideEffects::accessExternal,
       "rendinst::getRIGenDestrName");
     das::addExtern<DAS_BIND_FUN(rendinst::getRIGenDestrFxTemplateName)>(*this, lib, "getRIGenDestrFxTemplateName",
@@ -178,6 +184,10 @@ public:
       das::SideEffects::accessExternal, "rendinst::getRIGenBBox");
     das::addExtern<DAS_BIND_FUN(rendinst::getRIGenMatrix), das::SimNode_ExtFuncCallAndCopyOrMove>(*this, lib, "getRIGenMatrix",
       das::SideEffects::accessExternal, "rendinst::getRIGenMatrix");
+    das::addExtern<DAS_BIND_FUN(ri_desc_to_net_restorable), das::SimNode_ExtFuncCallAndCopyOrMove>(*this, lib,
+      "ri_desc_to_net_restorable", das::SideEffects::accessExternal, "bind_dascript::ri_desc_to_net_restorable");
+    das::addExtern<DAS_BIND_FUN(ri_desc_from_net_restorable), das::SimNode_ExtFuncCallAndCopyOrMove>(*this, lib,
+      "ri_desc_from_net_restorable", das::SideEffects::accessExternal, "bind_dascript::ri_desc_from_net_restorable");
     das::addExtern<DAS_BIND_FUN(rendinst::isRIGenExtraImmortal)>(*this, lib, "riex_isImmortal", das::SideEffects::accessExternal,
       "rendinst::isRIGenExtraImmortal");
     das::addExtern<DAS_BIND_FUN(rendinst::isRIGenExtraWalls)>(*this, lib, "riex_isWalls", das::SideEffects::accessExternal,
@@ -256,6 +266,8 @@ public:
       das::SideEffects::modifyExternal, "rendinst::applyTiledScenesUpdateForRIGenExtra");
     das::addExtern<DAS_BIND_FUN(rendinst_foreachTreeInBox)>(*this, lib, "rendinst_foreachTreeInBox", das::SideEffects::accessExternal,
       "bind_dascript::rendinst_foreachTreeInBox");
+    das::addExtern<DAS_BIND_FUN(rendinst_doRIGenDamageFiltered)>(*this, lib, "rendinst_doRIGenDamageFiltered",
+      das::SideEffects::modifyExternal, "bind_dascript::rendinst_doRIGenDamageFiltered");
     das::addExtern<DAS_BIND_FUN(get_ri_color_infos)>(*this, lib, "get_ri_color_infos", das::SideEffects::accessExternal,
       "bind_dascript::get_ri_color_infos");
     das::addExtern<DAS_BIND_FUN(iterate_riextra_map)>(*this, lib, "iterate_riextra_map", das::SideEffects::accessExternal,

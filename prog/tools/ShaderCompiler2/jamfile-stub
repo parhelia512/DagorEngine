@@ -5,6 +5,8 @@ include $(Root)/$(Location)/jamfile-common ;
 
 Target = tools/dsc2-stub ;
 
+Sources += ver_obj_pcdx.cpp ;
+
 CPPopt += -D_CROSS_TARGET_EMPTY -DBINDUMP_TARGET_BE=0 ;
 
 if $(Platform) = macOS { CPPopt += -Wno-switch ; }

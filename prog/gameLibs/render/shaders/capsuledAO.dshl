@@ -61,7 +61,7 @@ macro USE_CAPSULE_AO(code)
     {
       int2 gridPos = floor(capsuled_units_ao_world_to_grid_mul_add.xy*worldPos.xz + capsuled_units_ao_world_to_grid_mul_add.zw);
       BRANCH
-      if (any(gridPos < 0 || gridPos >= UNITS_AO_GRID_SIZE) || currentAO<0.01)//todo: check if it is outside meaningful grid, not maximum grid. i.e. maxium is something smaller.
+      if (any(or(gridPos < 0, gridPos >= UNITS_AO_GRID_SIZE)) || currentAO<0.01)//todo: check if it is outside meaningful grid, not maximum grid. i.e. maxium is something smaller.
         return currentAO;
 
       float occlusion = currentAO;

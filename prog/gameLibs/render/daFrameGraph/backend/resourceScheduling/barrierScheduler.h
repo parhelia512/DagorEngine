@@ -88,7 +88,8 @@ public:
 
   void scheduleEvents(EventsCollection &node_events, const intermediate::Graph &graph, const ResourceLifetimes &lifetimes,
     const PassColoring &pass_coloring, const IdIndexedFlags<intermediate::NodeIndex, framemem_allocator> &nodes_changed,
-    const IdIndexedFlags<intermediate::ResourceIndex, framemem_allocator> &resources_changed,
+    const IdIndexedFlags<intermediate::ResourceIndex, framemem_allocator> &values_changed,
+    const IdIndexedFlags<intermediate::ResourceIndex, framemem_allocator> &requests_changed,
     const IdIndexedFlags<intermediate::ResourceIndex, framemem_allocator> &lifetimes_changed);
 
   const UsageSyncStagesMapping &usageSyncStages() const { return usageSyncStagesPerResource; }
@@ -105,7 +106,8 @@ private:
 
   DirtyResources computeDirtyResources(const intermediate::Graph &graph,
     const IdIndexedFlags<intermediate::NodeIndex, framemem_allocator> &nodes_changed,
-    const IdIndexedFlags<intermediate::ResourceIndex, framemem_allocator> &resources_changed,
+    const IdIndexedFlags<intermediate::ResourceIndex, framemem_allocator> &values_changed,
+    const IdIndexedFlags<intermediate::ResourceIndex, framemem_allocator> &requests_changed,
     const IdIndexedFlags<intermediate::ResourceIndex, framemem_allocator> &lifetimes_changed, const GracePoints &grace_points);
 
   void updateDirtyResourceEvents(const intermediate::Graph &graph, const ResourceLifetimes &lifetimes,

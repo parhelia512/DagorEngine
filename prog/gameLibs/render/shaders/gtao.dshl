@@ -41,8 +41,10 @@ hlsl{
 }
 
 macro GTAO_MAIN_CORE(code)
+  (code) {
+    from_sun_direction@f3 = from_sun_direction;
+  }
   supports none;
-  supports global_const_block;
 
   assume_if_not_assumed use_contact_shadows = use_shadows;
 

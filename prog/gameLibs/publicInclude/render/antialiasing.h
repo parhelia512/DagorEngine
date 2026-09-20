@@ -10,6 +10,7 @@
 #include <resourcePool/resourcePool.h>
 #include <3d/dag_textureIDHolder.h>
 #include <render/daFrameGraph/daFG.h>
+#include <EASTL/optional.h>
 
 class TemporalAA;
 class TemporalSuperResolution;
@@ -88,16 +89,13 @@ struct ApplyContext
   float fov = 0;
   float aspect = 0;
 
-  Texture *depthTexture = nullptr;
   Texture *motionTexture = nullptr;
-  Texture *albedoTexture = nullptr;
   Texture *hitDistTexture = nullptr;
   Texture *normalRoughnessTexture = nullptr;
   Texture *specularAlbedoTexture = nullptr;
   Texture *reactiveTexture = nullptr;
   Texture *exposureTexture = nullptr;
   Texture *ssssGuideTexture = nullptr;
-  Texture *colorBeforeTransparencyTexture = nullptr;
   Point2 jitterPixelOffset = Point2::ZERO;
   IPoint2 inputOffset = IPoint2::ZERO;
   IPoint2 inputResolution = IPoint2::ZERO;
@@ -113,7 +111,6 @@ struct ApplyContext
   bool resetHistory = false;
 
 #if _TARGET_C2
-
 
 
 #endif
@@ -160,6 +157,14 @@ struct AppGlue
   virtual int getHangarPassValue() const = 0;
   virtual bool isVrHmdEnabled() const = 0;
   virtual bool pushSSAAoption() const = 0;
+  // Declares the gbuffer reads of the prepare_ray_reconstruction dispatch, bound to the gbuffer
+  // shader vars, and returns the albedo texture DLSS-RR takes as its diffuse albedo guide.
+  virtual eastl::optional<dafg::VirtualResourceHandle<const BaseTexture, true, false>> requestRayReconstructionGbuffer(
+    dafg::Registry registry) const
+  {
+    G_UNUSED(registry);
+    return eastl::nullopt;
+  }
 };
 
 void migrate(const char *config_name);
@@ -180,7 +185,10 @@ AntialiasingMethod get_method_from_name(const char *name);
 const char *get_method_name(AntialiasingMethod method);
 UpscalingQuality get_quality();
 const char *get_quality_name(UpscalingQuality quality);
+eastl::optional<UpscalingQuality> get_upscaling_quality_from_name(const char *name);
 void set_quality_override(const char *quality_name);
+void set_quality_override(UpscalingQuality quality);
+void reset_quality_override();
 bool is_quality_override_active();
 
 bool is_valid_method_name(const char *name);
@@ -217,7 +225,7 @@ Point2 get_jitter_offset(uint32_t frame_index);
 int get_jitter_sequence_length();
 
 void apply_fxaa(AntialiasingMethod method, Texture *src_color, Texture *src_depth, const Point4 &tc_scale_offset);
-void apply_mobile_aa(Texture *source_tex, Texture *dest_tex, const ApplyContext &ctx);
+void apply_mobile_aa(Texture *source_tex, Texture *dest_tex, Texture *depth_tex, const ApplyContext &ctx);
 
 const char *get_available_methods(bool is_vr, bool names_only);
 const char *get_available_upscaling_options(const char *method);
@@ -234,7 +242,6 @@ void schedule_generated_frames(const FrameGenContext &ctx);
 int get_supported_generated_frames(const char *method, bool exclusive_fullscreen);
 bool is_dynamic_mfg_supported(const char *method, bool exclusive_fullscreen);
 const char *get_frame_generation_unsupported_reason(const char *method, bool exclusive_fullscreen);
-int get_presented_frame_count();
 bool is_frame_generation_enabled();
 bool is_frame_generation_enabled_in_config();
 
@@ -242,16 +249,20 @@ unsigned int get_frame_after_aa_flags();
 
 bool try_init_dlss(IPoint2 postfx_resolution, IPoint2 &rendering_resolution, const char *input_name = nullptr,
   const char *depth_name = nullptr);
-void apply_dlss(Texture *in_color, const ApplyContext &apply_context, Texture *target);
+void apply_dlss(Texture *in_color, Texture *depth_tex, Texture *color_before_transparency_tex, Texture *albedo_tex,
+  const ApplyContext &apply_context, Texture *target);
 bool is_ray_reconstruction_enabled();
 bool try_init_tsr(IPoint2 postfx_resolution, IPoint2 &rendering_resolution, const char *input_name = nullptr);
-void apply_tsr(Texture *in_color, const ApplyContext &apply_context, Texture *out_color, Texture *history_color,
-  Texture *out_confidence, Texture *history_confidence, Texture *reactive_tex);
-bool try_init_fsr(IPoint2 postfx_resolution, IPoint2 &rendering_resolution, const char *input_name = nullptr);
-void apply_fsr(Texture *in_color, const ApplyContext &apply_context, Texture *target);
-bool try_init_xess(IPoint2 postfx_resolution, IPoint2 &rendering_resolution, const char *input_name = nullptr);
-void apply_xess(Texture *in_color, const ApplyContext &apply_context, Texture *target);
+void apply_tsr(Texture *in_color, const ApplyContext &apply_context, Texture *out_color, Texture *history_color, Texture *out_depth,
+  Texture *history_depth, Texture *out_confidence, Texture *history_confidence, Texture *reactive_tex);
+bool try_init_fsr(IPoint2 postfx_resolution, IPoint2 &rendering_resolution, const char *input_name = nullptr,
+  const char *depth_name = nullptr);
+void apply_fsr(Texture *in_color, Texture *depth_tex, const ApplyContext &apply_context, Texture *target);
+bool try_init_xess(IPoint2 postfx_resolution, IPoint2 &rendering_resolution, const char *input_name = nullptr,
+  const char *depth_name = nullptr);
+void apply_xess(Texture *in_color, Texture *depth_tex, const ApplyContext &apply_context, Texture *target);
 #if _TARGET_C2
+
 
 
 #endif

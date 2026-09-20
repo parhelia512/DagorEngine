@@ -26,10 +26,17 @@ public:
   typedef dag::Index16 Index16;
 
   GeomNodeTree() = default;
-  GeomNodeTree(const GeomNodeTree &from) { *this = from; }
+  // explicit, and no assignment: a dropped '&' must not silently deep copy a skeleton
+  explicit GeomNodeTree(const GeomNodeTree &from) { replaceContentFrom(from); }
   ~GeomNodeTree();
 
-  GeomNodeTree &operator=(const GeomNodeTree &from);
+  GeomNodeTree &operator=(const GeomNodeTree &from) = delete;
+
+  // refills this tree, keeping the object itself and every pointer already bound to it.
+  // data of a make()/load() tree is one fixed block, so such a tree only takes an equally
+  // sized one, and clear() (an empty refill) is for separately owned data only
+  void replaceContentFrom(const GeomNodeTree &from);
+  void clear() { replaceContentFrom(GeomNodeTree()); }
 
   // make()/load() return one block holding the instance and its data, released by destroy()
   static GeomNodeTree *make(const GeomNodeTree &from);
@@ -64,7 +71,7 @@ public:
   Index16 findINodeIndex(const char *name) const;
 
   // Per-OBJECT monotonic pose stamp: every wtm update entry, named world-state mutator
-  // (wtm/wofs setters), load and copy-assign bumps it, so consumers caching pose-derived
+  // (wtm/wofs setters), load and replaceContentFrom bump it, so consumers caching pose-derived
   // data (collision instances, TLAS feeders) see every pose change AND every content
   // replacement of this object as stale. Never 0. Local-tm writers do not bump (calcWtm
   // does); direct wtm writers through the non-const accessors must call markPoseChanged().
@@ -94,8 +101,9 @@ public:
   void verifyAllData() const;
   void verifyOnlyTmFast() const;
 
-  void calcWorldBox(bbox3f &box) const;
-  void calcWorldBox(BBox3 &box) const;
+  // world box of nodes up to importantNodeCount (to ignore stale nodes)
+  void calcWorldBoxFromImportantNodes(bbox3f &box) const;
+  void calcWorldBoxFromImportantNodes(BBox3 &box) const;
 
   void recalcTm(Index16 ni, bool allow_recalc_root = true)
   {

@@ -128,12 +128,14 @@ public:
 
   virtual void shadowsInvalidate(const BBox3 &box) = 0;
   virtual void shadowsAddInvalidBBox(const BBox3 &box) = 0;
-  virtual void invalidateGI(const BBox3 &model_bbox, const TMatrix &tm, const BBox3 &approx) = 0;
+  virtual void invalidateGI(const BBox3 &world_box) = 0;
 
   virtual void setWorldBBox(const BBox3 &) = 0;
 
   virtual bool needSeparatedUI() const = 0;
   virtual bool needUIBlendingForScreenshot() const = 0;
+
+  virtual void requireStencilGbuf(bool require) = 0;
 
 protected:
   virtual ~IRenderWorld() {}

@@ -23,6 +23,7 @@ struct EditorHeightmapInfo
   d3d::SamplerHandle detSampler = d3d::SamplerHandle::Invalid;
   Point2 detOrigin = {0, 0};
   Point2 detSize = {0, 0};
+  bool mirrorHmap = false;
 };
 
 class LandMeshManager;

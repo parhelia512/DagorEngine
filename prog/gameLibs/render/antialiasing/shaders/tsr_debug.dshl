@@ -1,0 +1,97 @@
+include "shader_global.dshl"
+include "tsr_stability_filter.dshl"
+
+// visualization of TSR's internal terms: tsr_debug_view picks one term at runtime and it goes to
+// the debug UAV that the ImGui window shows. tsr_debug gates the whole thing out of shipping builds
+
+float tsr_debug_update_override = 1;
+int tsr_debug_view = 1;
+
+int tsr_debug = 0;
+interval tsr_debug : off < 1, on;
+
+macro INIT_TSR_DEBUG(code)
+  (code) {
+    debugView@i1 = tsr_debug_view;
+    debugUpdateOverride@f1 = tsr_debug_update_override;
+  }
+  if (tsr_debug == on)
+  {
+    (code) {
+      // slot 5 is where TemporalSuperResolution binds the debug tex
+      outDebug@uav : register(5) hlsl {
+        RWTexture2D<float3> outDebug@uav;
+      }
+    }
+  }
+endmacro
+
+macro USE_TSR_DEBUG(code)
+  hlsl(code) {
+  ##if tsr_debug == on
+    struct TsrDebug
+    {
+      float confidence;
+      float rejection;
+      float aabbScale;
+      float3 inputColor;
+      float3 historyColor;
+      float3 rectifiedHistoryColor;
+      // the flicker view rebuilds calcResult()'s blend from these to show the luma change that
+      // lands on the accumulator this frame, so it has to be fed the pre-blend YCoCg lumas
+      float inputLuma;
+      float historyLuma;
+      float rectifiedHistoryLuma;
+      float inputConfidence;
+      float historyConfidence;
+    ##if tsr_stability_filter_allowed == yes
+      float stabilityScale;
+      float stabilityEdginess;
+    ##endif
+    };
+
+    void writeTsrDebug(uint2 coord, TsrDebug d)
+    {
+      float3 debugColor;
+      if (debugView == 0)
+        debugColor = d.confidence;
+      else if (debugView == 1)
+        debugColor = d.rejection;
+      else if (debugView == 2)
+        debugColor = d.inputColor;
+      else if (debugView == 3)
+        debugColor = d.aabbScale / 10;
+      else if (debugView == 4)
+        debugColor = d.historyColor;
+      else if (debugView == 5)
+        debugColor = d.rectifiedHistoryColor;
+      else if (debugView == 6)
+      {
+        float dc1 = d.inputConfidence * (d.historyConfidence - 1);
+        float dc2 = d.historyConfidence * (d.inputConfidence - 1);
+        float updateRate = (dc1 / (dc1 + dc2)) * debugUpdateOverride;
+        float flicker = 10 * abs(lerp(d.rectifiedHistoryLuma, d.inputLuma, updateRate) - d.historyLuma);
+      ##if (hardware.dx12 || hardware.vulkan)
+        // smooth with an EMA (~10 frames) via UAV read-modify-write; typed UAV loads from
+        // R11G11B10F are unavailable on other targets; debug tex starts uninitialized -> guard non-finite
+        float prevEma = texture2DAt(outDebug, coord).x;
+        flicker = lerp(isfinite(prevEma) ? prevEma : 0, flicker, 0.1);
+      ##endif
+        debugColor = flicker;
+      }
+    ##if tsr_stability_filter_allowed == yes
+      else if (debugView == 7)
+        debugColor = d.stabilityScale;
+      else if (debugView == 8)
+        debugColor = d.stabilityEdginess;
+    ##else
+      else if (debugView == 7 || debugView == 8)
+        debugColor = float3(1, 0, 1); // magenta: the stability filter is not built for this project
+    ##endif
+      else
+        debugColor = d.rejection;
+      texture2DAt(outDebug, coord) = debugColor;
+    }
+  ##endif
+  }
+endmacro

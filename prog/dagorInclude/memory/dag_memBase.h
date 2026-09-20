@@ -303,7 +303,7 @@ KRNLIMP int memresizeinplace_default(void *, size_t sz);
 #else
 // disabling compilation of new/delete code for C++
 #ifndef __cplusplus
-#define new :.:
-#define delete :.:
+#define new    :.: //-V1059
+#define delete :.: //-V1059
 #endif
 #endif //__B_NO_MEM_BASE_INCLUDE

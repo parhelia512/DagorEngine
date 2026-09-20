@@ -6,7 +6,7 @@ from "frp" import Watched, Computed, update_deferred
 // --- Test 1: Subscriber fires during set, not at update_deferred ---
 let log = []
 let w = Watched(1)
-w.setDeferred(false)
+w.setImmediate(true)
 
 update_deferred()
 w.subscribe(@(v) log.append($"sub:{v}"))
@@ -23,9 +23,9 @@ println($"timing: {" ".join(log)}")
 
 // --- Test 2: Computed value available immediately after set ---
 let w2 = Watched(10)
-w2.setDeferred(false)
+w2.setImmediate(true)
 let c2 = Computed(@() w2.get() * 2)
-c2.setDeferred(false)
+c2.setImmediate(true)
 update_deferred()
 
 let snapshots = []
@@ -39,7 +39,7 @@ println($"snapshots: {" ".join(snapshots)}")
 // --- Test 3: Immediate subscriber sees intermediate values ---
 let history = []
 let w3 = Watched(0)
-w3.setDeferred(false)
+w3.setImmediate(true)
 update_deferred()
 w3.subscribe(@(v) history.append(v))
 
@@ -66,11 +66,11 @@ println($"deferred after update: {" ".join(dHistory)}")
 
 // --- Test 5: Immediate computed in chain, read between sets ---
 let src = Watched("a")
-src.setDeferred(false)
+src.setImmediate(true)
 let upper = Computed(@() src.get() + src.get())
-upper.setDeferred(false)
+upper.setImmediate(true)
 let triple = Computed(@() upper.get() + src.get())
-triple.setDeferred(false)
+triple.setImmediate(true)
 update_deferred()
 
 println($"chain: {triple.get()}")  // aaa

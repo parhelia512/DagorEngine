@@ -3,6 +3,15 @@ float4 caustics_tile_hiding  = (0.5,0.32, 1.37, 2.1);
 float caustics_world_scale  = 1.0;
 float4 caustics_hero_pos = (0, -1000000, 0, 0); // position and radius of watched hero
 texture caustics__indoor_probe_mask;
+sampler caustics__indoor_probe_mask_samplerstate
+{
+  comparison_func = less;
+  mipmap_mode = point;
+  address_u = border;
+  address_v = border;
+  address_w = border;
+  border_color = (0, 0, 0, 0);
+};
 float4x4 caustics__indoor_probe_mask_matrix;
 float caustics__indoor_probe_mask_min_strength= 0.999;
 
@@ -34,7 +43,8 @@ macro USE_CAUSTICS_BASE(code)
   {
     (code)
     {
-      caustics__indoor_probe_mask@shd = caustics__indoor_probe_mask;
+      caustics__indoor_probe_mask@tex2d = caustics__indoor_probe_mask;
+      caustics__indoor_probe_mask_cmpSampler@cmpSampler = caustics__indoor_probe_mask_samplerstate;
       caustics__indoor_probe_mask_matrix@f44 = caustics__indoor_probe_mask_matrix;
       caustics__indoor_probe_mask_min_strength@f1 = caustics__indoor_probe_mask_min_strength;
     }
@@ -197,6 +207,5 @@ macro USE_CAUSTICS_BASE(code)
 endmacro
 
 macro USE_CAUSTICS(code)
-  supports global_const_block;
   USE_CAUSTICS_BASE(code)
 endmacro

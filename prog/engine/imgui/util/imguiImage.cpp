@@ -63,7 +63,7 @@ public:
 
     return this;
   }
-  const char *getJobName(bool &) const override { return "CompressAndSendJob"; }
+  const char *getJobName(bool &) const override { return DAPROFILER_STRING("CompressAndSendJob"); }
   void doJob() override
   {
     const uint64_t compressedDataSizeBound = ZSTD_compressBound(originalDataSize);

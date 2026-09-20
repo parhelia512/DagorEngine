@@ -10,6 +10,7 @@
 #include <daECS/core/componentTypes.h>
 #include <daECS/scene/scene.h>
 #include <util/dag_console.h>
+#include <osApiWrappers/dag_critSec.h>
 #include <EASTL/unique_ptr.h>
 #include <ska_hash_map/flat_hash_map2.hpp>
 #include <sqrat.h>
@@ -66,6 +67,8 @@ public:
 
   void setMainScenePath(const char *fpath);
   void saveMainSceneCopy(const char *fpath, const char *reason);
+  void requestSaveMainSceneCopy(const char *fpath, const char *reason);
+  void dropPendingSaveMainSceneCopy();
   void saveMainScene();
   void saveDirtyScenes();
   void saveScenes(const eastl::vector<ecs::Scene::SceneId> scenes_to_save);
@@ -108,6 +111,7 @@ public:
   void scheduleObjRemoval(EditableObject *o) { objsToRemove.push_back(o); }
 
   static void register_script_class(HSQUIRRELVM vm);
+  static Sqrat::Table getSceneTree(HSQUIRRELVM vm, EntityObjEditor *editor); // null editor: empty tree
 
   static eastl::string getTemplateNameForUI(ecs::EntityId eid);
   static bool hasTemplateComponent(const char *template_name, const char *comp_name);
@@ -226,6 +230,7 @@ private:
   static SQInteger get_target_scene(HSQUIRRELVM vm);
 
   void saveScenesSq(Sqrat::Array ids);
+  void savePendingMainSceneCopy();
   void selectObjectsSq(Sqrat::Array objects_ids);
 
   void mapEidToEditableObject(EntityObj *obj);
@@ -252,6 +257,8 @@ private:
   bool sceneInit = false;
   SimpleString sceneFilePath;
   SaveOrderRules saveOrderRules;
+  WinCritSec pendingSceneCopyCritSec;
+  SimpleString pendingSceneCopyPath, pendingSceneCopyReason;
   Tab<EditableObject *> objsToRemove;
   Ptr<EditableObject> newObj;
   bool newObjOk = false;
@@ -263,6 +270,7 @@ private:
   eastl::vector<eastl::string> hiddenTemplates;
   HierarchyItem temporaryHierarchyForGizmoChange;
   bool showOnlySceneEntities = false;
+  bool isEntityListed(EntityObj *o) const; // shown in the entity lists under the current work mode
 
   int lastCreateObjFrames = 0;
   Ptr<EditableObject> lastCreatedObj;

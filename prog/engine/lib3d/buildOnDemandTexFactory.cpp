@@ -121,7 +121,7 @@ struct build_on_demand_tex_factory::DDSxPrebuildCtx : DDSxPrebuildCtxBase
       return true;
     }
 
-    const char *getJobName(bool &) const override { return "PrebuildJob"; }
+    const char *getJobName(bool &) const override { return DAPROFILER_STRING("PrebuildJob"); }
 
     virtual void doJob()
     {
@@ -299,10 +299,7 @@ struct build_on_demand_tex_factory::DDSxBuildOnDemandTexFactory : public Texture
   bool scheduleTexLoading(TEXTUREID id, TexQL ql) override
   {
     if (get_managed_texture_refcount(id) == 0 && RMGR.getBaseTexRc(id) == 0)
-    {
-      RMGR.cancelReading(id.index());
       return false;
-    }
 
     unsigned nameId = getAssetNameIdFromPackRecIdx(id.index(), ql);
     G_ASSERTF_RETURN(nameId != ~0u, false, "id=0x%x (%s) ql=%d", id, get_managed_texture_name(id), ql);
@@ -621,6 +618,7 @@ public:
         RMGR.cancelReading(idx);
         return false;
       }
+      FINALLY([&] { build_helper->releaseDDSxTexData(tex_buf); });
 
       ddsx::Header *hdr = reinterpret_cast<ddsx::Header *>(tex_buf.data());
       if (!hdr->d3dFormat && tex_buf.size() == sizeof(ddsx::Header))
@@ -661,7 +659,6 @@ public:
       TexLoadRes ldRet = RMGR.readDdsxTex(tid, *hdr, crd, ql, onCompleted, nullptr);
 
       hdr = nullptr;
-      build_helper->releaseDDSxTexData(tex_buf);
       if (ldRet == TexLoadRes::ERR)
         if (!d3d::is_in_device_reset_now())
         {
@@ -735,7 +732,7 @@ struct build_on_demand_tex_factory::AsyncMassLoadJob final : public cpujobs::IJo
   DDSxBuildOnDemandTexFactory &factory;
   AsyncMassLoadJob(DDSxBuildOnDemandTexFactory &f) : factory(f) {}
 
-  const char *getJobName(bool &) const override { return "AsyncMassLoadJob"; }
+  const char *getJobName(bool &) const override { return DAPROFILER_STRING("AsyncMassLoadJob"); }
 
   void doJob() override
   {
@@ -966,7 +963,7 @@ bool get_managed_tex_entry_desc(TEXTUREID tid, ManagedTexEntryDesc &out_desc)
   }
   uint64_t texStateBits =
     (interlocked_relaxed_load(build_on_demand_tex_factory::shared.textureLoadingState[idx / 32u]) >> uint64_t((idx % 32u) * 2u)) &
-    0x11u;
+    0b11u;
   out_desc.isLoadedWithErrors = !bool(texStateBits >> 1u);
   out_desc.isLoading = bool(texStateBits & 1u);
   return true;

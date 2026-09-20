@@ -465,6 +465,10 @@ BINDUMP_BEGIN_LAYOUT(IntervalInfosBucket)
   {
     return intervalInfoByHash[(interval_name_hash >> hashShift) & (intervalInfoByHash.size() - 1)];
   }
+  inline const Field<IntervalInfo> &getIntervalInfoByHash(uint32_t interval_name_hash) const
+  {
+    return intervalInfoByHash[(interval_name_hash >> hashShift) & (intervalInfoByHash.size() - 1)];
+  }
 BINDUMP_END_LAYOUT()
 
 BINDUMP_BEGIN_EXTEND_LAYOUT(ScriptedShadersBinDumpV2, ScriptedShadersBinDump)
@@ -478,8 +482,17 @@ BINDUMP_BEGIN_EXTEND_LAYOUT(ScriptedShadersBinDumpV2, ScriptedShadersBinDump)
   {
     return intervalInfosBuckets[interval_name_hash & (intervalInfosBuckets.size() - 1)];
   }
+  const Field<IntervalInfosBucket> &getIntervalInfosBucketByHash(uint32_t interval_name_hash) const
+  {
+    return intervalInfosBuckets[interval_name_hash & (intervalInfosBuckets.size() - 1)];
+  }
 
-  inline Field<IntervalInfo> &getIntervalInfoByHash(uint32_t interval_name_hash)
+  Field<IntervalInfo> &getIntervalInfoByHash(uint32_t interval_name_hash)
+  {
+    auto &bucket = getIntervalInfosBucketByHash(interval_name_hash);
+    return bucket.getIntervalInfoByHash(interval_name_hash);
+  }
+  const Field<IntervalInfo> &getIntervalInfoByHash(uint32_t interval_name_hash) const
   {
     auto &bucket = getIntervalInfosBucketByHash(interval_name_hash);
     return bucket.getIntervalInfoByHash(interval_name_hash);

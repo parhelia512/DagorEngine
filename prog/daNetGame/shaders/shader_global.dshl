@@ -166,10 +166,6 @@ macro NO_ATEST()
   }
 endmacro
 
-macro _INIT_SUN_STCODE()
-  supports global_const_block;
-endmacro
-
 macro USE_SPECULAR_FROM_COLOR()
 
 hlsl(ps) {
@@ -179,10 +175,6 @@ hlsl(ps) {
   }
 }
 
-endmacro
-
-macro INIT_SUN_STCODE()
-  _INIT_SUN_STCODE()
 endmacro
 
 macro USE_GAMMA_CONVERSION()
@@ -670,7 +662,8 @@ macro GLOBAL_FRAME_CONTENT()
       gbuffer_enviSPH0 @f4 = (enviSPH0*skylight_params.y);
       gbuffer_enviSPH1 @f4 = (enviSPH1*skylight_params.y);
       gbuffer_enviSPH2 @f4 = (enviSPH2*skylight_params.y);
-      gbuffer_envi_probe_specular@smpCube = envi_probe_specular;
+      gbuffer_envi_probe_specular@texCube = envi_probe_specular;
+      gbuffer_envi_probe_specular_samplerstate@sampler = global_linear_wrap_sampler;
     }
   }
   if (use_postfx == off)
@@ -682,6 +675,7 @@ endmacro
 block(frame) global_frame
 {
   GLOBAL_FRAME_CONTENT()
+  GLOBAL_CONSTS(ps)
   (vs) {
     sky_color@f3 = sky_color;
   }

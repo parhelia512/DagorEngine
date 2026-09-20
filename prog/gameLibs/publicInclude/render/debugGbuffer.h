@@ -55,6 +55,8 @@ constexpr auto DEBUG_RENDER_GBUFFER_WITH_VECTORS_SHADER_NAME = "debug_final_gbuf
 void debug_render_gbuffer(const class PostFxRenderer &debugRenderer, DeferredRT &gbuffer, Texture *depth = nullptr,
   int mode = USE_DEBUG_GBUFFER_MODE);
 void debug_render_gbuffer(const class PostFxRenderer &debugRenderer, Texture *depth, int mode = USE_DEBUG_GBUFFER_MODE);
+void debug_render_gbuffer(const class PostFxRenderer &debugRenderer, Texture *dbg_tex, Texture *depth,
+  int32_t mode = USE_DEBUG_GBUFFER_MODE);
 
 void debug_render_gbuffer_tiles(const PostFxRenderer &debugRenderer, DebugGbufferComposition composition, bool with_labels = false);
 

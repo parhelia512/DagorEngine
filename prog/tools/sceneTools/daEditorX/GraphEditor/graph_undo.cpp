@@ -1,18 +1,20 @@
 // Copyright (C) Gaijin Games KFT.  All rights reserved.
 
 #include "graph_undo.h"
-#include "plugin.h"
+#include "graph_document.h"
 
-UndoCreateNode::UndoCreateNode(GraphEditorPlg &plg, GraphData::Node node_snapshot) : plugin(plg), node(eastl::move(node_snapshot)) {}
+UndoCreateNode::UndoCreateNode(GraphDocument &document, GraphData::Node node_snapshot) :
+  doc(document), node(eastl::move(node_snapshot))
+{}
 
 void UndoCreateNode::restore(bool /*save_redo_data*/)
 {
   // We already hold the full snapshot, so there is no redo data to capture here -- undo just
   // removes the created node (and its incident edges).
-  plugin.eraseNode(node.id);
+  doc.eraseNode(node.id);
 }
 
-void UndoCreateNode::redo() { plugin.reinsertNode(node); }
+void UndoCreateNode::redo() { doc.reinsertNode(node); }
 
 size_t UndoCreateNode::size()
 {
@@ -23,12 +25,12 @@ size_t UndoCreateNode::size()
 
 void UndoCreateNode::get_description(String &s) { s = "Create node"; }
 
-UndoDeleteNodes::UndoDeleteNodes(GraphEditorPlg &plg, eastl::vector<GraphData::Node> removed_nodes,
+UndoDeleteNodes::UndoDeleteNodes(GraphDocument &document, eastl::vector<GraphData::Node> removed_nodes,
   eastl::vector<GraphData::Edge> removed_edges) :
-  plugin(plg), nodes(eastl::move(removed_nodes)), edges(eastl::move(removed_edges))
+  doc(document), nodes(eastl::move(removed_nodes)), edges(eastl::move(removed_edges))
 {}
 
-void UndoDeleteNodes::restore(bool /*save_redo_data*/) { plugin.restoreNodesAndEdges(nodes, edges); }
+void UndoDeleteNodes::restore(bool /*save_redo_data*/) { doc.restoreNodesAndEdges(nodes, edges); }
 
 void UndoDeleteNodes::redo()
 {
@@ -40,7 +42,7 @@ void UndoDeleteNodes::redo()
   {
     ids.push_back(n.id);
   }
-  plugin.eraseNodes(ids);
+  doc.eraseNodes(ids);
 }
 
 size_t UndoDeleteNodes::size()
@@ -56,37 +58,37 @@ size_t UndoDeleteNodes::size()
 
 void UndoDeleteNodes::get_description(String &s) { s = "Delete nodes"; }
 
-UndoMoveNodes::UndoMoveNodes(GraphEditorPlg &plg, eastl::vector<NodePos> old_positions, eastl::vector<NodePos> new_positions) :
-  plugin(plg), oldPositions(eastl::move(old_positions)), newPositions(eastl::move(new_positions))
+UndoMoveNodes::UndoMoveNodes(GraphDocument &document, eastl::vector<NodePos> old_positions, eastl::vector<NodePos> new_positions) :
+  doc(document), oldPositions(eastl::move(old_positions)), newPositions(eastl::move(new_positions))
 {}
 
-void UndoMoveNodes::restore(bool /*save_redo_data*/) { plugin.applyNodePositions(oldPositions); }
+void UndoMoveNodes::restore(bool /*save_redo_data*/) { doc.applyNodePositions(oldPositions); }
 
-void UndoMoveNodes::redo() { plugin.applyNodePositions(newPositions); }
+void UndoMoveNodes::redo() { doc.applyNodePositions(newPositions); }
 
 size_t UndoMoveNodes::size() { return sizeof(*this) + (oldPositions.size() + newPositions.size()) * sizeof(NodePos); }
 
 void UndoMoveNodes::get_description(String &s) { s = "Move nodes"; }
 
-UndoCreateEdge::UndoCreateEdge(GraphEditorPlg &plg, const GraphData::Edge &created_edge) : plugin(plg), edge(created_edge) {}
+UndoCreateEdge::UndoCreateEdge(GraphDocument &document, const GraphData::Edge &created_edge) : doc(document), edge(created_edge) {}
 
-void UndoCreateEdge::restore(bool /*save_redo_data*/) { plugin.eraseEdge(edge.id); }
+void UndoCreateEdge::restore(bool /*save_redo_data*/) { doc.eraseEdge(edge.id); }
 
-void UndoCreateEdge::redo() { plugin.reinsertEdge(edge); }
+void UndoCreateEdge::redo() { doc.reinsertEdge(edge); }
 
 size_t UndoCreateEdge::size() { return sizeof(*this); }
 
 void UndoCreateEdge::get_description(String &s) { s = "Create edge"; }
 
-UndoDeleteEdges::UndoDeleteEdges(GraphEditorPlg &plg, eastl::vector<GraphData::Edge> removed_edges) :
-  plugin(plg), edges(eastl::move(removed_edges))
+UndoDeleteEdges::UndoDeleteEdges(GraphDocument &document, eastl::vector<GraphData::Edge> removed_edges) :
+  doc(document), edges(eastl::move(removed_edges))
 {}
 
 void UndoDeleteEdges::restore(bool /*save_redo_data*/)
 {
   for (const GraphData::Edge &e : edges)
   {
-    plugin.reinsertEdge(e);
+    doc.reinsertEdge(e);
   }
 }
 
@@ -94,7 +96,7 @@ void UndoDeleteEdges::redo()
 {
   for (const GraphData::Edge &e : edges)
   {
-    plugin.eraseEdge(e.id);
+    doc.eraseEdge(e.id);
   }
 }
 
@@ -102,25 +104,25 @@ size_t UndoDeleteEdges::size() { return sizeof(*this) + edges.size() * sizeof(Gr
 
 void UndoDeleteEdges::get_description(String &s) { s = "Delete edges"; }
 
-UndoToggleEdgeMuted::UndoToggleEdgeMuted(GraphEditorPlg &plg, int edge_id, bool old_muted) :
-  plugin(plg), edgeId(edge_id), oldMuted(old_muted)
+UndoToggleEdgeMuted::UndoToggleEdgeMuted(GraphDocument &document, int edge_id, bool old_muted) :
+  doc(document), edgeId(edge_id), oldMuted(old_muted)
 {}
 
-void UndoToggleEdgeMuted::restore(bool /*save_redo_data*/) { plugin.setEdgeMuted(edgeId, oldMuted); }
+void UndoToggleEdgeMuted::restore(bool /*save_redo_data*/) { doc.applyEdgeMuted(edgeId, oldMuted); }
 
-void UndoToggleEdgeMuted::redo() { plugin.setEdgeMuted(edgeId, !oldMuted); }
+void UndoToggleEdgeMuted::redo() { doc.applyEdgeMuted(edgeId, !oldMuted); }
 
 size_t UndoToggleEdgeMuted::size() { return sizeof(*this); }
 
 void UndoToggleEdgeMuted::get_description(String &s) { s = oldMuted ? "Unmute edge" : "Mute edge"; }
 
-UndoSelection::UndoSelection(GraphEditorPlg &plg, GraphSelection old_selection, GraphSelection new_selection) :
-  plugin(plg), oldSelection(eastl::move(old_selection)), newSelection(eastl::move(new_selection))
+UndoSelection::UndoSelection(GraphDocument &document, GraphSelection old_selection, GraphSelection new_selection) :
+  doc(document), oldSelection(eastl::move(old_selection)), newSelection(eastl::move(new_selection))
 {}
 
-void UndoSelection::restore(bool /*save_redo_data*/) { plugin.applySelection(oldSelection); }
+void UndoSelection::restore(bool /*save_redo_data*/) { doc.applySelection(oldSelection); }
 
-void UndoSelection::redo() { plugin.applySelection(newSelection); }
+void UndoSelection::redo() { doc.applySelection(newSelection); }
 
 size_t UndoSelection::size()
 {
@@ -130,9 +132,9 @@ size_t UndoSelection::size()
 
 void UndoSelection::get_description(String &s) { s = "Select"; }
 
-UndoNodeProps::UndoNodeProps(GraphEditorPlg &plg, int node_id) : plugin(plg), nodeId(node_id)
+UndoNodeProps::UndoNodeProps(GraphDocument &document, int node_id) : doc(document), nodeId(node_id)
 {
-  plugin.getNodeProperties(nodeId, oldProps);
+  doc.getNodeProperties(nodeId, oldProps);
   redoProps = oldProps;
 }
 
@@ -140,12 +142,12 @@ void UndoNodeProps::restore(bool save_redo_data)
 {
   if (save_redo_data)
   {
-    plugin.getNodeProperties(nodeId, redoProps);
+    doc.getNodeProperties(nodeId, redoProps);
   }
-  plugin.setNodeProperties(nodeId, oldProps);
+  doc.applyNodeProperties(nodeId, oldProps);
 }
 
-void UndoNodeProps::redo() { plugin.setNodeProperties(nodeId, redoProps); }
+void UndoNodeProps::redo() { doc.applyNodeProperties(nodeId, redoProps); }
 
 size_t UndoNodeProps::size()
 {
@@ -163,20 +165,20 @@ size_t UndoNodeProps::size()
 
 void UndoNodeProps::get_description(String &s) { s = "Change property"; }
 
-UndoGraphSettings::UndoGraphSettings(GraphEditorPlg &plg, GraphSettings old_settings) :
-  plugin(plg), oldSettings(eastl::move(old_settings)), redoSettings(oldSettings)
+UndoGraphSettings::UndoGraphSettings(GraphDocument &document, GraphSettings old_settings) :
+  doc(document), oldSettings(eastl::move(old_settings)), redoSettings(oldSettings)
 {}
 
 void UndoGraphSettings::restore(bool save_redo_data)
 {
   if (save_redo_data)
   {
-    plugin.getGraphSettings(redoSettings);
+    doc.getGraphSettings(redoSettings);
   }
-  plugin.setGraphSettings(oldSettings);
+  doc.applyGraphSettings(oldSettings);
 }
 
-void UndoGraphSettings::redo() { plugin.setGraphSettings(redoSettings); }
+void UndoGraphSettings::redo() { doc.applyGraphSettings(redoSettings); }
 
 size_t UndoGraphSettings::size()
 {
@@ -187,25 +189,26 @@ size_t UndoGraphSettings::size()
 
 void UndoGraphSettings::get_description(String &s) { s = "Change graph settings"; }
 
-UndoPinComment::UndoPinComment(GraphEditorPlg &plg, int node_id, int pin_index, eastl::string old_comment, eastl::string new_comment) :
-  plugin(plg), nodeId(node_id), pinIndex(pin_index), oldComment(eastl::move(old_comment)), newComment(eastl::move(new_comment))
+UndoPinComment::UndoPinComment(GraphDocument &document, int node_id, int pin_index, eastl::string old_comment,
+  eastl::string new_comment) :
+  doc(document), nodeId(node_id), pinIndex(pin_index), oldComment(eastl::move(old_comment)), newComment(eastl::move(new_comment))
 {}
 
-void UndoPinComment::restore(bool /*save_redo_data*/) { plugin.setPinComment(nodeId, pinIndex, oldComment); }
+void UndoPinComment::restore(bool /*save_redo_data*/) { doc.applyPinComment(nodeId, pinIndex, oldComment); }
 
-void UndoPinComment::redo() { plugin.setPinComment(nodeId, pinIndex, newComment); }
+void UndoPinComment::redo() { doc.applyPinComment(nodeId, pinIndex, newComment); }
 
 size_t UndoPinComment::size() { return sizeof(*this) + oldComment.length() + newComment.length(); }
 
 void UndoPinComment::get_description(String &s) { s = "Edit pin comment"; }
 
-UndoBlockResize::UndoBlockResize(GraphEditorPlg &plg, eastl::vector<BlockSize> old_sizes, eastl::vector<BlockSize> new_sizes) :
-  plugin(plg), oldSizes(eastl::move(old_sizes)), newSizes(eastl::move(new_sizes))
+UndoBlockResize::UndoBlockResize(GraphDocument &document, eastl::vector<BlockSize> old_sizes, eastl::vector<BlockSize> new_sizes) :
+  doc(document), oldSizes(eastl::move(old_sizes)), newSizes(eastl::move(new_sizes))
 {}
 
-void UndoBlockResize::restore(bool /*save_redo_data*/) { plugin.applyBlockSizes(oldSizes); }
+void UndoBlockResize::restore(bool /*save_redo_data*/) { doc.applyBlockSizes(oldSizes); }
 
-void UndoBlockResize::redo() { plugin.applyBlockSizes(newSizes); }
+void UndoBlockResize::redo() { doc.applyBlockSizes(newSizes); }
 
 size_t UndoBlockResize::size() { return sizeof(*this) + (oldSizes.size() + newSizes.size()) * sizeof(BlockSize); }
 

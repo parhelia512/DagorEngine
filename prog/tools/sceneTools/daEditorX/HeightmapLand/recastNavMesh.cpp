@@ -628,7 +628,7 @@ static void save_navmesh_bucket_format(const dtNavMesh *mesh, const NavMeshParam
 }
 
 static void save_navmesh(const dtNavMesh *mesh, const NavMeshParams &nav_mesh_params, dtTileCache *tc,
-  dag::ConstSpan<NavMeshObstacle> obstacles, BinDumpSaveCB &cwr, const int compress_ratio)
+  dag::ConstSpan<NavMeshObstacle> obstacles, float water_level, BinDumpSaveCB &cwr, const int compress_ratio)
 {
   int64_t reftSave = ref_time_ticks_qpc();
   if (tc && (nav_mesh_params.bucketSize > 0.0f))
@@ -667,6 +667,8 @@ static void save_navmesh(const dtNavMesh *mesh, const NavMeshParams &nav_mesh_pa
     numObsResNameHashes = (int)obsResNameHashes.size();
     dataSize += sizeof(int) + sizeof(uint32_t) * numObsResNameHashes + sizeof(pathfinder::TileCacheDetailSettings);
   }
+  else if (nav_mesh_params.navMeshType == pathfinder::NMT_TILED)
+    dataSize += sizeof(pathfinder::TiledNavMeshBuildSettings);
 
   BinDumpSaveCB dcwr(2 << 20, cwr);
   dcwr.writeRaw(mesh->getParams(), sizeof(dtNavMeshParams));
@@ -711,6 +713,61 @@ static void save_navmesh(const dtNavMesh *mesh, const NavMeshParams &nav_mesh_pa
     for (uint32_t h : obsResNameHashes)
       dcwr.writeInt32e(h);
     write_tilecache_detail_settings(dcwr, nav_mesh_params);
+  }
+  else if (nav_mesh_params.navMeshType == pathfinder::NMT_TILED)
+  {
+    pathfinder::TiledNavMeshBuildSettings settings;
+    settings.size = sizeof(settings);
+    settings.cellSize = nav_mesh_params.cellSize;
+    settings.cellHeight = nav_mesh_params.cellHeight;
+    settings.agentMaxSlope = nav_mesh_params.agentMaxSlope;
+    settings.agentHeight = nav_mesh_params.agentHeight;
+    settings.agentMaxClimb = nav_mesh_params.agentMaxClimb;
+    settings.agentRadius = nav_mesh_params.agentRadius;
+    settings.agentClimbAfterGluingMeshes = nav_mesh_params.agentClimbAfterGluingMeshes;
+    settings.edgeMaxLen = nav_mesh_params.edgeMaxLen;
+    settings.edgeMaxError = nav_mesh_params.edgeMaxError;
+    settings.regionMinSize = nav_mesh_params.regionMinSize;
+    settings.regionMergeSize = nav_mesh_params.regionMergeSize;
+    settings.vertsPerPoly = nav_mesh_params.vertsPerPoly;
+    settings.detailSampleDist = nav_mesh_params.detailSampleDist;
+    settings.detailSampleMaxError = nav_mesh_params.detailSampleMaxError;
+    settings.tileSize = nav_mesh_params.tileSize;
+    settings.jumpLinksEnabled = nav_mesh_params.jlkParams.enabled;
+    settings.crossObstaclesWithJumplinks = nav_mesh_params.jlkParams.crossObstaclesWithJumplinks;
+    settings.jumpLinkExtraCells = nav_mesh_params.jlkCovExtraCells;
+    settings.jumpLinksTypeGen = nav_mesh_params.jlkParams.typeGen;
+    settings.jumpLinksJumpoffMinHeight = nav_mesh_params.jlkParams.jumpoffMinHeight;
+    settings.jumpLinksJumpoffMaxHeight = nav_mesh_params.jlkParams.jumpoffMaxHeight;
+    settings.jumpLinksJumpoffMinLinkLength = nav_mesh_params.jlkParams.jumpoffMinLinkLength;
+    settings.jumpLinksEdgeMappingAngleDeg = nav_mesh_params.jlkParams.edgeMappingAngle;
+    settings.jumpLinksEdgeMergeAngleDeg = nav_mesh_params.jlkParams.edgeMergeAngle;
+    settings.jumpLinksEdgeMergeDist = nav_mesh_params.jlkParams.edgeMergeDist;
+    settings.jumpLinksEdgeMergeDistV1 = nav_mesh_params.jlkParams.edgeMergeDistV1;
+    settings.jumpLinksHeight = nav_mesh_params.jlkParams.jumpHeight;
+    settings.jumpLinksLength = nav_mesh_params.jlkParams.jumpLength;
+    settings.jumpLinksWidth = nav_mesh_params.jlkParams.width;
+    settings.jumpLinksAgentHeight = nav_mesh_params.jlkParams.agentHeight;
+    settings.jumpLinksAgentMinSpace = nav_mesh_params.jlkParams.agentMinSpace;
+    settings.jumpLinksDeltaHeightThreshold = nav_mesh_params.jlkParams.deltaHeightThreshold;
+    settings.jumpLinksMaxObstructionAngleRad = nav_mesh_params.jlkParams.maxObstructionAngle;
+    settings.jumpLinksMergeAngleCos = nav_mesh_params.jlkParams.linkDegAngle;
+    settings.jumpLinksMergeDistCos = nav_mesh_params.jlkParams.linkDegDist;
+    settings.complexJumpThreshold = nav_mesh_params.jlkParams.complexJumpTheshold;
+    settings.enableCustomJumplinks = nav_mesh_params.jlkParams.enableCustomJumplinks;
+    settings.simplificationEdgeEnabled = nav_mesh_params.mergeParams.enabled;
+    settings.simplificationWalkPrecisionX = nav_mesh_params.mergeParams.walkPrecision.x;
+    settings.simplificationWalkPrecisionY = nav_mesh_params.mergeParams.walkPrecision.y;
+    settings.simplificationMaxExtrudeErrorSq = nav_mesh_params.mergeParams.maxExtrudeErrorSq;
+    settings.simplificationExtrudeLimitSq = nav_mesh_params.mergeParams.extrudeLimitSq;
+    settings.simplificationSafeCutLimitSq = nav_mesh_params.mergeParams.safeCutLimitSq;
+    settings.simplificationUnsafeCutLimitSq = nav_mesh_params.mergeParams.unsafeCutLimitSq;
+    settings.simplificationUnsafeMaxCutSpace = nav_mesh_params.mergeParams.unsafeMaxCutSpace;
+    settings.traceStep = nav_mesh_params.traceStep;
+    settings.waterLevel = water_level;
+    settings.crossingWaterDepth = nav_mesh_params.crossingWaterDepth;
+    settings.navmeshExportType = nav_mesh_params.navmeshExportType;
+    dcwr.writeRaw(&settings, sizeof(settings));
   }
   DEBUG_DUMP_VAR(dataSize);
   cwr.writeInt32e(dataSize | (HmapLandPlugin::preferZstdPacking ? 0x40000000 : 0));
@@ -845,143 +902,25 @@ static bool finalize_navmesh_tile(const NavMeshParams &nav_mesh_params, BuildCon
   Tab<recastbuild::JumpLinkObstacle> cross_obstacles, Tab<recastbuild::JumpLinkObstacle> disable_jl_obstacles,
   bool save_tile_ctx_data = false)
 {
-  //
-  //  Step 1. Build polygons mesh from contours.
-  //
-
-  // Build polygon navmesh from the contours.
-  tile_ctx.pmesh = rcAllocPolyMesh();
-  if (!tile_ctx.pmesh)
-  {
-    ctx.log(RC_LOG_ERROR, "buildNavigation: Out of memory 'tile_ctx.pmesh'.");
-    tile_ctx.clearIntermediate(&tile_data);
+  if (!recastnavmesh::build_navmesh_tiled_tile_mesh(ctx, cfg, tile_ctx, tile_data))
     return false;
-  }
-  if (!rcBuildPolyMesh(&ctx, *tile_ctx.cset, cfg.maxVertsPerPoly, *tile_ctx.pmesh))
-  {
-    ctx.log(RC_LOG_ERROR, "buildNavigation: Could not triangulate contours.");
-    tile_ctx.clearIntermediate(&tile_data);
-    return false;
-  }
-
-  //
-  // Step 2. Create detail mesh which allows to access approximate height on each polygon.
-  //
-
-  tile_ctx.dmesh = rcAllocPolyMeshDetail();
-  if (!tile_ctx.dmesh)
-  {
-    ctx.log(RC_LOG_ERROR, "buildNavigation: Out of memory 'pmdtl'.");
-    tile_ctx.clearIntermediate(&tile_data);
-    return false;
-  }
-
-  if (!rcBuildPolyMeshDetail(&ctx, *tile_ctx.pmesh, *tile_ctx.chf, cfg.detailSampleDist, cfg.detailSampleMaxError, *tile_ctx.dmesh))
-  {
-    ctx.log(RC_LOG_ERROR, "buildNavigation: Could not build detail mesh.");
-    tile_ctx.clearIntermediate(&tile_data);
-    return false;
-  }
-
-  if (!save_tile_ctx_data)
-  {
-    rcFreeCompactHeightfield(tile_ctx.chf);
-    tile_ctx.chf = NULL;
-    rcFreeContourSet(tile_ctx.cset);
-    tile_ctx.cset = NULL;
-  }
-
   if (nav_mesh_params.jlkParams.enableCustomJumplinks)
+  {
+    const int customLinkStart = conn_storage.offMeshCon.size();
     add_custom_jumplinks(conn_storage, *tile_ctx.dmesh, nav_mesh_params.cellHeight, custom_jumplinks, box);
+    if (nav_mesh_params.navMeshType == pathfinder::NMT_TILED)
+    {
+      auto userIds = conn_storage.offMeshCon.get<recastnavmesh::OffMeshCon::Id>();
+      for (int i = customLinkStart; i < conn_storage.offMeshCon.size(); ++i)
+        userIds[i] |= recastnavmesh::MANUAL_JUMPLINK_USER_ID_BIT;
+    }
+  }
   cross_obstacles_with_jumplinks(conn_storage, *tile_ctx.dmesh, box, nav_mesh_params.jlkParams, nav_mesh_params.cellHeight,
     cross_obstacles);
   disable_jumplinks_around_obstacle(conn_storage, disable_jl_obstacles);
-
-  //
-  // (Optional) Step 3. Create Detour data from Recast poly mesh.
-  //
-
-  // The GUI may allow more max points per polygon than Detour can handle.
-  // Only build the detour navmesh if we do not exceed the limit.
-  if ((cfg.maxVertsPerPoly <= DT_VERTS_PER_POLYGON) && (tile_ctx.pmesh->npolys > 0))
-  {
-    for (int i = 0; i < tile_ctx.pmesh->npolys; ++i)
-      tile_ctx.pmesh->flags[i] = 1;
-
-    dtNavMeshCreateParams params;
-    memset(&params, 0, sizeof(params));
-    params.verts = tile_ctx.pmesh->verts;
-    params.vertCount = tile_ctx.pmesh->nverts;
-    params.polys = tile_ctx.pmesh->polys;
-    params.polyAreas = tile_ctx.pmesh->areas;
-    params.polyFlags = tile_ctx.pmesh->flags;
-    params.polyCount = tile_ctx.pmesh->npolys;
-    params.nvp = tile_ctx.pmesh->nvp;
-    params.detailMeshes = tile_ctx.dmesh->meshes;
-    params.detailVerts = tile_ctx.dmesh->verts;
-    params.detailVertsCount = tile_ctx.dmesh->nverts;
-    params.detailTris = tile_ctx.dmesh->tris;
-    params.detailTriCount = tile_ctx.dmesh->ntris;
-    if (nav_mesh_params.jlkParams.enabled && !conn_storage.offMeshCon.empty())
-    {
-      using namespace recastnavmesh;
-      auto offMeshCon0 = conn_storage.offMeshCon.front();
-      params.offMeshConVerts = &eastl::get<OffMeshCon::Verts>(offMeshCon0).first.x; //-V503
-      params.offMeshConRad = &eastl::get<OffMeshCon::Rads>(offMeshCon0);
-      params.offMeshConDir = &eastl::get<OffMeshCon::BiDirs>(offMeshCon0);
-      params.offMeshConAreas = &eastl::get<OffMeshCon::Areas>(offMeshCon0);
-      params.offMeshConFlags = &eastl::get<OffMeshCon::Flags>(offMeshCon0);
-      params.offMeshConUserID = &eastl::get<OffMeshCon::Id>(offMeshCon0);
-      params.offMeshConCount = conn_storage.offMeshCon.size();
-    }
-    params.walkableHeight = nav_mesh_params.agentHeight;
-    params.walkableRadius = nav_mesh_params.agentRadius;
-    params.walkableClimb = nav_mesh_params.agentClimbAfterGluingMeshes;
-
-    // Why:
-    // jl are culled based on detailed navmesh
-    // It is elevated by cellHeight for some reason: verts[j*3+1] += orig[1] + chf.ch;
-    // But later in the game jl will likely connect to crude navmesh
-    // (if geometry is simple and detailed mesh isn't required)
-    // jumpHeight * 0.5 is based on the heighest possible point of a double-jl
-    // params.walkableClimb inflates the culling bbox inside dtCreateNavMeshData, so this is a hack
-    params.walkableClimb += eastl::max(nav_mesh_params.cellHeight, nav_mesh_params.jlkParams.jumpHeight * 0.5f);
-    // Since walkableClimb is then assigned to header->walkableClimb, it will have to be modified separately
-
-    params.tileX = tx;
-    params.tileY = ty;
-    params.tileLayer = 0;
-    rcVcopy(params.bmin, tile_ctx.pmesh->bmin);
-    rcVcopy(params.bmax, tile_ctx.pmesh->bmax);
-    params.cs = cfg.cs;
-    params.ch = cfg.ch;
-    params.buildBvTree = false;
-
-    unsigned char *navData = 0;
-    int navDataSize = 0;
-    if (!dtCreateNavMeshData(&params, &navData, &navDataSize))
-    {
-      ctx.log(RC_LOG_ERROR, "Could not build Detour navmesh.");
-      tile_ctx.clearIntermediate(&tile_data);
-      return false;
-    }
-
-    // Surgically revert params.walkableClimb back
-    // This is needed to avoid modifying 3rd party code
-    dtMeshHeader *header = reinterpret_cast<dtMeshHeader *>(navData);
-    header->walkableClimb = nav_mesh_params.agentClimbAfterGluingMeshes;
-
-    if (!save_tile_ctx_data)
-      tile_ctx.clearIntermediate(&tile_data);
-    recastnavmesh::BuildTileData td;
-    td.navMeshData = navData;
-    td.navMeshDataSz = navDataSize;
-    tile_data.push_back(td);
-    return true;
-  }
-  if (!save_tile_ctx_data)
-    tile_ctx.clearIntermediate(&tile_data);
-  return true;
+  return recastnavmesh::finalize_navmesh_tiled_tile(ctx, cfg, nav_mesh_params.jlkParams.enabled ? &conn_storage : nullptr, tile_ctx,
+    tx, ty, nav_mesh_params.agentHeight, nav_mesh_params.agentRadius, nav_mesh_params.jlkParams.jumpHeight,
+    nav_mesh_params.agentClimbAfterGluingMeshes, tile_data, save_tile_ctx_data);
 }
 
 static bool finalize_navmesh_tilecached_tile(const NavMeshParams &nav_mesh_params, BuildContext &ctx, const rcConfig &cfg,
@@ -1500,7 +1439,7 @@ public:
     int idx;
   };
 
-  const char *getJobName(bool &) const override { return "SplitTileGeomJob"; }
+  const char *getJobName(bool &) const override { return DAPROFILER_STRING("SplitTileGeomJob"); }
 
   void doJob() override
   {
@@ -1701,7 +1640,7 @@ public:
     }
   }
 
-  const char *getJobName(bool &) const override { return "DropDownTileJob"; }
+  const char *getJobName(bool &) const override { return DAPROFILER_STRING("DropDownTileJob"); }
 
   void doJob() override
   {
@@ -1762,7 +1701,7 @@ public:
     navmeshHoleCutters(in_navmesh_hole_cutters)
   {}
 
-  const char *getJobName(bool &) const override { return "BuildTileJob"; }
+  const char *getJobName(bool &) const override { return DAPROFILER_STRING("BuildTileJob"); }
 
   void doJob() override
   {
@@ -1805,7 +1744,7 @@ public:
     range(range_in), covers(covers_in), unavailableCovers(unavailable_covers_in)
   {}
 
-  const char *getJobName(bool &) const override { return "CheckCoversJob"; }
+  const char *getJobName(bool &) const override { return DAPROFILER_STRING("CheckCoversJob"); }
 
   void doJob() override
   {
@@ -2664,6 +2603,9 @@ bool HmapLandPlugin::buildAndWriteSingleNavMesh(BinDumpSaveCB &cwr, int nav_mesh
       int numTilesProblems = 0;
       int numObstacleProblems = 0;
 
+      int obstaclesAtNavMesh = 0;
+      int obstaclesOutOfNavMesh = 0;
+
       const int64_t overLinksRefTime = ref_time_ticks();
       if (haveDataForOverLinks)
       {
@@ -2677,6 +2619,19 @@ bool HmapLandPlugin::buildAndWriteSingleNavMesh(BinDumpSaveCB &cwr, int nav_mesh
         for (const auto &obs : obstacles)
         {
           Point3 c = obs.box.center();
+
+          int tx, ty;
+          navMesh->calcTileLoc(&c.x, &tx, &ty);
+          static const int MAX_NEIS = 32;
+          const dtMeshTile *neis[MAX_NEIS];
+          const int nneis = navMesh->getTilesAt(tx, ty, neis, MAX_NEIS);
+          if (nneis <= 0)
+          {
+            ++obstaclesOutOfNavMesh;
+            continue;
+          }
+          ++obstaclesAtNavMesh;
+
           Point3 ext = obs.box.width() * 0.5f;
           pathfinder::tilecache_apply_obstacle_padding(nmParams.cellSize, Point2(nmParams.agentRadius, nmParams.agentHeight), c, ext);
           dtObstacleRef ref;
@@ -2752,15 +2707,17 @@ bool HmapLandPlugin::buildAndWriteSingleNavMesh(BinDumpSaveCB &cwr, int nav_mesh
         }
       }
 
-      if (numTilesProcessed > 0 || numTilesProblems > 0 || numObstacleProblems > 0)
+      if (numTilesProcessed > 0 || numTilesProblems > 0 || numObstacleProblems > 0 || obstaclesOutOfNavMesh > 0)
       {
         const int overLinksTimeUsec = get_time_usec(overLinksRefTime);
-        debug("NavMesh: rebuilded %d tiles for overlinks in %.2f sec (%d problems, %d non-empty tiles, %d tiles with data)",
-          numTilesProcessed, overLinksTimeUsec / 1000000.0, numTilesProblems, numTilesNotEmpty, numTilesWithData);
+        debug("NavMesh: rebuilded %d tiles for overlinks in %.2f sec (%d problems, %d non-empty tiles, %d tiles with data, %d "
+              "obstacles at navmesh, %d obstacles out-of-navmesh)",
+          numTilesProcessed, overLinksTimeUsec / 1000000.0, numTilesProblems, numTilesNotEmpty, numTilesWithData, obstaclesAtNavMesh,
+          obstaclesOutOfNavMesh);
       }
     }
 
-    save_navmesh(navMesh, nmParams, tileCache, obstacles, dcwr, nmProps.getInt("navmeshCompressRatio", 19));
+    save_navmesh(navMesh, nmParams, tileCache, obstacles, water_lev, dcwr, nmProps.getInt("navmeshCompressRatio", 19));
 
     String fileName(tileCache ? "navMeshTiled3" : "navMeshTiled2");
     fileName += (nav_mesh_idx == 0 ? String(".") : String(50, "_%d.", nav_mesh_idx + 1));

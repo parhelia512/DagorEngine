@@ -65,7 +65,7 @@ public:
   {
     for (std::size_t i = 0; i < pipelines.size(); ++i)
       if (pipelines[i])
-        callback(*pipelines[i], ProgramType::makeID(static_cast<LinearStorageIndex>(i)));
+        callback(*pipelines[i], pipelines[i]->getProgram());
   }
 
   template <typename T>

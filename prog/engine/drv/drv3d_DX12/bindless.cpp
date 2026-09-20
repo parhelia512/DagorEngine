@@ -1,6 +1,7 @@
 // Copyright (C) Gaijin Games KFT.  All rights reserved.
 
 #include "bindless.h"
+#include "debug/names.h"
 #include "device.h"
 #include "device_context.h"
 #include "frontend_state.h"
@@ -833,6 +834,7 @@ void backend::BindlessSetManager::init(ID3D12Device *device)
   {
     return;
   }
+  debug::name_object(resourceDescriptorHeap.Get(), debug::make_pool_object_name("BindlessResourceHeap"));
   resourceDescriptorHeapRevision = 0;
   resourceDescriptorSize = 0;
   resourceDescriptorWidth = device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
@@ -844,6 +846,7 @@ void backend::BindlessSetManager::init(ID3D12Device *device)
   {
     return;
   }
+  debug::name_object(samplerHeap.Get(), debug::make_pool_object_name("BindlessSamplerHeap"));
   samplerDescriptorSize = 0;
   samplerDescriptorWidth = device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_SAMPLER);
   samplerHeapStart = samplerHeap->GetCPUDescriptorHandleForHeapStart();

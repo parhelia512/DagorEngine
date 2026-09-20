@@ -15,6 +15,7 @@ dynamic_mirror_renderer {
   "dynamic_mirror_render_ground_node:dafg::NodeHandle"{}
   "dynamic_mirror_resolve_gbuf_node:dafg::NodeHandle"{}
   "dynamic_mirror_resolve_node:dafg::NodeHandle"{}
+  "dynamic_mirror_prepare_envi_node:dafg::NodeHandle"{}
   "dynamic_mirror_envi_node:dafg::NodeHandle"{}
   "dynamic_mirror_renderer:DynamicMirrorRenderer"{}
   _tags:t="render"

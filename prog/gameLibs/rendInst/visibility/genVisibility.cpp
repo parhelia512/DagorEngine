@@ -12,6 +12,9 @@
 #include "visibility/cullingMath.h"
 
 #include <osApiWrappers/dag_cpuJobs.h>
+#include <util/dag_convar.h>
+
+CONSOLE_BOOL_VAL("rendinst", tree_horizontal_cull, false);
 
 
 RiGenVisibility *rendinst::createRIGenVisibility(IMemAlloc *mem)
@@ -63,6 +66,11 @@ void rendinst::setRIGenVisibilityMinLod(RiGenVisibility *visibility, int ri_lod,
   visibility[0].riex.forcedExtraLod = visibility[1].riex.forcedExtraLod = ri_extra_lod;
 }
 
+void rendinst::setRIGenVisibilityForcedLodRangeCull(RiGenVisibility *visibility, bool range_cull)
+{
+  visibility[0].forcedLodRangeCull = visibility[1].forcedLodRangeCull = range_cull;
+}
+
 void rendinst::setRIGenVisibilityAtestSkip(RiGenVisibility *visibility, bool skip_atest, bool skip_noatest)
 {
   if (skip_noatest && skip_atest)
@@ -79,6 +87,8 @@ void rendinst::setRIGenVisibilityRendering(RiGenVisibility *visibility, Visibili
 {
   visibility[0].riex.rendering = v;
 }
+
+void rendinst::setRIGenVisibilityRequestDestrLods(RiGenVisibility *vis, bool request) { vis[0].riex.requestDestrLods = request; }
 
 bool rendinst::prepareRIGenVisibility(RiGenVisibility *visibility, const Frustum &frustum, const PrepareRiGenVisibilityParams &params)
 {
@@ -313,18 +323,23 @@ bool RendInstGenData::prepareVisibility(RiGenVisibility &visibility, const Frust
     use_occlusion = nullptr;
   vec3f curViewPos = v_ldu(&camera_pos.x);
   Tab<RenderRanges> &riRenderRanges = visibility.renderRanges;
+  const int forcedLod = rendinst::get_effective_forced_lod(visibility.forcedLod);
+  const bool rangeCull = forcedLod < 0 || visibility.forcedLodRangeCull;
+  // horizontal cull is main-view only; shadow passes stay 3d on purpose:
+  // distant tree shadows come from the baked clipmap shadow
+  const bool horTreeCull = tree_horizontal_cull.get() && !forShadow && forcedLod < 0;
   Frustum curFrustum = frustum;
-  if (!forShadow)
+  // the shrunk far plane is a 3d bound and would clip trees far below a high camera,
+  // so with horizontal cull the distance tests bound the work instead
+  if (!forShadow && !horTreeCull)
   {
     float maxRIDist = rtData->get_trees_last_range(rtData->rendinstFarPlane) * visibility.riDistMul;
     shrink_frustum_zfar(curFrustum, curViewPos, v_splats(maxRIDist));
   }
-
-  const int forcedLod = rendinst::get_effective_forced_lod(visibility.forcedLod);
   float forcedLodDist = 0.f;
   Point3_vec4 viewPos;
   bbox3f fbox;
-  if (forcedLod >= 0)
+  if (!rangeCull)
   {
     frustum.calcFrustumBBox(fbox);
     curViewPos = v_bbox3_center(fbox);
@@ -573,8 +588,13 @@ bool RendInstGenData::prepareVisibility(RiGenVisibility &visibility, const Frust
         continue;
 
       float minDist = visData.cells[vi].distance;
-      float maxDist = forcedLod < 0 ? farLodEndRange : forcedLodDist;
-      if (minDist >= maxDist)
+      float maxDist = rangeCull ? farLodEndRange : forcedLodDist;
+      if (horTreeCull && hasImpostor)
+      {
+        if (v_extract_x(v_distance_sq_to_bbox_2d_x(crt.bbox[0].bmin, crt.bbox[0].bmax, curViewPos)) >= farLodEndRangeSq)
+          continue;
+      }
+      else if (minDist >= maxDist)
         continue;
       int startVbOfs = crt.getCellSlice(ri_idx, 0).ofs;
       // fixme: we can separate for subcells if alphaBlendOnRadius is splitting cell, so part of subcells will be blended and part not
@@ -652,7 +672,10 @@ bool RendInstGenData::prepareVisibility(RiGenVisibility &visibility, const Frust
             float subCellDistSq = v_extract_x(v_distance_sq_to_bbox_x(crt.bbox[bboxIdx].bmin, crt.bbox[bboxIdx].bmax, curViewPos));
 
             float maxDistSq = farLodEndRangeSq;
-            if (subCellDistSq >= maxDistSq)
+            float cullDistSq = (horTreeCull && hasImpostor)
+                                 ? v_extract_x(v_distance_sq_to_bbox_2d_x(crt.bbox[bboxIdx].bmin, crt.bbox[bboxIdx].bmax, curViewPos))
+                                 : subCellDistSq;
+            if (cullDistSq >= maxDistSq)
               continue; // too far away
 
             if (use_external_filter)

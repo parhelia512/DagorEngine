@@ -6,6 +6,7 @@
 
 #include <util/dag_stdint.h>
 #include <perfMon/dag_daProfilerToken.h>
+#include <perfMon/dag_daProfilerString.h>
 #include <util/dag_compilerDefs.h>
 #include <supp/dag_define_KRNLIMP.h>
 #include <osApiWrappers/dag_atomic.h>
@@ -34,7 +35,8 @@ public:
   virtual unsigned getJobTag() { return 0; }
 
   //! called by job manager before performing the task for measurements;
-  //! set `copystr` to true if string need to be copied (i.e not static/persistently allocated)
+  //! set `copystr` to true if string need to be copied (i.e not static/persistently allocated);
+  //! wrap literal names in DAPROFILER_STRING() so they compile out where the profiler does not exist
   virtual const char *getJobName(bool & /*copystr*/) const = 0;
   da_profiler::desc_id_t getJobNameProfDesc() const;
 

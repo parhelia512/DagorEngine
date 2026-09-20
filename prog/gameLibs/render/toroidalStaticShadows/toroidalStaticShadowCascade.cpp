@@ -13,6 +13,7 @@
 #include <drv/3d/dag_driver.h>
 #include <drv/3d/dag_info.h>
 #include <drv/3d/dag_tex3d.h>
+#include <drv/3d/dag_texture.h>
 #include <util/dag_string.h>
 #include <shaders/dag_shaders.h>
 #include <render/scopeRenderTarget.h>
@@ -747,8 +748,8 @@ void ToroidalStaticShadowCascade::render(IStaticShadowsCB &cb)
   {
     if (transitionCopyTarget->getType() == D3DResourceType::ARRTEX)
     {
-      transitionCopyTarget->updateSubRegion(transitionTex.getTex2D(), 0, 0, 0, 0, helper.texSize, helper.texSize, 1, cascade_id, 0, 0,
-        0);
+      d3d::update_sub_region(transitionTex.getTex2D(), 0, 0, 0, 0, helper.texSize, helper.texSize, 1, transitionCopyTarget, cascade_id,
+        0, 0, 0);
     }
     else
     {

@@ -9,6 +9,7 @@ class TMatrix;
 class TMatrix4;
 class Point3;
 class SqModules;
+typedef struct SQVM *HSQUIRRELVM;
 class EditableObject;
 struct Frustum;
 
@@ -32,13 +33,15 @@ struct IDaEditor4EmbeddedComponent
 
   virtual void act(float dt) = 0;
   virtual void beforeRender(const TMatrix &view_tm, const TMatrix &view_itm, const TMatrix4 &proj_tm, const Point3 &view_pos) = 0;
-  virtual void render3d(const Frustum &, const Point3 &) = 0;
+  virtual void render3d(const Frustum &, const Point3 &, bool render_on_top = false) = 0;
   virtual void renderUi() = 0;
 };
 
 IDaEditor4EmbeddedComponent *create_da_editor4(const char *mouse_cursor_texname);
 
-void register_da_editor4_script(SqModules *module_mgr);
+void register_da_editor4_script(SqModules *module_mgr, bool editor_active);
+void unregister_da_editor4_script(HSQUIRRELVM vm); // call before the VM closes
+void update_active_state_on_toolbar(bool active);
 
 struct IDaEditor4StubEC : public IDaEditor4EmbeddedComponent
 {
@@ -55,6 +58,6 @@ struct IDaEditor4StubEC : public IDaEditor4EmbeddedComponent
 
   virtual void act(float /*dt*/) {}
   virtual void beforeRender(const TMatrix &, const TMatrix &, const TMatrix4 &, const Point3 &) {}
-  virtual void render3d(const Frustum &, const Point3 &) {}
+  virtual void render3d(const Frustum &, const Point3 &, bool = false) {}
   virtual void renderUi() {}
 };

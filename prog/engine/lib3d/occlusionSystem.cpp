@@ -631,6 +631,13 @@ void OcclusionImpl::prepareGPUDepthFrame(vec3f pos, mat44f_cref view, mat44f_cre
         if (has_separate_cockpit_proj)
           v_mat44_mul(cockpitViewProjTm, cockpit_proj, viewTm);
 
+        // cockpit_anim M moves world points as X' = R*X + t, but this branch works with positions
+        // relative to the camera pos P of the readback frame: q = X - P. The same motion in those coordinates is
+        //   q' = X' - P = M(q + P) - P = R*q + (M(P) - P)
+        // so the rotation stays and only the translation column is re-expressed relative to P
+        actualAnim.col3 =
+          v_perm_xyzd(v_sub(v_mat44_mul_vec3p(actualAnim, globtmHistory[idx].pos), globtmHistory[idx].pos), actualAnim.col3);
+
         occlusionRenderer.reprojectHWDepthBuffer(toWorldHW, cockpitToWorldRef, v_zero(), globtmHistory[idx].zn, globtmHistory[idx].zf,
           viewProjTm, 0, height, lastHWdepth.data(), cockpit_distance, cockpit_mode, actualAnim,
           has_separate_cockpit_proj ? cockpitViewProjTm : viewProjTm, has_separate_cockpit_proj);

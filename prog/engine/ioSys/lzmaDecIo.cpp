@@ -160,7 +160,7 @@ int BufferedLzmaLoadCB::tryRead(void *_ptr, int size)
     return size;
   }
 
-  if (totalOut - curPos && totalOut - curPos < size)
+  if (totalOut - curPos != 0 && totalOut - curPos < size)
   {
     memcpy(ptr, outBuf + curPos, totalOut - curPos);
     ptr += totalOut - curPos;

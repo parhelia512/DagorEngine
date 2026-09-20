@@ -146,7 +146,7 @@ public:
   }
   static uint32_t getChunkSize(const Query &q, int ci) { return q.chunkEntitiesCnt[ci]; }
 
-  const char *getJobName(bool &) const override { return "ESJob"; }
+  const char *getJobName(bool &) const override { return DAPROFILER_STRING("ESJob"); }
 
   virtual void doJob() override { perform_fun(parent, parent->starts.data(), workerId); }
 };

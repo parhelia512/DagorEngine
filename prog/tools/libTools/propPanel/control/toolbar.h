@@ -2,6 +2,7 @@
 #pragma once
 
 #include "controlType.h"
+#include "../changeFinishTracker.h"
 #include "spinEditInt.h"
 #include "toolbarSeparator.h"
 #include <propPanel/control/container.h>
@@ -36,6 +37,7 @@ public:
     SpinEditIntPropertyControl *newControl = new SpinEditIntPropertyControl(mEventHandler, this, id, caption,
       /*width_includes_label = */ false);
 
+    setAutomationNameFromCaption(newControl, caption);
     newControl->setIntValue(value);
     newControl->setEnabled(enabled);
     addControl(newControl, new_line);
@@ -46,6 +48,7 @@ public:
     SpinEditFloatPropertyControl *newControl = new SpinEditFloatPropertyControl(mEventHandler, this, id, caption, prec,
       /*width_includes_label = */ false);
 
+    setAutomationNameFromCaption(newControl, caption);
     newControl->setFloatValue(value);
     newControl->setEnabled(enabled);
     addControl(newControl, new_line);
@@ -57,6 +60,7 @@ public:
 
     ToolbarToggleButtonPropertyControl *newControl =
       new ToolbarToggleButtonPropertyControl(id, mEventHandler, this, 0, 0, hdpi::Px(0), hdpi::Px(0), caption);
+    setAutomationNameFromCaption(newControl, caption);
     newControl->setEnabled(enabled);
     addControl(newControl, new_line);
   }
@@ -67,6 +71,7 @@ public:
 
     ToolbarButtonPropertyControl *newControl =
       new ToolbarButtonPropertyControl(id, mEventHandler, this, 0, 0, hdpi::Px(0), hdpi::Px(0), caption);
+    setAutomationNameFromCaption(newControl, caption);
     newControl->setEnabled(enabled);
     addControl(newControl, new_line);
   }
@@ -86,6 +91,7 @@ public:
 
     ToolbarToggleButtonGroupPropertyControl *newControl =
       new ToolbarToggleButtonGroupPropertyControl(id, mEventHandler, this, 0, 0, hdpi::Px(0), hdpi::Px(0), caption);
+    setAutomationNameFromCaption(newControl, caption);
     addControl(newControl, new_line);
   }
 
@@ -98,6 +104,8 @@ public:
     for (PropertyControlBase *control : mControlArray)
       setControlWidth(*control);
   }
+
+  const char *getImguiTypeName() const override { return "Toolbar"; }
 
   void updateImgui() override
   {
@@ -189,6 +197,8 @@ protected:
 
   void controlUpdateImgui(PropertyControlBase &control, int control_index)
   {
+    const ImGuiID activeIdWasAlive = ImGui::GetCurrentContext()->ActiveIdIsAlive;
+
     if (useTightButtonPlacement && control.getImguiControlType() == (int)ControlType::ToolbarToggleButton)
     {
       ImDrawFlags frameDrawFlags = ImDrawFlags_RoundCornersNone;
@@ -203,6 +213,8 @@ protected:
     {
       control.updateImgui();
     }
+
+    note_held_active_imgui_item(control, activeIdWasAlive);
   }
 
   int toolbarScalePercent = 100;

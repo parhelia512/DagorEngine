@@ -3,10 +3,17 @@
 #include <vecmath/dag_vecMath.h>
 #include <math/dag_mathUtils.h>
 #include <scene/dag_kdtree.h>
+#include <util/dag_bitwise_cast.h>
 #include <EASTL/algorithm.h>
 #include <EASTL/sort.h>
 namespace kdtree
 {
+inline uint32_t float_sort_key(float f)
+{
+  const uint32_t u = dag::bit_cast<uint32_t>(f);
+  return u ^ (uint32_t(int32_t(u) >> 31) | 0x80000000u);
+}
+
 inline void make_box(bbox3f &box, bbox3f &cbox, const bbox3f *boxes, const uint32_t *indices, int cnt)
 {
   box = boxes[indices[0]];
@@ -88,17 +95,18 @@ int make_nodes(KDNode *outRoot, const bbox3f *boxes, const float *center_x, cons
     float center;
     int axis = max_axis(cbox, /*out*/ center);
     const float *centers = (axis == 0 ? center_x : (axis == 1 ? center_y : center_z));
+    const uint32_t centerKey = float_sort_key(center);
     int median = from;
     for (int i = from; i <= to; ++i)
     {
-      if (centers[indices[i]] < center)
+      if (float_sort_key(centers[indices[i]]) < centerKey)
         median++;
     }
     if (median <= from || median >= to - 1)
       median = (from + to) / 2;
 
     eastl::nth_element(indices + from, indices + median, indices + to + 1,
-      [centers](const uint32_t &a, const uint32_t &b) { return centers[a] < centers[b]; });
+      [centers](const uint32_t &a, const uint32_t &b) { return float_sort_key(centers[a]) < float_sort_key(centers[b]); });
 
     int left = make_nodes(NULL, boxes, center_x, center_y, center_z, from, median, indices, nodes, min_to_split_geom,
       max_to_split_count, min_box_to_split_geom, max_box_to_split_count);

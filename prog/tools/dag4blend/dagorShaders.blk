@@ -690,6 +690,16 @@ shader_category{
         default:i=0
       }
       parameter{
+        name:t="camo_skin_smoothness"
+        type:t="r"
+        default:r=0.4
+      }
+      parameter{
+        name:t="camo_skin_metalness"
+        type:t="r"
+        default:r=0
+      }
+      parameter{
         name:t="metallMap"
         type:t="b"
         default:b=no
@@ -1873,6 +1883,86 @@ shader_category{
     }
     parameter{
       name:t="overlay_mode"
+      type:t="i"
+      default:i=0
+    }
+  }
+  shader{
+    name:t="dynamic_distortion"
+    description:t="Refracts what is behind the surface. It writes a screen space offset into the distortion buffer instead of shading it, so the material has no albedo of its own: the whole look comes from the normal map in the usual normal slot, material.texture[2]. Channels of that texture: A and G carry the normal that bends the image, R carries the noise and B the blur amount, both passed on to the post effect."
+    parameters_group{
+      name:t="Offset"
+      description:t="How far and in which direction the background is pushed."
+      parameter{
+        name:t="distortion_strength"
+        type:t="r"
+        default:r=1.0
+        soft_min:r=0.0
+        soft_max:r=4.0
+        description:t="Scales the normal before it is projected to screen space. 0 leaves the surface invisible."
+      }
+      parameter{
+        name:t="distortion_twist"
+        type:t="r"
+        default:r=0.0
+        soft_min:r=0.0
+        soft_max:r=1.0
+        description:t="Rotates the screen space offset, measured in turns: 0.25 is a quarter turn, 1.0 is a full turn back to the start."
+      }
+    }
+    parameters_group{
+      name:t="Tint"
+      description:t="Colors the refracted image. Applies only while the renderer draws distortion in color."
+      parameter{
+        name:t="distortion_rgb"
+        type:t="p4"
+        default:p4=1.0, 1.0, 1.0, 1.0
+        custom_ui:t="color"
+        description:t="Target color, alpha unused. The surface blends from white towards it as the offset grows."
+      }
+      parameter{
+        name:t="distortion_rgb_strength"
+        type:t="r"
+        default:r=1.0
+        soft_min:r=0.0
+        soft_max:r=8.0
+        description:t="Multiplies the offset before that blend, so a higher value reaches the full color at a smaller offset."
+      }
+    }
+    parameters_group{
+      name:t="Distance fade"
+      description:t="Weakens the effect with distance. Both parameters must be above 0, otherwise the fade is off and the surface keeps full strength at any range."
+      parameter{
+        name:t="distortion_fade_range"
+        type:t="r"
+        default:r=0.0
+        soft_min:r=0.0
+        soft_max:r=200.0
+        description:t="Distance in meters at which the surface reaches zero strength."
+      }
+      parameter{
+        name:t="distortion_fade_power"
+        type:t="r"
+        default:r=0.0
+        soft_min:r=0.0
+        soft_max:r=1.0
+        description:t="Shape of the falloff inside that range. Small values hold full strength almost to the end and then drop fast, values near 1 fade from close by."
+      }
+    }
+    parameters_group{
+      name:t="Masking"
+      description:t="Lets the mesh vary the effect per vertex."
+      parameter{
+        name:t="enable_vcolor"
+        type:t="i"
+        default:i=0
+        soft_min:i=0
+        soft_max:i=1
+        description:t="Integer, but works as boolean. 1 makes vertex color scale the texture: R the normal, G the blur, B the noise."
+      }
+    }
+    parameter{
+      name:t="num_bones"
       type:t="i"
       default:i=0
     }
@@ -6263,66 +6353,6 @@ shader_category{
     }
   }
   shader{
-    name:t="dynamic_hair_morph"
-    parameter{
-      name:t="micro_detail_layer_intensity"
-      type:t="r"
-      default:r=1.0
-    }
-    parameter{
-      name:t="aoTex"
-      type:t="b"
-      default:b=no
-    }
-    parameter{
-      name:t="num_bones"
-      type:t="i"
-      default:i=0
-    }
-    parameter{
-      name:t="paint_color_to"
-      type:t="p4"
-      default:p4=0.5, 0.5, 0.5, 0.5
-    }
-    parameter{
-      name:t="paint_color_from"
-      type:t="p4"
-      default:p4=0.5, 0.5, 0.5, 0.5
-    }
-    parameter{
-      name:t="microDetailMask"
-      type:t="b"
-      default:b=no
-    }
-    parameter{
-      name:t="atest"
-      type:t="i"
-      default:i=0
-      soft_min:i=0
-      soft_max:i=1
-      description:t="Integer, but works as boolean. 0 or less -> opaque, 1 or more -> alpha mask is clipped at medium gray"
-    }
-    parameter{
-      name:t="micro_detail_layer"
-      type:t="i"
-      default:i=-1
-    }
-    parameter{
-      name:t="micro_detail_layer_v_scale"
-      type:t="r"
-      default:r=1.0
-    }
-    parameter{
-      name:t="micro_detail_layer_uv_scale"
-      type:t="r"
-    }
-    parameter{
-      name:t="micro_detail_layer_swap_uv"
-      type:t="i"
-      default:i=0
-    }
-  }
-  shader{
     name:t="dynamic_refraction"
     parameter{
       name:t="transparency_mul"
@@ -6545,86 +6575,6 @@ shader_category{
   }
   shader{
     name:t="dynamic_skin"
-    parameter{
-      name:t="dynamic_details_transform_2"
-      type:t="p4"
-      default:p4=0.0, 0.0, 0.0, 1.0
-    }
-    parameter{
-      name:t="micro_detail_layer_intensity"
-      type:t="r"
-      default:r=1.0
-    }
-    parameter{
-      name:t="aoTex"
-      type:t="b"
-      default:b=no
-    }
-    parameter{
-      name:t="num_bones"
-      type:t="i"
-      default:i=0
-    }
-    parameter{
-      name:t="dynamic_details_transform_0"
-      type:t="p4"
-      default:p4=0.0, 0.0, 0.0, 1.0
-    }
-    parameter{
-      name:t="micro_detail_layer"
-      type:t="i"
-      default:i=-1
-    }
-    parameter{
-      name:t="dynamic_details_transform_3"
-      type:t="p4"
-      default:p4=0.0, 0.0, 0.0, 1.0
-    }
-    parameter{
-      name:t="dynamic_details"
-      type:t="p4"
-      default:p4=-1.0, -1.0, -1.0, -1.0
-    }
-    parameter{
-      name:t="micro_detail_layer_uv_scale"
-      type:t="r"
-    }
-    parameter{
-      name:t="micro_detail_layer_v_scale"
-      type:t="r"
-      default:r=1.0
-    }
-    parameter{
-      name:t="microDetailMask"
-      type:t="b"
-      default:b=no
-    }
-    parameter{
-      name:t="dynamic_details_transform_1"
-      type:t="p4"
-      default:p4=0.0, 0.0, 0.0, 1.0
-    }
-    parameter{
-      name:t="micro_detail_layer_swap_uv"
-      type:t="i"
-      default:i=0
-    }
-    parameters_group{
-      name:t="EN_specific"
-      parameter{
-        name:t="has_burning"
-        type:t="i"
-        default:i=0
-      }
-      parameter{
-        name:t="has_wounds"
-        type:t="i"
-        default:i=0
-      }
-    }
-  }
-  shader{
-    name:t="dynamic_skin_morph"
     parameter{
       name:t="dynamic_details_transform_2"
       type:t="p4"
@@ -7376,6 +7326,193 @@ shader_category{
         type:t="m"
         default:m=[[1.0, 0.0, 0.0] [0.0, 1.0, 0.0] [0.0, 0.0, 1.0] [0.0, 0.0, 0.0]]
         description:t="Matrix is not used currently, but exists in API"
+      }
+    }
+  }
+}
+shader_category{
+  name:t="Active Matter Dynamic Shaders"
+  shader{
+    name:t="dynamic_animated_mask"
+    description:t="Opacity is gated twice: texture channel B against mask_threshold, and two scrolling Perlin noises against perlin_threshold. The mask is read on the raw UV and is never transformed."
+    parameters_group{
+      name:t="Surface"
+      description:t="Shading of whatever survives the mask."
+      parameter{
+        name:t="color"
+        type:t="p4"
+        default:p4=1.0, 1.0, 1.0, 1.0
+        soft_min:r=0.0
+        soft_max:r=1.0
+        custom_ui:t="color"
+        description:t="Albedo, and the emission color while use_emission is 1."
+      }
+      parameter{
+        name:t="metalness"
+        type:t="r"
+        default:r=0.0
+        soft_min:r=0.0
+        soft_max:r=1.0
+        description:t="Constant. Channel B, which usually carries metalness, is taken by the mask."
+      }
+      parameter{
+        name:t="smoothness"
+        type:t="r"
+        default:r=1.0
+        soft_min:r=0.0
+        soft_max:r=1.0
+        description:t="Multiplier over the smoothness read from the texture alpha channel."
+      }
+      parameter{
+        name:t="reflectance"
+        type:t="r"
+        default:r=0.5
+        soft_min:r=0.0
+        soft_max:r=1.0
+      }
+    }
+    parameters_group{
+      name:t="Mask"
+      description:t="The authored opacity mask. It gates the region where anything can appear."
+      parameter{
+        name:t="mask_threshold"
+        type:t="r"
+        default:r=0.5
+        soft_min:r=0.0
+        soft_max:r=1.0
+        description:t="Cut level of texture channel B alone, read on the raw UV. The mask is never scaled, shifted or scrolled by the shader."
+      }
+    }
+    parameters_group{
+      name:t="Perlin"
+      description:t="Two noise fields that carve inside the region the mask allows."
+      parameter{
+        name:t="perlin_threshold"
+        type:t="r"
+        default:r=0.5
+        soft_min:r=0.0
+        soft_max:r=1.0
+        description:t="Cut level of the two Perlin noises, taken as their geometric mean. Raise it to make the noise bite harder without moving the mask border."
+      }
+      parameter{
+        name:t="perlin_scale_u"
+        type:t="r"
+        default:r=4.0
+        soft_min:r=0.0
+        soft_max:r=16.0
+        description:t="Tiling of the first noise along U. Measured on the raw UV, independent of the normal map transform."
+      }
+      parameter{
+        name:t="perlin_scale_v"
+        type:t="r"
+        default:r=4.0
+        soft_min:r=0.0
+        soft_max:r=16.0
+        description:t="Tiling of the first noise along V. Measured on the raw UV, independent of the normal map transform."
+      }
+      parameter{
+        name:t="perlin_scroll_u"
+        type:t="r"
+        default:r=0.1
+        soft_min:r=-2.0
+        soft_max:r=2.0
+        description:t="Scroll speed of the first noise along U, in UV units per second."
+      }
+      parameter{
+        name:t="perlin_scroll_v"
+        type:t="r"
+        default:r=0.0
+        soft_min:r=-2.0
+        soft_max:r=2.0
+        description:t="Scroll speed of the first noise along V, in UV units per second."
+      }
+      parameter{
+        name:t="perlin2_scale_u"
+        type:t="r"
+        default:r=7.0
+        soft_min:r=0.0
+        soft_max:r=16.0
+        description:t="Tiling of the second noise along U. Keep it non integer against perlin_scale for a long beat period."
+      }
+      parameter{
+        name:t="perlin2_scale_v"
+        type:t="r"
+        default:r=7.0
+        soft_min:r=0.0
+        soft_max:r=16.0
+        description:t="Tiling of the second noise along V. Keep it non integer against perlin_scale for a long beat period."
+      }
+      parameter{
+        name:t="perlin2_scroll_u"
+        type:t="r"
+        default:r=0.0
+        soft_min:r=-2.0
+        soft_max:r=2.0
+        description:t="Scroll speed of the second noise along U, in UV units per second."
+      }
+      parameter{
+        name:t="perlin2_scroll_v"
+        type:t="r"
+        default:r=-0.07
+        soft_min:r=-2.0
+        soft_max:r=2.0
+        description:t="Scroll speed of the second noise along V, in UV units per second."
+      }
+    }
+    parameters_group{
+      name:t="Normal map"
+      description:t="UV transform of the texture. Drives the normal and the smoothness only, never the mask."
+      parameter{
+        name:t="normal_scale_u"
+        type:t="r"
+        default:r=1.0
+        soft_min:r=0.0
+        soft_max:r=8.0
+        description:t="Tiling along U."
+      }
+      parameter{
+        name:t="normal_scale_v"
+        type:t="r"
+        default:r=1.0
+        soft_min:r=0.0
+        soft_max:r=8.0
+        description:t="Tiling along V."
+      }
+      parameter{
+        name:t="normal_scroll_u"
+        type:t="r"
+        default:r=0.0
+        soft_min:r=-2.0
+        soft_max:r=2.0
+        description:t="Scroll speed along U, in UV units per second."
+      }
+      parameter{
+        name:t="normal_scroll_v"
+        type:t="r"
+        default:r=0.0
+        soft_min:r=-2.0
+        soft_max:r=2.0
+        description:t="Scroll speed along V, in UV units per second."
+      }
+    }
+    parameters_group{
+      name:t="Emission"
+      description:t="Turns the surface into a light source driven by the noise."
+      parameter{
+        name:t="use_emission"
+        type:t="i"
+        default:i=0
+        soft_min:i=0
+        soft_max:i=1
+        description:t="Integer, but works as boolean. 1 switches the surface to SHADING_SELFILLUM: the noise drives emission strength and color is the emission color."
+      }
+      parameter{
+        name:t="emission_strength"
+        type:t="r"
+        default:r=4.0
+        soft_min:r=0.0
+        soft_max:r=16.0
+        description:t="Multiplier of the noise before it becomes emission. Clamped at MAX_EMISSION = 16. Ignored while use_emission is 0."
       }
     }
   }

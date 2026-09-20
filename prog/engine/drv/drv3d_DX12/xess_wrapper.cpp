@@ -223,7 +223,6 @@ public:
         nullptr);
     }
 
-    lastPresentStatus = xefg_swapchain_present_status_t{};
     return result >= XEFG_SWAPCHAIN_RESULT_SUCCESS;
   }
 
@@ -238,7 +237,6 @@ public:
     m_xefgContext = nullptr;
     fgSwapchainInitialized = false;
     fgEnabled = false;
-    lastPresentStatus = xefg_swapchain_present_status_t{};
     G_ASSERT_RETURN(result == XEFG_SWAPCHAIN_RESULT_SUCCESS, false);
 
     return true;
@@ -537,7 +535,6 @@ public:
     *swapchain = newDxgiSwapchain.Detach();
     fgSwapchainInitialized = true;
     fgEnabled = false;
-    lastPresentStatus = xefg_swapchain_present_status_t{};
 
     if (wasFgEnabled)
     {
@@ -584,12 +581,7 @@ public:
   void doScheduleGeneratedFrames(const XessFgParamsDx12 &fgArgs, const XessFgParamsDx12ResourceStates &resourceStates,
     ID3D12CommandList *d3dCommandList)
   {
-    if (!m_xefgContext)
-      return;
-
-    xefgSwapChainGetLastPresentStatus(m_xefgContext, &lastPresentStatus);
-
-    if (!fgEnabled)
+    if (!m_xefgContext || !fgEnabled)
       return;
 
     xefg_swapchain_frame_constant_data_t constData{
@@ -634,7 +626,11 @@ public:
 
   int getPresentedFrameCount() const
   {
-    return fgEnabled && lastPresentStatus.isFrameGenEnabled ? lastPresentStatus.framesPresented : 1;
+    if (!m_xefgContext || !fgEnabled)
+      return 1;
+    xefg_swapchain_present_status_t status{};
+    xefgSwapChainGetLastPresentStatus(m_xefgContext, &status);
+    return status.isFrameGenEnabled ? int(status.framesPresented) : 1;
   }
 
   uint64_t getMemoryUsage() const
@@ -679,7 +675,6 @@ private:
   XessState m_state = XessState::DISABLED;
 
   xefg_swapchain_handle_t m_xefgContext = nullptr;
-  xefg_swapchain_present_status_t lastPresentStatus = {};
   bool fgSupported = false;
   bool fgSwapchainInitialized = false;
   bool fgEnabled = false;

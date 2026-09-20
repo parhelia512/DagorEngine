@@ -12,6 +12,7 @@ AddIncludes =
   $(Root)/prog/daNetGame
   $(Root)/prog/daNetGameLibs
   $(Root)/prog/1stPartyLibs/daScript/include
+  $(Root)/prog/gameLibs/render/animatedSplashScreen/public_api
 ;
 
 Sources =

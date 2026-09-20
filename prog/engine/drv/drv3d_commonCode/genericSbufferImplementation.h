@@ -1184,6 +1184,8 @@ public:
   bool copyTo(Sbuffer *dst) override
   {
     STORE_RETURN_ADDRESS();
+    D3D_CONTRACT_ASSERTF_RETURN(dst->getSize() >= getSize(), false,
+      "DX12: copyTo destination (%u bytes) is smaller than source (%u bytes)", dst->getSize(), getSize());
     auto dest = (GenericSbufferImplementation *)dst;
     T::copyBuffer(this, bufFlags, buffer, temporaryMemory, isStreamBuffer(), dest, dest->bufFlags, dest->buffer, dest->temporaryMemory,
       dest->isStreamBuffer(), 0, 0, bufSize);
@@ -1192,6 +1194,8 @@ public:
   }
   bool copyTo(Sbuffer *dst, uint32_t dst_offset, uint32_t src_offset, uint32_t size_bytes) override
   {
+    if (size_bytes == 0)
+      return true;
     STORE_RETURN_ADDRESS();
     auto dest = (GenericSbufferImplementation *)dst;
     T::copyBuffer(this, bufFlags, buffer, temporaryMemory, isStreamBuffer(), dest, dest->bufFlags, dest->buffer, dest->temporaryMemory,

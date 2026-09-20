@@ -2959,6 +2959,13 @@ namespace das {
                 }
             }
 
+            // corrupt stream can read module count as 0: back() on the empty list is UB
+            if ( program->library.getModules().empty() ) {
+                LOG(LogLevel::warning) << "das: serialize: program stream has no modules\n";
+                program->failToCompile = true;
+                return;
+            }
+
             program->thisModule.reset(program->library.getModules().back());
             // the deserialized module is the program's module now — new nodes and the
             // ModuleGcFinalize collect belong on its root

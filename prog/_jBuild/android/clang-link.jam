@@ -672,6 +672,8 @@ rule ProcessBundleCopy
   Depends $(OutDir)/$(Target) : $(out)/$(dest) ;
   Depends $(out)/$(dest) : $(src) ;
   file on $(out)/$(dest) = $(dest) ;
+  dstAbs on $(out)/$(dest) = [ MakePathAbsolute $(JAM_CWD) : $(out)/$(dest) ] ;
+  srcAbs on $(out)/$(dest) = [ MakePathAbsolute $(JAM_CWD) : $(src) ] ;
   raw_copy_file $(out)/$(dest) : $(src) ;
 
   if ! $(AndroidJavaCode) && $(dest:S) in .java .kt { AndroidJavaCode = yes ; }
@@ -723,6 +725,8 @@ rule ProcessAndroidCopy
   Depends $(OutDir)/$(Target) : $(out)/$(dest) ;
   Depends $(out)/$(dest) : $(src) ;
   file on $(out)/$(dest) = $(dest) ;
+  dstAbs on $(out)/$(dest) = [ MakePathAbsolute $(JAM_CWD) : $(out)/$(dest) ] ;
+  srcAbs on $(out)/$(dest) = [ MakePathAbsolute $(JAM_CWD) : $(src) ] ;
   raw_copy_file $(out)/$(dest) : $(src) ;
 
   if ! $(AndroidJavaCode) && $(dest:S) in .java .kt { AndroidJavaCode = yes ; }
@@ -747,6 +751,8 @@ rule ProcessAndroidProguard
   Depends $(OutDir)/$(Target) : $(out)/$(dest) ;
   Depends $(out)/$(dest) : $(src) ;
   file on $(out)/$(dest) = $(dest) ;
+  dstAbs on $(out)/$(dest) = [ MakePathAbsolute $(JAM_CWD) : $(out)/$(dest) ] ;
+  srcAbs on $(out)/$(dest) = [ MakePathAbsolute $(JAM_CWD) : $(src) ] ;
   raw_copy_file $(out)/$(dest) : $(src) ;
 
   if $(1[2]) { ProcessAndroidProguard $(1[2-]) ; }

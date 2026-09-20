@@ -85,7 +85,7 @@
 #include "main/webui.h"
 #include "main/watchdog.h"
 #include "main/storeApiEvents.h"
-#include "render/animatedSplashScreen.h"
+#include <animated_splash_screen_api.h>
 #include <render/hdrRender.h>
 #include "net/dedicated.h"
 #include "net/net.h"
@@ -422,8 +422,8 @@ static void post_shutdown_handler()
   shutdown_internal_server_on_host_exit();
   gameproj::reset_game_resources();
   reset_game_resources();
-  gameres_rendinst_desc.reset();
-  gameres_dynmodel_desc.reset();
+  gameres_reset_desc(gameres_rendinst_desc);
+  gameres_reset_desc(gameres_dynmodel_desc);
   term_res_factories();
   ddsx::shutdown_tex_pack2_data();
   shutdown_game(RESTART_INPUT);
@@ -469,6 +469,9 @@ void set_window_title(const char *net_role)
 
 static void dump_log_initial(const char *cwd)
 {
+  // Stamp before other lines so test_engine finds -test_log_uid first.
+  stamp_test_log_uid_if_present();
+
   String cmdLine(framemem_ptr());
   cmdLine.reserve(DAGOR_MAX_PATH);
 #if _TARGET_PC_LINUX
@@ -594,10 +597,11 @@ void set_corrected_fps_limit(int fps_limit)
 {
   const int fpsLimitFromSettings = [] {
     auto videoBlk = ::dgs_get_settings()->getBlockByNameEx("video");
+#if _TARGET_PC
     if (d3d::get_vsync_enabled())
       return 0;
-    String platformFpsLimitName = String(32, "%sFpsLimit", get_platform_string_id());
-    return videoBlk->paramExists(platformFpsLimitName) ? videoBlk->getInt(platformFpsLimitName) : videoBlk->getInt("fpsLimit", 0);
+#endif
+    return videoBlk->getInt("fpsLimit", 0);
   }();
   if (fps_limit < 0)
     fps_limit = fpsLimitFromSettings;
@@ -943,6 +947,9 @@ int DagorWinMain(int nCmdShow, bool /*debugmode*/)
 
   { // Setup log handlers before we start any threads which can log (specifically start_purge_logs_thread) to avoid dataraces.
     visual_err_log_setup(dedicated::is_dedicated());
+    // HIS default mirror: install above visuallog so DEBUG/WARN reach the host forwarder
+    // without visuallog having to chain non-ERR levels. Eden expect_later skips this arm.
+    hosted_server_arm_log_mirror_callback();
     bindquirrel::setup_logerr_interceptor();
 
 #if DAGOR_DBGLEVEL > 0
@@ -1285,9 +1292,9 @@ int DagorWinMain(int nCmdShow, bool /*debugmode*/)
     FrameSleeper _sleep;
 #endif
     wait_additional_game_job_done();
+    update_webui(); // webui can run game logic, which needs emgr ownership returned by the PUFD job
     gameproj::update_before_dagor_work_cycle();
     ::dagor_work_cycle();
-    update_webui();
     cpujobs::release_done_jobs();
     reset_framemem();
     watchdog_kick();

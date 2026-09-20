@@ -1301,6 +1301,11 @@ namespace drv3d_metal
         pso_compiler_cache[hash] = pso;
         g_compiler_condition.notify_all();
       }
+      else
+      {
+        std::unique_lock<std::mutex> l(g_cache_mutex);
+        pso_cache_objects.freeOneBlock(pso);
+      }
       return nil;
     }
     else
@@ -1438,10 +1443,13 @@ namespace drv3d_metal
           work_hash = 0;
       }
 
-      if (shader_hash)
-        compileShader(shader);
-      if (work_hash)
-        compilePipeline(work_hash, work_pso, false);
+      @autoreleasepool
+      {
+        if (shader_hash)
+          compileShader(shader);
+        if (work_hash)
+          compilePipeline(work_hash, work_pso, false);
+      }
     }
   }
 

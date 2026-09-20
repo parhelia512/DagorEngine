@@ -1,0 +1,105 @@
+include "shader_global.dshl"
+include "gbuffer.dshl"
+include "globtm.dshl"
+include "project_trace.dshl"
+
+float4 view_vecLT;
+float4 view_vecRT;
+float4 view_vecLB;
+float4 view_vecRB;
+
+// fullscreen verification of the heightfield max grid march: every pixel
+// traces the same path the gi rays take and writes the hit to the gbuffer,
+// so the traced ground must land exactly on the rasterized landmesh (the
+// checker shows the grid cells, red = the ray started below the
+// heightfield). Drawn marginally closer along the ray to win the depth test
+// over the coincident landmesh. render.debug_hmap_trace toggles it
+shader testgi_hmap_trace_debug
+{
+  if (tex_hmap_low == NULL)
+  {
+    dont_render;
+  }
+  z_write = true;
+  z_test = true;
+  cull_mode = none;
+
+  TESTGI_HEIGHTMAP_MAX_GRID(ps)
+  INIT_AND_USE_GLOBTM(ps)
+  (ps) {
+    view_vecLT@f3 = view_vecLT;
+    view_vecRT@f3 = view_vecRT;
+    view_vecLB@f3 = view_vecLB;
+    view_vecRB@f3 = view_vecRB;
+    world_view_pos@f3 = world_view_pos;
+  }
+
+  hlsl {
+    struct VsOutput
+    {
+      VS_OUT_POSITION(pos)
+      float2 tc : TEXCOORD0;
+    };
+  }
+
+  hlsl(vs) {
+    VsOutput test_vs(uint id : SV_VertexID)
+    {
+      VsOutput o;
+      float2 p = float2(id == 1 ? 3 : -1, id == 2 ? 3 : -1);
+      o.pos = float4(p, 0, 1);
+      o.tc = p*float2(0.5, -0.5) + 0.5;
+      return o;
+    }
+  }
+
+  WRITE_GBUFFER()
+  hlsl(ps) {
+    GBUFFER_OUTPUT test_ps(VsOutput input HW_USE_SCREEN_POS, out float out_depth : SV_Depth)
+    {
+      float4 screenpos = GET_SCREEN_POS(input.pos);
+      // the view vectors are scaled so a point at linear depth w is
+      // world_view_pos + viewVec*w: the ray's view depth is t/length(viewVec)
+      float3 viewVec = lerp(lerp(view_vecLT, view_vecRT, input.tc.x), lerp(view_vecLB, view_vecRB, input.tc.x), input.tc.y);
+      float3 dir = normalize(viewVec);
+      float t = 0;
+      bool backFace = false;
+      bool hit = false;
+      #if HAS_HEIGHTMAP_MAX_GRID_TRACE
+      // terrain is absent outside the grid window: clamp the ray to it so the
+      // view verifies the march, not the window border
+      float2 windowLt = heightmap_max_grid_lt.xy*heightmap_max_grid_cell.x;
+      float2 windowRb = (heightmap_max_grid_lt.xy + heightmap_max_grid_lt.z)*heightmap_max_grid_cell.x;
+      float2 safeDir = select(abs(dir.xz) > 1e-7, dir.xz, 1e-7);
+      float2 tWindow = max((windowLt - world_view_pos.xz)/safeDir, (windowRb - world_view_pos.xz)/safeDir);
+      float maxT = min(600.0, min(tWindow.x, tWindow.y));
+      hit = heightmap_max_grid_trace(world_view_pos, dir, maxT, true, t, backFace);
+      #endif
+      if (!hit)
+        discard;
+      float3 worldPos = world_view_pos + dir*t;
+      // marginally closer along the ray: wins the depth test over the
+      // coincident landmesh, anything taller still occludes
+      float4 imagePos = mulPointTm(world_view_pos + dir*t*0.999, globtm);
+      out_depth = imagePos.z/max(imagePos.w, 1e-9);
+      const float e = 1.0;
+      float2 dh = float2(
+        heightmap_max_grid_get_height(worldPos + float3(e, 0, 0)) - heightmap_max_grid_get_height(worldPos - float3(e, 0, 0)),
+        heightmap_max_grid_get_height(worldPos + float3(0, 0, e)) - heightmap_max_grid_get_height(worldPos - float3(0, 0, e)));
+      float3 normal = normalize(float3(-dh.x, 2*e, -dh.y));
+      int2 cell = int2(floor(worldPos.xz*heightmap_max_grid_cell.y));
+      half3 albedo = ((cell.x ^ cell.y) & 1) ? half3(0.1, 0.65, 0.1) : half3(0.55, 0.1, 0.55);
+      if (backFace)
+        albedo = half3(0.7, 0.05, 0.05);
+      UnpackedGbuffer result;
+      init_gbuffer(result);
+      init_ao(result, 1);
+      init_albedo(result, albedo);
+      init_smoothness(result, 0.01);
+      init_normal(result, normal);
+      return encode_gbuffer(result, world_view_pos - worldPos, screenpos);
+    }
+  }
+  compile("target_vs", "test_vs");
+  compile("target_ps", "test_ps");
+}

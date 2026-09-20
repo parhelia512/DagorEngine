@@ -1,7 +1,9 @@
 # Using vecmath
 
 Platform-abstracted SIMD vector math. Wraps SSE2/SSSE3/SSE4.1 (x86) and NEON (ARM) behind a
-unified C API. Used pervasively throughout the Dagor Engine for all performance-critical math:
+unified C API; a scalar per-lane backend (`_TARGET_SIMD_SCALAR`, auto-selected when no SIMD ISA is
+detected, e.g. Cortex-M or RISC-V without V) implements the same API; vecMathUnitTest builds
+against it on x64 with `jam -sVecMathScalar=yes`, the rest of the engine still assumes SSE or NEON. Used pervasively throughout the Dagor Engine for all performance-critical math:
 transforms, physics, BVH traversal, culling, animation.
 
 `vecmath/dag_vecMath.h` is the API reference: every `v_`-prefixed function is declared there with
@@ -10,8 +12,9 @@ a comment. Grep it by prefix before writing anything by hand -- what you need pr
 v_triangle*).
 
 ## Key types
-- `vec4f` / `vec3f` -- 128-bit float vector (__m128 on SSE, float32x4_t on NEON)
-- `vec4i` -- 128-bit integer vector (__m128i / int32x4_t)
+- `vec4f` / `vec3f` -- 128-bit float vector (__m128 on SSE, float32x4_t on NEON, a 16-byte aligned
+  `float f[4]` struct on the scalar backend)
+- `vec4i` -- 128-bit integer vector (__m128i / int32x4_t / `int32_t i[4]` struct)
 - `mat33f` -- 3x3 column-major matrix (3 x vec3f)
 - `mat44f` -- 4x4 column-major matrix (4 x vec4f)
 - `mat43f` -- 4x3 row-major matrix (3 x vec4f, each row is xyzw where w = translation component)
@@ -93,7 +96,9 @@ themselves do not need it.
   NEON-specific implementations; on x86 the obvious hand-written form reaches for haddps, which
   is on the avoid list and loses to the explicit shuffle + add these helpers use. Note the _x
   forms (v_hadd4_x, v_dot4_x, v_length4_x) define .x only and are cheaper when you do not need
-  the broadcast
+  the broadcast. Association differs per backend (the SSE2 tier and scalar sum v_hadd4_x as
+  (x+z)+(y+w), SSE4.1 and NEON as (x+y)+(z+w); v_dot3 likewise), so do not rely on the exact
+  bits of a horizontal reduction across backends
 - Branching on a compare: use the v_check_*/v_test_* helpers rather than v_signmask + integer
   compare. x86 has movmskps so the signmask idiom is cheap there, but NEON has no movemask
   instruction and emulates it - with current clang codegen v_signmask(a) == 0b1111 is 10

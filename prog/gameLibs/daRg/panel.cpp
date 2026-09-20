@@ -37,6 +37,7 @@ void Panel::clear()
   scene->destroyGuiScreen(screen);
   screen = nullptr;
   spatialInfo.lastTransform.forEach([](auto &opt) { opt.reset(); });
+  spatialInfo.lastTransformFrameNo.forEach([](auto &frameNo) { frameNo = ~0u; });
 }
 
 

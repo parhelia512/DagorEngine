@@ -3,6 +3,7 @@
 
 #include "bindless.h"
 #include "debug/device_state.h"
+#include "debug/names.h"
 #include "descriptor_heap.h"
 #include "device_context.h"
 #include "device_features_config.h"
@@ -255,6 +256,7 @@ protected:
       D3D_ERROR("DX12: Unable to setup device error observer, failed to create detector fence");
       return;
     }
+    debug::name_object(detector.Get(), "DeviceErrorDetectorFence");
 
     observer = eastl::make_unique<ObserverThread>(static_cast<D *>(this), detector);
     if (!observer->start())
@@ -548,7 +550,7 @@ private:
   dag::Vector<DeviceResetEventHandler *> deviceResetEventHandlers;
   RenderStateSystem renderStateSystem;
   PipelineManager pipeMan;
-  PipelineCache pipelineCache;
+  PipelineCache pipelineCache{};
   FrontendQueryManager frontendQueryManager;
   DeviceContext context;
   ResourceMemoryHeap resources;
@@ -644,6 +646,7 @@ private:
 public:
   eastl::unique_ptr<DriverNetManager> netManager;
   int psoSlowThresholdUsec = 1000 * 1000;
+  using debug::DeviceState::isObjectNamingActive;
   using debug::DeviceState::nameObject;
   using debug::DeviceState::nameResource;
   using debug::DeviceState::processDebugLog;
@@ -691,9 +694,9 @@ public:
     D3D12_RESOURCE_FLAGS flags, uint32_t cflags, const char *name);
   void addBufferView(BufferState &buffer, BufferViewType view_type, BufferViewFormatting formatting, FormatStore format,
     uint32_t struct_size);
-  d3d::SamplerHandle createSampler(SamplerState state) { return resources.createSampler(device.get(), state); }
+  d3d::SamplerHandle createSampler(SamplerState state);
   D3D12_CPU_DESCRIPTOR_HANDLE getSampler(d3d::SamplerHandle handle) { return resources.getSampler(handle); }
-  D3D12_CPU_DESCRIPTOR_HANDLE getSampler(SamplerState state) { return resources.getSampler(device.get(), state); }
+  D3D12_CPU_DESCRIPTOR_HANDLE getSampler(SamplerState state);
   void recordCommittedResourceAllocated(uint32_t size, bool is_gpu) { resources.recordCommittedResourceAllocated(size, is_gpu); }
   void recordCommittedResourceFreed(uint32_t size, bool is_gpu) { resources.recordCommittedResourceFreed(size, is_gpu); }
   int createPredicate();
@@ -854,12 +857,6 @@ public:
   }
 #endif
 
-#if DX12_DOES_SET_DEBUG_NAMES
-  bool shouldNameObjects() const { return config.features.test(DeviceFeaturesConfig::NAME_OBJECTS); }
-#else
-  bool shouldNameObjects() const { return false; }
-#endif
-
   uint32_t registerBindlessSampler(BaseTex *texture) { return bindlessManager.registerSampler(*this, context, texture); }
   uint32_t registerBindlessSampler(d3d::SamplerHandle sampler)
   {
@@ -936,14 +933,13 @@ public:
 #endif
 #endif
 
-  ResourceHeap *newUserHeap(ResourceHeapGroup *group, size_t size, ResourceHeapCreateFlags flags, ResourceTagType tag)
-  {
-    return resources.newUserHeap(getDXGIAdapter(), *this, group, size, flags, tag);
-  }
+  ResourceHeap *newUserHeap(ResourceHeapGroup *group, size_t size, ResourceHeapCreateFlags flags, ResourceTagType tag);
 
   ResourceAllocationProperties getResourceAllocationProperties(const ResourceDescription &desc)
   {
-    return resources.getResourceAllocationProperties(device.get(), desc);
+    // The d3d contract answers a rejected description with zeroed properties, the reason has
+    // already been reported by the resource manager.
+    return resources.getResourceAllocationProperties(device.get(), desc).value_or({});
   }
 
   BufferState placeBufferInHeap(::ResourceHeap *heap, const ResourceDescription &desc, size_t offset,
@@ -1095,6 +1091,7 @@ public:
     {
       return {};
     }
+    // The allocator reported the failure through checkForOOM and callers test the returned region.
     return resources.allocatePersistentUploadMemory(getDXGIAdapter(), *this, size, alignment).value_or({});
   }
   HostDeviceSharedMemoryRegion allocatePersistentReadBackMemory(size_t size, size_t alignment)
@@ -1103,6 +1100,7 @@ public:
     {
       return {};
     }
+    // The allocator reported the failure through checkForOOM and callers test the returned region.
     return resources.allocatePersistentReadBack(getDXGIAdapter(), *this, size, alignment).value_or({});
   }
   HostDeviceSharedMemoryRegion allocatePersistentBidirectionalMemory(size_t size, size_t alignment)
@@ -1111,6 +1109,7 @@ public:
     {
       return {};
     }
+    // The allocator reported the failure through checkForOOM and callers test the returned region.
     return resources.allocatePersistentBidirectional(getDXGIAdapter(), *this, size, alignment).value_or({});
   }
   HostDeviceSharedMemoryRegion allocateTemporaryUploadMemory(size_t size, size_t alignment)
@@ -1120,10 +1119,16 @@ public:
       return {};
     }
     bool shouldFlush = false;
+    // The allocator reported the failure through checkForOOM and callers test the returned region.
     auto result = resources.allocateTempUpload(getDXGIAdapter(), *this, size, alignment, shouldFlush).value_or({});
     if (shouldFlush)
     {
-      context.flushDraws();
+      // can only do a flush when no ranged queries are active, otherwise we violate our own contract and risk a device reset
+      ScopedCommitLock ctxLock{context};
+      if (context.noActiveQueriesNoLock())
+      {
+        context.flushDrawsNoLock();
+      }
     }
     return result;
   }
@@ -1133,6 +1138,7 @@ public:
     {
       return {};
     }
+    // The allocator reported the failure through checkForOOM and callers test the returned region.
     return resources.allocateTempUploadForUploadBuffer(getDXGIAdapter(), *this, size, alignment).value_or({});
   }
 
@@ -1169,6 +1175,7 @@ public:
 #endif
   D3D12_CPU_DESCRIPTOR_HANDLE allocateResourceDescriptor()
   {
+    // Only fails while the device is being removed, DescriptorHeap::allocate is fatal otherwise.
     return resources.allocateTextureSRVDescriptor(device.get()).value_or({});
   }
 
@@ -1496,6 +1503,7 @@ inline bool FrontendQueryManager::createPredicateHeapResources(HeapPredicate &he
   {
     return false;
   }
+  debug::name_object(heap.heap.Get(), debug::make_pool_object_name("PredicateQueryHeap"));
 
 #if _TARGET_XBOX
   // predication buffer is the same as indirect buffer (same state id - so needs this flag)

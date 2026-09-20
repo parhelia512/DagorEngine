@@ -7,11 +7,13 @@
 #include <math/integer/dag_IPoint3.h>
 #include <math/integer/dag_IPoint2.h>
 #include <generic/dag_staticTab.h>
-#include <math/dag_point2.h>
+#include <generic/dag_carray.h>
+#include <dag/dag_vector.h>
+#include <math/dag_bounds3.h>
+#include <vecmath/dag_vecMath.h>
 #include <daSDF/sparseSDFMip.h>
 #include <math/dag_hlsl_floatx.h>
 #include <daSDF/objects_sdf.hlsli>
-#include <sceneRay/dag_sceneRayDecl.h>
 
 class MippedMeshSDF
 {
@@ -25,9 +27,20 @@ public:
   dag::Vector<uint8_t> compressedMips;
 };
 
-class BBox3;
+struct MeshBLAS
+{
+  dag::Vector<uint8_t> data;
+  vec4f scale = V_C_ONE;
+  vec4f invScale = V_C_ONE; // build_mesh_blas keeps it agreeing with scale
+  vec4f ofs = v_zero();
+  int blasSize = 0;
+  BBox3 box;
+  bool empty() const { return blasSize == 0; }
+};
 
-void generate_sdf(StaticSceneRayTracer &tr, MippedMeshSDF &OutData,
+bool build_mesh_blas(MeshBLAS &blas, dag::ConstSpan<Point3> verts, dag::ConstSpan<uint32_t> indices);
+
+void generate_sdf(const MeshBLAS &blas, MippedMeshSDF &OutData,
   float voxel_density = 3.f, // 5 voxels per local unit (meter) - voxel size is 0.2m
   int per_mesh_max_res = 128);
 void init_sdf_generate();

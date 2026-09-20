@@ -263,21 +263,45 @@ void TextureFactory::onTexFactoryDeleted(TextureFactory *f)
     return;
 
   acquire_texmgr_lock();
-  bool d3d_already_destroyed = !d3d::is_inited();
+  const bool d3d_already_destroyed = !d3d::is_inited();
   for (unsigned i = 0, ie = RMGR.getAccurateIndexCount(); i < ie; i++)
   {
-    if (RMGR.getFactory(i) != f || !RMGR.getD3dRes(i))
+    // entries without a d3d resource still point to f: the next acquire would call into it
+    if (RMGR.getFactory(i) != f)
       continue;
 
     TEXTUREID tid = RMGR.toId(i);
     if (d3d_already_destroyed)
-      RMGR.initAllocatedRec(i, nullptr, f);
-    else if (RMGR.getRefCount(i) == 0)
     {
-      f->releaseTexture(RMGR.baseTexture(i), tid);
       RMGR.initAllocatedRec(i, nullptr, f);
+      texmgr_internal::evict_managed_tex_and_id(tid);
+      continue;
     }
-    texmgr_internal::evict_managed_tex_and_id(tid);
+
+    if (RMGR.resQS[i].isReading())
+      RMGR.cancelReading(i);
+    // shader vars hold refs and cache the pointer: unbind them first, as termTex() does
+    if (RMGR.getRefCount(i) > 0 && tql::reset_texture_from_shader_vars)
+      tql::reset_texture_from_shader_vars(tid);
+    // the reset may drop the last ref of an entry already scheduled for removal, which evicts it
+    if (RMGR.getFactory(i) != f || texmgr_internal::evict_managed_tex_and_id(tid))
+      continue;
+
+    // still referenced: the caller broke the contract (see the header note). Detach the entry so
+    // the last release never calls into f. Only f could release the texture (it may be shared between
+    // ids, like a substitute texture), so it is leaked and the raw pointers held by users stay valid
+    logerr("[TEXMGR] factory %p deleted while tex 0x%x(%s) is referenced, rc=%d: texture leaked", f, tid, RMGR.getName(i),
+      RMGR.getRefCount(i) & ~RMGR.RCBIT_FOR_REMOVE);
+    TEX_REC_LOCK();
+    if (RMGR.baseTexture(i))
+      RMGR.changeTexUsedMem(i, 0, 0, 0);
+    RMGR.setD3dRes(i, nullptr);
+    RMGR.markUpdated(i, 0);
+    String name(RMGR.getName(i));
+    RMGR.setName(i, nullptr, f); // the name may live in f's memory
+    RMGR.setFactory(i, nullptr);
+    RMGR.setName(i, name, nullptr);
+    TEX_REC_UNLOCK();
   }
   release_texmgr_lock();
 }
@@ -549,7 +573,12 @@ bool texmgr_internal::D3dResMgrDataFinal::scheduleReading(int idx, TextureFactor
         }
       }
 
-      f->scheduleTexLoading(RMGR.toId(idx), ql);
+      // this function owns the startReading/incBaseTexRc pair, so it alone reverts them on failure
+      if (!f->scheduleTexLoading(RMGR.toId(idx), ql))
+      {
+        RMGR.cancelReading(idx);
+        return false;
+      }
       return true;
     }
   return false;
@@ -645,8 +674,9 @@ TexLoadRes texmgr_internal::D3dResMgrDataFinal::readDdsxTex(TEXTUREID tid, const
   RMGR.incRefCountAndDecReadyForDiscardTex(idx);
   const unsigned cur_sz = tql::sizeInKb(calcTexMemSize(idx, target_lev, hdr));
   const unsigned full_sz = tql::sizeInKb(calcTexMemSize(idx, resQS[idx].getQLev(), hdr));
+  const unsigned old_alloc_lev = getTexAllocLev(idx);
   if (t)
-    RMGR.changeTexUsedMem(idx, cur_sz, full_sz);
+    RMGR.changeTexUsedMem(idx, cur_sz, full_sz, target_lev);
 
   int newTexSize = t ? t->getSize() : 0;
   if (!t)
@@ -710,9 +740,9 @@ TexLoadRes texmgr_internal::D3dResMgrDataFinal::readDdsxTex(TEXTUREID tid, const
 
   if (t)
   {
-    unsigned resSzKb = tql::sizeInKb(newTexSize);
-    if (resSzKb > cur_sz)
-      RMGR.changeTexUsedMem(idx, resSzKb, max(resSzKb, full_sz));
+    // a failed read keeps the old object, so its level is restored
+    const unsigned resSzKb = max<unsigned>(tql::sizeInKb(newTexSize), cur_sz);
+    RMGR.changeTexUsedMem(idx, resSzKb, max(resSzKb, full_sz), ret == TexLoadRes::OK ? target_lev : old_alloc_lev);
   }
   RMGR.decRefCountAndIncReadyForDiscardTex(idx);
 
@@ -815,11 +845,10 @@ void textag_get_list(int textag, Tab<TEXTUREID> &out_list, bool skip_unused)
 
 TextureMetaData get_texture_meta_data(TEXTUREID id)
 {
-  int idx = RMGR.toIndex(id);
-  const char *name = RMGR.getName(idx);
-
   TextureMetaData tmd;
-  tmd.decodeData(name);
+  int idx = RMGR.toIndex(id);
+  if (idx >= 0)
+    tmd.decodeData(RMGR.getName(idx));
   return tmd;
 }
 

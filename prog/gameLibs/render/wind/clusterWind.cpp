@@ -337,7 +337,6 @@ void ClusterWind::updateGridPosition(const Point3 &pos)
     // just updateOne, even for more region along the same axis.
     // potential of 3 region, but we already update the whole axis for one region
     int texelSize = 1; // once we use texture, use real texelsize
-    BBox2 box(point2(result.texelsFrom) * texelSize, point2(result.texelsFrom + result.wd) * texelSize);
     float boxSize = clusterWindCascades[i].boxSize;
     IPoint2 boxNumToUpdate = IPoint2(result.wd.x / (int)boxSize, result.wd.y / (int)boxSize);
     if (boxNumToUpdate.x >= clusterWindCascades[i].boxWidthNum && boxNumToUpdate.y >= clusterWindCascades[i].boxWidthNum)

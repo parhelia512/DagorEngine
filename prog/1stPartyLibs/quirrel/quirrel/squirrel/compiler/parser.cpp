@@ -297,6 +297,8 @@ Block* SQParser::parseStatements(SourceLoc start)
 
 void SQParser::onDocString(const char *doc_string)
 {
+    if (_docObjectStack.back() == nullptr)
+        throwError("table docstrings are not supported");
     if (_docObjectStack.back()->getDocString() != nullptr)
         throwError("multiple docstrings in a single block");
     else {
@@ -464,6 +466,17 @@ Expr* SQParser::parseCommaExpr(SQExpressionContext expression_context)
     }
 
     return expr;
+}
+
+
+Expr* SQParser::parseSpreadOrExpression(SQExpressionContext expression_context)
+{
+    if (_token != TK_VARPARAMS)
+        return Expression(expression_context);
+
+    SourceLoc spreadStart = _lex.tokenStart();
+    Lex();
+    return newNode<UnExpr>(TO_SPREAD, spreadStart, Expression(expression_context));
 }
 
 
@@ -883,6 +896,8 @@ Expr *SQParser::parseStringTemplate() {
 
     // '$' TK_TEMPLATE_PREFIX? (arg TK_TEMPLATE_INFIX)* arg? TK_TEMPLATE_SUFFX
 
+    SourceLoc dollarStart = _lex.tokenStart();
+
     _lex._state = LS_TEMPLATE;
     _lex._expectedToken = TK_TEMPLATE_PREFIX;
 
@@ -951,6 +966,8 @@ Expr *SQParser::parseStringTemplate() {
 
       result = call;
     }
+
+    result->setSpanStart(dollarStart);
 
     _lex._expectedToken = -1;
     _lex._state = LS_REGULAR;
@@ -1038,7 +1055,7 @@ Expr* SQParser::Factor(SQInteger &pos)
             bool spaceSeparated = false;
             bool reported = false;
             while(_token != ']') {
-                Expr *v = Expression(SQE_ARRAY_ELEM);
+                Expr *v = parseSpreadOrExpression(SQE_ARRAY_ELEM);
                 arr->addValue(v);
                 if (_token == ',') {
                     commaSeparated = true;
@@ -1065,7 +1082,7 @@ Expr* SQParser::Factor(SQInteger &pos)
         SourceLoc start = _lex.tokenStart();
         Lex();
         TableExpr *t = newNode<TableExpr>(arena(), start);
-        _docObjectStack.push_back(&t->docObject);
+        _docObjectStack.push_back(nullptr);
         ParseTableOrClass(t, ',', '}');
         _docObjectStack.pop_back();
         // TableExpr end is set by ParseTableOrClass via Lex() after '}'
@@ -1183,7 +1200,7 @@ Expr* SQParser::Factor(SQInteger &pos)
         break;
     case TK_DELETE :
         if (_lang_features & LF_FORBID_DELETE_OP) {
-            throwError("Usage of 'delete' operator is forbidden. Use 'o.rawdelete(\"key\")' instead");
+            throwError("Usage of 'delete' operator is forbidden. Use 'o.$rawdelete(\"key\")' instead");
         }
         r = DeleteExpr();
         break;
@@ -1191,8 +1208,10 @@ Expr* SQParser::Factor(SQInteger &pos)
         SourceLoc start = _lex.tokenStart();
         Lex();
         Expr *inner = Expression(_expression_context);
+        SourceLoc closeParenEnd = _lex.currentPos();
         Expect(')');
         r = newNode<UnExpr>(TO_PAREN, start, inner);
+        r->setSpanEnd(closeParenEnd);
         break;
     }
     case TK_CODE_BLOCK_EXPR: {
@@ -1265,6 +1284,15 @@ void SQParser::ParseTableOrClass(TableExpr *decl, SQInteger separator, SQInteger
         case TK_DOCSTRING: {
             onDocString(_lex._svalue);
             Lex();
+            break;
+        }
+        case TK_VARPARAMS: {
+            if (otype == NEWOBJ_CLASS)
+                throwError("spread is not allowed in a class");
+            SourceLoc spreadStart = _lex.tokenStart();
+            Lex();
+            Expr *source = Expression(SQE_RVALUE);
+            decl->addMember(nullptr, newNode<UnExpr>(TO_SPREAD, spreadStart, source), flags);
             break;
         }
         case TK_FUNCTION:

@@ -7,7 +7,9 @@
 #include <gameRes/dag_gameResSystem.h>
 #include <gameRes/dag_grpMgr.h>
 #include <gameRes/dag_stdGameResId.h>
+#include <gameRes/dag_stdGameRes.h>
 #include <gameRes/dag_gameResHooks.h>
+#include <memory/dag_framemem.h>
 #include <drv/3d/dag_lock.h>
 #include <3d/dag_texMgr.h>
 #include <3d/dag_texPackMgr2.h>
@@ -91,9 +93,6 @@ static OAHashNameMap<true> *avail_res_files = NULL;
 
 static bool addReqResListReferences(int res_id, Bitarray &restr_list, FastIntList &req_list, int parent_cls = -1);
 static void add_rendinst_implicit_ref(int res_id, Bitarray &restr_list, FastIntList &req_list);
-
-DataBlock gameres_rendinst_desc;
-DataBlock gameres_dynmodel_desc;
 
 static WinCritSec gameres_cs;
 static WinCritSec gameres_load_cs;
@@ -225,10 +224,9 @@ void get_game_resource_name(int id, String &name) { return ::getGameResName(id, 
 struct GameResPackInfo
 {
   SimpleString fileName;
-  gamerespackbin::GrpData *grData;
-  bool surelyLoaded;
-
-  GameResPackInfo() : grData(NULL), surelyLoaded(false) {}
+  gamerespackbin::GrpData *grData = nullptr;
+  unsigned short loadCount = 0, grpDescOnlySize4K = 0;
+  bool surelyLoaded = false;
 
   bool processGrData(gameres_rrl_cptr_t rrl);
 
@@ -594,6 +592,9 @@ void gameresprivate::scanGameResPack(const char *filename)
     int packId = append_items(packInfo, 1);
     GameResPackInfo &pack = packInfo[packId];
     pack.fileName = filename;
+    pack.grpDescOnlySize4K = (sizeof(GrpHeader) + ghdr.descOnlySize + 4095) / 4096;
+    G_ASSERTF(pack.grpDescOnlySize4K * 4096 >= sizeof(GrpHeader) + ghdr.descOnlySize, //
+      "grp=%s ghdr.grpDescOnlySize=%d", filename, ghdr.descOnlySize);
     DataBlock *regDest = gameresprivate::getDestBlock(filename, true);
 
     // reserve memory for mapping new resIds
@@ -743,8 +744,6 @@ bool GameResPackInfo::processGrData(gameres_rrl_cptr_t rrl)
   if (!grData)
     return false;
 
-  FATAL_CONTEXT_AUTO_SCOPE(fileName);
-  DEBUG_CTX("processing data from GRP %s", (char *)fileName);
   int this_packId = this - packInfo.data();
 
   const ResData *rd = grData->resData.data(), *rd_end = rd + grData->resData.size();
@@ -795,8 +794,6 @@ bool GameResPackInfo::processGrData(gameres_rrl_cptr_t rrl)
       G_ASSERTF_BREAK(grData, "grData unexpectedly became %p", grData);
     }
   }
-
-  DEBUG_CTX("processed data from GRP %s", (char *)fileName);
 
   return true;
 }
@@ -860,17 +857,24 @@ void GameResPackInfo::loadPack(gameres_rrl_cptr_t rrl)
       return;
     }
   }
-  DEBUG_CTX("loading GRP %s", (char *)fileName);
+  debug("loading GRP %s", (char *)fileName);
   int file_sz = vrom_data.data() ? data_size(vrom_data) : seq_cb.getSize();
 
 #if TRACE_RES_MANAGEMENT
   size_t sys_mem = dagor_memory_stat::get_memory_allocated();
 #endif
-  static constexpr int RANGES_BUF_SZ = 64;
-  FastSeqReader::Range rangesBuf[RANGES_BUF_SZ];
-  FastSeqReader::Range *__restrict rb = rangesBuf, *__restrict rb_end = rb + RANGES_BUF_SZ;
-  int data_size = 0;
-  int waste_size = 0, waste_last_size = 0;
+  // 64 areas cover 95% of packs with no allocation; the rest grow once, and 512 is within 1% of
+  // what the widest pack here would use unbounded
+  static constexpr int RANGES_INPLACE = 64, RANGES_BUF_SZ = 512;
+  FastSeqReader::Range rangesInplace[RANGES_INPLACE];
+  Tab<FastSeqReader::Range> rangesGrown(framemem_ptr()); // only for a pack that wants more areas
+  FastSeqReader::Range *rangesBuf = rangesInplace;
+  FastSeqReader::Range *rb = rangesBuf, *rb_end = rb + RANGES_INPLACE;
+  auto readsNoData = [](unsigned class_id) {
+    return gamereshooks::is_res_class_stubbed && gamereshooks::is_res_class_stubbed(class_id);
+  };
+  FastSeqReader::Range hdrRange{0, grpDescOnlySize4K * 4096};
+  int data_size = 0; // bytes the factories actually consume, so read waste is never negative
   int res_cnt = 0;
 
   DAGOR_TRY
@@ -881,6 +885,7 @@ void GameResPackInfo::loadPack(gameres_rrl_cptr_t rrl)
     if (!dump_data.data())
     {
       GrpHeader ghdr;
+      seq_cb.setRangesOfInterest(make_span(&hdrRange, 1)); // read the header alone first, so it is not 6x96K of blind readahead
 
       // check id
       cb.read(&ghdr, sizeof(ghdr));
@@ -962,9 +967,10 @@ void GameResPackInfo::loadPack(gameres_rrl_cptr_t rrl)
         continue;
       if (resId_to_packId[gdni] != this_packId)
         continue;
+      if (readsNoData(rre->classId)) // a stub factory reads nothing, so these bytes need no range
+        continue;
       int st_p = rre->offset;
       int end_p = (rre + 1 == rre_end) ? file_sz : rre[1].offset;
-      data_size += end_p - st_p;
       res_cnt++;
 
       if (rb == rangesBuf)
@@ -975,18 +981,49 @@ void GameResPackInfo::loadPack(gameres_rrl_cptr_t rrl)
         continue;
       }
 
-      if (st_p > rb[-1].end + (32 << 10) && rb < rb_end)
+      const int gap_to_last = st_p - rb[-1].end;
+      if (gap_to_last <= (32 << 10))
+        rb[-1].end = end_p; // too close for a separate range to save a read
+      else if (rb < rb_end)
       {
+        rb->start = st_p;
+        rb->end = end_p;
+        rb++;
+      }
+      else if (rangesBuf == rangesInplace) // grow once, then keep the areas until the bigger cap
+      {
+        const int used = int(rb - rangesBuf);
+        rangesGrown.resize(RANGES_BUF_SZ);
+        memcpy(rangesGrown.data(), rangesBuf, used * sizeof(*rangesBuf));
+        rangesBuf = rangesGrown.data();
+        rb = rangesBuf + used;
+        rb_end = rangesBuf + RANGES_BUF_SZ;
         rb->start = st_p;
         rb->end = end_p;
         rb++;
       }
       else
       {
-        waste_size += st_p - rb[-1].end;
-        if (rb == rb_end)
-          waste_last_size += st_p - rb[-1].end;
-        rb[-1].end = end_p;
+        // no slots left: give up the narrowest gap, not the last one, which is often the widest
+        int best_gap = gap_to_last;
+        FastSeqReader::Range *best = nullptr;
+        for (FastSeqReader::Range *r = rangesBuf; r + 1 < rb; r++)
+          if (r[1].start - r->end < best_gap)
+          {
+            best_gap = r[1].start - r->end;
+            best = r;
+          }
+        if (!best)
+          rb[-1].end = end_p;
+        else
+        {
+          best->end = best[1].end;
+          memmove(best + 1, best + 2, size_t((char *)rb - (char *)(best + 2)));
+          rb--;
+          rb->start = st_p;
+          rb->end = end_p;
+          rb++;
+        }
       }
     }
     if (rb == rangesBuf)
@@ -1009,6 +1046,8 @@ void GameResPackInfo::loadPack(gameres_rrl_cptr_t rrl)
       // debug("read %s at %d", ::resNameMap.getName(gdNameId[rre->resId]), rre->offset);
       if (resId_to_packId[gdni] != this_packId)
         continue;
+      if (readsNoData(rre->classId))
+        continue;
       cb.seekto(rre->offset);
 
       GameResourceFactory *fac = ::getFactoryByClassId(rre->classId);
@@ -1029,6 +1068,7 @@ void GameResPackInfo::loadPack(gameres_rrl_cptr_t rrl)
       }
 
       fac->loadGameResourceData(gdNameId[rre->resId], cb);
+      data_size += cb.tell() - rre->offset; // cb is at rre->offset: seekto() above, and nothing reads in between
     }
 
     // DEBUG_CTX("loaded real-res from GRP %s", (char*)fileName);
@@ -1050,20 +1090,21 @@ void GameResPackInfo::loadPack(gameres_rrl_cptr_t rrl)
   // DEBUG_CTX("loaded GRP %s", (char*)fileName);
 
   int t0 = profile_time_usec(reft);
+  loadCount++;
 #if TRACE_RES_MANAGEMENT
   TRACE("+++ loaded GRP %s, %d usec, %6.2f Mb/s, used sysmem: %zuK\n", fileName.str(), t0, double(cb.getSize()) / (t0 ? t0 : 1),
     (dagor_memory_stat::get_memory_allocated() - sys_mem) >> 10);
 #else
   if (vrom_data.data())
-    debug("loaded GRP %s (from VROMFS), %d usec (%dK in %d res), %6.2f Mb/s", fileName.str(), t0, data_size >> 10, res_cnt,
-      double(data_size) / (t0 ? t0 : 1));
-  else if (rb == rangesBuf)
-    debug("loaded GRP %s, %d usec (%dK, no ranges, %d res), %6.2f Mb/s", fileName.str(), t0, data_size >> 10, res_cnt,
-      double(data_size) / (t0 ? t0 : 1));
-  else
-    debug("loaded GRP %s, %d usec (%dK of %dK range in %d areas, %d res, %dK waste load, %dK waste due to ranges), %6.2f Mb/s",
-      fileName.str(), t0, data_size >> 10, (rb[-1].end - rangesBuf[0].start) >> 10, rb - rangesBuf, res_cnt, waste_size >> 10,
-      waste_last_size >> 10, double(data_size) / (t0 ? t0 : 1));
+    debug("loaded GRP %s #%u (from VROMFS), %d usec (%dK in %d res), %6.2f Mb/s", fileName.str(), loadCount, t0, data_size >> 10,
+      res_cnt, double(data_size) / (t0 ? t0 : 1));
+  else if (rb > rangesBuf)
+    debug("loaded GRP %s #%u, %d usec (%dK of %dK span in %d areas, %d res, %dK waste load; %d rd), %6.2f Mb/s", fileName, loadCount,
+      t0, data_size >> 10, (rb[-1].end - rangesBuf[0].start) >> 10, rb - rangesBuf, res_cnt,
+      (seq_cb.getRequestedBytes() > data_size ? seq_cb.getRequestedBytes() - data_size : 0) >> 10, seq_cb.getRequestCount(),
+      double(seq_cb.getRequestedBytes()) / (t0 ? t0 : 1));
+  else // nothing loadable here, so the header read and the open are all this pack cost
+    debug("loaded GRP %s #%u, %d usec (no res to read; %dK)", fileName, loadCount, t0, seq_cb.getRequestedBytes() >> 10);
 #endif
   G_UNUSED(t0);
 
@@ -1078,8 +1119,9 @@ static void loadGameResPack(gameres_rrl_cptr_t rrl, int pack_id, int /*res_id*/)
   if (pack_id < 0)
     return;
 
-  debug("loadGameResPack(%s) start", packInfo[pack_id].fileName.str());
-
+  FATAL_CONTEXT_AUTO_SCOPE(packInfo[pack_id].fileName);
+  if (packInfo[pack_id].grData)
+    debug("processing resident GRP %s", packInfo[pack_id].fileName.str());
   if (packInfo[pack_id].processGrData(rrl))
     return;
 
@@ -1090,8 +1132,6 @@ static void loadGameResPack(gameres_rrl_cptr_t rrl, int pack_id, int /*res_id*/)
   loadedPacks.push_back(pack_id);
 
   packInfo[pack_id].loadPack(rrl);
-
-  debug("loadGameResPack(%s) end", packInfo[pack_id].fileName.str());
 }
 
 
@@ -1489,14 +1529,24 @@ GameResource *get_one_game_resource_ex(const char *resname, unsigned type_id)
 #endif
 
   lock.unlockFinal();
+  // drop the caller's levels too before waiting on gameres_load_cs, as load_game_resource_pack() does: a nested pull made
+  // from a factory under gameres_cs would otherwise wait on the load lock while holding it, the reverse of the usual order
+  gameres_cs.lock(); // fullUnlock() is only safe on a section this thread owns
+  const int gameres_cs_cnt = gameres_cs.fullUnlock() - 1;
 
   GameResRestrictionList rrl(resNameMap.nameCount(), 1);
   if (res_id < rrl.mask.size())
     rrl.mask.set(res_id); // mark res itself regardless of subsequent addReqResListReferences() result!
   addReqResListReferences(res_id, rrl.mask, rrl.list);
 
-  WinAutoLock lock_load(gameres_load_cs);
-  return get_game_resource_ex(resname, type_id, &rrl);
+  GameResource *res = nullptr;
+  {
+    WinAutoLock lock_load(gameres_load_cs);
+    res = get_game_resource_ex(resname, type_id, &rrl);
+  }
+  if (gameres_cs_cnt)
+    gameres_cs.reLock(gameres_cs_cnt);
+  return res;
 }
 
 bool is_game_resource_loaded_nolock(const char *resname, unsigned type_id)
@@ -1875,7 +1925,7 @@ static void add_rendinst_implicit_ref(int res_id, Bitarray &restr_list, FastIntL
 {
   if (!gameres_rendinst_desc.blockCount())
     return;
-  if (const DataBlock *b = gameres_rendinst_desc.getBlockByName(resNameMap.getName(res_id)))
+  if (const DataBlock *b = gameres_find_ri_desc_block(resNameMap.getName(res_id)))
   {
     static const char *ref_nm[] = {"refRendInst", "refPhysObj", "refColl", "refApex"};
     for (int i = 0; i < sizeof(ref_nm) / sizeof(ref_nm[0]); i++)

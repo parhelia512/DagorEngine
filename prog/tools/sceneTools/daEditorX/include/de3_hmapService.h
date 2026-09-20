@@ -128,10 +128,11 @@ public:
 
   virtual void resetTexturesLandMesh(LandMeshRenderer &r) const = 0;
 
-  // land detail weights: the plugin reads the painted map into page-sized
-  // legacy texels (see landMesh/lmeshWeightAtlas.h), the atlas packs them
+  // land detail weights: the plugin reads the painted map into one page-sized
+  // weight plane per landclass slot (see landMesh/lmeshWeightAtlas.h), the
+  // atlas packs them
   virtual int getLandWeightCellTexSize(LandMeshManager &p) const = 0;
-  virtual void setLandWeights(LandMeshManager &p, int cell_idx, const uint32_t *argb4, const uint32_t *rg8, int num_tex) const = 0;
+  virtual void setLandWeights(LandMeshManager &p, int cell_idx, const uint8_t *const *planes, int num_tex) const = 0;
   virtual void uploadLandWeights(LandMeshManager &p) const = 0;
 
   virtual bool exportToGameLandMesh(mkbindump::BinDumpSaveCB &cwr, dag::ConstSpan<landmesh::Cell> cells,

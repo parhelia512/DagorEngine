@@ -133,6 +133,10 @@ public:
     das::addExtern<DAS_BIND_FUN(dainput::is_action_mask_immediate)>(*this, lib, "is_action_mask_immediate",
       das::SideEffects::accessExternal, "dainput::is_action_mask_immediate")
       ->args({"action_handle"});
+    das::addExtern<DAS_BIND_FUN(dainput::action_binding_changed)>(*this, lib, "action_binding_changed",
+      das::SideEffects::modifyExternal, "dainput::action_binding_changed")
+      ->arg_init(/*action*/ 0, new das::ExprConstUInt16(dainput::BAD_ACTION_HANDLE))
+      ->arg_init(/*column*/ 1, new das::ExprConstInt(-1));
     das::addExtern<DAS_BIND_FUN(dainput::get_digital_action_binding)>(*this, lib, "get_digital_action_binding",
       das::SideEffects::accessExternal, "dainput::get_digital_action_binding");
     das::addExtern<DAS_BIND_FUN(dainput::get_analog_axis_action_binding)>(*this, lib, "get_analog_axis_action_binding",
@@ -163,6 +167,10 @@ public:
       "dainput::get_action_set_handle");
     das::addExtern<DAS_BIND_FUN(dainput::activate_action_set)>(*this, lib, "activate_action_set", das::SideEffects::modifyExternal,
       "dainput::activate_action_set");
+    das::addExtern<DAS_BIND_FUN(dainput::get_action_set_priority)>(*this, lib, "get_action_set_priority",
+      das::SideEffects::accessExternal, "dainput::get_action_set_priority");
+    das::addExtern<DAS_BIND_FUN(dainput::are_action_sets_exclusive)>(*this, lib, "are_action_sets_exclusive",
+      das::SideEffects::accessExternal, "dainput::are_action_sets_exclusive");
     das::addExtern<DAS_BIND_FUN(dainput::set_analog_axis_action_state)>(*this, lib, "set_analog_axis_action_state",
       das::SideEffects::modifyExternal, "dainput::set_analog_axis_action_state");
     das::addExtern<DAS_BIND_FUN(dainput::send_action_event)>(*this, lib, "send_action_event", das::SideEffects::modifyExternal,

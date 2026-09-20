@@ -1,12 +1,12 @@
 import "%dngscripts/ecs.nut" as ecs
-let {get_setting_by_blk_path} = require("settings")
-let {has_network, INVALID_CONNECTION_ID} = require("net")
+from "settings" import get_setting_by_blk_path
+from "net" import has_network, INVALID_CONNECTION_ID
+from "dagor.system" import DBGLEVEL
+from "dagor.debug" import register_logerr_monitor, debug, clear_logerr_interceptors
+from "%scripts/globs/sqevents.nut" import mkEventSqChatMessage, CmdEnableDedicatedLogger, mkCmdEnableDedicatedLogger
+from "%scripts/globs/types.nut" import INVALID_USER_ID
+
 let dedicated = require_optional("dedicated")
-let dagorDebug = require("dagor.debug")
-let {register_logerr_monitor, debug, clear_logerr_interceptors} = dagorDebug
-let {DBGLEVEL} = require("dagor.system")
-let {mkEventSqChatMessage, CmdEnableDedicatedLogger, mkCmdEnableDedicatedLogger} = require("%scripts/globs/sqevents.nut")
-let {INVALID_USER_ID}= require("%scripts/globs/types.nut")
 
 let peersThatWantToReceiveQuery = ecs.SqQuery(
   "peersThatWantToReceiveQuery",

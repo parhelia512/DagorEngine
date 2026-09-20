@@ -135,7 +135,7 @@ protected:
 
   AssetTagManager *getTagManager();
 
-  void updateImguiDialog() override;
+  void updateImguiDialog(const PropPanel::DialogWindow::DialogFrameSizing &sizing) override;
 
   static PropPanel::TLeafHandle getTreeItemByName(PropPanel::TreeBaseWindow &tree, const String &name);
   static void selectTreeItemByName(PropPanel::TreeBaseWindow &tree, const String &name);

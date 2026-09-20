@@ -9,6 +9,7 @@
 #include <drv/3d/dag_consts_base.h>
 #include <drv/3d/dag_renderStateId.h>
 #include <drv/3d/dag_stencilState.h>
+#include <drv/3d/dag_multi_interface.h>
 #include <math/dag_e3dColor.h>
 
 namespace shaders
@@ -158,7 +159,7 @@ struct RenderState : public RenderStateBits
 };
 } // namespace shaders
 
-namespace d3d
+namespace d3d _MULTI_INTERFACE
 {
 /**
  * @brief Set the blend factor object
@@ -213,7 +214,7 @@ bool set_render_state(shaders::DriverRenderStateId state_id);
  * @brief Remove all render state objects allocated in driver
  */
 void clear_render_states();
-} // namespace d3d
+} // namespace d3d _MULTI_INTERFACE
 
 #if _TARGET_D3D_MULTI
 #include <drv/3d/dag_interface_table.h>

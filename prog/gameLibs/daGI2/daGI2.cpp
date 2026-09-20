@@ -75,6 +75,7 @@ struct DaGIImpl final : public DaGI
       return false;
     return uint32_t(sdf_clip - voxelScene->firstSdfClip) < uint32_t(voxelScene->clips);
   }
+  void invalidateAll();
   void afterReset();
   void debugRenderTrans();
   void debugRenderScreenDepth();
@@ -82,12 +83,14 @@ struct DaGIImpl final : public DaGI
   void requestUpdatePosition(const request_sdf_radiance_data_cb &sdf_cb, const cancel_sdf_radiance_data_cb &cancel_sdf_cb,
     const request_albedo_data_cb &albedo_cb, const cancel_albedo_data_cb &cancel_albedo_cb);
   bool requiresUpdate() const;
-  void updatePosition(const rasterize_sdf_radiance_cb &sdf_cb, const rasterize_albedo_cb &albedo_cb);
   void updateConstants()
   {
     if (worldSdf)
       worldSdf->updateConstants();
   }
+  void updatePosition(const rasterize_sdf_radiance_cb &sdf_cb, const rasterize_albedo_cb &albedo_cb,
+    const prepare_initial_media_cb &prepare_media_cb) override;
+  void invalidateInitialMedia() override;
   void invalidateBox(const BBox3 &box);
   void invalidateRadianceFrustum(const Frustum &frustum);
   void setSettings(const DaGISettings &s) { nextSettings = s; }
@@ -333,7 +336,8 @@ void DaGIImpl::requestUpdatePosition(const request_sdf_radiance_data_cb &, const
   const request_albedo_data_cb &, const cancel_albedo_data_cb &)
 {}
 
-void DaGIImpl::updatePosition(const rasterize_sdf_radiance_cb &sdf_cb, const rasterize_albedo_cb &albedo_cb)
+void DaGIImpl::updatePosition(const rasterize_sdf_radiance_cb &sdf_cb, const rasterize_albedo_cb &albedo_cb,
+  const prepare_initial_media_cb &prepare_media_cb)
 {
   pendingUpdateAfterDeviceReset = false;
   if (!gi_world_sdf_update)
@@ -351,7 +355,7 @@ void DaGIImpl::updatePosition(const rasterize_sdf_radiance_cb &sdf_cb, const ras
     albedoScene->update(pos, false,
       [&](const BBox3 &b, float voxel_size, uintptr_t &h) { return (UpdateAlbedoStatus)albedo_cb(b, voxel_size, h); });
   if (mediaScene)
-    mediaScene->updatePos(pos);
+    mediaScene->updatePos(pos, false, prepare_media_cb);
 
   worldSdf->update(
     pos,
@@ -539,6 +543,12 @@ void DaGIImpl::updatePosition(const rasterize_sdf_radiance_cb &sdf_cb, const ras
   workAroundUAVslots();
 }
 
+void DaGIImpl::invalidateInitialMedia()
+{
+  if (mediaScene)
+    mediaScene->resetHistoryAge();
+}
+
 void DaGIImpl::invalidateBox(const BBox3 &box)
 {
   if (mediaScene)
@@ -569,7 +579,7 @@ void DaGIImpl::invalidateRadianceFrustum(const Frustum &frustum)
   pendingRadianceInvalidations.push_back(inv);
 }
 
-void DaGIImpl::afterReset()
+void DaGIImpl::invalidateAll()
 {
   pendingUpdateAfterDeviceReset = true;
   if (radianceGrid)
@@ -593,6 +603,8 @@ void DaGIImpl::afterReset()
   G_ASSERTF(0, "fixme: reset support are not implemented yet");
 #endif
 }
+
+void DaGIImpl::afterReset() { invalidateAll(); }
 
 bool DaGIImpl::requiresUpdate() const { return pendingUpdateAfterDeviceReset; }
 

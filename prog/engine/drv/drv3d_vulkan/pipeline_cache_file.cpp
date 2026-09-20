@@ -37,16 +37,22 @@ uint32_t getPipelineSignificantAppVersion()
   return appVer;
 }
 
+static bool isPipelineCacheFileAllowed()
+{
+  const DataBlock *cfgBlk = Globals::cfg.getPerDriverPropertyBlock("pipelineCompiler");
+  return ::dgs_get_settings()->getBlockByNameEx("vulkan")->getBool("allowPipelineCache", true) &&
+         cfgBlk->getBool("allowPipelineCache", true);
+}
+
 void PipelineCacheFile::load(const char *path)
 {
   TIME_PROFILE(vulkan_load_pipeline_cache);
 
-  const DataBlock *cfgBlk = Globals::cfg.getPerDriverPropertyBlock("pipelineCompiler");
-  const bool allowPipelineCache = ::dgs_get_settings()->getBlockByNameEx("vulkan")->getBool("allowPipelineCache", true) &&
-                                  cfgBlk->getBool("allowPipelineCache", true);
-
-  if (!allowPipelineCache)
+  if (!isPipelineCacheFileAllowed())
+  {
+    debug("vulkan: pipeline cache file disabled, load skipped");
     return;
+  }
 
   const char *filePath = path ? path : getDataPath();
   if (!filePath || !*filePath)
@@ -266,6 +272,12 @@ public:
 
 void PipelineCacheFile::store()
 {
+  if (!isPipelineCacheFileAllowed())
+  {
+    debug("vulkan: pipeline cache file disabled, store skipped");
+    return;
+  }
+
   const char *path = getDataPath();
   if (!path || !*path)
     return;

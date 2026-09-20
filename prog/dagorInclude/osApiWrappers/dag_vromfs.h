@@ -90,6 +90,9 @@ struct VirtualRomFsPack : public VirtualRomFsData
     vromfs_user_get_file_data_t getData = NULL;
     void *getDataArg = NULL;
     VirtualRomFsSingleFile *resolvedFilesLinkedList = NULL;
+    // off-main resolves of this pack that dropped the vromfs read lock across the web wait;
+    // an unmount waits for it to reach 0 before the pack is freed (see vromfs.cpp)
+    volatile int resolvesInFlight = 0;
   };
 
   int hdrSz;
@@ -251,6 +254,9 @@ KRNLIMP uint32_t get_vromfs_dump_version(const char *fname);
 KRNLIMP void add_vromfs(VirtualRomFsData *fs, bool insert_first = false, char *mount_path = 0);
 //! removes vromfs from list of active file systems; returns mount path (to be freed when needed)
 KRNLIMP char *remove_vromfs(VirtualRomFsData *fs);
+//! set the callback (cpujobs::release_done_jobs) that drives pending job completions while a
+//! main-thread unmount waits out in-flight off-main backed resolves; keeps this lib off cpujobs
+KRNLIMP void set_vromfs_backed_resolve_pump(void (*pump)());
 //! replaces vromfs by index (mount path remains the same); returns previously mounted vromfs for that index
 KRNLIMP VirtualRomFsData *replace_vromfs(int idx, VirtualRomFsData *fs);
 

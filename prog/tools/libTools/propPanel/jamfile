@@ -29,6 +29,7 @@ Sources =
   propPanelService.cpp
   c_indirect.cpp
   c_util.cpp
+  changeFinishTracker.cpp
   colorChangeBuffer.cpp
   colorsInternal.cpp
   contextMenu.cpp

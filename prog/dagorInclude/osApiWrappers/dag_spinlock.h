@@ -13,6 +13,16 @@
 #include <perfMon/dag_daProfilerToken.h>
 #include <osApiWrappers/dag_threadSafety.h>
 
+// Set when waiters park in the OS (3 state futex lock), i.e. the lock may be held for a long time.
+// If not set it is a plain TTAS spin and it shall be held for a very short time only.
+#if _TARGET_PC_LINUX && DAGOR_THREAD_SANITIZER // TSAN sees the lock only through the pthread API
+#define DAG_SPINLOCK_IS_FUTEX_MUTEX 0
+#elif _TARGET_PC_WIN || _TARGET_XBOX || _TARGET_C2 || _TARGET_PC_LINUX || _TARGET_ANDROID
+#define DAG_SPINLOCK_IS_FUTEX_MUTEX 1
+#else
+#define DAG_SPINLOCK_IS_FUTEX_MUTEX 0
+#endif
+
 namespace dag::spinlock_internal
 {
 enum
@@ -33,14 +43,14 @@ inline bool os_spinlock_trylock(os_spinlock_t *lock)
 #if _TARGET_PC_LINUX && DAGOR_THREAD_SANITIZER
   static_assert(sizeof(*lock) >= sizeof(pthread_spinlock_t), "bad os_spinlock_t type!");
   return pthread_spin_trylock(lock) == 0;
-#elif _TARGET_PC_WIN || _TARGET_XBOX || _TARGET_C2
+#elif DAG_SPINLOCK_IS_FUTEX_MUTEX
   return interlocked_compare_exchange(*lock, LOCK_IS_TAKEN_NO_WAITERS, LOCK_IS_FREE) == LOCK_IS_FREE;
 #else
   return interlocked_exchange(*lock, LOCK_IS_TAKEN_NO_WAITERS) == LOCK_IS_FREE;
 #endif
 }
 KRNLIMP void DAGOR_NOINLINE os_spinlock_lock_contended(os_spinlock_t *lock, da_profiler::desc_id_t token);
-#if _TARGET_PC_WIN || _TARGET_XBOX || _TARGET_C2
+#if DAG_SPINLOCK_IS_FUTEX_MUTEX
 KRNLIMP void os_spinlock_unlock_contended(os_spinlock_t *lock);
 #endif
 inline void os_spinlock_lock(os_spinlock_t *lock, da_profiler::desc_id_t token = da_profiler::DescSpinlock)
@@ -53,7 +63,7 @@ inline void os_spinlock_unlock(os_spinlock_t *lock)
   using namespace dag::spinlock_internal;
 #if _TARGET_PC_LINUX && DAGOR_THREAD_SANITIZER
   pthread_spin_unlock(lock);
-#elif _TARGET_PC_WIN || _TARGET_XBOX || _TARGET_C2
+#elif DAG_SPINLOCK_IS_FUTEX_MUTEX
   if (interlocked_exchange(*lock, LOCK_IS_FREE) == LOCK_IS_TAKEN_CONTENDED)
     os_spinlock_unlock_contended(lock);
 #else

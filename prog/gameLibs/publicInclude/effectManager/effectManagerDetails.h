@@ -29,6 +29,8 @@ struct EffectManager::LightEffect
   int extLightId = -1;
   BaseEffectObject *obj;
   float radiusMultiplier = 1.0f;
+  uint32_t lightFlags = 0;
+  float lightSourceRadius = 0.f;
   Point3 pos = {0, 0, 0};
   Point4 params = {0, 0, 0, 0};
   float intensity = 1.0f;
@@ -56,6 +58,8 @@ struct EffectManager::PendingData
   Point3 velocity = Point3(0, 0, 0);
   Point2 velocityScaleMinMax = Point2(1, 1);
   float lightRadiusMultiplier = 1.0f;
+  uint32_t lightFlags = 0;
+  float lightSourceRadius = 0.f;
   float lightIntensity = 1.0f;
   float windScale = -1.0f;
   Matrix3 gravityTm = Matrix3::IDENT;

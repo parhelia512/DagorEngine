@@ -50,6 +50,7 @@ public:
   TextureIDHolder wfx_normals, wfx_details;
   float waterLevel = 0.f;
   double totalTime = 0.0;
+  double currentDt = 0.01f;
   bool srvDisabled = false;
   bool noDistanceField = false;
 
@@ -103,7 +104,11 @@ public:
   }
   ~WaterService() { termSrv(); }
 
-  void act(float dt) override { totalTime += dt; }
+  void act(float dt) override
+  {
+    totalTime += dt;
+    currentDt = dt;
+  }
   void init() override
   {
     fft_water::init();
@@ -154,7 +159,7 @@ public:
       return;
     fft_water::set_level(water, waterLevel);
     fft_water::simulate(water, totalTime);
-    fft_water::before_render(water);
+    fft_water::before_render(water, currentDt);
     static int foam_time_id = get_shader_glob_var_id("foam_time", true);
     ShaderGlobal::set_float(foam_time_id, max(0.f, (float)get_time_msec() / 1000.0f));
   }

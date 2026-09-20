@@ -194,7 +194,8 @@ public:
   }
   void afterDeviceReset(LandMeshRenderer *lrend, bool full_reset);
   void updateOverrideSamplers();
-  bool loadHeightmapDump(IGenLoad &loadCb, bool load_render_data, float water_level = -1000000, float shore_error_meters = 2.0f);
+  bool loadHeightmapDump(IGenLoad &loadCb, bool load_render_data, float water_level = -1000000, float shore_error_meters = 2.0f,
+    int metrics_min_calc_level = -1, int metrics_max_calc_level = -1);
   PhysMap *loadPhysMap(IGenLoad &loadCb, bool lmp2);
   void filterHeighLandmeshDecals(const DataBlock &levelBlk);
   const carray<Tab<TEXTUREID>, NUM_TEXTURES_STACK> &getMegaDetailsId() const { return megaDetailsId; }
@@ -316,10 +317,12 @@ public:
   int getVisibilityRangeCells() { return visRange; }
   const LandWeightAtlas *getWeightAtlas() const { return weightAtlas; }
   LandWeightAtlas *getWeightAtlasForEdit() { return weightAtlas; } // daEditor paints into it
-  void getDetailMapSize(int &elem_size, int &tex_size)
+  // texcoord scale of the legacy per-cell weight textures over world units;
+  // 0 for a packed level, which ships the atlas instead (its header carries a
+  // zero source texture size) - only the legacy per-cell path reads the scale
+  float getDetailMapTcScale() const
   {
-    tex_size = detailMap.texSize;
-    elem_size = detailMap.texElemSize;
+    return detailMap.texSize > 0 ? detailMap.texElemSize / (detailMap.texSize * landCellSize) : 0.f;
   }
 
   int getNumCellsX() const { return mapSizeX; }

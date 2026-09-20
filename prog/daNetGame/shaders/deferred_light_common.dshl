@@ -19,6 +19,7 @@ include "custom_probe_inc.dshl"
 include "world_sdf.dshl"
 include "use_gi.dshl"
 include "reproject_gi.dshl"
+include "ibl_cube_sample.dshl"
 
 int shadow_frame = 0;
 
@@ -91,6 +92,9 @@ macro INIT_AND_USE_DEFERRED_LIGHT_COMMON(code)
   USE_HDR(code)
   INIT_HDR(code)
 
+  INIT_IBL_CUBE(code)
+  USE_IBL_CUBE(code)
+
   (code) {
     hero_cockpit_camera_to_point@f3 = hero_cockpit_camera_to_point;
   }
@@ -148,6 +152,19 @@ macro INIT_AND_USE_DEFERRED_LIGHT_COMMON(code)
         float3 reflectionVec = 2 * NdotV * gbuffer.normal - view;
         float NoV = abs( NdotV ) + 1e-5;
         float ggx_alpha = gbuffer.ggx_alpha;
+
+        BRANCH
+        if (ibl_cube_is_inside != 0 && ibl_cube_pixel_inside(worldPos))
+        {
+          float iblFalloff = ibl_cube_falloff(worldPos);
+          float iblMulSpecular = lerp(ibl_cube_mul_specular_falloff_end, ibl_cube_mul_specular, iblFalloff);
+          float iblMulDiffuse = lerp(ibl_cube_mul_diffuse_falloff_end, ibl_cube_mul_diffuse, iblFalloff);
+          outSpecular = pack_hdr(ibl_cube_sample_specular(reflectionVec, gbuffer.linearRoughness) * iblMulSpecular);
+          outAmbient = pack_hdr(ibl_cube_sample_diffuse(gbuffer.normal) * iblMulDiffuse);
+          outPixelAge = 0;
+          return;
+        }
+
         float3 filteredWorldPos = worldPos;
 
         const float3 noise_speed = float3(0.02,0.03,0.025);

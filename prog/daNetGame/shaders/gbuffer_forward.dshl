@@ -62,7 +62,11 @@ macro INIT_GBUFFER_FORWARD()
       gbuffer_enviSPH0 @f4 = (enviSPH0*skylight_params.y);
       gbuffer_enviSPH1 @f4 = (enviSPH1*skylight_params.y);
       gbuffer_enviSPH2 @f4 = (enviSPH2*skylight_params.y);
-      gbuffer_envi_probe_specular@smpCube = envi_probe_specular;
+      gbuffer_envi_probe_specular@texCube = envi_probe_specular;
+    }
+    INIT_GLOBAL_LINEAR_WRAP_SAMPLER(ps)
+    hlsl(ps) {
+      #define gbuffer_envi_probe_specular_samplerstate global_linear_wrap_sampler
     }
     INIT_HDR(ps)
   }

@@ -7,6 +7,8 @@
 #include <libTools/util/hdpiUtil.h>
 #include <propPanel/constants.h>
 #include <util/dag_string.h>
+#include <propPanel/control/menuStyle.h>
+
 #include <imgui/imgui.h>
 #include <imgui/imgui_internal.h>
 
@@ -67,7 +69,15 @@ public:
     ImVec2 labelSize;
     ImVec2 textPos;
     ImVec2 textOffset;
-    ImRect frameBB;
+
+    // The row itself. Use it for whatever must line up with the row, for example TreeHierarchyLineDrawer.
+    ImRect rowBB;
+
+    // rowBB expanded with the vertical ItemSpacing, so that neighbouring rows touch. This is the row highlight and the
+    // drop target. It is also the item ImGui sees (hover, click, GetItemRectMin/Max) only with a span flag; without one
+    // the submitted item stops at the label width.
+    ImRect itemBB;
+
     ImVec2 padding;
     bool storeTreeNodeStackData; //-V730_NOINIT
     bool isOpen;                 //-V730_NOINIT
@@ -162,6 +172,7 @@ public:
   // - too long labels get an ellipsis (with RenderTextEllipsis) and a tooltip shows their full label on mouse hover
   // - prevents unneeded horizontal scrolling when navigating with the up/down keys (see https://github.com/ocornut/imgui/issues/7932)
   // - (optional) custom open/close button drawing
+  // - the item covers the vertical spacing between the rows, so the rows touch and there is no hover gap between them.
   //
   // You have to call TreeNodeWithSpecialHoverBehaviorEnd if end_data.draw is set to true. That function does the label
   // drawing, so if you want to add an icon before the label you can do it.
@@ -199,6 +210,10 @@ public:
   static bool beginListBoxWithWindowFlags(const char *label, const ImVec2 &size_arg = ImVec2(0.0f, 0.0f),
     ImGuiChildFlags child_flags = ImGuiChildFlags_FrameStyle, ImGuiWindowFlags window_flags = ImGuiWindowFlags_None);
 
+  // Names the current window's scrollbars for the ImGui test runtime. ImGui submits them as items but without a label.
+  // Call while the window is current.
+  static void hookWindowScrollbarsForTestRuntime();
+
   // Based on ImGui::ImageButton but no frame is drawn (ImGui::RenderFrame), and background is drawn if the button is pressed or
   // hovered.
   static bool imageButtonFrameless(ImGuiID id, ImTextureID texture_id, const ImVec2 &image_size, const ImVec2 &uv0 = ImVec2(0, 0),
@@ -218,7 +233,11 @@ public:
 
   static ImVec2 getImageButtonFramelessFullSize(const ImVec2 &image_size) { return image_size; }
 
-  static ImVec2 getImageButtonSize(const ImVec2 &image_size);
+  static ImVec2 getImageButtonSize(const ImVec2 &image_size)
+  {
+    const ImVec2 &framePadding = GImGui->Style.FramePadding;
+    return ImVec2(image_size.x + framePadding.x * 2.0f, image_size.y + framePadding.y * 2.0f);
+  }
 
   // A toggle image button.
   static bool imageCheckButtonWithBackground(const char *str_id, ImTextureID texture_id, const ImVec2 &image_size, bool checked,
@@ -226,7 +245,12 @@ public:
   static bool imageCheckButtonWithBackground(const char *str_id, IconId icon_id, const ImVec2 &image_size, bool checked,
     const char *tooltip);
 
-  static ImVec2 getImageButtonWithDownArrowSize(const ImVec2 &image_size);
+  static ImVec2 getImageButtonWithDownArrowSize(const ImVec2 &image_size)
+  {
+    float defaultHeight;
+    ImVec2 arrowHalfSize;
+    return getImageButtonWithDownArrowSizeInternal(image_size, defaultHeight, arrowHalfSize);
+  }
 
   // A toggle image button with a down arrow displayed on the right side of the image.
   static bool imageButtonWithArrow(const char *str_id, ImTextureID texture_id, const ImVec2 &image_size, bool checked = false,
@@ -248,7 +272,12 @@ public:
     ImGuiButtonFlags flags = ImGuiButtonFlags_None);
 
   // Get the size of ImGui::Button.
-  static ImVec2 getButtonSize(const char *label, bool hide_text_after_double_hash = false, const ImVec2 &size_arg = ImVec2(0, 0));
+  static ImVec2 getButtonSize(const char *label, bool hide_text_after_double_hash = false, const ImVec2 &size_arg = ImVec2(0, 0))
+  {
+    const ImVec2 labelSize = ImGui::CalcTextSize(label, nullptr, hide_text_after_double_hash);
+    return ImGui::CalcItemSize(size_arg, labelSize.x + ImGui::GetStyle().FramePadding.x * 2.0f,
+      labelSize.y + ImGui::GetStyle().FramePadding.y * 2.0f);
+  }
 
   // A search input with an search icon (typically a magnifying glass) and clear icon (typically an X). The latter is
   // only displayed when text_to_search is not empty. Clicking on it clears text_to_search.
@@ -269,15 +298,17 @@ public:
     bool *deactivated_after_edit = nullptr);
 
   // Same as ImGui::BeginMenuEx but meant to be used along with menuItemExWithLeftSideCheckmark. It aligns sub-menu
-  // items the same way as menuItemExWithLeftSideCheckmark.
-  static bool beginMenuExWithLeftSideCheckmark(const char *label, const char *icon, bool enabled = true);
+  // items the same way as menuItemExWithLeftSideCheckmark, shortcut column included.
+  static bool beginMenuExWithLeftSideCheckmark(const char *label, const char *icon, const char *shortcut = nullptr,
+    bool enabled = true, const MenuStyle &menu_style = DEFAULT_MENU_STYLE);
 
   // Same as ImGui::MenuItemEx but the checkmark is rendered before the label just like in Windows.
   // This also can draw bullets instead of checkmarks (for radio button-like menu items).
   // menu_item_selected: if true then draw a highlight the same way as if the menu item had a sub-menu opened. This can
   //   used when opening a context menu for a menu item.
   static bool menuItemExWithLeftSideCheckmark(const char *label, const char *icon, const char *shortcut = nullptr,
-    bool selected = false, bool enabled = true, bool bullet = false, bool menu_item_selected = false);
+    bool selected = false, bool enabled = true, bool bullet = false, bool menu_item_selected = false,
+    const MenuStyle &menu_style = DEFAULT_MENU_STYLE, bool secondary_is_comment = false);
 
   static float getDefaultRightSideEditWidth();
 
@@ -301,11 +332,27 @@ public:
   // This is a more convenient version of pre-registering all owned keys and then checking them with ImGui::IsKeyChordPressed.
   static bool isKeyChordPressedOwned(ImGuiKeyChord key_chord, ImGuiID canvas_id);
 
+  // Makes the item with str_id inactive if it is currently active and disabled, and returns true if it did so.
+  // It does not change ImGui's navigation focus, so an item that handles keys must do that itself.
+  // It is recommended to call it before submitting the item, to prevent the disabled item from making any further changes.
+  static bool deactivateItemIfActiveAndDisabled(const char *str_id);
+
   // Reset all window settings (position, size, dock state, ImGuiCond_FirstUseEver, etc.) stored by ImGui.
   static void resetWindowLayout();
 
 private:
-  static ImVec2 getImageButtonWithDownArrowSizeInternal(const ImVec2 &image_size, float &default_height, ImVec2 &arrow_half_size);
+  static ImVec2 getImageButtonWithDownArrowSizeInternal(const ImVec2 &image_size, float &default_height, ImVec2 &arrow_half_size)
+  {
+    const ImGuiContext &g = *GImGui;
+    const float arrowScale = 0.5f;
+
+    default_height = ImGui::GetFrameHeight();
+    arrow_half_size = ImVec2(g.FontSize * 0.5f * arrowScale, g.FontSize * 0.25f * arrowScale);
+
+    return ImVec2(
+      g.Style.FramePadding.x + image_size.x + g.Style.ItemInnerSpacing.x + (arrow_half_size.x * 2.0f) + g.Style.FramePadding.x,
+      ImMax(image_size.y, default_height));
+  }
 
   static bool checkboxDragSelectionInProgress;
   static bool checkboxDragSelectionValue;

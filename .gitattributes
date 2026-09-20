@@ -14,5 +14,10 @@
 *.tis text
 *.png binary
 *.jpg binary
+*.wasm binary
 *.sh text eol=lf
 *.plist text eol=lf
+
+active_matter/prog/gameBase/gamedata/dx12_cache.blk binary
+enlisted/prog/gameBase/gamedata/dx12_cache.blk binary
+skyquake/prog/gameBase/gamebase/gamedata/dx12_cache.blk binary

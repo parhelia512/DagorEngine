@@ -41,6 +41,8 @@ const auto no_authentication_failures_expected_callback = [](sepclient::Authenti
   FAIL("Should not be executed here (no authentication failures are expected in this test)");
 };
 
+constexpr eastl::string_view SERVER_SHUTDOWN_NOTIFICATION = R"({"jsonrpc":"2.0","method":"sep.NotifyClient.ServerIsGoingToShutdown"})";
+
 
 } // namespace
 
@@ -154,6 +156,40 @@ TEST_CASE("SepClient: receive server-initiated JSON RPC messages (reverse direct
 
     clientPtr.reset();
   }
+}
+
+
+TEST_CASE("SepClient: server shutdown notification selects another host", suiteTags)
+{
+  WebsocketLibraryInterceptor ws;
+  const auto wsMock = ws.addFutureConnection()->shouldSucceedConnectingAtMs(1000, 999'999);
+  const auto wsMock2 = ws.addFutureConnection()->shouldSucceedConnectingAtMs(2000, 999'999);
+
+  auto sepClientConfig = get_default_sep_config();
+  sepClientConfig.serverUrls.clear();
+  sepClientConfig.serverUrls.emplace_back("wss://localhost:12345/sep-a");
+  sepClientConfig.serverUrls.emplace_back("wss://localhost:12346/sep-b");
+
+  auto clientPtr = sepclient::SepClient::create(sepClientConfig);
+  sepclient::SepClient &client = *clientPtr;
+  client.initialize(no_authentication_failures_expected_callback, nullptr, nullptr);
+
+  client.poll();
+  ws.timer->addTimeMs(1000);
+  client.poll();
+  REQUIRE(wsMock->state == WebsocketMock::CONNECTED);
+
+  wsMock->emulateReceivedMessage(ws.relativeMs(0), SERVER_SHUTDOWN_NOTIFICATION);
+  client.poll();
+
+  REQUIRE(wsMock2->connectCallCount == 1);
+  CHECK(wsMock2->connectUri != wsMock->connectUri);
+
+  ws.timer->addTimeMs(1001);
+  client.poll();
+  REQUIRE(wsMock2->state == WebsocketMock::CONNECTED);
+
+  clientPtr.reset();
 }
 
 

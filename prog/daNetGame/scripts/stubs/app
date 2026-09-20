@@ -20,6 +20,7 @@ return {
   manual_relay_start = @() null
 
   exit_game = @() null
+  set_visuallog_logerrs = @(_count) null
   is_app_terminating = @() false
   circuit_name = get_arg_value_by_name("circuit")
   set_timespeed = @(_speed) null

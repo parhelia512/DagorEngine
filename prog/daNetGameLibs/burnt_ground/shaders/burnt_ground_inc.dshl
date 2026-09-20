@@ -52,8 +52,8 @@ macro USE_BURNT_GROUND_COMMON()
     {
       float4 weights = float4(0, 0, 0, 0);
       uint4 indices = getBiomeIndices(world_pos, weights);
-      float4 biomeMask = bool4(isBiomeAllowed(indices.x), isBiomeAllowed(indices.y), isBiomeAllowed(indices.z), isBiomeAllowed(indices.w))
-        ? float4(1, 1, 1, 1) : float4(0, 0, 0, 0);
+      float4 biomeMask = select(bool4(isBiomeAllowed(indices.x), isBiomeAllowed(indices.y), isBiomeAllowed(indices.z), isBiomeAllowed(indices.w)),
+        float4(1, 1, 1, 1), float4(0, 0, 0, 0));
       return dot(biomeMask, weights);
     }
 

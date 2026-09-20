@@ -103,9 +103,9 @@ void Base64::encode_urlsafe(const uint8_t *from, int size)
       data[i] = '_';
   }
   // remove trailing '='
-  while (len > 0 && data[len - 1] == '=')
+  while (len > 1 && data[len - 2] == '=')
     --len;
-  data[len] = '\0'; // ensure null-termination
+  data[len - 1] = '\0'; // ensure null-termination
 }
 
 int Base64::decodeLength(void) const

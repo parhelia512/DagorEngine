@@ -27,8 +27,6 @@ extern const CollisionResource *lru_collision_get_collres(uint32_t i);
 namespace bvh
 {
 
-Sbuffer *alloc_scratch_buffer(uint32_t size, uint32_t &offset);
-
 struct LruCollisionData
 {
   struct GatherJob final : public cpujobs::IJob
@@ -41,7 +39,7 @@ struct LruCollisionData
     dag::Vector<mat43f> transforms;
     volatile int gatherDone = 0;
     void doJob() override;
-    const char *getJobName(bool &) const override { return "BvhLruCollisionGather"; }
+    const char *getJobName(bool &) const override { return DAPROFILER_STRING("BvhLruCollisionGather"); }
   } gatherJob;
 
   enum class ModelState : uint8_t
@@ -739,13 +737,6 @@ bool connect_lru_collision(ContextId context_id, LRURendinstCollision *lru_coll,
   d->gatherJob.self = d;
   context_id->lruCollision = d;
   return true;
-}
-
-void remove_lru_collision(ContextId context_id)
-{
-  if (context_id == InvalidContextId)
-    return;
-  lru_collision::teardown(context_id);
 }
 
 void invalidate_lru_collision(ContextId context_id)

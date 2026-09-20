@@ -529,6 +529,67 @@ struct ChildComponentAnnotation final : das::ManagedStructureAnnotation<ecs::Chi
 #endif
 };
 
+
+// The jit lowers `.[]` only for arrays, tables and vectors; an ecs container is a handle, so it
+// needs an op with a native address to call. These are jitOnly, so interpreted and C++ AOT builds
+// keep resolving the index through the annotation.
+struct EcsIndexArgFn : das::defaultTempFn
+{
+  EcsIndexArgFn() : das::defaultTempFn() {}
+  bool operator()(das::Function *fn)
+  {
+    das::defaultTempFn::operator()(fn);
+    if (!fn->arguments.empty())
+      fn->arguments[0]->type->explicitConst = true;
+    fn->builtIn = true;
+    fn->generated = true;
+    fn->jitOnly = true;
+    return true;
+  }
+};
+
+static ecs::ChildComponent *ecs_object_at(ecs::Object &obj, const char *key, das::Context *, das::LineInfoArg *)
+{
+  auto it = obj.find_as(ECS_HASH_SLOW(key ? key : ""));
+  return it != obj.end() ? &it->second : nullptr;
+}
+
+static const ecs::ChildComponent *ecs_object_at_const(const ecs::Object &obj, const char *key, das::Context *, das::LineInfoArg *)
+{
+  auto it = obj.find_as(ECS_HASH_SLOW(key ? key : ""));
+  return it != obj.end() ? &it->second : nullptr;
+}
+
+static ecs::ChildComponent &ecs_array_at(ecs::Array &arr, int idx, das::Context *context, das::LineInfoArg *at)
+{
+  if (uint32_t(idx) >= arr.size())
+    context->throw_error_at(at, "Array index %d out of range %d", idx, arr.size());
+  return arr[idx];
+}
+
+static const ecs::ChildComponent &ecs_array_at_const(const ecs::Array &arr, int idx, das::Context *context, das::LineInfoArg *at)
+{
+  if (uint32_t(idx) >= arr.size())
+    context->throw_error_at(at, "Array index %d out of range %d", idx, arr.size());
+  return arr[idx];
+}
+
+static void registerEcsAtFunctions(das::Module &mod, das::ModuleLibrary &lib)
+{
+  das::addExtern<DAS_BIND_FUN(ecs_object_at), das::SimNode_ExtFuncCall, EcsIndexArgFn>(mod, lib, ".[]",
+    das::SideEffects::modifyArgument, "bind_dascript::ecs_object_at")
+    ->args({"obj", "key", "context", "at"});
+  das::addExtern<DAS_BIND_FUN(ecs_object_at_const), das::SimNode_ExtFuncCall, EcsIndexArgFn>(mod, lib, ".[]", das::SideEffects::none,
+    "bind_dascript::ecs_object_at_const")
+    ->args({"obj", "key", "context", "at"});
+  das::addExtern<DAS_BIND_FUN(ecs_array_at), das::SimNode_ExtFuncCallRef, EcsIndexArgFn>(mod, lib, ".[]",
+    das::SideEffects::modifyArgument, "bind_dascript::ecs_array_at")
+    ->args({"arr", "index", "context", "at"});
+  das::addExtern<DAS_BIND_FUN(ecs_array_at_const), das::SimNode_ExtFuncCallRef, EcsIndexArgFn>(mod, lib, ".[]", das::SideEffects::none,
+    "bind_dascript::ecs_array_at_const")
+    ->args({"arr", "index", "context", "at"});
+}
+
 void ECS::addContainerAnnotations(das::ModuleLibrary &lib)
 {
   addAnnotation(new ChildComponentAnnotation(lib));
@@ -539,6 +600,8 @@ void ECS::addContainerAnnotations(das::ModuleLibrary &lib)
   addAnnotation(new ArrayAnnotation(lib));
   addAnnotation(new SharedArrayAnnotation(lib));
   addAnnotation(new SharedObjectAnnotation(lib));
+
+  registerEcsAtFunctions(*this, lib);
 
   das::addUsing<ecs::ChildComponent>(*this, lib, " ::ecs::ChildComponent");
 

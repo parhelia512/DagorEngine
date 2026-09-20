@@ -32,6 +32,8 @@ public:
 
   void setEnabled(bool enabled) override { controlEnabled = enabled; }
 
+  const char *getImguiTypeName() const override { return "Button"; }
+
   void updateImgui() override
   {
     ScopedImguiBeginDisabled scopedDisabled(!controlEnabled);
@@ -49,6 +51,7 @@ public:
     }
 
     const bool clicked = ImGui::Button(controlCaption, ImVec2(width, 0.0f));
+    setImguiTestItemInfo();
 
     if (leftAlignText)
       ImGui::GetStyle().ButtonTextAlign.x = oldAlignX;

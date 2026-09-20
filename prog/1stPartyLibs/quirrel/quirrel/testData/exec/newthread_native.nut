@@ -4,9 +4,9 @@ print("calling newthread(print)...\n")
 local err = null
 try {
   local t = newthread(print)
-  print("newthread returned: " + typeof(t) + "\n")
+  println($"newthread returned: {typeof(t)}")
 } catch (e) {
   err = e
 }
-print("error: " + err + "\n")
+println($"error: {err}")
 print("SURVIVED (no crash)\n")

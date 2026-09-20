@@ -25,6 +25,7 @@ public:
   bool isEntBlock() const;
   bool hasEntBlock() const;
   bool hasChildNode(unsigned dataBlockId) const;
+  bool hasChildTreeDataNode(const CompositeEditorTreeDataNode *node) const;
   bool isAncestorOfNode(unsigned dataBlockId) const;
   bool hasNameParameter() const;
   bool canEditAssetName(bool isRootNode) const;

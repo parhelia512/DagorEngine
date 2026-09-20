@@ -64,6 +64,7 @@ struct WRDispatcher
   static HeroWtmAndBox &getHeroData();
 
   static float getDaGdpRangeScale();
+  static float getLodDistanceScaleBase();
   static struct SkiesData *getMainPovSkiesData();
 
 #if DAGOR_DBGLEVEL > 0
@@ -75,6 +76,8 @@ struct WRDispatcher
   static bool isReadyToUse();
   static bool hasHighResFx();
 
+  static bool isStencilGbufRequired();
+
   static IPoint2 getSubSuperPixels();
   static Point3 getSunDirection();
   static Color3 getSunColor();
@@ -82,7 +85,8 @@ struct WRDispatcher
   static const DataBlock *getLevelSettings();
 
   static float GetWaterLevel();
-  static WaterRenderMode determineWaterRenderMode(bool underWater, bool belowClouds);
+  static WaterRenderMode getWaterRenderMode();
+  static bool isCameraBelowClouds();
 
   static void getDisplayResolution(int &w, int &h);
   static void getDownsampledDepthParams(uint32_t &downsampledTexturesMipCount, bool &storeDownsampledTexturesInEsram);

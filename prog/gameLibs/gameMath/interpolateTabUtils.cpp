@@ -5,7 +5,8 @@
 #include <math/dag_Point2.h>
 #include <math/dag_Point3.h>
 
-bool read_interpolate_tab_float_p2(InterpolateTabFloat &tab, const DataBlock &blk)
+template <typename T>
+static bool read_tab_float_p2(T &tab, const DataBlock &blk)
 {
   return read_interpolate_tab_as_params(tab, blk, [](const DataBlock &blk, int i, float &x, float &y) -> bool {
     Point2 p = blk.getPoint2(i);
@@ -14,6 +15,10 @@ bool read_interpolate_tab_float_p2(InterpolateTabFloat &tab, const DataBlock &bl
     return true;
   });
 }
+
+bool read_interpolate_tab_float_p2(InterpolateTabFloat &tab, const DataBlock &blk) { return read_tab_float_p2(tab, blk); }
+
+bool read_interpolate_tab_float_p2(InterpolateTabMemPtrFloat &tab, const DataBlock &blk) { return read_tab_float_p2(tab, blk); }
 
 bool read_interpolate_2d_tab_float_p2(Interpolate2DTabFloat &tab, const DataBlock &blk, const char *x_param_name)
 {

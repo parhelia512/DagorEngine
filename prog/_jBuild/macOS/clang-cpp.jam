@@ -31,6 +31,10 @@ rule ProcessCompileTarget
 
   _CPP_OPT = "-I "$(AddIncludes) $(_CONFIG_OPT) $(_SUPPRESS_OPT) $(CPPopt) $(GlobalCPPopt) ;
 
+  if $(StrictCompile) = yes {
+    if ! [ MATCH /(3rdPartyLibs)/ : $(Location) ] { _CPP_OPT += -Wunused-lambda-capture -Wrange-loop-construct -Werror=unused-lambda-capture -Werror=range-loop-construct ; }
+  }
+
   $(Target)__CPP_OPT = -include memory/dag_memBase.h $(_CPP_OPT) ;
   $(Target)__C_OPT   = $(Copt) $(_CPP_OPT) ;
   $(Target)__PRE_OPT = $(pre_opt) ;

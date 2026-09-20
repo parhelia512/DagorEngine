@@ -2205,7 +2205,7 @@ void GuiContext::render_imgui_list()
   v.zeroTc1();
   for (int i = 0, ei = imDrawList.VtxBuffer.size(); i < ei; ++i, ++dst)
   {
-    auto srcV = imDrawList.VtxBuffer[i];
+    const auto &srcV = imDrawList.VtxBuffer[i];
     // debug("%d: %@ %@", i, Point2(srcV.pos), E3DCOLOR(srcV.col));
     v.color = srcV.col;
     v.setPos(vertexTransform, srcV.pos);
@@ -4424,9 +4424,9 @@ void start_render()
   stdgui_context.setTarget();
   stdgui_context.start_render();
 }
-void start_render(int screen_width, int screen_height)
+void start_render(int screen_width, int screen_height, int prerotate_angle)
 {
-  stdgui_context.setTarget(screen_width, screen_height);
+  stdgui_context.setTarget(screen_width, screen_height, 0, 0, prerotate_angle);
   stdgui_context.start_render();
 }
 void continue_render() { stdgui_context.start_render(); }

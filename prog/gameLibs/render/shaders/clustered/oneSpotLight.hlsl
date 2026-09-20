@@ -58,9 +58,6 @@
             spotShadow = 1-dynamic_shadow_sample_8tap(screenpos, lightShadowTC.xy, lightShadowTC.z, 1.5*shadowAtlasTexel.x*(0.75+saturate(0.3*length(point2light))), shadow_frame);
         #endif
       #endif
-      #ifdef SPOT_CONTACT_SHADOWS_CALC
-        SPOT_CONTACT_SHADOWS_CALC
-      #endif
     }
     attenuation *= spotShadow;
   #endif
@@ -71,7 +68,7 @@
     half3 lightBRDF = standardBRDF( NoV, NoL, gbuffer.diffuseColor, ggx_alpha, gbuffer.linearRoughness, specularColor, dynamicLightsSpecularStrength, dirFromLight, view, gbuffer.normal, gbuffer.translucencyColor, gbuffer.sheen);
 
     #if USE_SSSS && SPOT_SHADOWS
-      BRANCH if (gbuffer.material == SHADING_SUBSURFACE)
+      BRANCH if (gbuffer.isSkinMaterial)
       {
         SpotlightShadowDescriptor spotlightDesc = spot_lights_ssss_shadow_desc[spot_light_index];
         BRANCH if (lightShadowTC.w > 1e-6 && spotlightDesc.hasDynamic)
@@ -91,7 +88,7 @@
       else
     #endif
     {
-      BRANCH if (isSubSurfaceShader(gbuffer.material))
+      BRANCH if (gbuffer.isTranslucent)
         lightBRDF += (foliageSSS(NoL, view, dirFromLight)*ao) * gbuffer.translucencyColor;//can make ao*gbuffer.translucencyColor only once for all lights
     }
   #else
@@ -103,6 +100,13 @@
   #endif
     attenuation = applySpotLightPhotometry(-dirFromLight, lightDirection.xyz, lightRollAngle, texId_scale.x, texId_scale.y, attenuation);
     lightBRDF *= attenuation * lightColor.xyz;
+  #if !RT_DYNAMIC_LIGHTS && defined(SPOT_CONTACT_SHADOWS_CALC)
+    {
+      half spotShadow = 1;
+      SPOT_CONTACT_SHADOWS_CALC
+      lightBRDF *= spotShadow;
+    }
+  #endif
   #if WAVE_INTRINSICS || !DYNAMIC_LIGHTS_EARLY_EXIT
     FLATTEN
     if (attenuation <= 0)

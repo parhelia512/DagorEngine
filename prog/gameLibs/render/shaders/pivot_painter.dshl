@@ -252,7 +252,7 @@ macro USE_PIVOT_PAINTER_BASE(stage)
 
       // protect rotation axis from NaNs
       rotationAxis = normalize(rotationAxis);
-      rotationAxis = isfinite(rotationAxis) ? rotationAxis : 0;
+      rotationAxis = select(isfinite(rotationAxis), rotationAxis, float3(0, 0, 0));
 
       rotQuat = makeQuat(rotationAxis, rotationAngle * PI / 180);
       float3 newPos = quat_rotate(rotQuat, oldPos-branchPivotPos) + branchPivotPos;

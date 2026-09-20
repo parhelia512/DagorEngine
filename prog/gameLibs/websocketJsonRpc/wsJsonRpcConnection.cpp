@@ -790,7 +790,7 @@ void WsJsonRpcConnection::onEvent(eastl::unique_ptr<DisconnectEvent> &&event)
   G_ASSERT_RETURN(event, );
   if (state == State::CLOSING)
   {
-    logdbg("%sWebSocket connection was closed by our side (close status: %d); %d", logPrefix.c_str(), static_cast<int>(event->status),
+    logdbg("%sWebSocket connection was closed by our side (close status: %d); %s", logPrefix.c_str(), static_cast<int>(event->status),
       event->error.message.c_str());
   }
   else
@@ -844,6 +844,12 @@ void WsJsonRpcConnection::onEvent(eastl::unique_ptr<CannotMakeRpcCallEvent> &&ev
 void WsJsonRpcConnection::onEvent(RequestFromServerEvent &&event)
 {
   G_ASSERT_RETURN(event.request, );
+
+  if (event.request->isNotification() && event.request->getMethod() == protocol::SERVER_SHUTDOWN_NOTIFICATION_METHOD)
+  {
+    logdbg("%sServer announced that it is going to shut down this connection", logPrefix.c_str());
+    serverIsGoingToShutdown = true;
+  }
 
   if (incomingRequestCallback)
   {

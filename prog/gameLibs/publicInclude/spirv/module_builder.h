@@ -161,6 +161,16 @@ public:
     }
   }
 
+  template <typename T>
+  void enumerateAllNodesWithStopCondition(T u)
+  {
+    for (auto &&n : allNodes)
+    {
+      if (u(NodePointer<Node>{n.get()}))
+        break;
+    }
+  }
+
   void reserveMemoryForNodes(size_t count) { allNodes.reserve(allNodes.size() + count); }
 
   Id allocateId();

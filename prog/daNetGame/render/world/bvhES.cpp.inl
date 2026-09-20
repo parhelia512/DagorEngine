@@ -15,7 +15,7 @@
 #include "frameGraphHelpers.h"
 #include <landMesh/lmeshManager.h>
 #include <render/viewVecs.h>
-#include <render/world/cameraParams.h>
+#include <render/cameraParams.h>
 #include <render/world/wrDispatcher.h>
 #include <render/world/global_vars.h>
 #include <ecs/render/updateStageRender.h>
@@ -27,6 +27,7 @@
 #include <shaders/dag_shaderBlock.h>
 #include "frameGraphNodes/frameGraphNodes.h"
 #include <drv/3d/dag_resetDevice.h>
+#include <osApiWrappers/dag_critSec.h>
 
 #include <daECS/core/coreEvents.h>
 #include <daECS/core/entitySystem.h>
@@ -51,13 +52,11 @@
 #include <drv/3d/dag_shaderConstants.h>
 #include <drv/3d/dag_matricesAndPerspective.h>
 #include <render/world/dynModelRenderPass.h>
-#include <util/dag_console.h>
 #include <util/dag_threadPool.h>
 #include <rendInst/rendInstGen.h>
 #include <rendInst/rendInstExtraAccess.h>
 #include <camera/sceneCam.h>
 #include <rendInst/constants.h>
-#include <shaders/dag_shaderResUnitedData.h>
 #include <render/rendererFeatures.h>
 #include <render/antialiasing.h>
 #include <osApiWrappers/dag_miscApi.h>
@@ -67,13 +66,18 @@
 #include <3d/dag_nvFeatures.h>
 #include <render/dasModules/bvh.h>
 #include <generic/dag_sort.h>
+#include <drv/3d/dag_commands.h>
+#include <drv/3d/dag_lock.h>
+#include <EASTL/optional.h>
+#include <EASTL/vector_set.h>
+#include <userSystemInfo/systemInfo.h>
+#include <folders/folders.h>
 
 // To reduce shader variants these got assumed in raytracing.blk
 // CONSOLE_BOOL_VAL("raytracing", rtr_shadow, false, "Also controls debug view!");
-// CONSOLE_BOOL_VAL("raytracing", rtr_use_csm, true, "Also controls debug view!");
 constexpr bool rtr_shadow = false;
-constexpr bool rtr_use_csm = true;
 CONSOLE_INT_VAL("raytracing", ptgi_quality, 0, 0, 2);
+CONSOLE_BOOL_VAL("raytracing", ptgi_half_rate, true);
 CONSOLE_FLOAT_VAL("raytracing", additional_impostor_mip_bias, -2);
 CONSOLE_FLOAT_VAL("raytracing", bbox_width, 4000);
 CONSOLE_INT_VAL("raytracing",
@@ -94,6 +98,7 @@ CONSOLE_BOOL_VAL("raytracing", prepare_ri_extra_job_on_previous_frame, true);
 CONSOLE_BOOL_VAL("raytracing", delay_PUFD, true);
 CONSOLE_FLOAT_VAL("raytracing", animate_all_animchars_range, 30);
 CONSOLE_BOOL_VAL("raytracing", rtr_use_prev_frame_sample, true);
+CONSOLE_BOOL_VAL("raytracing", rtr_checkerboard_depth, false);
 CONSOLE_BOOL_VAL("raytracing", ptgi_use_prev_frame_sample, true);
 CONSOLE_BOOL_VAL("raytracing", only_impostors_optimization, true);
 CONSOLE_FLOAT_VAL("raytracing", grass_range, 32);
@@ -102,6 +107,7 @@ CONSOLE_FLOAT_VAL_MINMAX("raytracing", grass_fraction_to_keep, 0.25, 0.01, 1);
 CONSOLE_FLOAT_VAL("rt_speed", max_speed_for_tree_meshes, 20);
 CONSOLE_FLOAT_VAL("rt_speed", max_speed_for_medium_budget, 5.5, "Slightly above running and free cam speed");
 CONSOLE_FLOAT_VAL("rt_speed", max_speed_for_grass, 50);
+CONSOLE_FLOAT_VAL("rt_speed", teleport_detection_distance, 50, "Camera jump per frame above this is a teleport, not movement");
 CONSOLE_FLOAT_VAL("rt_speed", airplane_detection_speed, 20);
 CONSOLE_FLOAT_VAL("rt_speed", airplane_cockpit_radius, 5);
 
@@ -117,6 +123,10 @@ static BVHConnection *fxBvhConnection = nullptr;
 static BVHConnection *smokeTracersBvhConnection = nullptr;
 static bool cablesChanged = false;
 static dynrend::ContextId bvhDynmodelCtx = dynrend::ContextId::Invalid;
+static GlobalVariableStates bvhDebugGvarsState;
+static const GlobalVariableStates *get_bvh_debug_gvars_state() { return draw_debug_dynmodels ? &bvhDebugGvarsState : nullptr; }
+static bool bvhUnloadDynModels = false;
+static eastl::vector_set<const DynamicRenderableSceneLodsResource *> bvhActiveDynResources;
 static void bvh_iterate_over_animchars(
   dynrend::BVHIterateOneInstanceCallback iterate_one_instance, const Point3 &view_position, void *user_data);
 static bool rigen_cull_dist_was_increased = false;
@@ -148,7 +158,6 @@ enum class RTRMode
 {
   off,
   full,
-  halfCloseDepth,
   halfCheckerboardDepth,
   halfSmartPattern
 };
@@ -173,7 +182,7 @@ struct ResolvedRTSettings
 
   bool isRTREnabled() const { return rtrMode != RTRMode::off; }
   bool isRTRHalfRes() const { return isRTREnabled() && rtrMode != RTRMode::full; }
-  bool isRTRRaySkipping() const { return rtrMode == RTRMode::halfCloseDepth || rtrMode == RTRMode::halfSmartPattern; }
+  bool isRTRRaySkipping() const { return rtrMode == RTRMode::halfSmartPattern; }
 };
 ECS_DECLARE_RELOCATABLE_TYPE(ResolvedRTSettings);
 ECS_REGISTER_RELOCATABLE_TYPE(ResolvedRTSettings, nullptr);
@@ -224,7 +233,8 @@ struct RTFeatureChanged
     isRTTRChanged = old.isRTTREnabled != current.isRTTREnabled;
     isRTAOChanged = old.isRTAOEnabled != current.isRTAOEnabled || isRayReconstructionChanged;
     isPTGIChanged = old.isPTGIEnabled != current.isPTGIEnabled || isRayReconstructionChanged;
-    isDenoiserChanged = old.isDenoiserEnabled != current.isDenoiserEnabled || isRayReconstructionChanged || isRTRChanged;
+    isDenoiserChanged = old.isDenoiserEnabled != current.isDenoiserEnabled || isRayReconstructionChanged || isRTRChanged ||
+                        isRTAOChanged || isPTGIChanged;
     isRTWaterChanged = old.isRTWaterEnabled != current.isRTWaterEnabled;
     isRTGIChanged = old.isRTGIEnabled != current.isRTGIEnabled;
     isDagdpChanged = old.isDagdpEnabled != current.isDagdpEnabled;
@@ -345,13 +355,13 @@ struct RTPersistentTexturesECS
   void allocate(const denoiser::TexInfoMap &textures, Type type)
   {
     textureMap.reserve(32);
-    for (auto tex : textures)
+    for (const auto &tex : textures)
       textureMap[tex.first] = UniqueTex{dag::create_tex(nullptr, tex.second.w, tex.second.h, tex.second.cflg | TEXCF_CLEAR_ON_CREATE,
         tex.second.mipLevels, tex.first)};
 
     auto saveNames = [&textures](dag::Vector<const char *> &names) {
       G_ASSERT(names.empty());
-      for (auto pair : textures)
+      for (const auto &pair : textures)
         names.push_back(pair.first);
     };
     switch (type)
@@ -385,7 +395,7 @@ struct RTPersistentTexturesECS
   {
     eastl::vector_map<const char *, RWHandle> result;
     result.reserve(32);
-    for (auto tex : textures)
+    for (const auto &tex : textures)
     {
       ManagedTexView view = textureMap.at_key(tex.first);
       result.emplace(eastl::pair{tex.first, registry.registerTexture(tex.first, [view](auto) { return view; })
@@ -420,6 +430,40 @@ static void use_bindless_fom_shadows(dafg::Registry registry, dafg::Stage stage)
   registry.readBlob<OrderingToken>("bvh_fom_shadows_registered");
   registry.read("fom_shadows_sin").texture().atStage(stage).useAs(dafg::Usage::SHADER_RESOURCE).optional();
   registry.read("fom_shadows_cos").texture().atStage(stage).useAs(dafg::Usage::SHADER_RESOURCE).optional();
+}
+
+// Orders the OOM report against closeBVH: an in-flight report holds the mutex, and the driver
+// loads the hook pointer before calling, so a late call must re-check it under the mutex.
+static WinCritSec bvh_oom_report_mutex;
+
+// Called from the failing allocation, possibly on a thread already inside BVH, hence the try variant.
+static void log_bvh_memory_on_gpu_oom()
+{
+  WinAutoLock lock(bvh_oom_report_mutex);
+  if (dgs_report_gpu_out_of_memory)
+    bvh::try_log_rt_memory_overhead(bvhRenderingContextId);
+}
+
+static void applyVoxelActivitySettings()
+{
+  const DataBlock *graphicsBlk = ::dgs_get_settings()->getBlockByNameEx("graphics");
+  if (!graphicsBlk->getBool("bvhVoxelActivity", false))
+    return;
+
+  bvh::VoxelActivitySettings vaSettings;
+  vaSettings.voxelSize = graphicsBlk->getReal("bvhVoxelActivityVoxelSize", vaSettings.voxelSize);
+  vaSettings.activeValue = graphicsBlk->getInt("bvhVoxelActivityActiveValue", vaSettings.activeValue);
+  vaSettings.inactiveKeepFraction = graphicsBlk->getReal("bvhVoxelActivityKeepFraction", vaSettings.inactiveKeepFraction);
+  const float range = graphicsBlk->getReal("bvhVoxelActivityRange", bbox_width.get() * 0.5f);
+  const float verticalRange = graphicsBlk->getReal("bvhVoxelActivityVerticalRange", 512.f);
+  auto toDim = [&](float r) { return max(int(ceilf(r * 2 / vaSettings.voxelSize)), 8); };
+  vaSettings.dims = IPoint3(toDim(range), toDim(verticalRange), toDim(range));
+  bvh::set_voxel_activity(bvhRenderingContextId, vaSettings);
+
+  static int rtrProbesMarkVarId = get_shader_variable_id("rtr_probes_mark_voxel_activity", true);
+  static int ptgiMarkBouncesVarId = get_shader_variable_id("ptgi_mark_voxel_activity_bounces", true);
+  ShaderGlobal::set_int(rtrProbesMarkVarId, graphicsBlk->getBool("bvhVoxelActivityMarkRTRProbes", true) ? 1 : 0);
+  ShaderGlobal::set_int(ptgiMarkBouncesVarId, graphicsBlk->getInt("bvhVoxelActivityMarkPTGIBounces", 1));
 }
 
 static void initBVH()
@@ -462,10 +506,20 @@ static void initBVH()
     additionalSettings.singleLodFilterMaxFaces = dgs_get_settings()->getBlockByNameEx("graphics")->getInt("bvhSingleLodMaxFaces", 0);
     additionalSettings.singleLodFilterMaxRange = dgs_get_settings()->getBlockByNameEx("graphics")->getReal("bvhSingleLodMaxRange", 0);
     additionalSettings.enableCaching = dgs_get_settings()->getBlockByNameEx("graphics")->getBool("bvhEnableCaching", true);
+    additionalSettings.unloadDynModels = dgs_get_settings()->getBlockByNameEx("graphics")->getBool("bvhUnloadDynModels", false);
+    bvhUnloadDynModels = additionalSettings.unloadDynModels;
+    additionalSettings.buildDynOnDemand = dgs_get_settings()->getBlockByNameEx("graphics")->getBool("bvhBuildDynOnDemand", false);
+    additionalSettings.dynModelRetentionSec =
+      dgs_get_settings()->getBlockByNameEx("graphics")->getReal("bvhDynModelRetentionSec", additionalSettings.dynModelRetentionSec);
     additionalSettings.enableOmm = dgs_get_settings()->getBlockByNameEx("graphics")->getBool("bvhEnableOmm", false);
     additionalSettings.ommDataArrayBudget = dgs_get_settings()->getBlockByNameEx("graphics")->getInt("bvhOmmDataArrayBudget", 0);
     additionalSettings.retainOmmBakeResults =
       dgs_get_settings()->getBlockByNameEx("graphics")->getBool("bvhRetainOmmBakeResults", false);
+    additionalSettings.ommCacheRetentionFrames = dgs_get_settings()
+                                                   ->getBlockByNameEx("graphics")
+                                                   ->getInt("bvhOmmCacheRetentionFrames", additionalSettings.ommCacheRetentionFrames);
+    additionalSettings.ommCacheIdleBudget =
+      dgs_get_settings()->getBlockByNameEx("graphics")->getInt("bvhOmmCacheIdleBudget", additionalSettings.ommCacheIdleBudget);
     additionalSettings.strictAssetChecks = dgs_get_settings()->getBlockByNameEx("graphics")->getBool("bvhStrictAssetChecks", false);
     bvh_max_skinned_memory_mb = dgs_get_settings()->getBlockByNameEx("graphics")->getInt("bvhMaxSkinnedMemoryMB", -1);
     bvh_animchar_lod_dist_mul = dgs_get_settings()->getBlockByNameEx("graphics")->getReal("bvhAnimcharLodDistMul", 1);
@@ -475,6 +529,8 @@ static void initBVH()
     bvh::connect_fx(bvhRenderingContextId, [](BVHConnection *connection) { fxBvhConnection = connection; });
     bvh::connect_smoke_tracers(bvhRenderingContextId, [](BVHConnection *connection) { smokeTracersBvhConnection = connection; });
     bvh::connect_dagdp(bvhRenderingContextId, [](BVHInstanceMapper *mapper) { dagdpInstanceMapper = mapper; });
+    applyVoxelActivitySettings();
+    dgs_report_gpu_out_of_memory = log_bvh_memory_on_gpu_oom;
     bvhBuildingCountdown = MAX_BVH_BUILDING_COUNTDOWN;
     debug("initBVH: bvhBuildingCountdown reset to %d frames", bvhBuildingCountdown);
     if (auto cables = get_cables_mgr())
@@ -520,6 +576,10 @@ static void closeBVH(bool device_reset = false)
 {
   if (bvhRenderingContextId)
   {
+    {
+      WinAutoLock lock(bvh_oom_report_mutex);
+      dgs_report_gpu_out_of_memory = nullptr;
+    }
     bvh::teardown(bvhRenderingContextId);
     bvh::teardown(device_reset, true);
     g_entity_mgr->broadcastEventImmediate(RemoveSplinegenBVHEvent());
@@ -531,6 +591,23 @@ static void closeBVH(bool device_reset = false)
     toggle_rtsm_dynamic(false);
   }
 }
+
+static void flush_deferred_resource_frees() { d3d::driver_command(Drv3dCommand::D3D_FLUSH); }
+
+struct ScopedSwapchainPresentBlock
+{
+  eastl::optional<d3d::GpuAutoLock> blockPresents;
+  ScopedSwapchainPresentBlock()
+  {
+    if (bvhRenderingContextId != bvh::InvalidContextId)
+      blockPresents.emplace();
+  }
+  ~ScopedSwapchainPresentBlock()
+  {
+    if (blockPresents)
+      flush_deferred_resource_frees();
+  }
+};
 
 static void wait_bvh_worker_threads();
 
@@ -616,7 +693,7 @@ static void setup_bvh_scene_es(
 }
 
 ECS_TAG(render)
-ECS_ON_EVENT(UnloadLevel)
+ECS_ON_EVENT(EventRenderSceneUnload)
 ECS_REQUIRE(BvhHeightProvider bvh__heightProvider)
 static void close_bvh_scene_es(const ecs::Event &) { closeBVHScene(); }
 
@@ -631,6 +708,7 @@ ECS_ON_EVENT(on_disappear)
 static void bvh_destroy_es(
   const ecs::Event &, RiGenVisibilityECS &bvh__rendinst_visibility, RiGenVisibilityECS &bvh__rendinst_oof_visibility)
 {
+  ScopedSwapchainPresentBlock presentBlock;
   wait_bvh_worker_threads();
   closeBVHScene();
   bvh__rendinst_visibility = {};
@@ -701,6 +779,7 @@ bool is_rtgi_enabled() { return get_resolved_rt_settings().isRTGIEnabled; }
 bool is_denoiser_enabled() { return get_resolved_rt_settings().isDenoiserEnabled; }
 bool is_rr_enabled() { return get_resolved_rt_settings().isRayReconstructionEnabled; }
 bool is_bvh_dagdp_enabled() { return get_resolved_rt_settings().isDagdpEnabled; }
+bool is_bvh_dyn_models_enabled() { return get_resolved_rt_settings().isBvhDynModelsEnabled; }
 
 void draw_rtr_validation() { rtr::render_validation_layer(); }
 void draw_ptgi_validation() { ptgi::render_validation_layer(); }
@@ -715,6 +794,36 @@ void set_bvh_on_parallel_jobs_finished_cb(void (*cb)())
 void bvh_cables_changed() { cablesChanged = true; }
 
 bool is_rt_supported() { return bvh::is_available(); }
+
+bool is_rt_supported_on_disk()
+{
+#if _TARGET_PC
+  String diskPath = folders::get_exe_dir();
+  if (diskPath.empty())
+  {
+    diskPath = folders::get_game_dir();
+  }
+
+  systeminfo::DiskType diskType;
+  if (!systeminfo::get_disk_type(diskPath.c_str(), diskType))
+  {
+    LOGWARN_ONCE("BVH was not able to query the players disk type!");
+    return true;
+  }
+
+  // Not sure who has access to RAM disks at this age, but it should be more than capable
+  if (diskType == systeminfo::DiskType::Ssd || diskType == systeminfo::DiskType::RamDisk)
+    return true;
+
+  if (is_bvh_enabled())
+    LOGWARN_ONCE("RT is enabled even though the player has disk type:%s, which might not be fast enough!",
+      systeminfo::to_string(diskType));
+
+  return false;
+#endif
+  return true;
+}
+
 int rt_support_error_code() { return eastl::to_underlying(bvh::is_available_verbose()); }
 
 void bvh_bind_resources(int render_width)
@@ -742,7 +851,7 @@ struct BVHRICullingJob final : public cpujobs::IJob
     cameraPos = cameraPos_;
     threadpool::add(this, prio, false); // Note: would be waken up by `bvh_start_before_render_jobs_es`
   }
-  const char *getJobName(bool &) const override { return "BVHRICullingJob"; }
+  const char *getJobName(bool &) const override { return DAPROFILER_STRING("BVHRICullingJob"); }
   void doJob() override
   {
     G_ASSERT(use_bvh_ri_culling_job);
@@ -764,11 +873,12 @@ struct BVHRIOOFCullingJob final : public cpujobs::IJob
     cameraPos = cameraPos_;
     threadpool::add(this, prio, false); // Note: would be waken up by `bvh_start_before_render_jobs_es`
   }
-  const char *getJobName(bool &) const override { return "BVHRIOOFCullingJob"; }
+  const char *getJobName(bool &) const override { return DAPROFILER_STRING("BVHRIOOFCullingJob"); }
   void doJob() override
   {
     G_ASSERT(use_bvh_ri_oof_culling_job);
     rendinst::setRIGenVisibilityMinLod(visibility, rendinst::MAX_LOD_COUNT, 1);
+    rendinst::setRIGenVisibilityForcedLodRangeCull(visibility, true);
     rendinst::prepareRIGenVisibility(bvhFrustum, cameraPos, visibility, false, nullptr, false);
   }
 } bvh_ri_oof_culling_job;
@@ -780,7 +890,7 @@ struct BVHPrepareRiExtraInstancesJob final : public cpujobs::IJob
     // Note: would be waken up by `bvh_start_before_render_jobs_es` when prepare_ri_extra_job_on_previous_frame is false
     threadpool::add(this, prio, prepare_ri_extra_job_on_previous_frame);
   }
-  const char *getJobName(bool &) const override { return "BVHPrepareRiExtraInstancesJob"; }
+  const char *getJobName(bool &) const override { return DAPROFILER_STRING("BVHPrepareRiExtraInstancesJob"); }
   void doJob() override { bvh::prepare_ri_extra_instances(); }
 } bvh_prepare_ri_extra_instances_job;
 
@@ -803,10 +913,22 @@ static void bvh_start_before_render_jobs_es(
 
   bvh::finalize_async_atmosphere_update(bvhRenderingContextId);
 
+  constexpr int INITIAL_FAST_BUILDING_FRAME_COUNT = 500;
+  constexpr int TELEPORT_FAST_BUILDING_FRAME_COUNT = 100;
+
   constexpr float PREV_FRAME_WEIGHT = 0.95;
-  float currectSpeed = safediv(length(stg.camPos - bvh__prev_pos), stg.realDt);
+  float frameDist = length(stg.camPos - bvh__prev_pos);
   bvh__prev_pos = stg.camPos;
-  bvh__accumulated_speed = bvh__accumulated_speed * PREV_FRAME_WEIGHT + currectSpeed * (1.0f - PREV_FRAME_WEIGHT);
+  if (frameDist > teleport_detection_distance)
+  {
+    bvh__accumulated_speed = 0;
+    bvh__frame_counter = min(bvh__frame_counter, INITIAL_FAST_BUILDING_FRAME_COUNT - TELEPORT_FAST_BUILDING_FRAME_COUNT);
+  }
+  else
+  {
+    float currectSpeed = safediv(frameDist, stg.realDt);
+    bvh__accumulated_speed = bvh__accumulated_speed * PREV_FRAME_WEIGHT + currectSpeed * (1.0f - PREV_FRAME_WEIGHT);
+  }
 
   use_bvh_ri_culling_job = use_bvh_ri_oof_culling_job = false;
   Frustum frustum;
@@ -843,7 +965,6 @@ static void bvh_start_before_render_jobs_es(
     bvh_prepare_ri_extra_instances_job.start(threadpool::JobPriority::PRIO_LOW);
   threadpool::wake_up_all(); // Wake all added above and occulision/raster jobs
 
-  constexpr int INITIAL_FAST_BUILDING_FRAME_COUNT = 500;
   bvh::BuildBudget budget =
     bvh__frame_counter++ < INITIAL_FAST_BUILDING_FRAME_COUNT
       ? bvh::BuildBudget::High
@@ -905,6 +1026,11 @@ static void upload_dynmodel_instance_data()
 {
   TIME_PROFILE(bvh::upload_dynmodel_instance_data)
   bvh::wait_dynamic_instances_jobs();
+  if (bvhUnloadDynModels)
+  {
+    bvh::tell_active_dynamic_resources(bvhRenderingContextId, bvhActiveDynResources);
+    bvhActiveDynResources.clear();
+  }
   bvhDynmodelDataReady = dynrend::prepare_render_current(bvhDynmodelCtx);
   if (!bvhDynmodelDataReady)
     return;
@@ -945,8 +1071,14 @@ static void copy_animchar_visbits()
   });
 }
 
-void bvh_update_instances(
-  const Point3 &cameraPos, const Point3 &lightDirection, const TMatrix &itm, const TMatrix4 &projTm, const Frustum &viewFrustum)
+void bvh_update_instances(const Point3 &cameraPos,
+  const Point3 &lightDirection,
+  const TMatrix &itm,
+  const TMatrix4 &viewRotTm,
+  const TMatrix4 &projTm,
+  const TMatrix4 &prevViewRotTm,
+  const TMatrix4 &prevProjTm,
+  const Frustum &viewFrustum)
 {
   if (!is_bvh_enabled())
     return;
@@ -954,6 +1086,12 @@ void bvh_update_instances(
   copy_animchar_visbits(); // bvh::update_instances processes animchars in a thread
   bvhDynmodelCtx = dynrend::get_or_create_context("bvh");
   dynrend::set_instance_data_only(bvhDynmodelCtx, !draw_debug_dynmodels);
+  dynrend::set_context_view_proj(bvhDynmodelCtx, viewRotTm, projTm, prevViewRotTm, prevProjTm);
+  if (draw_debug_dynmodels)
+  {
+    ShaderGlobal::set_int(dyn_model_render_passVarId, eastl::to_underlying(dynmodel::RenderPass::Color));
+    copy_current_global_variables_states(bvhDebugGvarsState);
+  }
   dag::Vector<RiGenVisibility *> visibilities;
   if (use_bvh_ri_culling_job)
     visibilities.push_back(get_bvh_rigen_visibility());
@@ -990,8 +1128,7 @@ static dafg::NodeHandle makeBVHUpdateNode()
     auto cameraHndl = CameraViewShvars{camera}.bindViewVecs().toHandle();
 
     return [cameraHndl, rtWaterHndl, resolution, dagdpCounterHndl, dagdpIntsancesHndl,
-             rt_debug_rt_shadowVarId = get_shader_variable_id("rt_debug_rt_shadow", true),
-             rt_debug_use_csmVarId = get_shader_variable_id("rt_debug_use_csm", true)](
+             rt_debug_rt_shadowVarId = get_shader_variable_id("rt_debug_rt_shadow", true)](
              const dafg::multiplexing::Index &multiplexing_index) {
       if (multiplexing_index != dafg::multiplexing::Index{})
         return;
@@ -1008,7 +1145,6 @@ static dafg::NodeHandle makeBVHUpdateNode()
       }
 
       ShaderGlobal::set_int(rt_debug_rt_shadowVarId, rtr_shadow ? 1 : 0);
-      ShaderGlobal::set_int(rt_debug_use_csmVarId, rtr_use_csm ? 1 : 0);
       float tanPixelAngularRadius = cameraHndl.ref().jitterPersp.hk * tan(0.5f / resolution.get().x);
       ShaderGlobal::set_float(var::bvh_additional_impostor_mip_bias, additional_impostor_mip_bias);
       ShaderGlobal::set_float(var::bvh_tan_pixel_angular_radius, tanPixelAngularRadius);
@@ -1085,8 +1221,8 @@ struct RtTexturesDescriptors
     res.persistentTextures[::denoiser::ReflectionDenoiser::TextureNames::rtr_validation] = {};
 #endif
     rtr::get_required_transient_texture_descriptors(res.transientTextures);
-    denoiser::get_required_persistent_texture_descriptors(res.denoiserTextures, rtr_mode == RTRMode::halfCloseDepth,
-      rtr_mode == RTRMode::halfCheckerboardDepth, rtr_mode == RTRMode::halfSmartPattern);
+    denoiser::get_required_persistent_texture_descriptors(res.denoiserTextures, false, rtr_mode == RTRMode::halfCheckerboardDepth,
+      rtr_mode == RTRMode::halfSmartPattern);
 
     if (rtr_mode == RTRMode::halfCheckerboardDepth || rtr_mode == RTRMode::halfSmartPattern)
     {
@@ -1102,11 +1238,6 @@ struct RtTexturesDescriptors
     {
       res.renameTextures[::denoiser::TextureNames::denoiser_view_z] = "denoiser_view_z_rtr";
       G_VERIFY(res.denoiserTextures.erase(::denoiser::TextureNames::denoiser_view_z) > 0);
-      if (rtr_mode == RTRMode::halfCloseDepth)
-      {
-        res.renameTextures[::denoiser::TextureNames::denoiser_half_view_z] = "denoiser_half_view_z_rtr";
-        G_VERIFY(res.denoiserTextures.erase(::denoiser::TextureNames::denoiser_half_view_z) > 0);
-      }
     }
 
     return res;
@@ -1189,7 +1320,7 @@ public:
   void clearTransient()
   {
     TIME_D3D_PROFILE(ClearTransient)
-    for (auto h : transientHandles)
+    for (const auto &h : transientHandles)
       d3d::clear_rt({h.second.get()}, {});
   }
   denoiser::TexMap resolveToPair() const
@@ -1238,20 +1369,20 @@ private:
 
   void readCheckerboardAliases(dafg::Registry registry, const eastl::vector_map<const char *, const char *> &aliases)
   {
-    for (auto alias : aliases)
+    for (const auto &alias : aliases)
       readHandles.emplace(eastl::pair{alias.first,
         registry.read(alias.second).texture().atStage(dafg::Stage::COMPUTE).useAs(dafg::Usage::SHADER_RESOURCE).handle()});
   }
 
   static void resolveTextureHandleToPair(denoiser::TexMap &pairs, const eastl::vector_map<const char *, RWHandle> &handles)
   {
-    for (auto h : handles)
+    for (const auto &h : handles)
       pairs[h.first] = h.second.get();
   }
 
   static void resolveTextureHandleToPair(denoiser::TexMap &pairs, const eastl::vector_map<const char *, ROHandle> &handles)
   {
-    for (auto h : handles)
+    for (const auto &h : handles)
       pairs[h.first] = h.second.get();
   }
 
@@ -1259,7 +1390,7 @@ private:
   {
     eastl::vector_map<const char *, RWHandle> result;
     result.reserve(16);
-    for (auto tex : textures)
+    for (const auto &tex : textures)
     {
       result.emplace(eastl::pair{tex.first, registry.create(tex.first)
                                               .texture(dafg::Texture2dCreateInfo{tex.second.cflg | TEXCF_RTARGET,
@@ -1275,7 +1406,7 @@ private:
   {
     eastl::vector_map<const char *, ROHandle> result;
     result.reserve(16);
-    for (auto tex : textures)
+    for (const auto &tex : textures)
     {
       result.emplace(eastl::pair{
         tex.first, registry.read(tex.first).texture().atStage(dafg::Stage::COMPUTE).useAs(dafg::Usage::SHADER_RESOURCE).handle()});
@@ -1288,7 +1419,7 @@ private:
   {
     eastl::vector_map<const char *, RWHandle> result;
     result.reserve(2);
-    for (auto tex : textures)
+    for (const auto &tex : textures)
     {
       result.emplace(eastl::pair{tex.first,
         registry.renameTexture(tex.first, tex.second).atStage(dafg::Stage::COMPUTE).useAs(dafg::Usage::SHADER_RESOURCE).handle()});
@@ -1363,7 +1494,7 @@ static dafg::NodeHandle makeDenoiserPrepareNode(RTPersistentTexturesECS &rt_pers
   const RTRMode rtrMode = get_resolved_rt_settings().rtrMode;
   const bool needCheckerboardSet = rtrMode == RTRMode::halfCheckerboardDepth;
   const bool useSmartDepth = rtrMode == RTRMode::halfSmartPattern;
-  const bool needCloseSet = (is_rtao_enabled() || is_ptgi_enabled() || rtrMode == RTRMode::halfCloseDepth) && !is_rr_enabled();
+  const bool needCloseSet = (is_rtao_enabled() || is_ptgi_enabled()) && !is_rr_enabled();
 
   denoiser::TexInfoMap persistentTextures;
   denoiser::get_required_persistent_texture_descriptors(persistentTextures, needCloseSet, needCheckerboardSet, useSmartDepth);
@@ -1450,9 +1581,9 @@ static eastl::array<dafg::NodeHandle, 3> makeRTSMNode(RTPersistentTexturesECS &r
     denoiser::TexInfoMap transientTextures;
     rtsm::get_required_transient_texture_descriptors(transientTextures);
     denoiser::TexInfoMap denoiserTextures;
-    denoiser::get_required_persistent_texture_descriptors(denoiserTextures, !is_rr_enabled(), false, false);
+    denoiser::get_required_persistent_texture_descriptors(denoiserTextures, false, false, false);
     auto textureMaps = RTTextureMaps::makeForInitNode(registry, rt_persistent_textures, persistentTextures, transientTextures,
-      denoiserTextures, eastl::vector_map<const char *, const char *>{}, true);
+      denoiserTextures, eastl::vector_map<const char *, const char *>{}, false);
 
     return [ctxHndl, textureMaps = eastl::move(textureMaps)] {
       Color4 sunDirC = ShaderGlobal::get_float4(from_sun_directionVarId);
@@ -1478,7 +1609,7 @@ static eastl::array<dafg::NodeHandle, 3> makeRTSMNode(RTPersistentTexturesECS &r
     auto ctxHndl = registry.readBlob<eastl::optional<rtsm::RTSMContext>>("rtsm_context").handle();
     denoiser::TexInfoMap transientTextures;
     rtsm::get_required_transient_texture_descriptors(transientTextures);
-    RTTextureMaps::makeForExecNode(registry, {}, transientTextures, {}, {}, true);
+    RTTextureMaps::makeForExecNode(registry, {}, transientTextures, {}, {}, false);
 
     return [ctxHndl, cameraHndl](const dafg::multiplexing::Index &multiplexing_index) {
       if (!ctxHndl.ref().has_value())
@@ -1496,7 +1627,7 @@ static eastl::array<dafg::NodeHandle, 3> makeRTSMNode(RTPersistentTexturesECS &r
     auto ctxHndl = registry.readBlob<eastl::optional<rtsm::RTSMContext>>("rtsm_context").handle();
     denoiser::TexInfoMap transientTextures;
     rtsm::get_required_transient_texture_descriptors(transientTextures);
-    RTTextureMaps::makeForExecNode(registry, {}, transientTextures, {}, {}, true);
+    RTTextureMaps::makeForExecNode(registry, {}, transientTextures, {}, {}, false);
     return [ctxHndl]() {
       if (!ctxHndl.ref().has_value())
         return;
@@ -1594,14 +1725,13 @@ static eastl::array<dafg::NodeHandle, 3> makeRTRNodes(RTPersistentTexturesECS &r
       registry.createBlob<OrderingToken>("rtr_undenoised_token");
 
       const RtTexturesDescriptors ds = RtTexturesDescriptors::collectRTR(rtSettings.rtrMode);
-      auto textureMaps =
-        RTTextureMaps::makeForInitNode(registry, rt_persistent_textures, ds, rtSettings.rtrMode == RTRMode::halfCloseDepth);
+      auto textureMaps = RTTextureMaps::makeForInitNode(registry, rt_persistent_textures, ds, false);
       registry.bindBlob<Point4>("world_view_pos", "world_view_pos");
       read_gbuffer_depth(registry, dafg::Stage::PS_OR_CS);
 
       return [textureMaps = eastl::move(textureMaps), isRR, rtSettings]() {
         textureMaps->clearTransient();
-        rtr::prepare(bvhRenderingContextId, rtr_shadow, rtr_use_csm, textureMaps->resolveToPair(), rtSettings.isRTRRaySkipping());
+        rtr::prepare(bvhRenderingContextId, rtr_shadow, textureMaps->resolveToPair(), rtSettings.isRTRRaySkipping());
 
         if (is_rtr_probes_enabled(isRR))
         {
@@ -1644,7 +1774,7 @@ static eastl::array<dafg::NodeHandle, 3> makeRTRNodes(RTPersistentTexturesECS &r
     registry.readBlob<OrderingToken>("rtao_token").optional();
 
     const RtTexturesDescriptors ds = RtTexturesDescriptors::collectRTR(rtSettings.rtrMode);
-    RTTextureMaps::makeForExecNode(registry, ds, rtSettings.rtrMode == RTRMode::halfCloseDepth);
+    RTTextureMaps::makeForExecNode(registry, ds, false);
 
     return [cameraHndl, prevCameraHndl](const dafg::multiplexing::Index &multiplexing_index) {
       camera_in_camera::ApplyPostfxState camcam{multiplexing_index, cameraHndl.ref(), prevCameraHndl.ref()};
@@ -1660,10 +1790,8 @@ static eastl::array<dafg::NodeHandle, 3> makeRTRNodes(RTPersistentTexturesECS &r
 
       auto &lights = WRDispatcher::getClusteredLights();
       lights.setOutOfFrustumLightsToShader();
-      d3d::set_cs_constbuffer_register_count(256);
       rtr::bind_params();
       rtr::do_trace(cameraHndl.ref().jitterProjTm);
-      d3d::set_cs_constbuffer_register_count(0);
       lights.setInsideOfFrustumLightsToShader();
       rtr::unbind_params();
     };
@@ -1674,7 +1802,7 @@ static eastl::array<dafg::NodeHandle, 3> makeRTRNodes(RTPersistentTexturesECS &r
     registry.renameBlob<OrderingToken>("rtr_undenoised_token", "rtr_token");
 
     const RtTexturesDescriptors ds = RtTexturesDescriptors::collectRTR(rtSettings.rtrMode);
-    auto textureMaps = RTTextureMaps::makeForExecNode(registry, ds, rtSettings.rtrMode == RTRMode::halfCloseDepth);
+    auto textureMaps = RTTextureMaps::makeForExecNode(registry, ds, false);
 
     return [textureMaps = eastl::move(textureMaps), useSmartDepth = rtSettings.rtrMode == RTRMode::halfSmartPattern]() {
       rtr::bind_params();
@@ -1717,28 +1845,24 @@ static dafg::NodeHandle makeRTTRNode()
     registry.bindTexCs("glass_depth", "translucent_gbuffer_depth");
     registry.bindTexCs("far_downsampled_depth", "downsampled_far_depth_tex");
 
-    return
-      [cameraHndl, glassGbufferHndl, glass_rt = Ptr(new_compute_shader("rt_glass_reflection")),
-        rtr_shadowVarId = get_shader_variable_id("rtr_shadow", true), rtr_use_csmVarId = get_shader_variable_id("rtr_use_csm", true),
-        rtr_resolutionIVarId = get_shader_variable_id("rtr_resolutionI")](const dafg::multiplexing::Index &multiplexing_index) {
-        camera_in_camera::ApplyPostfxState camcam{multiplexing_index, cameraHndl.ref()};
+    return [cameraHndl, glassGbufferHndl, glass_rt = Ptr(new_compute_shader("rt_glass_reflection")),
+             rtr_shadowVarId = get_shader_variable_id("rtr_shadow", true),
+             rtr_resolutionIVarId = get_shader_variable_id("rtr_resolutionI")](const dafg::multiplexing::Index &multiplexing_index) {
+      camera_in_camera::ApplyPostfxState camcam{multiplexing_index, cameraHndl.ref()};
 
-        auto &lights = WRDispatcher::getClusteredLights();
-        lights.setOutOfFrustumLightsToShader();
-        TextureInfo glassGbufferTi;
-        glassGbufferHndl.view().getTex2D()->getinfo(glassGbufferTi);
-        ShaderGlobal::set_int4(rtr_resolutionIVarId, glassGbufferTi.w, glassGbufferTi.h, 0, 0);
-        rtr::set_rtr_hit_distance_params();
-        ShaderGlobal::set_int(rtr_shadowVarId, rtr_shadow ? 1 : 0);
-        ShaderGlobal::set_int(rtr_use_csmVarId, rtr_use_csm ? 1 : 0);
-        bvh::bind_resources(bvhRenderingContextId, glassGbufferTi.w);
+      auto &lights = WRDispatcher::getClusteredLights();
+      lights.setOutOfFrustumLightsToShader();
+      TextureInfo glassGbufferTi;
+      glassGbufferHndl.view().getTex2D()->getinfo(glassGbufferTi);
+      ShaderGlobal::set_int4(rtr_resolutionIVarId, glassGbufferTi.w, glassGbufferTi.h, 0, 0);
+      rtr::set_rtr_hit_distance_params();
+      ShaderGlobal::set_int(rtr_shadowVarId, rtr_shadow ? 1 : 0);
+      bvh::bind_resources(bvhRenderingContextId, glassGbufferTi.w);
 
-        d3d::set_cs_constbuffer_register_count(256);
-        glass_rt->dispatchThreads(glassGbufferTi.w, glassGbufferTi.h, 1);
-        d3d::set_cs_constbuffer_register_count(0);
-        bvh::unbind_resources();
-        lights.setInsideOfFrustumLightsToShader();
-      };
+      glass_rt->dispatchThreads(glassGbufferTi.w, glassGbufferTi.h, 1);
+      bvh::unbind_resources();
+      lights.setInsideOfFrustumLightsToShader();
+    };
   });
 }
 
@@ -1882,7 +2006,7 @@ static dafg::NodeHandle makePTGINode(RTPersistentTexturesECS &rt_persistent_text
       textureMaps->clearTransient();
       denoiser::TexMap textures = textureMaps->resolveToPair();
       ptgi::render(bvhRenderingContextId, cameraHndl.ref().jitterProjTm, closeDepthHndl.get(), false, textures,
-        static_cast<ptgi::Quality>(ptgi_quality.get()), !is_rr_enabled());
+        static_cast<ptgi::Quality>(ptgi_quality.get()), !is_rr_enabled(), ptgi_half_rate.get());
       lights.setInsideOfFrustumLightsToShader();
     };
   });
@@ -1894,15 +2018,15 @@ enum class WaterRTOutputMode
   RR = 1
 };
 
-const eastl::array<char const *, eastl::to_underlying(WaterRenderMode::COUNT)> WATER_RT_NODE_NAMES = {
-  "water_rt_early_before_envi_node", "water_rt_early_after_envi_node", "water_rt_late_node"};
-
-dafg::NodeHandle makeWaterRTNode(WaterRenderMode mode)
+dafg::NodeHandle makeWaterRTNode()
 {
   if (!is_rt_water_enabled())
     return {};
+  if (!get_world_renderer())
+    return {};
+  WaterRenderMode mode = WRDispatcher::getWaterRenderMode();
   const uint32_t modeIdx = eastl::to_underlying(mode);
-  return dafg::register_node(WATER_RT_NODE_NAMES[modeIdx], DAFG_PP_NODE_SRC, [mode, modeIdx](dafg::Registry registry) {
+  return dafg::register_node("water_rt_node", DAFG_PP_NODE_SRC, [modeIdx](dafg::Registry registry) {
     registry.readBlob<OrderingToken>("bvh_ready_token");
 
     registry.multiplex(dafg::multiplexing::Mode::FullMultiplex);
@@ -1912,16 +2036,10 @@ dafg::NodeHandle makeWaterRTNode(WaterRenderMode mode)
 
     registry.bindBlob<Point4>("world_view_pos", "world_view_pos");
 
-    auto waterModeHndl = registry.readBlob<WaterRenderMode>("water_render_mode").handle();
-
-    registry.bindTexCs(WATER_NORMAL_DIR_TEX[modeIdx], "water_normal_dir");
-    registry.readBlob<OrderingToken>(WATER_SSR_COLOR_TOKEN[modeIdx]);
-    auto colorTexHndl = registry.modify(WATER_SSR_COLOR_TEX[modeIdx + 1])
-                          .texture()
-                          .atStage(dafg::Stage::CS)
-                          .bindToShaderVar("water_reflection_tex_uav")
-                          .handle();
-    auto strengthTexHndl = registry.modify(WATER_SSR_STRENGTH_TEX[modeIdx + 1])
+    registry.bindTexCs("water_normal_dir", "water_normal_dir");
+    auto colorTexHndl =
+      registry.modify("water_ssr_color").texture().atStage(dafg::Stage::CS).bindToShaderVar("water_reflection_tex_uav").handle();
+    auto strengthTexHndl = registry.modify("water_ssr_strength")
                              .texture()
                              .atStage(dafg::Stage::CS)
                              .bindToShaderVar("water_reflection_strength_tex_uav")
@@ -1929,17 +2047,11 @@ dafg::NodeHandle makeWaterRTNode(WaterRenderMode mode)
 
     if (!is_rr_enabled())
     {
-      registry.historyFor(WATER_SSR_COLOR_TEX[eastl::to_underlying(WaterRenderMode::COUNT)])
-        .texture()
-        .atStage(dafg::Stage::CS)
-        .bindToShaderVar("water_reflection_tex");
-      registry.historyFor(WATER_SSR_STRENGTH_TEX[eastl::to_underlying(WaterRenderMode::COUNT)])
-        .texture()
-        .atStage(dafg::Stage::CS)
-        .bindToShaderVar("water_reflection_strength_tex");
+      registry.historyFor("water_ssr_color").texture().atStage(dafg::Stage::CS).bindToShaderVar("water_reflection_tex");
+      registry.historyFor("water_ssr_strength").texture().atStage(dafg::Stage::CS).bindToShaderVar("water_reflection_strength_tex");
     }
 
-    registry.read(is_rr_enabled() ? WATER_RT_DEPTH_TEX[modeIdx] : WATER_SSR_DEPTH_TEX[modeIdx + 1])
+    registry.read(is_rr_enabled() ? "water_rt_depth" : WATER_SSR_DEPTH_TEX[modeIdx + 1])
       .texture()
       .atStage(dafg::Stage::CS)
       .bindToShaderVar("downsampled_depth");
@@ -1954,14 +2066,10 @@ dafg::NodeHandle makeWaterRTNode(WaterRenderMode mode)
 
     auto resHndl = registry.getResolution<2>("main_view", is_rr_enabled() ? 1.0f : 0.5f);
 
-    return [prevCameraHndl, cameraHndl, mode, waterModeHndl, resHndl, colorTexHndl, strengthTexHndl,
+    return [prevCameraHndl, cameraHndl, resHndl, colorTexHndl, strengthTexHndl,
              water_rt = Ptr(new_compute_shader("raytraced_water_reflections")),
-             rtr_shadowVarId = get_shader_variable_id("rtr_shadow", true),
-             rtr_use_csmVarId = get_shader_variable_id("rtr_use_csm", true)](const dafg::multiplexing::Index &multiplexing_index) {
+             rtr_shadowVarId = get_shader_variable_id("rtr_shadow", true)](const dafg::multiplexing::Index &multiplexing_index) {
       camera_in_camera::ApplyPostfxState camcam{multiplexing_index, cameraHndl.ref(), prevCameraHndl.ref()};
-
-      if (waterModeHndl.ref() != mode)
-        return;
 
       auto &lights = WRDispatcher::getClusteredLights();
       lights.setOutOfFrustumLightsToShader();
@@ -1969,7 +2077,6 @@ dafg::NodeHandle makeWaterRTNode(WaterRenderMode mode)
       ShaderGlobal::set_int(var::water_rt_frame_index, (frameIdx++) % 32);
       ShaderGlobal::set_float4(var::sun_dir_for_shadows, ShaderGlobal::get_float4(from_sun_directionVarId)); // For WT compatibility
       ShaderGlobal::set_int(rtr_shadowVarId, rtr_shadow ? 1 : 0);
-      ShaderGlobal::set_int(rtr_use_csmVarId, rtr_use_csm ? 1 : 0);
       ShaderGlobal::set_int(var::water_rt_output_mode,
         is_rr_enabled() ? eastl::to_underlying(WaterRTOutputMode::RR) : eastl::to_underlying(WaterRTOutputMode::REGULAR));
       IPoint2 res = resHndl.get();
@@ -1982,9 +2089,7 @@ dafg::NodeHandle makeWaterRTNode(WaterRenderMode mode)
         d3d::clear_rt({strengthTexHndl.get()}, make_clear_value(1.0f, 0.0f, 0.0f, 0.0f));
       }
 
-      d3d::set_cs_constbuffer_register_count(256);
       water_rt->dispatchThreads(res.x, res.y, 1);
-      d3d::set_cs_constbuffer_register_count(0);
       bvh::unbind_resources();
       lights.setInsideOfFrustumLightsToShader();
     };
@@ -2009,8 +2114,7 @@ static void recreateBVHNodes(const RTFeatureChanged &changed)
       dafg::NodeHandle &rtsm_trace_node, dafg::NodeHandle &rtsm_denoise_node, dafg::NodeHandle &rtr_prepare_node,
       dafg::NodeHandle &rtr_trace_node, dafg::NodeHandle &rtr_denoise_node, dafg::NodeHandle &rttr_node,
       dafg::NodeHandle &rtao_prepare_node, dafg::NodeHandle &rtao_trace_node, dafg::NodeHandle &rtao_denoise_node,
-      dafg::NodeHandle &ptgi_node, dafg::NodeHandle &water_rt_early_before_envi_node, dafg::NodeHandle &water_rt_early_after_envi_node,
-      dafg::NodeHandle &water_rt_late_node, dafg::NodeHandle &bvh_register_fom_shadows,
+      dafg::NodeHandle &ptgi_node, dafg::NodeHandle &water_rt_node, dafg::NodeHandle &bvh_register_fom_shadows,
       RTPersistentTexturesECS &rt_persistent_textures) {
       if (changed.isBVHChanged)
       {
@@ -2052,12 +2156,15 @@ static void recreateBVHNodes(const RTFeatureChanged &changed)
       if (changed.isPTGIChanged)
         ptgi_node = makePTGINode(rt_persistent_textures);
       if (changed.isRTWaterChanged)
-      {
-        water_rt_early_before_envi_node = makeWaterRTNode(WaterRenderMode::EARLY_BEFORE_ENVI);
-        water_rt_early_after_envi_node = makeWaterRTNode(WaterRenderMode::EARLY_AFTER_ENVI);
-        water_rt_late_node = makeWaterRTNode(WaterRenderMode::LATE);
-      }
+        water_rt_node = makeWaterRTNode();
     });
+}
+
+void recreate_water_rt_node()
+{
+  RTFeatureChanged changed;
+  changed.isRTWaterChanged = true;
+  recreateBVHNodes(changed);
 }
 
 ECS_TAG(render)
@@ -2074,59 +2181,6 @@ static void rt_set_resolution_es(const SetResolutionEvent &resEvt)
   recreateBVHNodes(RTFeatureChanged::All());
 };
 
-void setup_unitedvdata_allocation_rt_limits(bool apply_rt_limits)
-{
-  auto prepare_united_vdata_limits = [&](auto &unitedVdata, const char *type_nm) {
-    int ibLimitsKb = INT_MAX;
-    int vbLimitsKb = INT_MAX;
-    int blasLimitsKb = 0;
-    if (apply_rt_limits)
-    {
-      const DataBlock *streamingBlk = dgs_get_settings()->getBlockByNameEx(type_nm);
-      const DataBlock *limitsBlk = nullptr;
-      G_UNUSED(streamingBlk);
-
-#if _TARGET_SCARLETT || _TARGET_C2
-      switch (get_console_model())
-      {
-        case ConsoleModel::XBOX_ANACONDA: limitsBlk = streamingBlk->getBlockByNameEx("scarlettXRTLimits"); break;
-        case ConsoleModel::XBOX_LOCKHART: limitsBlk = streamingBlk->getBlockByNameEx("scarlettSRTLimits"); break;
-        case ConsoleModel::PS5: limitsBlk = streamingBlk->getBlockByNameEx("ps5RTLimits"); break;
-        case ConsoleModel::PS5_PRO: limitsBlk = streamingBlk->getBlockByNameEx("ps5proRTLimits"); break;
-        default: break;
-      }
-#elif _TARGET_PC
-      limitsBlk = streamingBlk->getBlockByNameEx("pcRTLimits");
-#endif
-
-      if (limitsBlk) //-V547
-      {
-        ibLimitsKb = limitsBlk->getInt("ibLimitsKb", INT_MAX);
-        vbLimitsKb = limitsBlk->getInt("vbLimitsKb", INT_MAX);
-        blasLimitsKb = limitsBlk->getInt("blasLimitsKb", 0);
-      }
-    }
-
-    debug("Setting %s limits to ib: %d kb, vb: %d kb, blas: %d kb", type_nm, ibLimitsKb, vbLimitsKb, blasLimitsKb);
-
-    unitedVdata.setAllocationLimits(ibLimitsKb, vbLimitsKb);
-    unitedVdata.setBlasAllocationLimit(blasLimitsKb);
-  };
-
-  prepare_united_vdata_limits(unitedvdata::dmUnitedVdata, "unitedVdata.dynModel");
-  prepare_united_vdata_limits(unitedvdata::riUnitedVdata, "unitedVdata.rendInst");
-}
-
-static bool mesh_streaming_console_handler(const char *argv[], int argc)
-{
-  // to make non-RT use the same limits, used for testing
-  int found = 0;
-  CONSOLE_CHECK_NAME("mesh_streaming", "apply_rt_limits", 1, 1) { setup_unitedvdata_allocation_rt_limits(true); }
-  return found;
-}
-REGISTER_CONSOLE_HANDLER(mesh_streaming_console_handler);
-
-
 template <typename Callable>
 static void bvh_destroy_ri_visibility_ecs_query(ecs::EntityManager &manager, Callable c);
 template <typename Callable>
@@ -2135,6 +2189,7 @@ static void bvh_create_ri_visibility_ecs_query(ecs::EntityManager &manager, Call
 
 static void destroyBVH()
 {
+  ScopedSwapchainPresentBlock presentBlock;
   closeBVHScene();
   bvh_destroy_ri_visibility_ecs_query(*g_entity_mgr,
     [](bool &bvh__initialized, RiGenVisibilityECS &bvh__rendinst_visibility, RiGenVisibilityECS &bvh__rendinst_oof_visibility) {
@@ -2144,7 +2199,7 @@ static void destroyBVH()
       bvh__rendinst_oof_visibility = {};
     });
   closeBVH();
-  setup_unitedvdata_allocation_rt_limits(is_bvh_enabled());
+  apply_united_vdata_allocation_limits(is_bvh_enabled());
 }
 
 static void createBVH()
@@ -2155,7 +2210,7 @@ static void createBVH()
       bvh__rendinst_visibility = RiGenVisibilityECS::create();
       bvh__rendinst_oof_visibility = RiGenVisibilityECS::create();
     });
-  setup_unitedvdata_allocation_rt_limits(is_bvh_enabled());
+  apply_united_vdata_allocation_limits(is_bvh_enabled());
 }
 
 static bool is_rr_supported()
@@ -2165,8 +2220,6 @@ static bool is_rr_supported()
   return streamline && streamline->isDlssRRSupported() == nv::SupportState::Supported;
 }
 
-// Note: Only useRTRCheckerboardDeptha is tracked and useRTRSmartDepth is not since they both change together,
-// and this way we don't have to workaround the 16 component track limit of ECS
 ECS_TAG(render)
 ECS_ON_EVENT(OnRenderSettingsReady, ChangeRenderFeaturesEarly)
 ECS_TRACK(render_settings__enableBVH,
@@ -2182,8 +2235,7 @@ ECS_TRACK(render_settings__enableBVH,
   render_settings__antialiasing_mode,
   render_settings__rayReconstruction,
   render_settings__bvhDynModels,
-  render_settings__RTpreset,
-  render_settings__useRTRCheckerboardDepth)
+  render_settings__RTpreset)
 static void bvh_render_settings_changed_es(const ecs::Event &,
   ecs::EntityManager &manager,
   bool render_settings__enableBVH,
@@ -2199,9 +2251,7 @@ static void bvh_render_settings_changed_es(const ecs::Event &,
   const ecs::string &render_settings__antialiasing_mode,
   bool render_settings__rayReconstruction,
   bool render_settings__bvhDynModels,
-  const ecs::string &render_settings__RTpreset,
-  bool render_settings__useRTRCheckerboardDepth,
-  bool render_settings__useRTRSmartDepth)
+  const ecs::string &render_settings__RTpreset)
 {
   static bool enableAllRTFeatures = dgs_get_settings()->getBlockByNameEx("graphics")->getBool("enableAllRTFeatures", false);
 
@@ -2225,14 +2275,7 @@ static void bvh_render_settings_changed_es(const ecs::Event &,
   if (settings.isRayReconstructionEnabled)
     settings.rtrMode = RTRMode::full;
   else if (isBVHAvailable && render_settings__enableRTR)
-  {
-    if (render_settings__useRTRCheckerboardDepth)
-      settings.rtrMode = RTRMode::halfCheckerboardDepth;
-    else if (render_settings__useRTRSmartDepth)
-      settings.rtrMode = RTRMode::halfSmartPattern;
-    else
-      settings.rtrMode = RTRMode::halfCloseDepth;
-  }
+    settings.rtrMode = rtr_checkerboard_depth.get() ? RTRMode::halfCheckerboardDepth : RTRMode::halfSmartPattern;
   else
     settings.rtrMode = RTRMode::off;
 
@@ -2247,7 +2290,7 @@ static void bvh_render_settings_changed_es(const ecs::Event &,
   settings.isBvhDynModelsEnabled = settings.isBVHEnabled && render_settings__bvhDynModels;
   settings.ultraPerformanceOverwrite = settings.isBVHEnabled && render_settings__RTpreset == "ultraPerformance";
 
-  set_resolved_rt_settings_ecs_query(manager, [&settings](ResolvedRTSettings &resolved_rt_settings, bool needs_water_heightmap) {
+  set_resolved_rt_settings_ecs_query(manager, [&settings](ResolvedRTSettings &resolved_rt_settings, bool &needs_water_heightmap) {
     resolved_rt_settings = settings;
     needs_water_heightmap = settings.isBVHEnabled;
   });
@@ -2305,8 +2348,38 @@ static void bvh_render_settings_changed_es(const ecs::Event &,
   }
 }
 
+template <typename Callable>
+static void set_resolved_rtr_settings_ecs_query(ecs::EntityManager &manager, Callable c);
+
+ECS_TAG(render, dev)
+static void rtr_checkerboard_depth_convar_es(const UpdateStageInfoBeforeRender &, ecs::EntityManager &manager)
+{
+  if (!rtr_checkerboard_depth.pullValueChange())
+    return;
+
+  ResolvedRTSettings settings = get_resolved_rt_settings();
+  if (settings.rtrMode == RTRMode::halfSmartPattern && rtr_checkerboard_depth.get())
+    settings.rtrMode = RTRMode::halfCheckerboardDepth;
+  else if (settings.rtrMode == RTRMode::halfCheckerboardDepth && !rtr_checkerboard_depth.get())
+    settings.rtrMode = RTRMode::halfSmartPattern;
+  else
+    return;
+
+  RTFeatureChanged changed;
+  changed.isDenoiserChanged = changed.isRTRChanged = true;
+  set_resolved_rtr_settings_ecs_query(manager,
+    [&settings](ResolvedRTSettings &resolved_rt_settings) { resolved_rt_settings = settings; });
+
+  recreateBVHNodes(changed);
+}
+
 bool bvh_do_early_occlusion_culling() { return is_bvh_enabled() && (bvh_animchar_lod_dist_mul > 1 || bvh_max_skinned_memory_mb >= 0); }
-float get_bvh_animchar_lod_dist_mul() { return bvh_animchar_lod_dist_mul; }
+float get_bvh_animchar_lod_dist_mul()
+{
+  // Zoom boosts the quality of lods, so to save memory this reverses that for anything not in main view
+  return bvh_animchar_lod_dist_mul *
+         safediv(WRDispatcher::getLodDistanceScaleBase(), DynamicRenderableSceneInstance::lodDistanceScale);
+}
 
 ECS_TAG(render)
 ECS_AFTER(animchar_before_render_es)
@@ -2340,8 +2413,6 @@ struct BVHAnimcharCallbackData
 {
   const DynamicRenderableSceneInstance *inst = nullptr;
   const DynamicRenderableSceneResource *res = nullptr;
-  dynrend::PathFilterView filter = dynrend::PathFilterView::NULL_FILTER;
-  uint8_t filterMask = 0;
   eastl::vector<int, framemem_allocator> offsets;
   bool animate = false;
   dynrend::BVHCamoData bvhCamoData;
@@ -2349,6 +2420,14 @@ struct BVHAnimcharCallbackData
   float skinPriority; // higher priority gets added first up to a max memory limit
 };
 static dag::Vector<BVHAnimcharCallbackData> animcharCallbackDatas;
+
+static void record_active_dyn_resource(const DynamicRenderableSceneInstance *inst)
+{
+  if (!bvhUnloadDynModels)
+    return;
+  if (const DynamicRenderableSceneLodsResource *lodsRes = inst->getLodsResource())
+    bvhActiveDynResources.insert(lodsRes->getFirstOriginal());
+}
 
 static void bvh_iterate_over_animchars(
   dynrend::BVHIterateOneInstanceCallback iterate_one_instance, const Point3 &view_position, void *user_data)
@@ -2382,7 +2461,8 @@ static void bvh_iterate_over_animchars(
   {
     TIME_PROFILE(iterate_entities)
     bvh_iterate_over_animchars_ecs_query(*g_entity_mgr,
-      [&](ECS_REQUIRE_NOT(ecs::Tag excludeFromAnimcharRender, ecs::Tag invisibleUpdatableAnimchar) ecs::EntityId eid,
+      [&](ECS_REQUIRE_NOT(ecs::Tag excludeFromAnimcharRender, ecs::Tag invisibleUpdatableAnimchar, ecs::Tag excludeFromBvh)
+            ecs::EntityId eid,
         const animchar_visbits_t &animchar_visbits_copy_for_bvh, const AnimV20::AnimcharRendComponent &animchar_render,
         const ecs::Point4List *additional_data, const ecs::UInt8List *animchar_render__nodeVisibleStgFilters,
         const vec4f &animchar_bsph) {
@@ -2394,6 +2474,8 @@ static void bvh_iterate_over_animchars(
         const auto res = inst->getCurSceneResource();
         if (!res)
           return;
+
+        record_active_dyn_resource(inst);
 
         auto filter = dynrend::PathFilterView(animchar_render__nodeVisibleStgFilters);
         G_ASSERT(!animchar_render__nodeVisibleStgFilters || filter.size() == inst->getNodeCount());
@@ -2408,7 +2490,7 @@ static void bvh_iterate_over_animchars(
 
         dynrend::add_animchar(bvhDynmodelCtx, ShaderMesh::STG_opaque, ShaderMesh::STG_atest, inst, res, additionalDataView,
           draw_debug_dynmodels ? dynrend::NeedPreviousMatrices::Yes : dynrend::NeedPreviousMatrices::No, {}, filter, filterMask,
-          dynrend::RenderPriority::DEFAULT, nullptr, TexStreamingContext(0), &data.offsets);
+          dynrend::RenderPriority::DEFAULT, get_bvh_debug_gvars_state(), TexStreamingContext(0), &data.offsets);
 
         dynrend::BVHCamoData bvhCamoData = getCamoData(eid);
         bool animate = [viewPosition, animchar_visbits_copy_for_bvh, position = animchar_bsph]() {
@@ -2421,8 +2503,6 @@ static void bvh_iterate_over_animchars(
 
         data.inst = inst;
         data.res = res;
-        data.filter = filter;
-        data.filterMask = filterMask;
         data.animate = animate;
         data.bvhCamoData = bvhCamoData;
         data.skinPriority = calculate_priority(animchar_visbits_copy_for_bvh, animchar_bsph);
@@ -2436,19 +2516,20 @@ static void bvh_iterate_over_animchars(
         if (!res)
           return;
 
+        record_active_dyn_resource(inst);
+
         auto &data = animcharCallbackDatas.push_back();
 
         dynrend::add_animchar(bvhDynmodelCtx, ShaderMesh::STG_opaque, ShaderMesh::STG_atest, inst, res, additional_data_view,
           draw_debug_dynmodels ? dynrend::NeedPreviousMatrices::Yes : dynrend::NeedPreviousMatrices::No, {},
-          dynrend::PathFilterView::NULL_FILTER, 0, dynrend::RenderPriority::DEFAULT, nullptr, TexStreamingContext(0), &data.offsets);
+          dynrend::PathFilterView::NULL_FILTER, 0, dynrend::RenderPriority::DEFAULT, get_bvh_debug_gvars_state(),
+          TexStreamingContext(0), &data.offsets);
 
         dynrend::BVHCamoData bvhCamoData = getCamoData(eid);
         bool animate = static_cast<bool>(animchar_visbits_copy_for_bvh & FLAGS_TO_TEST);
 
         data.inst = inst;
         data.res = res;
-        data.filter = dynrend::PathFilterView::NULL_FILTER;
-        data.filterMask = 0;
         data.animate = animate;
         data.bvhCamoData = bvhCamoData;
         data.skinPriority = calculate_priority(animchar_visbits_copy_for_bvh, v_ldu_p3_safe(&inst->getNodeWtm(0).getcol(3).x));
@@ -2467,8 +2548,8 @@ static void bvh_iterate_over_animchars(
     dynrend::BVHSkinnedMemoryUsage skinMem = {.max_bytes = int64_t(bvh_max_skinned_memory_mb) * (1ll << 20), .current_bytes = 0ll};
     for (auto &data : animcharCallbackDatas)
     {
-      iterate_one_instance(*data.inst, *data.res, data.filter.begin(), data.filter.size(), data.filterMask, data.offsets,
-        bvh_set_dynmodel_instance_data, data.animate, data.bvhCamoData, skinMem, user_data);
+      iterate_one_instance(*data.inst, *data.res, data.offsets, bvh_set_dynmodel_instance_data, data.animate, data.bvhCamoData,
+        skinMem, user_data);
     }
 #if DA_PROFILER_ENABLED
     if (bvh_max_skinned_memory_mb >= 0)
@@ -2507,7 +2588,7 @@ static dafg::NodeHandle makeBvhDrawDebugNode()
       SCOPE_VIEWPORT;
       d3d::setview(0, 0, displayResolution.get().x / 2, displayResolution.get().y / 2, 0, 1);
       d3d::clearview(CLEAR_TARGET | CLEAR_ZBUFFER, e3dcolor(Color4{}), 0, 0);
-      d3d::settm(TM_PROJ, &cameraHndl.ref().jitterProjTm);
+      d3d::settm(TM_PROJ, &cameraHndl.ref().noJitterProjTm);
       TMatrix vtm = cameraHndl.ref().viewTm;
       vtm.setcol(3, 0, 0, 0);
       d3d::settm(TM_VIEW, vtm);
@@ -2597,7 +2678,10 @@ static void process_elem(const ShaderMesh::RElem &elem,
   bool isEye = strncmp(elem.mat->getShaderClassName(), "dynamic_eye", 12) == 0;
   bool isSkin =
     strcmp(elem.mat->getShaderClassName(), "dynamic_skin") == 0 || strcmp(elem.mat->getShaderClassName(), "dynamic_skin_morph") == 0;
+  bool isSkinFaceMorph = strcmp(elem.mat->getShaderClassName(), "dynamic_skin_morph") == 0;
+  bool isHairFaceMorph = strcmp(elem.mat->getShaderClassName(), "dynamic_hair_morph") == 0;
   bool isDynamicSheenCamo = strcmp(elem.mat->getShaderClassName(), "dynamic_sheen_camo") == 0;
+  bool isPaintedByMask = strcmp(elem.mat->getShaderClassName(), "dynamic_painted_by_mask") == 0;
   bool isRiLandclass = strncmp(elem.mat->getShaderClassName(), "rendinst_landclass", 18) == 0;
   bool isMonochrome = strcmp(elem.mat->getShaderClassName(), "rendinst_monochrome") == 0 ||
                       strcmp(elem.mat->getShaderClassName(), "dynamic_monochrome") == 0;
@@ -2654,7 +2738,6 @@ static void process_elem(const ShaderMesh::RElem &elem,
   int paint_palette_rowValue = 1;
   float paint_details_strength = 0;
   int use_alpha_as_maskValue = 0;
-  Point4 detailsData = Point4(0.0, 0.0, 0.0, 0.0);
   uint32_t packedDetailsData = 0;
   if (elem.mat->getIntVariable(paint_palette_rowVarId, paint_palette_rowValue)) // INIT_SIMPLE_PAINTED
   {
@@ -2917,7 +3000,31 @@ static void process_elem(const ShaderMesh::RElem &elem,
   mesh_info.alphaTest = hasAlphaTest;
   mesh_info.isCamo = isCamo;
   mesh_info.forceNonMetal = isSkin || isTree;
+  if (isSkinFaceMorph || isHairFaceMorph)
+  {
+    const int morphAtlasMatSlotSharedWithAoTex = 3;
+    const uint32_t morphUvFormat = isHairFaceMorph ? parser.secTexcoordFormat : parser.texcoordFormat;
+    unsigned morphUvSize = 0;
+    channel_size(morphUvFormat == BufferProcessor::bvhAttributeShort2TC ? VSDT_SHORT2 : morphUvFormat, morphUvSize);
+    mesh_info.faceMorphAtlasTextureId = elem.mat->get_texture(morphAtlasMatSlotSharedWithAoTex);
+    mesh_info.faceMorphUvOffset = isHairFaceMorph ? mesh_info.secTexcoordOffset : mesh_info.texcoordOffset;
+    mesh_info.faceMorphUvSize = morphUvSize;
+
+    const bool isSkinnedMesh = mesh_info.weightsOffset != MeshInfo::invalidOffset;
+    if (!isSkinnedMesh || mesh_info.faceMorphAtlasTextureId == BAD_TEXTUREID || mesh_info.faceMorphUvSize == 0)
+    {
+      LOGERR_ONCE("BVH: %s has no skin weights, morph atlas or morph UV, so its BVH copy keeps the neutral face",
+        elem.mat->getShaderClassName());
+      mesh_info.faceMorphAtlasTextureId = BAD_TEXTUREID;
+    }
+  }
   mesh_info.hasColorMod = isDynamicSheenCamo;
+  mesh_info.isPaintedByMask = isPaintedByMask;
+  if (isPaintedByMask)
+  {
+    mesh_info.extraTextureId = elem.mat->get_texture(4);
+    mesh_info.secondaryMaskTextureId = elem.mat->get_texture(5);
+  }
   real tank_decals_smoothness; // Values are hard coded in shader to default, only checking if variable exists
   mesh_info.hasAnimcharDecals = elem.mat->getRealVariable(tank_decals_smoothnessVarId, tank_decals_smoothness);
 }

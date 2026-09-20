@@ -646,9 +646,9 @@ void SelectAssetDlg::customControlUpdate(int id)
     recentlyUsedTab->updateImgui();
 }
 
-void SelectAssetDlg::updateImguiDialog()
+void SelectAssetDlg::updateImguiDialog(const PropPanel::DialogWindow::DialogFrameSizing &sizing)
 {
-  DialogWindow::updateImguiDialog();
+  DialogWindow::updateImguiDialog(sizing);
 
   // Delay the displaying of the asset browser dialog because its position is based on the asset selector dialog's position and size.
   if (assetBrowserOpeningRequested && !ImGui::IsWindowAppearing())

@@ -191,6 +191,8 @@ struct DriverConfig
     bool profileResourceMemUsage : 1;
     // allow loading and using XeSS (Intel super sampling). When disabled, libxess is never loaded
     bool allowXess : 1;
+    // allow exposing hardware barycentrics (GetAttributeAtVertex / SPV_KHR_fragment_shader_barycentric).
+    bool allowBarycentrics : 1;
     // AMD GPUs have broken clears on non-linear (SRGB) views of linear UAV render targets
     bool brokenClearsOnNonLinearUAVRT : 1;
     // sample depth textures via DEPTH_STENCIL_READ_ONLY_OPTIMAL to save time on layout transitions

@@ -23,6 +23,8 @@ public:
   unsigned getTypeMaskForGet() const override { return 0; }
   unsigned getWidth() const override { return THICKNESS; }
 
+  const char *getImguiTypeName() const override { return "ToolbarSeparator"; }
+
   void updateImgui() override { ImGui::SeparatorEx(ImGuiSeparatorFlags_Vertical, THICKNESS); }
 
 private:

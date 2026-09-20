@@ -47,6 +47,9 @@ void NodesProcessing::renderNodes(int selected_node_id, bool draw_solid)
 
 void NodesProcessing::onClick(int pcb_id)
 {
+  // Leftover controls of a plugin that ended without a successor still route their events here.
+  if (!panel)
+    return;
   switch (pcb_id)
   {
     case PID_SHOW_CONVEX_COMPUTER: convexComputerProcessing.showConvexComputed = panel->getBool(pcb_id); break;
@@ -89,6 +92,9 @@ void NodesProcessing::onClick(int pcb_id)
 
 void NodesProcessing::onChange(int pcb_id)
 {
+  // Leftover controls of a plugin that ended without a successor still route their events here.
+  if (!panel)
+    return;
   switch (pcb_id)
   {
     case PID_ROT_X:
@@ -120,6 +126,9 @@ void NodesProcessing::onChange(int pcb_id)
 
 void NodesProcessing::selectNode(const char *node_name, bool ctrl_pressed)
 {
+  // The properties panel is closed; the viewport selection itself already changed.
+  if (!panel)
+    return;
   if (node_name || !editMode)
   {
     selectionNodesProcessing.selectNode(node_name, ctrl_pressed);
@@ -155,6 +164,8 @@ void NodesProcessing::fillCollisionInfoPanel()
   treeContainer->setTreeEventHandler(treeEventHandler);
 
   selectionNodesProcessing.fillInfoTree(tree);
+  // Created here, with the group, so the plugin's caption update after every rebuild has a control to write to.
+  group->createStatic(PID_SELECTED_NODE_INFO, "", true, false, true);
 
   group->createButton(PID_CREATE_NEW_NODE, "Create new node");
   group->createButton(PID_EDIT_NODE, "Edit node", false);

@@ -25,7 +25,7 @@ UseProgLibs =
   engine/baseUtil
   engine/ioSys
   engine/perfMon/daProfilerStub
-  engine/sceneRay
+  engine/daBVH
   engine/math
   engine/startup
 ;

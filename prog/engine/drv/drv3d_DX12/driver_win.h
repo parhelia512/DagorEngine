@@ -30,7 +30,6 @@ using D3DCopyCommandList = ID3D12GraphicsCommandList;
 // state. The driver can not optimize those barriers away, so we have to disable split barriers for now.
 #define DX12_ALLOW_SPLIT_BARRIERS          0
 #define DX12_WHATCH_IN_FLIGHT_BARRIERS     DAGOR_DBGLEVEL > 0
-#define DX12_VALIDATE_INPUT_LAYOUT_USES    DAGOR_DBGLEVEL > 0
 #define DX12_TRACK_ACTIVE_DRAW_EVENTS      DAGOR_DBGLEVEL > 0
 #define DX12_VALIDATE_USER_BARRIERS        DAGOR_DBGLEVEL > 0
 #define DX12_AUTOMATIC_BARRIERS            1

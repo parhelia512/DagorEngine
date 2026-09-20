@@ -520,23 +520,6 @@ bool StaticGeometryPlugin::traceRay(const Point3 &p, const Point3 &dir, real &ma
 }
 
 
-bool StaticGeometryPlugin::shadowRayHitTest(const Point3 &p, const Point3 &dir, real maxt)
-{
-  if (maxt <= 0)
-    return false;
-
-  if (!loaded)
-  {
-    loadGeometry();
-
-    if (loadingFailed)
-      return false;
-  }
-
-  return dagGeom->geomObjectShadowRayHitTest(*geom, p + dir * maxt, -dir, maxt);
-}
-
-
 void StaticGeometryPlugin::registered() { DAGORED2->registerCustomCollider(this); }
 
 

@@ -137,7 +137,7 @@ namespace null
 class Tracker
 {
 private:
-  const eastl::string invalidPath{};
+  inline static const eastl::string invalidPath;
 
 public:
   eastl::string_view beginEvent(eastl::string_view name) { return name; }

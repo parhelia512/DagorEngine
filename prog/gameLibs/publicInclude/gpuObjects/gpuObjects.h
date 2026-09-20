@@ -6,6 +6,7 @@
 
 #include <EASTL/span.h>
 #include <EASTL/stack.h>
+#include <EASTL/utility.h>
 #include <EASTL/unique_ptr.h>
 #include <EASTL/vector_set.h>
 #include <EASTL/vector_map.h>
@@ -53,7 +54,6 @@ private:
   ToroidalHelper toroidalGrid;
   BufPtr gatheredBuffer;
   BufPtr countersBuffer, bboxesBuffer;
-  BufPtr matricesOffsetsBuffer;
   uint32_t cellDispatchTile = 0;
   uint32_t cellTile = 0, cellTileOrig = 0, cellsSideCount = 0, cellsCount = 0;
   uint32_t maxObjectsCountInCell = 0;
@@ -74,7 +74,6 @@ private:
   eastl::vector<AppendOrder> appendOrder;
   eastl::vector<uint32_t> counters;
   eastl::vector<bbox3f> cellsBboxes;
-  eastl::vector<uint32_t> matricesOffsets;
   eastl::unique_ptr<ComputeShaderElement> inCellPlacer, counterAndBboxCleaner;
   eastl::unique_ptr<ComputeShaderElement> gatherMatrices;
   bool waitingForGpuData = false;
@@ -94,14 +93,13 @@ private:
   void updateBuffer();
   void setShaderVarsAndConsts();
   bool dispatchNextCell();
-  void makeMatricesOffsetsBuffer();
 
   void onLandPlacing();
   void setBombHoleShaderGlobals(const CellToUpdateData cellData);
 
   void processBboxes(const eastl::span<int32_t> &raw_bboxes);
-  void copyMatrices(const eastl::vector<uint32_t> &cells_to_copy, const eastl::vector<uint32_t> &cell_counters, Sbuffer *dst_buffer,
-    Sbuffer *src_buffer, uint32_t max_in_cell, uint32_t dst_offset_bytes, uint32_t lod);
+  void copyMatrices(const eastl::vector<uint32_t> &cells_to_copy, Sbuffer *dst_buffer, Sbuffer *src_buffer, Sbuffer *shared_offsets,
+    uint32_t max_in_cell, uint32_t dst_offset_bytes, uint32_t lod);
   eastl::string assetName;
   rendinst::ClientRiexPoolId riPoolId;
   uint32_t riPoolOffset;
@@ -109,6 +107,8 @@ private:
   int numLods;
   eastl::array<float, MAX_LODS> distSqLod;
   eastl::array<eastl::vector<uint32_t>, MAX_LODS> cellIndexesByLods;
+  eastl::array<uint32_t, MAX_LODS> sharedOffsetsBase = {};
+  eastl::array<uint32_t, MAX_LODS> maxMatricesPerCell = {};
 
   eastl::vector<Point4> bomb_holes;
 
@@ -136,7 +136,8 @@ public:
   void update(const Point3 &origin);
   void gatherBuffers();
   void updateVisibilityAndLods(const Frustum &frustum, const Occlusion *occlusion, ShadowPass for_shadow);
-  void addMatricesToBuffer(Sbuffer *buffer, uint32_t offset_in_bytes, int lod);
+  void appendMatricesOffsets(eastl::vector<eastl::pair<uint32_t, uint32_t>> &shared_offsets, int lod);
+  void addMatricesToBuffer(Sbuffer *buffer, uint32_t offset_in_bytes, int lod, Sbuffer *shared_offsets);
   void onLandGpuInstancing(Sbuffer *indirection_buffer, int offset);
   uint32_t getInstancesToDraw(uint32_t lod) const;
   uint32_t getInstancesInGridToDraw(uint32_t lod) const;
@@ -203,6 +204,8 @@ private:
   eastl::vector<ObjectManager> objects;
   eastl::vector<rendinst::ClientRiexPoolId> objectIds;
   uint32_t maxRowsCountInBuffer = 0;
+  BufPtr sharedOffsetsBuffer;
+  eastl::vector<eastl::pair<uint32_t, uint32_t>> sharedOffsets;
   eastl::unique_ptr<ComputeShaderElement> gpuInstancingGenerateIndirect;
   eastl::unique_ptr<ComputeShaderElement> gpuInstancingRebuildRelems;
 
@@ -210,7 +213,7 @@ private:
   {
     GpuObjects *thiz = nullptr;
     int threadIx = 0;
-    const char *getJobName(bool &) const override { return "GatherBuffersJob"; }
+    const char *getJobName(bool &) const override { return DAPROFILER_STRING("GatherBuffersJob"); }
     void doJob() override;
   } gatherBuffersJobs[4];
 

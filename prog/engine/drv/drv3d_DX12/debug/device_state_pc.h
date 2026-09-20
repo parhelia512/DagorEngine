@@ -47,7 +47,7 @@ public:
   };
 
 private:
-  bool inUse = false;
+  bool isValidationActive = false;
   DWORD callbackCookie = 0;
   GlobalState *globalState = nullptr;
   ComPtr<ID3D12InfoQueue> debugQueue;
@@ -55,7 +55,7 @@ private:
   NVRTValidationLayer nvRtValidationLayer;
 
 public:
-  bool setup(GlobalState &global, D3DDevice *device, const Direct3D12Enviroment &d3d_env);
+  void setup(GlobalState &global, D3DDevice *device, const Direct3D12Enviroment &d3d_env);
   void teardown();
   void beginCommandBuffer(D3DDevice *device, CommandListIdentifier cmd_id, D3DGraphicsCommandList *cmd);
   void endCommandBuffer(CommandListIdentifier cmd_id, D3DGraphicsCommandList *cmd);
@@ -96,6 +96,7 @@ public:
   void nameResource(ID3D12Resource *resource, eastl::wstring_view name);
   void nameObject(ID3D12Object *object, eastl::string_view name);
   void nameObject(ID3D12Object *object, eastl::wstring_view name);
+  bool isObjectNamingActive() const;
   TraceCheckpoint getTraceCheckpoint();
   TraceRunStatus getTraceRunStatusFor(const TraceCheckpoint &cp);
   TraceStatus getTraceStatusFor(const TraceCheckpoint &cp);
@@ -110,7 +111,7 @@ public:
   void sendGPUCrashDump(const char *type, const void *data, uintptr_t size);
   void processDebugLog()
   {
-    if (DAGOR_UNLIKELY(inUse))
+    if (DAGOR_UNLIKELY(isValidationActive))
       processDebugLogImpl();
   }
   bool isAnyCapturerLoaded() const;

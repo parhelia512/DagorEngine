@@ -54,7 +54,7 @@ public:
   void makeInstanceActive(InstanceId id);
   void makeInstanceInactive(InstanceId id);
   void updateBuffers();
-  void updateInstancingData(
+  void writeSplineData(
     InstanceId id, SplineGenInstance &instance, const eastl::vector<SplineGenSpline, framemem_allocator> &spline_vec);
   void updateAttachmentBatchIds(InstanceId id, SplineGenInstance &instance, const eastl::vector<BatchId> &batch_ids);
   void uploadGenerateData();
@@ -127,8 +127,8 @@ private:
   bool reactivationInProcess = false;
   UniqueBuf instancingStagingBuffer;
   UniqueBuf instancingBuffer;
-  Bitarray splineBufferDirtyMask;
-  bool splineBufferDirty = false;
+  eastl::vector<uint8_t> splineBufferDirtyMask;
+  eastl::vector<SplineGenSpline> splineCpuData;
   UniqueBuf splineStagingBuffer;
   carray<UniqueBuf, 2> splineBuffer;
   carray<UniqueBuf, 2> vertexBuffer;

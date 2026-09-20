@@ -195,6 +195,9 @@ void d3d::set_render_target(RenderTarget depth, DepthAccess depth_access, dag::C
   LocalAccessor la;
   using Bind = StateFieldFramebufferAttachment;
 
+  D3D_CONTRACT_ASSERTF(colors.size() <= Driver3dRenderTarget::MAX_SIMRT, "Vulkan: too many color render targets: %d, max %d",
+    colors.size(), Driver3dRenderTarget::MAX_SIMRT);
+
   int i = 0;
   for (; i < colors.size() && i < Driver3dRenderTarget::MAX_SIMRT; ++i)
   {

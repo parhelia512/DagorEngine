@@ -19,6 +19,7 @@ AddIncludes =
 if $(Platform)-$(PlatformArch) in windows-x86_64 linux-x86_64 {
   Sources =
     omm.cpp
+    omm_cpu.cpp
     omm_debug.cpp
     ../../../3rdPartyLibs/omm_sdk/src/bake.cpp
     ../../../3rdPartyLibs/omm_sdk/src/bake_cpu_impl.cpp
@@ -35,6 +36,7 @@ if $(Platform)-$(PlatformArch) in windows-x86_64 linux-x86_64 {
 UseProgLibs +=
   engine/lib3d
   engine/shaders
+  3rdPartyLibs/eastl
   3rdPartyLibs/hash
   3rdPartyLibs/arc/lz4
 ;

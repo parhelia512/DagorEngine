@@ -359,6 +359,9 @@ void d3d::set_render_target(RenderTarget depth, DepthAccess depth_access, dag::C
   RenderState &rs = g_render_state;
   resolve_msaa_and_gen_mips(rs.nextRtState);
 
+  D3D_CONTRACT_ASSERTF(colors.size() <= Driver3dRenderTarget::MAX_SIMRT, "DX11: too many color render targets: %d, max %d",
+    colors.size(), Driver3dRenderTarget::MAX_SIMRT);
+
   int i = 0;
   for (; i < colors.size() && i < Driver3dRenderTarget::MAX_SIMRT; ++i)
   {
@@ -573,6 +576,7 @@ bool d3d::clearview(int write_mask, E3DCOLOR c, float z_value, uint32_t stencil_
   return true;
 }
 
+#define RP_GENERIC_MAX_T_REGISTERS MAX_RESOURCES
 #include <renderPassGeneric.cpp.inl>
 
 void d3d::clear_render_pass(const RenderPassTarget &target, const RenderPassArea &area, const RenderPassBind &bind)

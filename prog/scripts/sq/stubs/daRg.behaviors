@@ -33,5 +33,6 @@ return {
   TextAreaEdit = "TextAreaEdit"
   JoystickScroll = "JoystickScroll"
   BoundProps = "BoundProps"
+  VirtualList = "VirtualList"
   ImageLoadState = "ImageLoadState"
 }

@@ -9,6 +9,7 @@
 #include <generic/dag_carray.h>
 #include <dag/dag_relocatable.h>
 #include <util/dag_bitFlagsMask.h>
+#include <util/dag_compilerDefs.h>
 
 #include <supp/dag_define_KRNLIMP.h>
 
@@ -55,6 +56,7 @@ enum class ReadFlag : uint8_t
   BINARY_ONLY = 2,   //< don't try to parse text files
   RESTORE_FLAGS = 4, //< restore sticky flags state after load() call
   ALLOW_SS = 8,      //< allow simple string during load call (see DataBlock::allowSimpleString)
+  NO_INCLUDES = 16,  //< reject 'include' directives while parsing text (sticky flag); fails the load even in ROBUST mode
 
 #if DAGOR_DBGLEVEL < 1
   ROBUST_IN_REL = ROBUST,
@@ -100,7 +102,7 @@ bool are_approximately_equal(const DataBlock &lhs, const DataBlock &rhs, float e
 /// DataBlock tree contents can be serialized in binary or text form.
 ///
 /// Text files of this format usually have extension ".blk".
-class DataBlock
+class DAGOR_WARN_IF_UNUSED DataBlock
 {
 public:
   KRNLIMP static const DataBlock emptyBlock;
@@ -285,7 +287,7 @@ public:
   inline bool saveToTextFileCompact(const char *filename) const { return saveToTextFileCompactEx(filename, 64 << 10); }
 
   /// Save this DataBlock (and its sub-tree) to the arbitrary stream (text form)
-  KRNLIMP bool saveToTextStream(IGenSave &cwr, int write_buf_sz = 4 << 10) const;
+  KRNLIMP bool saveToTextStream(IGenSave &cwr, int write_buf_sz = 4 << 10, bool write_arrays = false) const;
 
   /// Save this DataBlock (and its sub-tree) to the arbitrary stream in compact form (text form)
   KRNLIMP bool saveToTextStreamCompact(IGenSave &cwr, int write_buf_sz = 64 << 10) const;
@@ -302,7 +304,7 @@ public:
 
   /// Print this DataBlock (and its sub-tree) to the arbitrary text stream with limitations; returns true when whole BLK is written
   inline bool printToTextStreamLimited(IGenSave &cwr, int max_out_line_num = -1, int max_level_depth = -1, int init_indent = 0,
-    int write_buf_sz = 4 << 10) const;
+    int write_buf_sz = 4 << 10, bool write_arrays = false) const;
 
 
   /// @}
@@ -615,7 +617,7 @@ protected:
 
   void saveToBinStreamWithoutNames(const DataBlockShared &names, IGenSave &cwr, bool dedup) const;
   template <bool print_with_limits>
-  bool writeText(BufferedWriter &cwr, int lev, int *max_ln, int max_lev) const;
+  bool writeText(BufferedWriter &cwr, int lev, int *max_ln, int max_lev, bool write_arrays = false) const;
 
   KRNLIMP bool loadText(const char *text, int text_length, const char *fname, DataBlock::IFileNotify *fnotify);
   KRNLIMP bool loadFromStream(IGenLoad &crd, const char *fname, DataBlock::IFileNotify *fnotify, unsigned hint_size);
@@ -805,7 +807,7 @@ KRNLIMP bool save_to_binary_file(const DataBlock &blk, const char *filename);
 
 /// Print this DataBlock (and its sub-tree) to the arbitrary text stream with limitations; returns true when whole BLK is written
 KRNLIMP bool print_to_text_stream_limited(const DataBlock &blk, IGenSave &cwr, int max_out_line_num = -1, int max_level_depth = -1,
-  int init_indent = 0, int write_buf_sz = 4 << 10);
+  int init_indent = 0, int write_buf_sz = 4 << 10, bool write_arrays = false);
 
 /// Save BLK (and its sub-tree) to the specified file (binary form, packed format)
 KRNLIMP bool pack_to_binary_file(const DataBlock &blk, const char *filename, int approx_sz = 16 << 10);
@@ -1044,9 +1046,9 @@ inline bool DataBlock::saveToTextFileCompactEx(const char *fn, int write_buf_sz)
 }
 
 inline bool DataBlock::printToTextStreamLimited(IGenSave &cwr, int max_out_line_num, int max_level_depth, int init_indent,
-  int write_buf_sz) const
+  int write_buf_sz, bool write_arrays) const
 {
-  return dblk::print_to_text_stream_limited(*this, cwr, max_out_line_num, max_level_depth, init_indent, write_buf_sz);
+  return dblk::print_to_text_stream_limited(*this, cwr, max_out_line_num, max_level_depth, init_indent, write_buf_sz, write_arrays);
 }
 
 template <typename Cb>

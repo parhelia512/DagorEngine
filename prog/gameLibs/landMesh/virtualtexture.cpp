@@ -852,6 +852,8 @@ public:
   void invalidateBox(const BBox2 &world_xz);                    // not forces redraw!
   void invalidate(bool force_redraw = true);
 
+  bool getCurrentFeedbackBox(BBox2 &ret) const;
+
   void recordCompressionErrorStats(bool enable);
   void dump();
 
@@ -1179,6 +1181,7 @@ void Clipmap::recordCompressionErrorStats(bool enable) { clipmapImpl->recordComp
 void Clipmap::dump() { clipmapImpl->dump(); }
 bool Clipmap::getBBox(BBox2 &ret) const { return clipmapImpl->getBBox(ret); }
 bool Clipmap::getMaximumBBox(BBox2 &ret) const { return clipmapImpl->getMaximumBBox(ret); }
+bool Clipmap::getCurrentFeedbackBox(BBox2 &ret) const { return clipmapImpl->getCurrentFeedbackBox(ret); }
 void Clipmap::setFeedbackType(uint32_t ftp) { clipmapImpl->setFeedbackType(ftp); }
 uint32_t Clipmap::getFeedbackType() const { return clipmapImpl->getFeedbackType(); }
 void Clipmap::setSoftwareFeedbackRadius(int inner_tiles, int outer_tiles)
@@ -2628,7 +2631,7 @@ public:
     forceUpdate = force_update;
   }
 
-  const char *getJobName(bool &) const override { return "PrepareFeedbackJob"; }
+  const char *getJobName(bool &) const override { return DAPROFILER_STRING("PrepareFeedbackJob"); }
 
   virtual void doJob() override
   {
@@ -2927,7 +2930,7 @@ void ClipmapImpl::GPUrestoreIndirectionFromLRUFull()
     d3d::setwire(false);
 
   d3d::set_render_target({}, DepthAccess::RW, {{currentContext->indirection.getTex2D(), 0, 0}});
-  d3d::clearview(CLEAR_DISCARD_TARGET, 0xFFFFFFFF, 1.f, 0);
+  d3d::clearview(DISCARD_TARGET, 0xFFFFFFFF, 1.f, 0);
   constantFillerBuf->unlockDataAndFlush((quad - basequad) / 4);
 
   currentContext->invalidateIndirection = false;
@@ -4775,6 +4778,38 @@ bool ClipmapImpl::getMaximumBBox(BBox2 &ret) const
     mul((Point2)tilesRegion[1] + IPoint2::ONE, tilesDimensions) + originOffset, // + IPoint2::ONE to make box inclusive.
   };
 
+  return true;
+}
+
+// returns combined bbox for all clipmap regions which will be updated this frame
+// !! should be called AFTER finalizing of feedback and BEFORE clipmap cache update
+bool ClipmapImpl::getCurrentFeedbackBox(BBox2 &ret) const
+{
+  if (currentContext->updateLRUIndices.empty())
+    return false;
+
+  BBox2 result;
+
+  for (size_t idx : currentContext->updateLRUIndices)
+  {
+    const TexLRU &ti = currentContext->LRU[idx];
+
+    Point4 uv2landscape = getUV2landacape(ti.tilePos.ri_offset);
+    IBBox2 tileBox = ti.tilePos.projectOnLowerMip(getMipPosition(ti.tilePos.ri_offset), 0);
+
+    float brd = float(texTileBorder << ti.tilePos.mip) / float(texTileInnerSize);
+    Point2 t0 = (Point2(tileBox.lim[0]) - Point2(brd, brd)) / TILE_WIDTH_F;
+    Point2 t1 = (Point2(tileBox.lim[1] + IPoint2::ONE) + Point2(brd, brd)) / TILE_WIDTH_F;
+    BBox2 region;
+    region[0].x = t0.x * uv2landscape.x + uv2landscape.z;
+    region[0].y = t0.y * uv2landscape.y + uv2landscape.w;
+    region[1].x = t1.x * uv2landscape.x + uv2landscape.z;
+    region[1].y = t1.y * uv2landscape.y + uv2landscape.w;
+
+    result += region;
+  }
+
+  ret = result;
   return true;
 }
 

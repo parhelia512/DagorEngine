@@ -36,9 +36,6 @@ interval use_portal_rendering: no<1, yes;
 
 bool use_simplified_heightmap_rendering = in_editor_assume == no && (use_satellite_rendering == yes || use_portal_rendering == yes);
 
-float4 hmap_ofs_thickness_map = (1/2048,1/2048,0,0);
-texture hmap_ofs_thickness;
-
 texture blue_white_mask_tex;
 
 texture detailAlbedoTex;
@@ -225,7 +222,7 @@ shader heightmap
 
     if ((compatibility_mode == compatibility_mode_on) && (hardware.dx11 || hardware.dx12))
     {
-      supports global_const_block;
+      GLOBAL_CONSTS(vs)
       (vs) {
         static_shadow_compatibility_bias@f1 = (static_shadow_compatibility_bias);
       }
@@ -236,7 +233,6 @@ shader heightmap
     {
       (ps) {
         globtm_psf@f44 = { globtm_psf_0, globtm_psf_1, globtm_psf_2, globtm_psf_3 };
-        heightmap_min_max@f4 = (0,0,0,heightmap_min_max.w - 0.15);//should be minus static shadow texel size. I assume it is about 18 cm
         local_view_z@f3 = local_view_z;
         camera_base_offset@f4 = camera_base_offset;
       }
@@ -246,7 +242,8 @@ shader heightmap
       hlsl(ps) {
         void heightmap_vsm_ps(VsOutput input, out float depth : SV_Depth)
         {
-          float3 worldPos = float3(input.worldPosXZ, getWorldHeight(input.worldPosXZ)+heightmap_min_max.w).xzy;
+          const float HMAP_HEIGHT_BIAS = -0.15;
+          float3 worldPos = float3(input.worldPosXZ, getWorldHeight(input.worldPosXZ)+HMAP_HEIGHT_BIAS).xzy;
           float3 normal = getWorldNormal(worldPos);
           float NoL = abs(dot(normal, local_view_z));
           worldPos -= (0.4*(1-NoL)+0.08)*normal;
@@ -583,9 +580,9 @@ shader heightmap
     {
       INIT_TOROIDAL_HEIGHTMAP(vs)
       USE_TOROIDAL_HEIGHTMAP(vs)
+      INIT_HEIGHTMAP_DISPLACEMENT_IN_EDITOR(vs)
     }
 
-    INIT_HEIGHTMAP_DISPLACEMENT(vs)
     INIT_DEFORM_HMAP(vs)
     USE_DEFORM_HMAP(vs)
 

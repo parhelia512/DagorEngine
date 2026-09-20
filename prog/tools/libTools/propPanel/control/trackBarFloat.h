@@ -69,6 +69,8 @@ public:
 
   void setDefaultValue(Variant var) override { defaultValue = var.convert<float>(); }
 
+  const char *getImguiTypeName() const override { return "TrackFloat"; }
+
   void updateImgui() override
   {
     ScopedImguiBeginDisabled scopedDisabled(!controlEnabled);
@@ -82,10 +84,14 @@ public:
     {
       ImGui::SetNextItemWidth(sliderWidth);
 
+      const char *label = "##s";
+      ImguiHelper::deactivateItemIfActiveAndDisabled(label);
+
       float value = spinEdit.getValue();
-      const bool changed = controlPower == TRACKBAR_DEFAULT_POWER ? sliderFloat(value) : sliderFloatPower(value);
+      const bool changed = controlPower == TRACKBAR_DEFAULT_POWER ? sliderFloat(label, value) : sliderFloatPower(label, value);
       const bool sliderDeactivatedAfterEdit = ImGui::IsItemDeactivatedAfterEdit();
 
+      setImguiTestItemInfo();
       setPreviousImguiControlTooltip();
 
       if (changed)
@@ -116,7 +122,7 @@ public:
     }
 
     setFocusToNextImGuiControlIfRequested();
-    spinEdit.updateImgui(*this, &controlTooltip, this);
+    spinEdit.updateImgui(*this, &controlTooltip, this, this, "value");
 
     if (spinEdit.isTextInputFocused())
       set_focused_immediate_focus_loss_handler(this);
@@ -127,16 +133,16 @@ public:
 private:
   void onImmediateFocusLoss() override { spinEdit.sendWcChangeAndFinishIfVarChanged(*this); }
 
-  bool sliderFloat(float &value)
+  bool sliderFloat(const char *label, float &value)
   {
     pushTrackBarColorOverrides();
     const bool changed =
-      ImGui::SliderFloat("##s", &value, spinEdit.getMinValue(), spinEdit.getMaxValue(), "", ImGuiSliderFlags_NoInput);
+      ImGui::SliderFloat(label, &value, spinEdit.getMinValue(), spinEdit.getMaxValue(), "", ImGuiSliderFlags_NoInput);
     popTrackBarColorOverrides();
     return changed;
   }
 
-  bool sliderFloatPower(float &value)
+  bool sliderFloatPower(const char *label, float &value)
   {
     // As the power parameter no longer can be given to ImGui's SliderFloat, we map our value between 0 and 1 respecting
     // the power parameter, let the slider work normally within the 0..1 range, and then convert the value back.
@@ -146,7 +152,7 @@ private:
     float ratio = min == max ? 0.0f : pow((spinEdit.getValue() - min) / (max - min), 1.0f / controlPower);
 
     pushTrackBarColorOverrides();
-    const bool changed = ImGui::SliderFloat("##s", &ratio, 0.0f, 1.0f, "", ImGuiSliderFlags_NoInput);
+    const bool changed = ImGui::SliderFloat(label, &ratio, 0.0f, 1.0f, "", ImGuiSliderFlags_NoInput);
     popTrackBarColorOverrides();
     if (!changed)
       return false;

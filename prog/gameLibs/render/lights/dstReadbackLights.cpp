@@ -30,7 +30,7 @@ DistanceReadbackLights::DistanceReadbackLights(ShadowSystem *shadowSystem, SpotL
   resultRingBuffer.init(sizeof(float), 4, 1, lights_res_mgr->getResName("find_max_depth_2d"), SBCF_UA_STRUCTURED_READBACK, 0, false);
 }
 
-void DistanceReadbackLights::update(eastl::fixed_function<sizeof(void *) * 2, RenderStaticCallback> render_static)
+void DistanceReadbackLights::update(RenderStaticCallback render_static)
 {
   if (!processing)
     dispatchQuery(render_static);
@@ -38,7 +38,7 @@ void DistanceReadbackLights::update(eastl::fixed_function<sizeof(void *) * 2, Re
     completeQuery();
 }
 
-void DistanceReadbackLights::dispatchQuery(eastl::fixed_function<sizeof(void *) * 2, RenderStaticCallback> render_static)
+void DistanceReadbackLights::dispatchQuery(RenderStaticCallback render_static)
 {
   if (!findMaxDepth2D)
     return;
@@ -48,8 +48,8 @@ void DistanceReadbackLights::dispatchQuery(eastl::fixed_function<sizeof(void *) 
 
   mat44f view, proj, viewItm;
   const SpotLight &light = spotLights->getLight(lastNonOptId);
-  float prevValue = light.pos_radius.w;
-  if (prevValue <= 0.0 || !light.requiresCullRadiusOptimization) // This shouldn't be true, but it can (or can be explicitly disabled)
+  if (!spotLights->isLightValid(lastNonOptId) || !light.requiresCullRadiusOptimization) // This shouldn't be true, but it can (or can
+                                                                                        // be explicitly disabled)
   {
     // Perspective matrix is wrong, skip this light
     spotLights->setLightOptimized(lastNonOptId);

@@ -121,7 +121,7 @@ macro USE_R5G6B5_2BPP_COMPRESSION(code)
 
       // Between each rounded value there are R5G6B5_SHIFTS - 1 or R5G6B5_SHIFTS full 8bit values.
       uint3 color_final = color_prev;
-      color_final = lerp(color_final, color_this, color_rgb8 > color_this || color_this - color_rgb8 <= R5G6B5_STEP / 2);
+      color_final = lerp(color_final, color_this, or(color_rgb8 > color_this, color_this - color_rgb8 <= R5G6B5_STEP / 2));
       color_final = lerp(color_final, color_next, color_next - color_rgb8 <= R5G6B5_STEP / 2);
 
       return color_final;

@@ -51,7 +51,14 @@ shader specular_cube
 
   (ps) {
     relight_mip@f2 = (relight_mip,integrate_face,0,0);
-    dynamic_cube_tex@smpCube : register(dynamic_cube_tex_reg_no);
+    dynamic_cube_tex@texCube : register(dynamic_cube_tex_reg_no);
+  }
+  if (!maybe(global_frame_has_linear_clamp_sampler))
+  {
+    INIT_GLOBAL_LINEAR_CLAMP_SAMPLER(ps)
+  }
+  hlsl(ps) {
+    #define dynamic_cube_tex_samplerstate global_linear_clamp_sampler
   }
   hlsl(ps) {
     struct MRT_OUTPUT

@@ -3,6 +3,7 @@
 
 #include "entityObj.h"
 #include "entityEditor.h"
+#include "inGameEditor.h"
 
 #include <shaders/dag_dynSceneRes.h>
 #include <daECS/core/entityManager.h>
@@ -340,6 +341,7 @@ void EntityObj::onRemove(ObjectEditor *objEd)
     resetObjectFlags();
   }
 
+  invalidate_scene_tree();
   sqeventbus::send_event("entity_editor.onEntityRemoved", Json::Value((ecs::entity_id_t)eid));
 }
 
@@ -375,7 +377,7 @@ void EntityObj::onAdd(ObjectEditor *objEd)
   removedEntData.reset();
   removedEntComps.reset();
 
-  sqeventbus::send_event("entity_editor.onEntityAdded", Json::Value((ecs::entity_id_t)eid));
+  invalidate_scene_tree();
 }
 
 EditableObject *EntityObj::cloneObject() { return cloneObject(NULL); }

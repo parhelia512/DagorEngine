@@ -6,10 +6,11 @@
 
 #include <generic/dag_tab.h>
 #include <generic/dag_DObject.h>
+#include <util/dag_compilerDefs.h>
 
 /// #Tab of #Ptr
 template <class T>
-class PtrTab : public Tab<Ptr<T>>
+class DAGOR_WARN_IF_UNUSED PtrTab : public Tab<Ptr<T>>
 {
   typedef Tab<Ptr<T>> BASE;
 

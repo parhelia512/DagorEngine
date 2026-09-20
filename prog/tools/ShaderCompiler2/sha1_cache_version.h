@@ -11,11 +11,11 @@
 #elif _CROSS_TARGET_METAL
 static const uint32_t sha1_cache_version = 45;
 #elif _CROSS_TARGET_SPIRV
-static const uint32_t sha1_cache_version = 48;
+static const uint32_t sha1_cache_version = 49;
 #elif _CROSS_TARGET_EMPTY
 static const uint32_t sha1_cache_version = 9;
 #elif _CROSS_TARGET_DX12
-static const uint32_t sha1_cache_version = 54;
+static const uint32_t sha1_cache_version = 57;
 #elif _CROSS_TARGET_DX11 //_TARGET_PC is also defined
-static const uint32_t sha1_cache_version = 14;
+static const uint32_t sha1_cache_version = 15;
 #endif

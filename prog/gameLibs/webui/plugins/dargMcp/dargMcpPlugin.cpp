@@ -18,6 +18,7 @@
 #include <drv/hid/dag_hiKeybIds.h>
 #include <drv/hid/dag_hiMouseIds.h>
 #include <quirrel/sqPrintCollector.h>
+#include <math.h>
 
 using namespace webui;
 using namespace darg;
@@ -28,6 +29,118 @@ static darg::IGuiScene *(*scene_provider)() = nullptr;
 static darg::IGuiScene *get_scene() { return scene_provider ? scene_provider() : nullptr; }
 
 void webui::set_darg_mcp_scene_provider(darg::IGuiScene *(*provider)()) { scene_provider = provider; }
+
+
+static const int JSONRPC_INVALID_REQUEST = -32600;
+static const int JSONRPC_METHOD_NOT_FOUND = -32601;
+static const int JSONRPC_INVALID_PARAMS = -32602;
+static const int JSONRPC_PARSE_ERROR = -32700;
+
+
+static void set_error(Json::Value &response, int code, const eastl::string &message)
+{
+  response["error"]["code"] = code;
+  response["error"]["message"] = message;
+}
+
+
+// jsoncpp asserts on a type mismatch (asString on a number, asInt on a string),
+// so tool arguments are read only through these checked accessors. The first
+// bad field records a JSON-RPC "Invalid params" error and clears ok; a tool
+// reads all its fields, then checks ok before it acts.
+struct ToolArgs
+{
+  const Json::Value &args; // object or null (isObject() accepts both); operator[] asserts on any other type
+  Json::Value &response;
+  eastl::string path; // prefix of field names in messages, e.g. "actions[2]."
+  bool ok = true;
+
+  ToolArgs(const Json::Value &args_, Json::Value &response_, const char *path_ = "") : args(args_), response(response_), path(path_) {}
+
+  void fail(const char *name, const char *problem)
+  {
+    if (ok)
+      set_error(response, JSONRPC_INVALID_PARAMS, "Invalid params: '" + path + name + "' " + problem);
+    ok = false;
+  }
+
+  const Json::Value *lookup(const char *name, bool required)
+  {
+    const Json::Value &v = args[name];
+    if (!v.isNull())
+      return &v;
+    if (required)
+      fail(name, "is required");
+    return nullptr;
+  }
+
+  int readInt(const char *name, int def, bool required)
+  {
+    const Json::Value *v = lookup(name, required);
+    if (!v)
+      return def;
+    if (!v->isInt() && !v->isUInt() && !v->isDouble())
+    {
+      fail(name, "must be an integer");
+      return def;
+    }
+    // a real with no fractional part, such as the 50.0 a float computation serializes to, is an integer
+    double d = v->asDouble();
+    if (d != floor(d))
+    {
+      fail(name, "must be an integer");
+      return def;
+    }
+    // asInt silently wraps an int64 or uint64 value; the double comparison rejects it
+    if (d < Json::Value::minInt || d > Json::Value::maxInt)
+    {
+      fail(name, "is out of the 32-bit integer range");
+      return def;
+    }
+    return int(d);
+  }
+  int getInt(const char *name, int def) { return readInt(name, def, false); }
+  int requireInt(const char *name) { return readInt(name, 0, true); }
+
+  bool getBool(const char *name, bool def)
+  {
+    const Json::Value *v = lookup(name, false);
+    if (!v)
+      return def;
+    if (!v->isBool())
+    {
+      fail(name, "must be a boolean");
+      return def;
+    }
+    return v->asBool();
+  }
+
+  eastl::string readString(const char *name, const char *def, bool required)
+  {
+    const Json::Value *v = lookup(name, required);
+    if (!v)
+      return def;
+    if (!v->isString())
+    {
+      fail(name, "must be a string");
+      return def;
+    }
+    return v->asString();
+  }
+  eastl::string getString(const char *name, const char *def) { return readString(name, def, false); }
+  eastl::string requireString(const char *name) { return readString(name, "", true); }
+
+  const Json::Value *requireArray(const char *name)
+  {
+    const Json::Value *v = lookup(name, true);
+    if (v && !v->isArray())
+    {
+      fail(name, "must be an array");
+      return nullptr;
+    }
+    return v;
+  }
+};
 
 
 static int resolve_mouse_button(const char *name)
@@ -248,6 +361,8 @@ static void handle_tools_list(Json::Value &response)
                           "- {\"type\": \"text\", \"text\": \"Hello\"} — types each character as key press + release\n"
                           "- {\"type\": \"key\", \"key\": \"enter\"} — presses and releases a named key\n"
                           "- {\"type\": \"combo\", \"keys\": [\"ctrl\", \"a\"]} — presses keys in order, releases in reverse\n"
+                          "A bad action anywhere in the batch is an Invalid params error and no key of the batch "
+                          "is sent, so a corrected call repeats nothing.\n"
                           "Named keys: a-z, 0-9, enter, tab, escape/esc, backspace, delete, space, "
                           "up, down, left, right, home, end, pageup, pagedown, insert, f1-f12, "
                           "ctrl/lctrl/rctrl, shift/lshift/rshift, alt/lalt/ralt";
@@ -318,11 +433,8 @@ static void handle_tools_list(Json::Value &response)
   response["result"]["tools"] = tools;
 }
 
-static void tool_get_last_error(const Json::Value &request, Json::Value &response)
+static void tool_get_last_error(Json::Value &response)
 {
-  Json::Value params = request["params"];
-  Json::Value arguments = params["arguments"];
-
   Json::Value result;
 
   IGuiScene *scene = get_scene();
@@ -342,11 +454,11 @@ static void tool_get_last_error(const Json::Value &request, Json::Value &respons
 }
 
 
-static void tool_run_ui_script(const Json::Value &request, Json::Value &response)
+static void tool_run_ui_script(ToolArgs &args, Json::Value &response)
 {
-  Json::Value params = request["params"];
-  Json::Value arguments = params["arguments"];
-  eastl::string filename = arguments.get("filename", "").asString();
+  eastl::string filename = args.requireString("filename");
+  if (!args.ok)
+    return;
 
   Json::Value result;
 
@@ -368,9 +480,14 @@ static void tool_run_ui_script(const Json::Value &request, Json::Value &response
 }
 
 
-static void tool_make_screenshot(const Json::Value &request, Json::Value &response)
+static void tool_make_screenshot(ToolArgs &args, Json::Value &response)
 {
-  Json::Value arguments = request["params"]["arguments"];
+  bool wantTree = args.getBool("scene_tree", true);
+  int treeMaxDepth = args.getInt("scene_tree_max_depth", 50);
+  int treeMaxElems = args.getInt("scene_tree_max_elements", 2000);
+  eastl::string filterText = args.getString("scene_tree_filter", "");
+  if (!args.ok)
+    return;
 
   Json::Value result;
   YAMemSave save;
@@ -429,15 +546,11 @@ static void tool_make_screenshot(const Json::Value &request, Json::Value &respon
     result["content"][1]["data"] = b64Coder.c_str();
     result["content"][1]["mimeType"] = "image/png";
 
-    bool wantTree = arguments.get("scene_tree", true).asBool();
     if (wantTree)
     {
       IGuiScene *scene = get_scene();
       if (scene)
       {
-        int treeMaxDepth = arguments.get("scene_tree_max_depth", 50).asInt();
-        int treeMaxElems = arguments.get("scene_tree_max_elements", 2000).asInt();
-        eastl::string filterText = arguments.get("scene_tree_filter", "").asString();
         eastl::string treeOut;
         scene->inspectSceneTree(treeOut, treeMaxDepth, filterText.empty() ? nullptr : filterText.c_str(), false, false, treeMaxElems);
         if (!treeOut.empty())
@@ -458,10 +571,11 @@ static void tool_make_screenshot(const Json::Value &request, Json::Value &respon
 }
 
 
-static void tool_check_quirrel_syntax(const Json::Value &request, Json::Value &response)
+static void tool_check_quirrel_syntax(ToolArgs &args, Json::Value &response)
 {
-  Json::Value params = request["params"];
-  Json::Value arguments = params["arguments"];
+  eastl::string source = args.requireString("source");
+  if (!args.ok)
+    return;
 
   Json::Value result;
 
@@ -473,7 +587,6 @@ static void tool_check_quirrel_syntax(const Json::Value &request, Json::Value &r
   }
   else
   {
-    eastl::string source = arguments.get("source", "").asString();
     HSQUIRRELVM vm = scene->getScriptVM();
 
     SQPrintCollector printCollector(vm);
@@ -494,9 +607,14 @@ static void tool_check_quirrel_syntax(const Json::Value &request, Json::Value &r
 }
 
 
-static void tool_mouse_click(const Json::Value &request, Json::Value &response)
+static void tool_mouse_click(ToolArgs &args, Json::Value &response)
 {
-  Json::Value arguments = request["params"]["arguments"];
+  int x = args.requireInt("x");
+  int y = args.requireInt("y");
+  eastl::string buttonName = args.getString("button", "left");
+  bool returnHitInfo = args.getBool("return_hit_info", true);
+  if (!args.ok)
+    return;
 
   Json::Value result;
 
@@ -509,15 +627,10 @@ static void tool_mouse_click(const Json::Value &request, Json::Value &response)
     return;
   }
 
-  int x = arguments.get("x", 0).asInt();
-  int y = arguments.get("y", 0).asInt();
-  eastl::string buttonName = arguments.get("button", "left").asString();
   int btnId = resolve_mouse_button(buttonName.c_str());
   if (btnId < 0)
   {
-    result["content"][0]["type"] = "text";
-    result["content"][0]["text"] = "ERROR: unknown button '" + buttonName + "', expected 'left', 'right', or 'middle'";
-    response["result"] = result;
+    args.fail("button", ("must be 'left', 'right' or 'middle', not '" + buttonName + "'").c_str());
     return;
   }
 
@@ -528,7 +641,6 @@ static void tool_mouse_click(const Json::Value &request, Json::Value &response)
   result["content"][0]["type"] = "text";
   result["content"][0]["text"] = "OK";
 
-  bool returnHitInfo = arguments.get("return_hit_info", true).asBool();
   if (returnHitInfo)
   {
     eastl::string hitOut;
@@ -544,9 +656,12 @@ static void tool_mouse_click(const Json::Value &request, Json::Value &response)
 }
 
 
-static void tool_mouse_move(const Json::Value &request, Json::Value &response)
+static void tool_mouse_move(ToolArgs &args, Json::Value &response)
 {
-  Json::Value arguments = request["params"]["arguments"];
+  int x = args.requireInt("x");
+  int y = args.requireInt("y");
+  if (!args.ok)
+    return;
 
   Json::Value result;
 
@@ -558,9 +673,6 @@ static void tool_mouse_move(const Json::Value &request, Json::Value &response)
     response["result"] = result;
     return;
   }
-
-  int x = arguments.get("x", 0).asInt();
-  int y = arguments.get("y", 0).asInt();
 
   scene->onMouseEvent(INP_EV_POINTER_MOVE, 0, short(x), short(y), 0);
 
@@ -570,142 +682,179 @@ static void tool_mouse_move(const Json::Value &request, Json::Value &response)
 }
 
 
-static void tool_send_keyboard_input(const Json::Value &request, Json::Value &response)
+static void set_text_result(Json::Value &response, const eastl::string &text)
 {
-  Json::Value arguments = request["params"]["arguments"];
-
   Json::Value result;
-
-  IGuiScene *scene = get_scene();
-  if (!scene)
-  {
-    result["content"][0]["type"] = "text";
-    result["content"][0]["text"] = "ERROR: no UI scene";
-    response["result"] = result;
-    return;
-  }
-
-  const Json::Value &actions = arguments["actions"];
-  if (!actions.isArray())
-  {
-    result["content"][0]["type"] = "text";
-    result["content"][0]["text"] = "ERROR: 'actions' must be an array";
-    response["result"] = result;
-    return;
-  }
-
-  for (Json::ArrayIndex i = 0; i < actions.size(); ++i)
-  {
-    const Json::Value &action = actions[i];
-    eastl::string type = action.get("type", "").asString();
-
-    if (type == "text")
-    {
-      eastl::string text = action.get("text", "").asString();
-      for (const char *p = text.c_str(); *p;)
-      {
-        // Decode UTF-8 to wchar_t
-        wchar_t wc = 0;
-        unsigned char c = (unsigned char)*p;
-        if (c < 0x80)
-        {
-          wc = c;
-          p += 1;
-        }
-        else if (c < 0xE0)
-        {
-          wc = (c & 0x1F) << 6;
-          if ((unsigned char)p[1] >= 0x80)
-            wc |= ((unsigned char)p[1] & 0x3F);
-          p += 2;
-        }
-        else if (c < 0xF0)
-        {
-          wc = (c & 0x0F) << 12;
-          if ((unsigned char)p[1] >= 0x80)
-            wc |= ((unsigned char)p[1] & 0x3F) << 6;
-          if ((unsigned char)p[2] >= 0x80)
-            wc |= ((unsigned char)p[2] & 0x3F);
-          p += 3;
-        }
-        else
-        {
-          // Skip 4-byte sequences (outside BMP)
-          p += 4;
-          continue;
-        }
-        scene->onKbdEvent(INP_EV_PRESS, 0, 0, false, wc);
-        scene->onKbdEvent(INP_EV_RELEASE, 0, 0, false, wc);
-      }
-    }
-    else if (type == "key")
-    {
-      eastl::string keyName = action.get("key", "").asString();
-      int dkey = resolve_key_name(keyName.c_str());
-      if (dkey < 0)
-      {
-        result["content"][0]["type"] = "text";
-        result["content"][0]["text"] = "ERROR: unknown key '" + keyName + "' in action " + eastl::to_string(i);
-        response["result"] = result;
-        return;
-      }
-      scene->onKbdEvent(INP_EV_PRESS, dkey, 0, false);
-      scene->onKbdEvent(INP_EV_RELEASE, dkey, 0, false);
-    }
-    else if (type == "combo")
-    {
-      const Json::Value &keys = action["keys"];
-      if (!keys.isArray() || keys.empty())
-      {
-        result["content"][0]["type"] = "text";
-        result["content"][0]["text"] = "ERROR: 'combo' action requires non-empty 'keys' array in action " + eastl::to_string(i);
-        response["result"] = result;
-        return;
-      }
-
-      // Resolve all key names first
-      eastl::vector<int> dkeys;
-      dkeys.reserve(keys.size());
-      for (Json::ArrayIndex k = 0; k < keys.size(); ++k)
-      {
-        eastl::string keyName = keys[k].asString();
-        int dkey = resolve_key_name(keyName.c_str());
-        if (dkey < 0)
-        {
-          result["content"][0]["type"] = "text";
-          result["content"][0]["text"] = "ERROR: unknown key '" + keyName + "' in combo, action " + eastl::to_string(i);
-          response["result"] = result;
-          return;
-        }
-        dkeys.push_back(dkey);
-      }
-
-      // Press all keys in order
-      for (int dk : dkeys)
-        scene->onKbdEvent(INP_EV_PRESS, dk, 0, false);
-
-      // Release in reverse order
-      for (int j = (int)dkeys.size() - 1; j >= 0; --j)
-        scene->onKbdEvent(INP_EV_RELEASE, dkeys[j], 0, false);
-    }
-    else
-    {
-      result["content"][0]["type"] = "text";
-      result["content"][0]["text"] = "ERROR: unknown action type '" + type + "' in action " + eastl::to_string(i);
-      response["result"] = result;
-      return;
-    }
-  }
-
   result["content"][0]["type"] = "text";
-  result["content"][0]["text"] = "OK";
+  result["content"][0]["text"] = text;
   response["result"] = result;
 }
 
-
-static void tool_get_scene_tree(const Json::Value &request, Json::Value &response)
+// a "text" action carries its text; a "key" or "combo" action carries the resolved keys
+struct KeyboardAction
 {
-  Json::Value arguments = request["params"]["arguments"];
+  bool isText = false;
+  eastl::string text;
+  eastl::vector<int> dkeys;
+};
+
+// reads one action; on a bad one the response already carries the error
+static bool read_keyboard_action(const Json::Value &actionVal, Json::ArrayIndex i, Json::Value &response, KeyboardAction &out)
+{
+  eastl::string actionPath = "actions[" + eastl::to_string(i) + "]";
+  if (!actionVal.isObject())
+  {
+    set_error(response, JSONRPC_INVALID_PARAMS, "Invalid params: '" + actionPath + "' must be an object");
+    return false;
+  }
+  ToolArgs action(actionVal, response, (actionPath + ".").c_str());
+  eastl::string type = action.requireString("type");
+  if (!action.ok)
+    return false;
+
+  if (type == "text")
+  {
+    out.isText = true;
+    out.text = action.getString("text", "");
+    return action.ok;
+  }
+  if (type == "key")
+  {
+    eastl::string keyName = action.getString("key", "");
+    if (!action.ok)
+      return false;
+    int dkey = resolve_key_name(keyName.c_str());
+    if (dkey < 0)
+    {
+      action.fail("key", ("is not a known key: '" + keyName + "'").c_str());
+      return false;
+    }
+    out.dkeys.push_back(dkey);
+    return true;
+  }
+  if (type == "combo")
+  {
+    const Json::Value *keys = action.requireArray("keys");
+    if (!keys)
+      return false;
+    if (keys->empty())
+    {
+      action.fail("keys", "must not be empty");
+      return false;
+    }
+    out.dkeys.reserve(keys->size());
+    for (Json::ArrayIndex k = 0; k < keys->size(); ++k)
+    {
+      const Json::Value &keyVal = (*keys)[k];
+      eastl::string keyField = "keys[" + eastl::to_string(k) + "]";
+      if (!keyVal.isString())
+      {
+        action.fail(keyField.c_str(), "must be a string");
+        return false;
+      }
+      eastl::string keyName = keyVal.asString();
+      int dkey = resolve_key_name(keyName.c_str());
+      if (dkey < 0)
+      {
+        action.fail(keyField.c_str(), ("is not a known key: '" + keyName + "'").c_str());
+        return false;
+      }
+      out.dkeys.push_back(dkey);
+    }
+    return true;
+  }
+  action.fail("type", ("is not a known action type: '" + type + "'").c_str());
+  return false;
+}
+
+static void send_text(IGuiScene *scene, const eastl::string &text)
+{
+  for (const char *p = text.c_str(); *p;)
+  {
+    // Decode UTF-8 to wchar_t
+    wchar_t wc = 0;
+    unsigned char c = (unsigned char)*p;
+    if (c < 0x80)
+    {
+      wc = c;
+      p += 1;
+    }
+    else if (c < 0xE0)
+    {
+      wc = (c & 0x1F) << 6;
+      if ((unsigned char)p[1] >= 0x80)
+        wc |= ((unsigned char)p[1] & 0x3F);
+      p += 2;
+    }
+    else if (c < 0xF0)
+    {
+      wc = (c & 0x0F) << 12;
+      if ((unsigned char)p[1] >= 0x80)
+        wc |= ((unsigned char)p[1] & 0x3F) << 6;
+      if ((unsigned char)p[2] >= 0x80)
+        wc |= ((unsigned char)p[2] & 0x3F);
+      p += 3;
+    }
+    else
+    {
+      // Skip 4-byte sequences (outside BMP)
+      p += 4;
+      continue;
+    }
+    scene->onKbdEvent(INP_EV_PRESS, 0, 0, false, wc);
+    scene->onKbdEvent(INP_EV_RELEASE, 0, 0, false, wc);
+  }
+}
+
+// every action is read before the first key goes to the scene, so a bad action later in the
+// batch leaves the scene untouched and the corrected call does not repeat delivered keys
+static void tool_send_keyboard_input(ToolArgs &args, Json::Value &response)
+{
+  const Json::Value *actions = args.requireArray("actions");
+  if (!actions)
+    return;
+
+  IGuiScene *scene = get_scene();
+  if (!scene)
+  {
+    set_text_result(response, "ERROR: no UI scene");
+    return;
+  }
+
+  eastl::vector<KeyboardAction> parsed;
+  parsed.reserve(actions->size());
+  for (Json::ArrayIndex i = 0; i < actions->size(); ++i)
+    if (!read_keyboard_action((*actions)[i], i, response, parsed.push_back()))
+      return;
+
+  for (const KeyboardAction &action : parsed)
+  {
+    if (action.isText)
+    {
+      send_text(scene, action.text);
+      continue;
+    }
+    // a combo presses its keys in order and releases them in reverse; a single key is a combo of one
+    for (int dk : action.dkeys)
+      scene->onKbdEvent(INP_EV_PRESS, dk, 0, false);
+    for (int j = (int)action.dkeys.size() - 1; j >= 0; --j)
+      scene->onKbdEvent(INP_EV_RELEASE, action.dkeys[j], 0, false);
+  }
+
+  set_text_result(response, "OK");
+}
+
+
+static void tool_get_scene_tree(ToolArgs &args, Json::Value &response)
+{
+  int maxDepth = args.getInt("max_depth", 50);
+  eastl::string filterText = args.getString("filter_text", "");
+  bool includeHidden = args.getBool("include_hidden", false);
+  bool skipNonVisual = args.getBool("skip_non_visual", false);
+  int maxElements = args.getInt("max_elements", 2000);
+  if (!args.ok)
+    return;
+
   Json::Value result;
 
   IGuiScene *scene = get_scene();
@@ -716,12 +865,6 @@ static void tool_get_scene_tree(const Json::Value &request, Json::Value &respons
     response["result"] = result;
     return;
   }
-
-  int maxDepth = arguments.get("max_depth", 50).asInt();
-  eastl::string filterText = arguments.get("filter_text", "").asString();
-  bool includeHidden = arguments.get("include_hidden", false).asBool();
-  bool skipNonVisual = arguments.get("skip_non_visual", false).asBool();
-  int maxElements = arguments.get("max_elements", 2000).asInt();
 
   eastl::string out;
   scene->inspectSceneTree(out, maxDepth, filterText.empty() ? nullptr : filterText.c_str(), includeHidden, skipNonVisual, maxElements);
@@ -732,9 +875,13 @@ static void tool_get_scene_tree(const Json::Value &request, Json::Value &respons
 }
 
 
-static void tool_find_elements_at(const Json::Value &request, Json::Value &response)
+static void tool_find_elements_at(ToolArgs &args, Json::Value &response)
 {
-  Json::Value arguments = request["params"]["arguments"];
+  int x = args.requireInt("x");
+  int y = args.requireInt("y");
+  if (!args.ok)
+    return;
+
   Json::Value result;
 
   IGuiScene *scene = get_scene();
@@ -745,9 +892,6 @@ static void tool_find_elements_at(const Json::Value &request, Json::Value &respo
     response["result"] = result;
     return;
   }
-
-  int x = arguments.get("x", 0).asInt();
-  int y = arguments.get("y", 0).asInt();
 
   eastl::string out;
   scene->inspectElementsAtPos(out, x, y);
@@ -758,9 +902,14 @@ static void tool_find_elements_at(const Json::Value &request, Json::Value &respo
 }
 
 
-static void tool_find_elements_by_text(const Json::Value &request, Json::Value &response)
+static void tool_find_elements_by_text(ToolArgs &args, Json::Value &response)
 {
-  Json::Value arguments = request["params"]["arguments"];
+  eastl::string text = args.requireString("text");
+  bool caseSensitive = args.getBool("case_sensitive", false);
+  int maxResults = args.getInt("max_results", 50);
+  if (!args.ok)
+    return;
+
   Json::Value result;
 
   IGuiScene *scene = get_scene();
@@ -771,10 +920,6 @@ static void tool_find_elements_by_text(const Json::Value &request, Json::Value &
     response["result"] = result;
     return;
   }
-
-  eastl::string text = arguments.get("text", "").asString();
-  bool caseSensitive = arguments.get("case_sensitive", false).asBool();
-  int maxResults = arguments.get("max_results", 50).asInt();
 
   eastl::string out;
   scene->findElementsByText(out, text.c_str(), caseSensitive, maxResults);
@@ -787,36 +932,56 @@ static void tool_find_elements_by_text(const Json::Value &request, Json::Value &
 
 static void handle_tool_call(const Json::Value &request, Json::Value &response)
 {
-  Json::Value params = request["params"];
-  eastl::string toolName = params["name"].asString();
+  const Json::Value &params = request["params"];
+  if (!params.isObject())
+  {
+    set_error(response, JSONRPC_INVALID_PARAMS, "Invalid params: 'params' must be an object");
+    return;
+  }
+  const Json::Value &name = params["name"];
+  if (name.isNull())
+  {
+    set_error(response, JSONRPC_INVALID_PARAMS, "Invalid params: 'name' is required");
+    return;
+  }
+  if (!name.isString())
+  {
+    set_error(response, JSONRPC_INVALID_PARAMS, "Invalid params: 'name' must be a string");
+    return;
+  }
+  const Json::Value &arguments = params["arguments"];
+  if (!arguments.isObject())
+  {
+    set_error(response, JSONRPC_INVALID_PARAMS, "Invalid params: 'arguments' must be an object");
+    return;
+  }
 
+  eastl::string toolName = name.asString();
   debug("MCP tool use call: %s", toolName.c_str());
 
+  ToolArgs args(arguments, response);
   if (toolName == "get_last_error")
-    tool_get_last_error(request, response);
+    tool_get_last_error(response);
   else if (toolName == "run_ui_script")
-    tool_run_ui_script(request, response);
+    tool_run_ui_script(args, response);
   else if (toolName == "make_screenshot")
-    tool_make_screenshot(request, response);
+    tool_make_screenshot(args, response);
   else if (toolName == "check_quirrel_syntax")
-    tool_check_quirrel_syntax(request, response);
+    tool_check_quirrel_syntax(args, response);
   else if (toolName == "mouse_click")
-    tool_mouse_click(request, response);
+    tool_mouse_click(args, response);
   else if (toolName == "mouse_move")
-    tool_mouse_move(request, response);
+    tool_mouse_move(args, response);
   else if (toolName == "send_keyboard_input")
-    tool_send_keyboard_input(request, response);
+    tool_send_keyboard_input(args, response);
   else if (toolName == "get_scene_tree")
-    tool_get_scene_tree(request, response);
+    tool_get_scene_tree(args, response);
   else if (toolName == "find_elements_at")
-    tool_find_elements_at(request, response);
+    tool_find_elements_at(args, response);
   else if (toolName == "find_elements_by_text")
-    tool_find_elements_by_text(request, response);
+    tool_find_elements_by_text(args, response);
   else
-  {
-    response["error"]["code"] = -32602;
-    response["error"]["message"] = "Unknown tool: " + toolName;
-  }
+    set_error(response, JSONRPC_INVALID_PARAMS, "Unknown tool: " + toolName);
 }
 
 
@@ -829,49 +994,71 @@ static void handle_resources_list(Json::Value &response)
 
 static void handle_resource_read(const Json::Value &request, Json::Value &response)
 {
-  eastl::string uri = request["params"]["uri"].asString();
+  const Json::Value &params = request["params"];
+  if (!params.isObject())
+  {
+    set_error(response, JSONRPC_INVALID_PARAMS, "Invalid params: 'params' must be an object");
+    return;
+  }
+  const Json::Value &uri = params["uri"];
+  if (uri.isNull())
+  {
+    set_error(response, JSONRPC_INVALID_PARAMS, "Invalid params: 'uri' is required");
+    return;
+  }
+  if (!uri.isString())
+  {
+    set_error(response, JSONRPC_INVALID_PARAMS, "Invalid params: 'uri' must be a string");
+    return;
+  }
 
-  response["error"]["code"] = -32602;
-  response["error"]["message"] = "Unknown resource: " + uri;
+  set_error(response, JSONRPC_INVALID_PARAMS, "Unknown resource: " + uri.asString());
 }
 
 
 static void darg_mcp(RequestInfo *params)
 {
-  Json::Value request;
-  Json::Reader reader;
   if (!params->content || !params->content_len)
   {
     text_response(params->conn, "Must be a POST request with data");
     return;
   }
 
-  reader.parse(params->content, request);
-
   // MCP-compliant JSON response
   Json::Value response;
   response["jsonrpc"] = "2.0";
-  response["id"] = request["id"];
 
-  eastl::string method = request["method"].asString();
-
-  debug("MCP call, method: %s", method.c_str());
-
-  if (method == "initialize")
-    handle_initialize(request, response);
-  else if (method == "tools/list")
-    handle_tools_list(response);
-  else if (method == "tools/call")
-    handle_tool_call(request, response);
-  else if (method == "resources/list")
-    handle_resources_list(response);
-  else if (method == "resources/read")
-    handle_resource_read(request, response);
+  Json::Value request;
+  Json::Reader reader;
+  if (!reader.parse(params->content, request))
+  {
+    response["id"] = Json::Value();
+    set_error(response, JSONRPC_PARSE_ERROR, "Parse error: " + reader.getFormattedErrorMessages());
+  }
+  else if (!request.isObject() || !request["method"].isString())
+  {
+    response["id"] = request.isObject() ? request["id"] : Json::Value();
+    set_error(response, JSONRPC_INVALID_REQUEST, "Invalid Request: expected an object with a string 'method'");
+  }
   else
   {
-    // Unknown method
-    response["error"]["code"] = -32601;
-    response["error"]["message"] = "Method not found";
+    response["id"] = request["id"];
+    eastl::string method = request["method"].asString();
+
+    debug("MCP call, method: %s", method.c_str());
+
+    if (method == "initialize")
+      handle_initialize(request, response);
+    else if (method == "tools/list")
+      handle_tools_list(response);
+    else if (method == "tools/call")
+      handle_tool_call(request, response);
+    else if (method == "resources/list")
+      handle_resources_list(response);
+    else if (method == "resources/read")
+      handle_resource_read(request, response);
+    else
+      set_error(response, JSONRPC_METHOD_NOT_FOUND, "Method not found");
   }
 
   eastl::string respData = response.toStyledString();

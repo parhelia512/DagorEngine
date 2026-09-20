@@ -33,12 +33,21 @@ float4x4 gpu_objects_remove_box_mtx;
 float4 gpu_objects_remove_box_size;
 float4 gpu_objects_spoofed_decal_size;
 
+// Dev-only deterministic placement: sort the gathered triangles by a stable
+// vertex key before the prefix sum, so the placer's cumulative-area binary
+// search maps each (thread_id, placer_tm) to the same triangle every run.
+int gpu_objects_sort_pow2 = 0;
+int gpu_objects_sort_block = 0;
+int gpu_objects_sort_stride = 0;
+
 int gpu_objects_distance_affect_decal = 0;
 interval gpu_objects_distance_affect_decal: no<1, yes;
 
 buffer gpu_objects_geometry_meshes;
 buffer gpu_objects_counter;
 buffer gpu_objects_gathered_triangles;
+buffer gpu_objects_sort_src;
+buffer gpu_objects_sort_dst;
 int gpu_objects_mesh_offset;
 int gpu_objects_max_triangles;
 float4 gpu_objects_debug_color;
@@ -1106,4 +1115,104 @@ shader gpu_object_placer_draw_geometry_debug
     }
   }
   compile("target_ps", "debug_ps");
+}
+
+// Dev-only: fill slots [count, pow2) of the gather buffer with a sentinel
+// triangle whose packed vertex uints are all 0xFFFFFFFF. Real triangles hold
+// packed f16 values (always < 0xFFFFFFFF), so the sentinel is strictly greater
+// and sorts to the end. This is value-based, so it stays correct even as
+// triangles move between slots during the sort (no index-based sentinel).
+shader gpu_objects_fill_sort_sentinels_cs
+{
+  (cs) {
+    sort_pow2@i1 = gpu_objects_sort_pow2;
+    triangles_dst@uav = gpu_objects_sort_dst hlsl {
+      #include "gpuObjects/gpu_objects_const.hlsli"
+      RWStructuredBuffer<GeometryTriangle> triangles_dst@uav;
+    };
+    counter@buf = gpu_objects_counter hlsl {
+      #include "gpuObjects/gpu_objects_const.hlsli"
+      ByteAddressBuffer counter@buf;
+    };
+    max_triangles@i1 = (gpu_objects_max_triangles);
+  }
+  hlsl(cs) {
+    [numthreads(DISPATCH_WARP_SIZE, 1, 1)]
+    void fill_sentinels(uint tid : SV_DispatchThreadID)
+    {
+      // Read the live triangle count from the GPU counter so the sort does not
+      // depend on the CPU readback (which is not available yet at gather time).
+      uint count = min(counter.Load(TRIANGLES_COUNT * 4), (uint)max_triangles);
+      if (tid < count || tid >= (uint)sort_pow2)
+        return;
+      GeometryTriangle s;
+      s.v1v2 = uint3(0xFFFFFFFFu, 0xFFFFFFFFu, 0xFFFFFFFFu);
+      s.areaDoubled = asfloat(0x7F800000); // +inf
+      s.v3 = uint3(0xFFFFFFFFu, 0xFFFFFFFFu, 0xFFFFFFFFu);
+      s.pad2 = 0;
+      triangles_dst[tid] = s;
+    }
+  }
+  compile("cs_5_0", "fill_sentinels");
+}
+
+// Dev-only: one double-buffered bitonic compare-exchange pass.
+shader gpu_objects_sort_triangles_cs
+{
+  (cs) {
+    sort_pow2@i1 = gpu_objects_sort_pow2;
+    sort_block@i1 = gpu_objects_sort_block;
+    sort_stride@i1 = gpu_objects_sort_stride;
+    triangles_src@buf = gpu_objects_sort_src hlsl {
+      #include "gpuObjects/gpu_objects_const.hlsli"
+      StructuredBuffer<GeometryTriangle> triangles_src@buf;
+    };
+    triangles_dst@uav = gpu_objects_sort_dst hlsl {
+      #include "gpuObjects/gpu_objects_const.hlsli"
+      RWStructuredBuffer<GeometryTriangle> triangles_dst@uav;
+    };
+  }
+  hlsl(cs) {
+    bool tri_less(uint3 av1v2, uint3 av3, float aarea, uint3 bv1v2, uint3 bv3, float barea)
+    {
+      if (av1v2.x != bv1v2.x) return av1v2.x < bv1v2.x;
+      if (av1v2.y != bv1v2.y) return av1v2.y < bv1v2.y;
+      if (av1v2.z != bv1v2.z) return av1v2.z < bv1v2.z;
+      if (av3.x != bv3.x) return av3.x < bv3.x;
+      if (av3.y != bv3.y) return av3.y < bv3.y;
+      if (av3.z != bv3.z) return av3.z < bv3.z;
+      return aarea < barea;
+    }
+
+    [numthreads(DISPATCH_WARP_SIZE, 1, 1)]
+    void sort_pass(uint tid : SV_DispatchThreadID)
+    {
+      uint pow2 = (uint)sort_pow2;
+      if (tid >= pow2 / 2u)
+        return;
+      uint stride = (uint)sort_stride;
+      uint block = (uint)sort_block;
+      uint left = ((tid / stride) * 2u * stride) + (tid % stride);
+      uint right = left + stride;
+      if (right >= pow2)
+        return;
+      GeometryTriangle L = triangles_src[left];
+      GeometryTriangle R = triangles_src[right];
+      bool ascending = (left & block) == 0u;
+      bool lLess = tri_less(L.v1v2, L.v3, L.areaDoubled, R.v1v2, R.v3, R.areaDoubled);
+      bool rLess = tri_less(R.v1v2, R.v3, R.areaDoubled, L.v1v2, L.v3, L.areaDoubled);
+      bool doSwap = ascending ? rLess : lLess;
+      if (doSwap)
+      {
+        triangles_dst[left] = R;
+        triangles_dst[right] = L;
+      }
+      else
+      {
+        triangles_dst[left] = L;
+        triangles_dst[right] = R;
+      }
+    }
+  }
+  compile("cs_5_0", "sort_pass");
 }

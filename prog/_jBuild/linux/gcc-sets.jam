@@ -18,6 +18,7 @@ local _DEF_COM_CMDLINE =
   -D_POSIX_C_SOURCE=200809L -D_GNU_SOURCE
   -D__STDC_CONSTANT_MACROS
 ;
+if $(StrictAliasing) = no { _DEF_COM_CMDLINE += -fno-strict-aliasing ; }
 if $(MAbi) = 64 { _DEF_COM_CMDLINE += -D_TARGET_64BIT -D_TARGET_ARCH_X86_64 -D__LINUX__=64 ; }
 else { _DEF_COM_CMDLINE += -D_TARGET_ARCH_X86 -D__LINUX__=32 -D_FILE_OFFSET_BITS=64 ; }
 if $(KernelLinkage) = static { _DEF_COM_CMDLINE += -D_TARGET_STATIC_LIB ; }
@@ -79,10 +80,11 @@ if $(CheckOnly) != yes {
 CC  ?= gcc ;
 CXX ?= g++ ;
 
-_C_COMPILER   = $(CC) [ StripStrings $(_DEF_COM_CMDLINE) $(_DEF_C_CMDLINE) : $(RemoveCompilerSwitches_$(_BuildEnv)) ] ;
-_CPP_COMPILER = $(CXX) [ StripStrings $(_DEF_COM_CMDLINE) $(_DEF_CPP_CMDLINE) : $(RemoveCompilerSwitches_$(_BuildEnv)) ] ;
+# CI: $(CompilerWrapper) prefixes a compiler cache (sccache); empty by default so dev builds are unchanged.
+_C_COMPILER   = $(CompilerWrapper) $(CC) [ StripStrings $(_DEF_COM_CMDLINE) $(_DEF_C_CMDLINE) : $(RemoveCompilerSwitches_$(_BuildEnv)) ] ;
+_CPP_COMPILER = $(CompilerWrapper) $(CXX) [ StripStrings $(_DEF_COM_CMDLINE) $(_DEF_CPP_CMDLINE) : $(RemoveCompilerSwitches_$(_BuildEnv)) ] ;
 _ASM_COMPILER = nasm -f elf$(MAbi) ;
-_GAS_COMPILER = $(CC) -g -c -m$(MAbi) ;
+_GAS_COMPILER = $(CompilerWrapper) $(CC) -g -c -m$(MAbi) ;
 
 _INCLUDE      = $(Root)/prog/dagorInclude $(Root)/prog/1stPartyLibs $(Root)/prog/3rdPartyLibs ;
 

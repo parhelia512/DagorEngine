@@ -65,8 +65,7 @@ static __forceinline void heightLeaf_SoA(const uint8_t *data, const QuadLeafFiel
   vec4f valid = get4TrianglesHtWT<CULL_DOWN>(p, ht, p0, p1, p2);
   valid = v_and(valid, v_cmp_ge(v_splats(acc.limit), ht));
   ht = v_sel(v_splats(-1e30f), ht, valid);
-  vec4f m = v_max(ht, v_perm_zwxy(ht));
-  m = v_max(m, v_perm_yzwx(m));
+  vec4f m = v_hmax(ht);
   const float h = v_extract_x(m);
   if (h > acc.maxHt)
   {

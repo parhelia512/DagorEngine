@@ -390,6 +390,13 @@ shader gpu_objects_create_indirect {
 float4 hmap_ofs_thickness_map = (1/2048,1/2048,0,0);
 texture hmap_ofs_thickness;
 
+define_macro_if_not_defined USE_DISPLACEMENT_PHYSMAT(code)
+  hlsl(code)
+  {
+    half get_phys_height(float height, float thickness, float offset) { return 0; }
+  }
+endmacro
+
 texture perlin_noise3d;
 
 macro GPU_OBJECTS_LOAD_MESH_TRIANGLE()
@@ -1270,20 +1277,23 @@ shader gpu_objects_gather_matrices_cs
     #define target_offset copy_parameters.x
     #define max_in_cell copy_parameters.y
     #define visible_cells copy_parameters.z
-    #define lod_no copy_parameters.w
 
     #include "gpuObjects/gpu_objects_const.hlsli"
+
+    #define lod_no (copy_parameters.w & GPUOBJ_LOD_NO_MASK)
+    #define offsets_base (copy_parameters.w >> GPUOBJ_OFFSETS_BASE_SHIFT)
 
     [numthreads(DISPATCH_WARP_SIZE_XY, DISPATCH_WARP_SIZE_XY, 1)]
     void gather_matrices(uint2 thread_id : SV_DispatchThreadID)
     {
       if (visible_cells <= thread_id.x)
         return;
-      uint matricesInCell = offsets[thread_id.x + 1].x - offsets[thread_id.x].x;
+      uint cellPair = (uint)offsets_base + thread_id.x;
+      uint matricesInCell = offsets[cellPair + 1].x - offsets[cellPair].x;
       if (matricesInCell <= thread_id.y)
         return;
-      uint matrixOffset = (offsets[thread_id.x].y * max_in_cell + thread_id.y) * ROWS_IN_MATRIX;
-      uint targetOffset = target_offset + (offsets[thread_id.x].x + thread_id.y) * ROWS_IN_MATRIX;
+      uint matrixOffset = (offsets[cellPair].y * max_in_cell + thread_id.y) * ROWS_IN_MATRIX;
+      uint targetOffset = target_offset + (offsets[cellPair].x + thread_id.y) * ROWS_IN_MATRIX;
       bufferAt(targetBuffer, targetOffset + 0) = bufferAt(matrices, matrixOffset + 0);
       bufferAt(targetBuffer, targetOffset + 1) = bufferAt(matrices, matrixOffset + 1);
       bufferAt(targetBuffer, targetOffset + 2) = bufferAt(matrices, matrixOffset + 2);

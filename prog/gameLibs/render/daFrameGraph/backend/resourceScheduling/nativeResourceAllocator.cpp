@@ -99,7 +99,8 @@ D3dResource *NativeResourceAllocator::getD3dResource(int frame, intermediate::Re
            cachedIntermediateResources[res_idx].asScheduled().resourceType == ResourceType::Buffer);
 
   D3dResource *res = placedResourceProperties[frame][res_idx].activeResource;
-  G_ASSERT(res);
+  G_ASSERT_LOG_ONCE(res, "daFG: resource '%s' has nothing placed for frame %d!", cachedIntermediateResourceNames[res_idx].c_str(),
+    frame);
   return res;
 }
 

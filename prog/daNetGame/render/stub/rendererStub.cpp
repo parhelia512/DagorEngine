@@ -83,22 +83,13 @@ bool have_renderer() { return false; }
 
 void before_draw_scene(int, float, float, ecs::EntityId) {}
 void draw_scene(uint32_t) {}
+// no renderer draws a splash over a game
+bool is_splash_over_game_active() { return false; }
+bool splash_opens_onto_game() { return false; }
 
 void push_debug_sphere(const Point3 &) {}
 void set_debug_group_name(const char *) {}
 void init_device_reset() {}
-
-void animated_splash_screen_start(bool) {}
-void animated_splash_screen_stop() {}
-void animated_splash_screen_draw() {}
-void debug_animated_splash_screen() {}
-bool is_animated_splash_screen_started() { return false; }
-bool is_animated_splash_screen_encoding() { return false; }
-
-void start_animated_splash_screen_in_thread() {}
-void stop_animated_splash_screen_in_thread() {}
-bool is_animated_splash_screen_in_thread() { return false; }
-void animated_splash_screen_allow_watchdog_kick(bool) {}
 
 bool should_draw_debug_collision() { return false; }
 bool should_hide_debug() { return false; }
@@ -117,6 +108,7 @@ void apply_united_vdata_settings(const DataBlock *) {}
 void prepare_ri_united_vdata_setup(const DataBlock *) {}
 void prepare_dynm_united_vdata_setup(const DataBlock *) {}
 void prepare_voxel_atlas_setup(const DataBlock *) {}
+void apply_united_vdata_allocation_limits(bool) {}
 
 const char *node_based_shader_current_platform_suffix() { return ""; }
 DngSkies *get_daskies() { return nullptr; }

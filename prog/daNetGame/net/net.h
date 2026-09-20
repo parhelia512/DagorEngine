@@ -9,6 +9,7 @@
 #include <dag/dag_vector.h>
 #include <EASTL/string.h>
 #include <osApiWrappers/dag_miscApi.h>
+#include <daECS/net/authority.h>
 #include <debug/dag_assert.h>
 
 class String;
@@ -23,13 +24,8 @@ class IMessage;
 class MessageClass;
 struct MessageNetDesc;
 
+// Compat name; maps to net authority thread (or unset).
 bool is_this_thread_net_em_owner();
-bool topology_read_pin_active();
-// Transfers EM ownership and keeps the lock-free owner check above in sync.
-// Use instead of a bare EntityManager::setOwnerThreadId for any EM that may be net-bound.
-// Lock order: the TopologyLock rwlock stays outermost; this takes the internal net-EM
-// spinlock, so it must never be entered by code already holding that spinlock.
-void change_em_ownership(ecs::EntityManager &mgr, int64_t new_owner_tid);
 
 enum class ServerFlags : uint16_t
 {
@@ -45,15 +41,6 @@ DAGOR_ENABLE_ENUM_BITMASK(ServerFlags)
 
 ServerFlags get_server_flags();
 
-enum ConnFlags : uint32_t
-{
-  CF_NONE = 0,
-  CF_PENDING = 1 << 0, // Not yet authenticated
-  // resv    =  1<<1,
-  // resv    =  1<<2,
-  // resv    =  1<<3,
-};
-
 struct ConnectParams
 {
   dag::Vector<eastl::string> serverUrls;
@@ -61,26 +48,6 @@ struct ConnectParams
   dag::Vector<uint8_t> authKey;
   eastl::string sessionId;
   eastl::string relayStunRequestAddr; // if set, UDP punch to this relay addr is queued on connect
-};
-
-// RAII guard at job roots / main / user threads: lazily syncs TLS, gates READ_SNAPSHOT.
-// Nested instances and owner-thread instances no-op. assumeSingleUpdate=true asserts (via
-// LOGERR_ONCE) on publish-during-scope; long-running jobs spanning publishes pass false.
-// `label` (any string literal) identifies the scope site in single-update-violation /
-// stale-TLS LOGERR_ONCE diagnostics; pass a short job/site name when constructing.
-struct NetSnapshotScope
-{
-  explicit NetSnapshotScope(bool assumeSingleUpdate = true, const char *label = "anon");
-  ~NetSnapshotScope();
-  NetSnapshotScope(const NetSnapshotScope &) = delete;
-  NetSnapshotScope &operator=(const NetSnapshotScope &) = delete;
-
-private:
-  const char *label;
-  bool wasValidAtCtor; // True if net_snap_valid was already set (owner thread, or nested scope).
-                       // The dtor only clears the flag when we were the ones to set it.
-  bool assumeSingle;
-  uint32_t capturedVersion = 0;
 };
 
 } // namespace net
@@ -113,16 +80,11 @@ int send_net_msg(net::IMessage &&msg, const net::MessageNetDesc *msg_net_desc = 
 
 net::CNetwork *get_net_or_null_unchecked(); // do not call directly; use GET_NET()
 
-// Active session's CNetwork or nullptr. Caller must be the net-owner thread or hold a ReadScope.
-#define GET_NET()                                                                                                      \
-  ([]() -> net::CNetwork * {                                                                                           \
-    G_ASSERTF(net::is_this_thread_net_em_owner() || net::topology_read_pin_active(),                                   \
-      "GET_NET off the net-owner thread without a topology ReadScope (cur=%lld)", (long long)get_current_thread_id()); \
-    return get_net_or_null_unchecked();                                                                                \
-  }())
+// Active session's CNetwork or nullptr. No owner-thread assert.
+#define GET_NET() (get_net_or_null_unchecked())
 
-bool send_msg_to_client(net::IMessage &&msg, int client_conn_id); // off-thread; pins internally
-void debug_verify_net_connection_ptr(net::IConnection *conn);     // off-thread; pins internally; debug-only
+bool send_msg_to_client(net::IMessage &&msg, int client_conn_id); // may run off-owner (unchecked)
+void debug_verify_net_connection_ptr(net::IConnection *conn);     // may run off-owner; debug-only
 
 void disconnect_from_relay();
 bool establish_relay_connection(const char *relay_url);
@@ -142,5 +104,12 @@ bool net_destroy(ecs::EntityManager &mgr, bool final = false);
 bool net_on_about_to_clear_all_entities(ecs::EntityManager &mgr);
 void net_stop();
 
-bool is_main_thread_network();
-void set_main_thread_network(bool value);
+enum class NetworkVariant : int
+{
+  None = 0,
+  MainNet = 1,
+  UserNet = 2,
+};
+
+NetworkVariant network_variant();
+bool is_main_thread_network(); // network_variant() == MainNet

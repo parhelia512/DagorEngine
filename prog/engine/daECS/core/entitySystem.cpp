@@ -454,10 +454,22 @@ void EntityManager::setEsOrder(dag::ConstSpan<const char *> es_order, dag::Const
 
 void EntityManager::setEsTags(dag::ConstSpan<const char *> es_tags)
 {
-  lastEsGen = EntitySystemDesc::generation - 1;
+  bool equal = true;
+  for (const char *t : es_tags)
+  {
+    auto it = esTags.find_as(t);
+    if (it == esTags.end())
+      equal = false;
+    else
+      esTags.erase(it);
+  }
+  if (!esTags.empty())
+    equal = false;
   esTags.clear();
   for (auto t : es_tags)
     esTags.insert(t);
+  if (!equal)
+    lastEsGen = EntitySystemDesc::generation - 1;
 }
 
 void EntityManager::addEsTag(const char *es_tag)

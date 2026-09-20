@@ -106,7 +106,7 @@ void StcodeBranchedBuildEvalCB::evalExternalBlockStat(const state_block_stat &st
   if (def.pairSamplerTmpDecl && def.isDynamic && def.hardcodedRegister == -1)
   {
     auto [samplerVarId, _1, _2] = semantic::lookup_state_var(*def.pairSamplerTmpDecl->name, ctx);
-    const String samplerConstName{0, "%s%s", def.mangledName.c_str(), def.pairSamplerBindSuffix};
+    const String samplerConstName{0, "%s_samplerstate", def.mangledName.c_str()};
     assembly::build_stcode_for_pair_sampler<assembly::StcodeBuildFlagsBits::CPP>(samplerConstName.c_str(), def.pairSamplerName.c_str(),
       ID_PLACEHOLDER, stage, samplerVarId, def.pairSamplerIsGlobal, &cppStcode, nullptr);
   }

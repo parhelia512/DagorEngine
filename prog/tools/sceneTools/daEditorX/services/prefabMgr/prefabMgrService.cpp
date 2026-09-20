@@ -388,47 +388,6 @@ public:
     }
     return false;
   }
-  bool shadowRayHitTest(const Point3 &p, const Point3 &dir, real &maxt)
-  {
-    if (!(sumNodeFlags & StaticGeometryNode::FLG_RENDERABLE))
-      return false;
-    if (!(sumNodeFlags & StaticGeometryNode::FLG_CASTSHADOWS))
-      return false;
-
-    if (maxt <= 0)
-      return false;
-
-    if (!geomTmIdent)
-    {
-      geom->setTm(TMatrix::IDENT);
-      geomTmIdent = true;
-    }
-
-    TMatrix tm, iwtm;
-    BSphere3 wbs;
-
-    const int subtype_mask = IObjEntityFilter::getSubTypeMask(IObjEntityFilter::STMASK_TYPE_COLLISION);
-    for (int j = 0; j < ent.size(); j++)
-      if (ent[j] && ent[j]->getSubtype() != IObjEntity::ST_NOT_COLLIDABLE && ent[j]->checkSubtypeMask(subtype_mask))
-      {
-        ent[j]->getTm(tm);
-        wbs = tm * bsph;
-        if (!notNormalizedRayIntersectSphere(p, dir, wbs.c, wbs.r2))
-          continue;
-
-        float tm_det = tm.det();
-        if (fabsf(tm_det) < 1e-12)
-          continue;
-        iwtm = inverse(tm, tm_det);
-        Point3 transformedP = iwtm * p;
-        Point3 transformedP2 = iwtm * (p + dir * maxt);
-        Point3 transformedDir = transformedP2 - transformedP;
-
-        if (geom->shadowRayHitTest(transformedP2, -transformedDir, 1, 0))
-          return true;
-      }
-    return false;
-  }
   void gatherOccluders(Tab<TMatrix> &occl_boxes, Tab<IOccluderGeomProvider::Quad> &occl_quads)
   {
     if (occlBox.size() + occlQuadV.size() == 0)
@@ -956,17 +915,6 @@ public:
       if (p[i]->traceRay(p0, dir, maxt, norm))
         ret = true;
     return ret;
-  }
-  bool shadowRayHitTest(const Point3 &p0, const Point3 &dir, real maxt) override
-  {
-    if (maxt <= 0)
-      return false;
-
-    dag::ConstSpan<PrefabEntityPool *> p = prefabPool.getPools();
-    for (int i = 0; i < p.size(); i++)
-      if (p[i]->shadowRayHitTest(p0, dir, maxt))
-        return true;
-    return false;
   }
   const char *getColliderName() const override { return getServiceFriendlyName(); }
   bool isColliderVisible() const override { return visible; }

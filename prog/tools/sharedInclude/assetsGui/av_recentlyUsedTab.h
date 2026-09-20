@@ -36,6 +36,8 @@ public:
     dragHandler.tree = &recentlyUsedTree;
   }
 
+  bool isContextMenuOpen() const { return recentlyUsedTree.isContextMenuOpen(); }
+
   void onAllowedTypesChanged(dag::ConstSpan<int> allowed_type_indexes)
   {
     const int assetTypeCount = assetMgr.getAssetTypesCount();
@@ -62,7 +64,6 @@ public:
 
     recentlyUsedTree.clear();
 
-    String imageName;
     const dag::Vector<String> &recentlyUsedList = AssetSelectorGlobalState::getRecentlyUsed();
     for (int i = recentlyUsedList.size() - 1; i >= 0; --i)
     {

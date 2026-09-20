@@ -108,12 +108,11 @@ struct GpuBufferPool
 
   struct Buffer
   {
-    Buffer() : pageId(PageId()), directPtr(nullptr), resId(BAD_D3DRESID), offset(0), size(0) {}
+    element_t *directPtr = nullptr;
     PageId pageId;
-    element_t *directPtr;
-    D3DRESID resId;
-    int offset;
-    int size;
+    D3DRESID resId = BAD_D3DRESID;
+    int offset = 0;
+    int size = 0;
   };
 
   int pageSize;

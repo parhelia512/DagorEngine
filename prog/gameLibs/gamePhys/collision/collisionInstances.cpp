@@ -9,6 +9,7 @@
 #include <phys/dag_physics.h>
 #include <rendInst/rendInstCollision.h>
 #include <rendInst/rendInstAccess.h>
+#include "collisionLibPrivate.h"
 
 
 namespace dacoll
@@ -55,8 +56,6 @@ void set_add_instances_to_world(bool flag) { add_instances_to_world = flag; }
 
 float exchange_ttl_for_collision_instances(float value) { return eastl::exchange(default_time_to_live, value); }
 
-extern void push_non_empty_ri_instance_list(CollisionInstances &ci);
-
 ScaledBulletInstance *CollisionInstances::getScaledInstance(const rendinst::RendInstDesc &desc, vec3f scale, bool &out_created)
 {
   float timeOfDeath = get_ri_instances_time() + default_time_to_live;
@@ -65,7 +64,7 @@ ScaledBulletInstance *CollisionInstances::getScaledInstance(const rendinst::Rend
     if (desc != si.desc)
       continue;
 
-    si.timeOfDeath = timeOfDeath;
+    si.timeOfDeath = max(si.timeOfDeath, timeOfDeath); // Don't shorten longer TTL (see exchange_ttl_for_collision_instances)
     out_created = false;
     return &si;
   }
@@ -86,16 +85,12 @@ ScaledBulletInstance *CollisionInstances::getScaledInstance(const rendinst::Rend
     return nullptr;
   }
 
-#ifndef ENABLE_APEX
-  if (bulletInstances.size() == 1)
-    push_non_empty_ri_instance_list(*this);
-#endif
+  push_non_empty_ri_instance_list(*this);
 
   out_created = true;
   return &ret;
 }
 
-extern void remove_empty_ri_instance_list(CollisionInstances &ci);
 
 void CollisionInstances::removeCollisionObject(const rendinst::RendInstDesc &desc)
 {
@@ -118,34 +113,6 @@ void CollisionInstances::removeCollisionObject(const rendinst::RendInstDesc &des
 #endif
 }
 
-void CollisionInstances::enableDisableCollisionObject(const rendinst::RendInstDesc &desc, bool flag)
-{
-  const auto it = eastl::find(disabledInstances.begin(), disabledInstances.end(), desc);
-  const bool isEnabled = it == disabledInstances.end();
-  if (isEnabled == flag)
-    return;
-
-  if (!flag)
-    disabledInstances.emplace_back(desc);
-  else
-    disabledInstances.erase_unsorted(it);
-}
-
-bool CollisionInstances::isCollisionObjectEnabled(const rendinst::RendInstDesc &desc) const
-{
-  const auto it = eastl::find(disabledInstances.begin(), disabledInstances.end(), desc);
-  const bool isEnabled = it == disabledInstances.end();
-  return isEnabled;
-}
-
-CollisionInstances::CollisionInstances(CollisionInstances &&rhs) :
-  bulletInstances(eastl::move(rhs.bulletInstances)),
-  disabledInstances(eastl::move(rhs.disabledInstances)),
-  originalObj(rhs.originalObj)
-{
-  rhs.originalObj.clear_ptrs();
-}
-
 CollisionInstances::~CollisionInstances()
 {
   if (originalObj)
@@ -161,7 +128,6 @@ void CollisionInstances::clear()
 
 void CollisionInstances::clearInstances() { bulletInstances.clear(); }
 
-void CollisionInstances::unlink() { prevNotEmpty = nextNotEmpty = -1; }
 
 CollisionObject CollisionInstances::updateTm(const rendinst::RendInstDesc &desc, const TMatrix &tm, TMatrix *out_ntm,
   bool update_scale, bool instant)
@@ -227,7 +193,7 @@ CollisionObject CollisionInstances::updateTm(const rendinst::RendInstDesc &desc,
 
 CollisionObject CollisionInstances::updateTm(const rendinst::RendInstDesc &desc, const Point3 &vel, const Point3 &omega)
 {
-  if (!rendinst::isRiGenInWorld(desc) || !isCollisionObjectEnabled(desc))
+  if (!rendinst::isRiGenInWorld(desc) || !is_ri_instance_enabled(desc))
     return CollisionObject();
   TMatrix tm = rendinst::getRIGenMatrix(desc);
   if (CollisionObject cobj = updateTm(desc, tm))

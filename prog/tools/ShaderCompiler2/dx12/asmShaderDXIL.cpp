@@ -222,7 +222,7 @@ DecodedShaderContainer decode_shader_container(dag::ConstSpan<uint8_t> container
 }
 
 DecodedShaderContainer get_null_shader_container(::dxil::ShaderHeader &default_header, bool hlsl_2021, bool enable_fp16,
-  bool skip_validation, bool optimize, bool debug_info, bool scarlett_w32, char *store, size_t store_size)
+  bool skip_validation, uint32_t optimize_level, bool debug_info, bool scarlett_w32, char *store, size_t store_size)
 {
   DecodedShaderContainer result;
   result.shader.shaderHeader = default_header;
@@ -232,7 +232,7 @@ DecodedShaderContainer get_null_shader_container(::dxil::ShaderHeader &default_h
     memcpy(store, encodedSource, sizeof(encodedSource));
     // patch to the same flag set as vs
     store[encoded_bits::SkipValidation] = '0' + skip_validation;
-    store[encoded_bits::Optimize] = '0' + optimize;
+    store[encoded_bits::Optimize] = '0' + optimize_level;
     store[encoded_bits::DebugInfo] = '0' + debug_info;
     store[encoded_bits::ScarlettW32] = '0' + scarlett_w32;
     store[encoded_bits::HLSL2021] = '0' + hlsl_2021;
@@ -1094,9 +1094,9 @@ eastl::wstring get_module_path()
 bool is_mesh_profile(const char *profile) { return ('m' == profile[0]) || ('a' == profile[0]); }
 
 ShaderCompileResult compileShader(dag::ConstSpan<char> source, const char *profile, const char *entry, bool hlsl2021, bool enableFp16,
-  bool skipValidation, bool optimize, bool debug_info, wchar_t *pdb_dir, wchar_t *pdb_name, ::dx12::dxil::Platform platform,
+  bool skipValidation, uint32_t optimize_level, bool debug_info, wchar_t *pdb_dir, wchar_t *pdb_name, ::dx12::dxil::Platform platform,
   eastl::wstring_view root_signature_def, unsigned phase, bool pipeline_has_ts, bool pipeline_has_gs, bool scarlett_w32,
-  bool warnings_as_errors, DebugLevel debug_level, bool embed_source, bool pipeline_has_stream_output)
+  bool warnings_as_errors, DebugLevel debug_level, DebugParts debug_parts, bool pipeline_has_stream_output)
 {
   ShaderCompileResult result = {};
 
@@ -1114,17 +1114,21 @@ ShaderCompileResult compileShader(dag::ConstSpan<char> source, const char *profi
 
   ::dxil::DXCSettings compileConfig;
   compileConfig.disableValidation = skipValidation;
-  compileConfig.optimizeLevel = optimize ? 3 : 0;
+  compileConfig.optimizeLevel = optimize_level;
   // debug is stored in *.lld files in the pdb subfolder of the compile bat it was kicked off.
   // Those files act as pdb for shaders, shaders know the name of the file and tools like PIX will
   // pick them up if configured correctly.
   compileConfig.PDBBasePath = pdb_dir;
   compileConfig.PDBNameOverride = pdb_name;
-  if ((debug_level == DebugLevel::FULL_DEBUG_INFO) || (debug_level == DebugLevel::AFTERMATH) || embed_source)
+  const bool embedSource = debug_parts == DebugParts::EMBED_SOURCE;
+  if ((debug_level == DebugLevel::FULL_DEBUG_INFO) || (debug_level == DebugLevel::AFTERMATH) || embedSource)
     compileConfig.pdbMode = ::dxil::PDBMode::FULL;
   else if (debug_level == DebugLevel::BASIC)
     compileConfig.pdbMode = ::dxil::PDBMode::SMALL;
-  compileConfig.saveHlslToBlob = debug_level == DebugLevel::FULL_DEBUG_INFO || embed_source;
+  if (debug_level == DebugLevel::FULL_DEBUG_INFO || embedSource)
+    compileConfig.blobDebugParts = ::dxil::BlobDebugParts::EMBED;
+  else if (debug_parts == DebugParts::KEEP)
+    compileConfig.blobDebugParts = ::dxil::BlobDebugParts::KEEP;
 
   Tab<char> utf8_buf;
   if (compileConfig.pdbMode != ::dxil::PDBMode::NONE && !compileConfig.PDBBasePath.empty())
@@ -1284,10 +1288,10 @@ ShaderCompileResult compileShader(dag::ConstSpan<char> source, const char *profi
 eastl::tuple<eastl::vector<uint8_t>, eastl::vector<uint8_t>> recompile_shader(const char *encoded_shader_source,
   const ::dxil::ShaderHeader &header, dag::ConstSpan<dxil::StreamOutputComponentInfo> stream_output_desc,
   const eastl::wstring &root_signature_def, ::dx12::dxil::Platform platform, bool pipeline_has_ts, bool pipeline_has_gs,
-  wchar_t *pdb_dir, wchar_t *pdb_name, DebugLevel debug_level, bool embed_source, bool pipeline_has_stream_output)
+  wchar_t *pdb_dir, wchar_t *pdb_name, DebugLevel debug_level, DebugParts debug_parts, bool pipeline_has_stream_output)
 {
   bool skipValidation = encoded_shader_source[encoded_bits::SkipValidation] > '0';
-  bool optimize = encoded_shader_source[encoded_bits::Optimize] > '0';
+  uint32_t optimizeLevel = encoded_shader_source[encoded_bits::Optimize] - '0';
   bool debugInfo = encoded_shader_source[encoded_bits::DebugInfo] > '0';
   bool scarlettW32 = encoded_shader_source[encoded_bits::ScarlettW32] > '0';
   bool hlsl2021 = encoded_shader_source[encoded_bits::HLSL2021] > '0';
@@ -1299,8 +1303,8 @@ eastl::tuple<eastl::vector<uint8_t>, eastl::vector<uint8_t>> recompile_shader(co
   auto sourceStart = entryStart + strlen(entryStart) + 1;
   // TODO could avoid strlen when encoded_shader_source would be a slice
   auto compileResult = ::compileShader(make_span(sourceStart, strlen(sourceStart)), profileBuf, entryStart, hlsl2021, enableFp16,
-    skipValidation, optimize, debugInfo, pdb_dir, pdb_name, platform, root_signature_def, 2, pipeline_has_ts, pipeline_has_gs,
-    scarlettW32, false, debug_level, embed_source, pipeline_has_stream_output);
+    skipValidation, optimizeLevel, debugInfo, pdb_dir, pdb_name, platform, root_signature_def, 2, pipeline_has_ts, pipeline_has_gs,
+    scarlettW32, false, debug_level, debug_parts, pipeline_has_stream_output);
   if (compileResult.dxil.empty() && compileResult.dxbc.empty())
   {
     debug("recompile_shader failed: %s", compileResult.errorLog.c_str());
@@ -1541,7 +1545,7 @@ CompileResult build_shader_libray_as_shader(const dx12::dxil::CompileInputs &inp
   bindump::streamWrite(shaderLibAsShader, shaderLibAsShaderWriter);
 
   ::dxil::ShaderHeader header{
-    .maxConstantCount = 0,
+    .implicitCbufRegCount = 0,
     .bonesConstantsUsed = 0,
     .resourceUsageTable = libHeaderCompileResult.libInfo.resourceUsageTable,
     .sRegisterCompareUseMask = libHeaderCompileResult.libInfo.sRegisterCompareUseMask,
@@ -1577,9 +1581,9 @@ CompileResult build_shader_libray_as_shader(const dx12::dxil::CompileInputs &inp
 CompileResult dx12::dxil::compileShader(const CompileInputs &inputs)
 {
   auto compileResult = ::compileShader(inputs.source, inputs.profile, inputs.entry, inputs.compilationOptions.hlsl2021,
-    inputs.compilationOptions.enableFp16, inputs.compilationOptions.skipValidation, inputs.compilationOptions.optimize,
+    inputs.compilationOptions.enableFp16, inputs.compilationOptions.skipValidation, inputs.compilationOptions.optimizeLevel,
     inputs.compilationOptions.debugInfo, inputs.PDBDir, inputs.PDBName, inputs.platform, {}, 1, true, true,
-    inputs.compilationOptions.scarlettW32, inputs.warningsAsErrors, inputs.debugLevel, inputs.embedSource,
+    inputs.compilationOptions.scarlettW32, inputs.warningsAsErrors, inputs.debugLevel, inputs.debugParts,
     !inputs.streamOutputComponents.empty());
 
   CompileResult result;
@@ -1596,7 +1600,7 @@ CompileResult dx12::dxil::compileShader(const CompileInputs &inputs)
   {
     return build_shader_libray_as_shader(inputs, compileResult);
   }
-  auto headerCompileResult = ::dxil::compileHeaderFromReflectionData(stage, compileResult.reflectionData, inputs.maxConstantsNo,
+  auto headerCompileResult = ::dxil::compileHeaderFromReflectionData(stage, compileResult.reflectionData, inputs.implicitCbufRegCount,
     inputs.streamOutputComponents, pinDxcLib.get());
 
   if (!headerCompileResult.isOk)
@@ -1679,9 +1683,9 @@ CompileResult dx12::dxil::compileShader(const CompileInputs &inputs)
         headerCompileResult.header.resourceUsageTable);
 
       compileResult = ::compileShader(inputs.source, inputs.profile, inputs.entry, inputs.compilationOptions.hlsl2021,
-        inputs.compilationOptions.enableFp16, inputs.compilationOptions.skipValidation, inputs.compilationOptions.optimize,
+        inputs.compilationOptions.enableFp16, inputs.compilationOptions.skipValidation, inputs.compilationOptions.optimizeLevel,
         inputs.compilationOptions.debugInfo, inputs.PDBDir, inputs.PDBName, inputs.platform, rootSignatureDefine, 2, false, false,
-        inputs.compilationOptions.scarlettW32, inputs.warningsAsErrors, inputs.debugLevel, inputs.embedSource,
+        inputs.compilationOptions.scarlettW32, inputs.warningsAsErrors, inputs.debugLevel, inputs.debugParts,
         !inputs.streamOutputComponents.empty());
       result.logs += compileResult.messageLog;
       if (compileResult.dxil.empty())
@@ -1700,11 +1704,11 @@ CompileResult dx12::dxil::compileShader(const CompileInputs &inputs)
       shaderSource.reserve(encoded_bits::BitCount + encoded_bits::ExtraBytes + entryLength + inputs.source.size() + 1);
       shaderSource.resize(encoded_bits::BitCount);
       shaderSource[encoded_bits::SkipValidation] = '0' + inputs.compilationOptions.skipValidation; // ends up being either '0' or '1'
-      shaderSource[encoded_bits::Optimize] = '0' + inputs.compilationOptions.optimize;             // ends up being either '0' or '1'
-      shaderSource[encoded_bits::DebugInfo] = '0' + inputs.compilationOptions.debugInfo;           // ends up being either '0' or '1'
-      shaderSource[encoded_bits::ScarlettW32] = '0' + inputs.compilationOptions.scarlettW32;       // ends up being either '0' or '1'
-      shaderSource[encoded_bits::HLSL2021] = '0' + inputs.compilationOptions.hlsl2021;             // ends up being either '0' or '1'
-      shaderSource[encoded_bits::EnableFp16] = '0' + inputs.compilationOptions.enableFp16;         // ends up being either '0' or '1'
+      shaderSource[encoded_bits::Optimize] = '0' + inputs.compilationOptions.optimizeLevel;  // holds the optimization level ('0'..'3')
+      shaderSource[encoded_bits::DebugInfo] = '0' + inputs.compilationOptions.debugInfo;     // ends up being either '0' or '1'
+      shaderSource[encoded_bits::ScarlettW32] = '0' + inputs.compilationOptions.scarlettW32; // ends up being either '0' or '1'
+      shaderSource[encoded_bits::HLSL2021] = '0' + inputs.compilationOptions.hlsl2021;       // ends up being either '0' or '1'
+      shaderSource[encoded_bits::EnableFp16] = '0' + inputs.compilationOptions.enableFp16;   // ends up being either '0' or '1'
       shaderSource.insert(shaderSource.end(), inputs.profile, inputs.profile + encoded_bits::ProfileLength);
       shaderSource.insert(shaderSource.end(), inputs.entry, inputs.entry + entryLength);
       // we insert here a null terminator for ease of use later, consumer will know that source will
@@ -1910,13 +1914,16 @@ dx12::dxil::RootSignatureStore dx12::dxil::generateRootSignatureDefinition(dag::
 }
 
 constexpr uint32_t COMPILATION_FLAG_SKIP_VALIDATION = 1u << 0;
-constexpr uint32_t COMPILATION_FLAG_OPTIMIZE = 1u << 1;
-constexpr uint32_t COMPILATION_FLAG_DEBUG_INFO = 1u << 2;
-constexpr uint32_t COMPILATION_FLAG_SCARLETT_W32 = 1u << 3;
-constexpr uint32_t COMPILATION_FLAG_HAS_GS = 1u << 4;
-constexpr uint32_t COMPILATION_FLAG_HAS_HD_DS = 1u << 5;
-constexpr uint32_t COMPILATION_FLAG_HLSL2021 = 1u << 6;
-constexpr uint32_t COMPILATION_FLAG_ENABLEFP16 = 1u << 7;
+constexpr uint32_t COMPILATION_FLAG_OPTIMIZE_SHIFT = 1;
+constexpr uint32_t COMPILATION_FLAG_OPTIMIZE_BITS = 2;
+constexpr uint32_t COMPILATION_FLAG_OPTIMIZE_MASK = ((1u << COMPILATION_FLAG_OPTIMIZE_BITS) - 1u) << COMPILATION_FLAG_OPTIMIZE_SHIFT;
+G_STATIC_ASSERT(dx12::dxil::MAX_OPTIMIZE_LEVEL < (1 << COMPILATION_FLAG_OPTIMIZE_BITS));
+constexpr uint32_t COMPILATION_FLAG_DEBUG_INFO = 1u << 3;
+constexpr uint32_t COMPILATION_FLAG_SCARLETT_W32 = 1u << 4;
+constexpr uint32_t COMPILATION_FLAG_HAS_GS = 1u << 5;
+constexpr uint32_t COMPILATION_FLAG_HAS_HD_DS = 1u << 6;
+constexpr uint32_t COMPILATION_FLAG_HLSL2021 = 1u << 7;
+constexpr uint32_t COMPILATION_FLAG_ENABLEFP16 = 1u << 8;
 
 BINDUMP_BEGIN_LAYOUT(VertexProgramPhaseOneMetadata)
   BINDUMP_USING_EXTENSION()
@@ -2063,7 +2070,7 @@ auto dx12::dxil::combinePhaseOneVertexProgram(const ShaderStageData &vs, const S
   combinedMetadata.compilationFlags = 0;
   combinedMetadata.compilationFlags |= gs.empty() ? 0 : COMPILATION_FLAG_HAS_GS;
   combinedMetadata.compilationFlags |= (hs.empty() || ds.empty()) ? 0 : COMPILATION_FLAG_HAS_HD_DS;
-  combinedMetadata.compilationFlags |= options.optimize ? COMPILATION_FLAG_OPTIMIZE : 0;
+  combinedMetadata.compilationFlags |= (options.optimizeLevel << COMPILATION_FLAG_OPTIMIZE_SHIFT) & COMPILATION_FLAG_OPTIMIZE_MASK;
   combinedMetadata.compilationFlags |= options.skipValidation ? COMPILATION_FLAG_SKIP_VALIDATION : 0;
   combinedMetadata.compilationFlags |= options.scarlettW32 ? COMPILATION_FLAG_SCARLETT_W32 : 0;
   combinedMetadata.compilationFlags |= options.debugInfo ? COMPILATION_FLAG_DEBUG_INFO : 0;
@@ -2113,7 +2120,7 @@ auto dx12::dxil::combinePhaseOnePixelShader(const ShaderStageData &ps, const Roo
   combinedMetadata.compilationFlags = 0;
   combinedMetadata.compilationFlags |= has_gs ? COMPILATION_FLAG_HAS_GS : 0;
   combinedMetadata.compilationFlags |= has_ts ? COMPILATION_FLAG_HAS_HD_DS : 0;
-  combinedMetadata.compilationFlags |= options.optimize ? COMPILATION_FLAG_OPTIMIZE : 0;
+  combinedMetadata.compilationFlags |= (options.optimizeLevel << COMPILATION_FLAG_OPTIMIZE_SHIFT) & COMPILATION_FLAG_OPTIMIZE_MASK;
   combinedMetadata.compilationFlags |= options.skipValidation ? COMPILATION_FLAG_SKIP_VALIDATION : 0;
   combinedMetadata.compilationFlags |= options.scarlettW32 ? COMPILATION_FLAG_SCARLETT_W32 : 0;
   combinedMetadata.compilationFlags |= options.debugInfo ? COMPILATION_FLAG_DEBUG_INFO : 0;
@@ -2146,7 +2153,7 @@ auto dx12::dxil::combinePhaseOnePixelShader(const ShaderStageData &ps, const Roo
 }
 
 auto dx12::dxil::recompileVertexProgram(dag::ConstSpan<uint8_t> source, Platform platform, wchar_t *pdb_dir, wchar_t *pdb_name,
-  DebugLevel debug_level, bool embed_source) -> eastl::optional<CombinedShaderStorage>
+  DebugLevel debug_level, DebugParts debug_parts) -> eastl::optional<CombinedShaderStorage>
 {
   auto *metadata = bindump::map<VertexProgramPhaseOneMetadata>((const uint8_t *)source.data());
   if (!metadata)
@@ -2193,7 +2200,7 @@ auto dx12::dxil::recompileVertexProgram(dag::ConstSpan<uint8_t> source, Platform
   auto [rebuildVSMetadata, rebuildVSBytecode] =
     recompile_shader(vsDecodedMetadata.source.data(), vsDecodedMetadata.shader.shaderHeader, vsDecodedMetadata.streamOutputComponents,
       progSignature, platform, hsDecodedMetadata.source.size() && dsDecodedMetadata.source.size(), gsDecodedMetadata.source.size(),
-      pdb_dir, pdb_name, debug_level, embed_source, metadata->rootSignature.hasStreamOutput);
+      pdb_dir, pdb_name, debug_level, debug_parts, metadata->rootSignature.hasStreamOutput);
 
   if (rebuildVSMetadata.empty() || rebuildVSBytecode.empty())
   {
@@ -2205,7 +2212,7 @@ auto dx12::dxil::recompileVertexProgram(dag::ConstSpan<uint8_t> source, Platform
   {
     eastl::tie(rebuildHSMetadata, rebuildHSBytecode) = recompile_shader(hsDecodedMetadata.source.data(),
       hsDecodedMetadata.shader.shaderHeader, hsDecodedMetadata.streamOutputComponents, progSignature, platform, true,
-      gsDecodedMetadata.source.size(), pdb_dir, pdb_name, debug_level, embed_source, metadata->rootSignature.hasStreamOutput);
+      gsDecodedMetadata.source.size(), pdb_dir, pdb_name, debug_level, debug_parts, metadata->rootSignature.hasStreamOutput);
     if (rebuildHSMetadata.empty() || rebuildHSBytecode.empty())
     {
       return eastl::nullopt;
@@ -2217,7 +2224,7 @@ auto dx12::dxil::recompileVertexProgram(dag::ConstSpan<uint8_t> source, Platform
   {
     eastl::tie(rebuildDSMetadata, rebuildDSBytecode) =
       recompile_shader(dsDecodedMetadata.source.data(), dsDecodedMetadata.shader.shaderHeader, {}, progSignature, platform, true,
-        gsDecodedMetadata.source.size(), pdb_dir, pdb_name, debug_level, embed_source, metadata->rootSignature.hasStreamOutput);
+        gsDecodedMetadata.source.size(), pdb_dir, pdb_name, debug_level, debug_parts, metadata->rootSignature.hasStreamOutput);
     if (rebuildDSMetadata.empty() || rebuildDSBytecode.empty())
     {
       return eastl::nullopt;
@@ -2229,7 +2236,7 @@ auto dx12::dxil::recompileVertexProgram(dag::ConstSpan<uint8_t> source, Platform
   {
     eastl::tie(rebuildGSMetadata, rebuildGSBytecode) = recompile_shader(gsDecodedMetadata.source.data(),
       gsDecodedMetadata.shader.shaderHeader, gsDecodedMetadata.streamOutputComponents, progSignature, platform,
-      hsDecodedMetadata.source.size() && dsDecodedMetadata.source.size(), true, pdb_dir, pdb_name, debug_level, embed_source,
+      hsDecodedMetadata.source.size() && dsDecodedMetadata.source.size(), true, pdb_dir, pdb_name, debug_level, debug_parts,
       metadata->rootSignature.hasStreamOutput);
     if (rebuildGSMetadata.empty() || rebuildGSBytecode.empty())
     {
@@ -2271,7 +2278,7 @@ auto dx12::dxil::recompileVertexProgram(dag::ConstSpan<uint8_t> source, Platform
 }
 
 auto dx12::dxil::recompilePixelShader(dag::ConstSpan<uint8_t> source, Platform platform, wchar_t *pdb_dir, wchar_t *pdb_name,
-  DebugLevel debug_level, bool embed_source) -> eastl::optional<CombinedShaderStorage>
+  DebugLevel debug_level, DebugParts debug_parts) -> eastl::optional<CombinedShaderStorage>
 {
   auto *metadata = bindump::map<PixelShaderPhaseOneMetadata>((const uint8_t *)source.data());
   if (!metadata)
@@ -2317,13 +2324,13 @@ auto dx12::dxil::recompilePixelShader(dag::ConstSpan<uint8_t> source, Platform p
   if (metadata->pixelShaderMetadata.empty())
   {
     bool skipValidation = 0 != (metadata->compilationFlags & COMPILATION_FLAG_SKIP_VALIDATION);
-    bool optimize = 0 != (metadata->compilationFlags & COMPILATION_FLAG_OPTIMIZE);
+    uint32_t optimizeLevel = (metadata->compilationFlags & COMPILATION_FLAG_OPTIMIZE_MASK) >> COMPILATION_FLAG_OPTIMIZE_SHIFT;
     bool debugInfo = 0 != (metadata->compilationFlags & COMPILATION_FLAG_DEBUG_INFO);
     bool scarlettW32 = 0 != (metadata->compilationFlags & COMPILATION_FLAG_SCARLETT_W32);
     bool hlsl2021 = 0 != (metadata->compilationFlags & COMPILATION_FLAG_HLSL2021);
     bool enableFp16 = 0 != (metadata->compilationFlags & COMPILATION_FLAG_ENABLEFP16);
-    psDecoded = get_null_shader_container(defaultShaderHeader, hlsl2021, enableFp16, skipValidation, optimize, debugInfo, scarlettW32,
-      nullShaderStore, sizeof(nullShaderStore));
+    psDecoded = get_null_shader_container(defaultShaderHeader, hlsl2021, enableFp16, skipValidation, optimizeLevel, debugInfo,
+      scarlettW32, nullShaderStore, sizeof(nullShaderStore));
   }
   else
   {
@@ -2333,7 +2340,7 @@ auto dx12::dxil::recompilePixelShader(dag::ConstSpan<uint8_t> source, Platform p
   bool hasTS = 0 != (metadata->compilationFlags & COMPILATION_FLAG_HAS_HD_DS);
   bool hasGS = 0 != (metadata->compilationFlags & COMPILATION_FLAG_HAS_GS);
   auto [rebuildPSMetadata, rebuildPSBytecode] = recompile_shader(psDecoded.source.data(), psDecoded.shader.shaderHeader, {},
-    progSignature, platform, hasTS, hasGS, pdb_dir, pdb_name, debug_level, embed_source, metadata->rootSignature.hasStreamOutput);
+    progSignature, platform, hasTS, hasGS, pdb_dir, pdb_name, debug_level, debug_parts, metadata->rootSignature.hasStreamOutput);
 
   if (rebuildPSMetadata.empty() || rebuildPSBytecode.empty())
   {

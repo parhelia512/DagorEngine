@@ -10,6 +10,7 @@
 #include <debug/dag_debug.h>
 #include <ioSys/dag_dataBlock.h>
 #include <osApiWrappers/dag_threads.h>
+#include <osApiWrappers/dag_atomic_types.h>
 
 #include "drv_log_defs.h"
 #include "driver.h"
@@ -239,6 +240,7 @@ dag::AtomicInteger<uint64_t> global_frame_progress = 0;
 eastl::optional<MemoryMetrics> memory_metrics;
 
 HWND main_window_hwnd = NULL;
+volatile uintptr_t pending_reset_reason = 0;
 HWND secondary_window_hwnd = NULL;
 main_wnd_f *main_window_proc = NULL;
 WNDPROC origin_window_proc = NULL;
@@ -318,18 +320,18 @@ DriverDesc g_device_desc = {
   0, 0, // int zcmpfunc,acmpfunc;
   0, 0, // int sblend,dblend;
 
-  1, 1,            // int mintexw,mintexh;
-  16384, 16384,    // int maxtexw,maxtexh;
-  1, 16384,        // int mincubesize,maxcubesize;
-  1, 2048,         // int minvolsize,maxvolsize;
-  0,               // int maxtexaspect; ///< 1 means texture should be square, 0 means no limit
-  65536,           // int maxtexcoord;
-  MAX_RESOURCES,   // int maxsimtex;
-  MAX_VS_SAMPLERS, // int maxlights;
-  0,               // int maxclipplanes;
-  64,              // int maxstreams;
-  64,              // int maxstreamstr;
-  1024,            // int maxvpconsts;
+  1, 1,                                               // int mintexw,mintexh;
+  16384, 16384,                                       // int maxtexw,maxtexh;
+  1, 16384,                                           // int mincubesize,maxcubesize;
+  1, 2048,                                            // int minvolsize,maxvolsize;
+  0,                                                  // int maxtexaspect; ///< 1 means texture should be square, 0 means no limit
+  65536,                                              // int maxtexcoord;
+  MAX_RESOURCES,                                      // int maxsimtex;
+  MAX_VS_SAMPLERS,                                    // int maxlights;
+  0,                                                  // int maxclipplanes;
+  64,                                                 // int maxstreams;
+  64,                                                 // int maxstreamstr;
+  D3D11_REQ_CONSTANT_BUFFER_ELEMENT_COUNT,            // int maxvpconsts;
 
 
   65536 * 4, 65536 * 4,                                                              // int maxprims,maxvertind;
@@ -419,6 +421,7 @@ bool device_should_reset(HRESULT hr, const char *text)
   if (device_is_lost != S_OK)
   {
     dagor_d3d_force_driver_reset = true;
+    set_pending_reset_reason_if_none("error while device is lost");
     logwarn("dx11 error: %s hr=0x%X called, while in driver reset", text, device_is_lost);
     return true;
   }
@@ -446,6 +449,7 @@ bool device_should_reset(HRESULT hr, const char *text)
       return false;
   }
   dagor_d3d_force_driver_reset = true;
+  set_pending_reset_reason(errorText);
   device_is_lost = hr;
   get_aftermath_status();
   debug("Vendor: %s, device id: 0x%X, device name: %s, driver version: %s", d3d_get_vendor_name(g_device_desc.info.vendor),
@@ -758,6 +762,8 @@ static HRESULT create_waitable_object()
     swapChain2->SetMaximumFrameLatency(MAXIMUM_FRAME_LATENCY);
     swapChain2->Release();
   }
+  debug("DX11 swapchain: waitable=%d (hr=0x%X) flags=0x%X swapEffect=%d windowed=%d maxLatency=%d", waitableObject.get() != nullptr,
+    hr, scd.Flags, (int)scd.SwapEffect, (int)scd.Windowed, MAXIMUM_FRAME_LATENCY);
   return hr;
 }
 
@@ -771,7 +777,7 @@ static HRESULT set_fullscreen_state(BOOL is_fullscreen, IDXGIOutput *new_target_
   {
     if (new_target_output == previousTargetOutput)
     {
-      return hres;
+      return SUCCEEDED(hres) ? S_FALSE : hres;
     }
     if (new_target_output && previousTargetOutput)
     {
@@ -780,7 +786,7 @@ static HRESULT set_fullscreen_state(BOOL is_fullscreen, IDXGIOutput *new_target_
       new_target_output->GetDesc(&newDesc);
       if (memcmp(&prevDesc, &newDesc, sizeof(DXGI_OUTPUT_DESC)) == 0)
       {
-        return hres;
+        return SUCCEEDED(hres) ? S_FALSE : hres;
       }
     }
   }
@@ -825,6 +831,7 @@ static bool recreate_swapchain(DXGI_SWAP_CHAIN_DESC &new_scd)
   dump_swapchain_desc(new_scd);
 
   dagor_d3d_force_driver_reset = true;
+  set_pending_reset_reason("recreate_swapchain failed");
 
   return false;
 }
@@ -2150,9 +2157,6 @@ FORCE_INLINE static bool init_device(Driver3dInitCallback *cb, HWND window_hwnd,
     }
   }
 
-  if (!is_float_exceptions_enabled())
-    _fpreset();
-
   debug("Fragment shader version: %d", g_device_desc.shaderModel);
 
   DEBUG_CTX("creating backbuffers %dx%d", screen_wdt, screen_hgt);
@@ -2264,11 +2268,12 @@ static void close_device(bool is_reset)
         ScopeSetWatchdogTimeout _wd(DEVICE_RESET_FLUSH_TIMEOUT_MS);
         int startTimeMs = get_time_msec();
 
-        DEBUG_CP();
+        log_present_state("reset flush begin");
         dx_context->Flush();
         DEBUG_CP();
 
         int elapsedMs = get_time_msec() - startTimeMs;
+        debug("DX11 device reset flush done in %d ms", elapsedMs);
         if (elapsedMs > DEVICE_RESET_FLUSH_LONG_WAIT_MS)
           D3D_ERROR("DX11 device reset flush took %d ms.", elapsedMs);
       }
@@ -2333,6 +2338,11 @@ static void close_device(bool is_reset)
 
 void drv3d_dx11::set_fullscreen_state(bool fullscreen)
 {
+  // This may be invoked from the message loop or delayed actions,
+  // so may need to protect swapchain/backbuffer access on the render thread
+  acquireD3dOwnership();
+  FINALLY([] { releaseD3dOwnership(); });
+
   bool needToUpdateSurfaces = false;
   HRESULT hres;
   {
@@ -2358,20 +2368,31 @@ void drv3d_dx11::set_fullscreen_state(bool fullscreen)
     hres = set_fullscreen_state(fullscreen, fullscreen ? target_output : nullptr);
   }
 
-  if (SUCCEEDED(hres) && fullscreen && is_flip_model(scd.SwapEffect)) //-V560
+  if (SUCCEEDED(hres) && hres != S_FALSE && fullscreen && is_flip_model(scd.SwapEffect)) //-V560
   {
     DEBUG_CTX("deleted backbuffer %p", g_driver_state.backBufferColorTex);
     // DXGI_SWAP_EFFECT_FLIP_DISCARD or DXGI_SWAP_EFFECT_FLIP_SEQUENTIAL
     // MSDN: Before you call ResizeBuffers, ensure that the application releases all references.
-    // Note: Destroy via DA to reduce chances that some other render (perhaps splash) thread refs it
-    add_delayed_callback_buffered([](void *t) { destroy_d3dres((Texture *)t); }, g_driver_state.backBufferColorTex);
-    g_driver_state.backBufferColorTex = nullptr;
+    del_d3dres(g_driver_state.backBufferColorTex);
 
+    HRESULT resizeHr;
     {
       ContextAutoLock contextLock;
-      swap_chain->ResizeBuffers(scd.BufferCount, scd.BufferDesc.Width, scd.BufferDesc.Height, scd.BufferDesc.Format,
+      resizeHr = swap_chain->ResizeBuffers(scd.BufferCount, scd.BufferDesc.Width, scd.BufferDesc.Height, scd.BufferDesc.Format,
         scd.Flags); // MSDN: For the flip presentation model, after you transition the display state to full screen,
                     // you must call ResizeBuffers to ensure that your call to IDXGISwapChain1::Present1 succeeds.
+    }
+    last_hres = resizeHr;
+    if (FAILED(resizeHr))
+    {
+      // a failed ResizeBuffers keeps the old buffers, so a backbuffer can still be recreated from them
+      D3D_ERROR("DX11: ResizeBuffers after SetFullscreenState(%d) failed: %s hr=0x%X, requesting mode reset", (int)fullscreen,
+        dx11_error(resizeHr), resizeHr);
+      if (!device_should_reset(last_hres, "set_fullscreen_state::ResizeBuffers"))
+      {
+        dagor_d3d_force_driver_mode_reset = true;
+        set_pending_reset_reason("ResizeBuffers failed, trying to repair with mode reset");
+      }
     }
     needToUpdateSurfaces = true;
   }
@@ -2380,46 +2401,53 @@ void drv3d_dx11::set_fullscreen_state(bool fullscreen)
     g_driver_state.createSurfaces(scd.BufferDesc.Width, scd.BufferDesc.Height);
 }
 
+enum FsToggleState
+{
+  FULLSCREEN_TOGGLE_NONE = 0,
+  FULLSCREEN_TOGGLE_OFF = 1,
+  FULLSCREEN_TOGGLE_ON = 2
+};
+static dag::AtomicPod<FsToggleState> fullscreen_toggle_pending{FULLSCREEN_TOGGLE_NONE};
+
+static void apply_deferred_fullscreen_toggle()
+{
+  const auto toggle = fullscreen_toggle_pending.exchange(FULLSCREEN_TOGGLE_NONE, dag::mo::acq_rel);
+  G_ASSERT_RETURN(toggle != FULLSCREEN_TOGGLE_NONE, );
+  const bool fullscreen = toggle == FULLSCREEN_TOGGLE_ON;
+
+  if (!swap_chain || resetting_device_now || dagor_d3d_force_driver_reset || dagor_d3d_force_driver_mode_reset)
+    return;
+
+  debug("DX11: SetFullscreenState(%d)", (int)fullscreen);
+  drv3d_dx11::set_fullscreen_state(fullscreen);
+  if (!fullscreen)
+    return;
+
+  if (gamma_control_valid && swap_chain)
+  {
+    ContextAutoLock contextLock;
+    IDXGIOutput *dxgiOutput;
+    HRESULT hr = swap_chain->GetContainingOutput(&dxgiOutput);
+    if (SUCCEEDED(hr))
+    {
+      dxgiOutput->SetGammaControl(&gamma_control);
+      dxgiOutput->Release();
+    }
+  }
+  dagor_d3d_notify_fullscreen_state_restored = true;
+}
+
 DAGOR_NOINLINE static void toggle_fullscreen(HWND hWnd, UINT message, WPARAM wParam)
 {
   if (dgs_get_window_mode() != WindowMode::FULLSCREEN_EXCLUSIVE)
     return;
 
-  if (has_focus(hWnd, message, wParam))
-  {
-    ShowWindow(hWnd, SW_RESTORE);
-    ::delayed_call([]() {
-      if (swap_chain)
-      {
-        debug("DX11: SetFullscreenState(1)");
-        drv3d_dx11::set_fullscreen_state(true);
+  const bool focused = has_focus(hWnd, message, wParam);
+  ShowWindow(hWnd, focused ? SW_RESTORE : SW_MINIMIZE);
 
-        if (gamma_control_valid && swap_chain)
-        {
-          ContextAutoLock contextLock;
-          IDXGIOutput *dxgiOutput;
-          HRESULT hr = swap_chain->GetContainingOutput(&dxgiOutput);
-          if (SUCCEEDED(hr))
-          {
-            dxgiOutput->SetGammaControl(&gamma_control);
-            dxgiOutput->Release();
-          }
-        }
-        dagor_d3d_notify_fullscreen_state_restored = true;
-      }
-    });
-  }
-  else
-  {
-    ShowWindow(hWnd, SW_MINIMIZE);
-    ::delayed_call([]() {
-      if (swap_chain)
-      {
-        debug("DX11: SetFullscreenState(0)");
-        drv3d_dx11::set_fullscreen_state(false);
-      }
-    });
-  }
+  const auto toggle = focused ? FULLSCREEN_TOGGLE_ON : FULLSCREEN_TOGGLE_OFF;
+  if (fullscreen_toggle_pending.exchange(toggle, dag::mo::acq_rel) == FULLSCREEN_TOGGLE_NONE)
+    ::delayed_call([] { apply_deferred_fullscreen_toggle(); });
 }
 
 LRESULT CALLBACK WindowProcProxy(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
@@ -2629,6 +2657,9 @@ bool d3d::reset_device()
 
   if (dagor_d3d_force_driver_reset)
   {
+    const char *resetReason = fetch_pending_reset_reason();
+    debug("DX11 reset_device: reason='%s' device_is_lost=0x%X", resetReason ? resetReason : "unknown", device_is_lost);
+    log_present_state("reset_device");
     ScopedLockWrite lock(reset_rw_lock);
     ResAutoLock resLock; // Avoid deadlock with Tex::lock functions.
     resetting_device_now = true;
@@ -2709,6 +2740,16 @@ bool d3d::reset_device()
     if (fullscreenWindowStateChanged)
       ShowWindow(main_window_hwnd, SW_MINIMIZE);
 
+    auto restoreWindowFsState = [&] {
+      // restore a minimized window after the reset to fix client and clipping regions for the cursor
+      if (fullscreenWindowStateChanged)
+        ShowWindow(main_window_hwnd, SW_RESTORE);
+
+      // maximizing fullscreen window to fill whole display in case if game resolution lower than screen resolution
+      if (fullscreenWindow)
+        ShowWindow(main_window_hwnd, SW_MAXIMIZE);
+    };
+
     IDXGIOutput *output = get_output_monitor_by_name_or_default(displayName);
     if (target_output && target_output != output)
       target_output->Release();
@@ -2726,9 +2767,24 @@ bool d3d::reset_device()
 
     find_closest_matching_mode();
 
-    DXFATAL(swap_chain->ResizeBuffers(scd.BufferCount, scd.BufferDesc.Width, scd.BufferDesc.Height, scd.BufferDesc.Format, scd.Flags),
-      "RSB");
+    const HRESULT resizeHr =
+      swap_chain->ResizeBuffers(scd.BufferCount, scd.BufferDesc.Width, scd.BufferDesc.Height, scd.BufferDesc.Format, scd.Flags);
+    last_hres = resizeHr;
+    // a failed ResizeBuffers keeps the old buffers, so a backbuffer is recreated from them either way
     ds.createSurfaces(scd.BufferDesc.Width, scd.BufferDesc.Height);
+    if (FAILED(resizeHr))
+    {
+      D3D_ERROR("DX11: mode reset ResizeBuffers failed: %s hr=0x%X, falling back to full device reset", dx11_error(resizeHr),
+        resizeHr);
+      dump_swapchain_desc(scd);
+      // the frame before the full reset must be gated like a device loss; init_device<true> clears this
+      device_is_lost = resizeHr;
+      dagor_d3d_force_driver_mode_reset = false;
+      dagor_d3d_force_driver_reset = true;
+      set_pending_reset_reason("ResizeBuffers failed");
+      restoreWindowFsState();
+      return false;
+    }
 
     recreate_render_states();
 
@@ -2763,13 +2819,7 @@ bool d3d::reset_device()
       return false;
     }
 
-    // restore a minimized window after the reset to fix client and clipping regions for the cursor
-    if (fullscreenWindowStateChanged)
-      ShowWindow(main_window_hwnd, SW_RESTORE);
-
-    // maximizing fullscreen window to fill whole display in case if game resolution lower than screen resolution
-    if (fullscreenWindow)
-      ShowWindow(main_window_hwnd, SW_MAXIMIZE);
+    restoreWindowFsState();
   }
 
   dagor_d3d_force_driver_reset = false;

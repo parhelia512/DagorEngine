@@ -233,7 +233,6 @@ static dafg::NodeHandle make_outline_apply_node(ecs::EntityManager &manager)
 
     auto outlineDepthHndl =
       registry.read("outline_depth").texture().atStage(dafg::Stage::PS).bindToShaderVar("outline_depth").handle();
-    registry.create("outline_depth_sampler").blob(d3d::request_sampler({})).bindToShaderVar("outline_depth_samplerstate");
 
     read_gbuffer_material_only(registry);
 

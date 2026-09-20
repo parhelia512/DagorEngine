@@ -449,7 +449,7 @@ void BlkLoadContext::load(const DataBlock &blk, const char *tags, on_empty_comp_
       addSets(hName.hash, setFlags);
       clist->emplace_back(pName, eastl::move(comp)); // todo: we should not calculate hash again
     }
-    else if (doMainLoad && sets.tagsSkipped)
+    else if (sets.tagsSkipped)
       sets.tagsSkipped->insert(hName.hash);
   }
 
@@ -568,7 +568,7 @@ void BlkLoadContext::load(const DataBlock &blk, const char *tags, on_empty_comp_
     }
     if (addedComponent) //-V547
       addSets(hName.hash, setFlags | readSetFlags(*subBlock));
-    else if (doLoad && sets.tagsSkipped)
+    else if (sets.tagsSkipped)
       sets.tagsSkipped->insert(hName.hash);
   }
 }
@@ -814,6 +814,10 @@ static void load_templates_blk_file(ecs::EntityManager &mgr, const char *path, c
         {
           const char *ftags = tblk.getStr(TAGS_NAME, NULL);
           const bool doLoad = !ftags || (info && ecs::filter_needed(ftags, info->filterTags)); //-V595
+          // before the tag gate and the registration outcome, like template components:
+          // skipped and failed declarations stay known
+          if (info)
+            info->updateComponentTags(ECS_HASH_SLOW(compName), ftags, templName, path);
           if (doLoad && (!lctx.ignoreTypeNm || lctx.ignoreTypeNm->getNameId(compType) < 0))
           {
             RegisterRet ret = register_component(mgr, compName, eastl::string_view(compType), tblk);
@@ -823,8 +827,6 @@ static void load_templates_blk_file(ecs::EntityManager &mgr, const char *path, c
               logerr("_component block at %s is invalid. Type %s for %sis unknown", path, compType, compName);
             else if (ret != RegisterRet::OK)
               logerr("_component block at %s is invalid. Can't register %s:%s.", path, compName, compType);
-            else if (info)
-              info->updateComponentTags(ECS_HASH_SLOW(compName), ftags, templName, path);
           }
         }
         else
@@ -920,15 +922,16 @@ static void load_templates_blk_file(ecs::EntityManager &mgr, const char *path, c
       if (tblk.getParamNameId(j) == skipInitialNid)
       {
         tokenize_const_string(tblk.getStr(j), ",", [&](eastl::string_view comp_name) {
-          ignored.emplace(ecs_hash(comp_name));
+          const ecs::component_t c = ecs_hash(comp_name);
+          if (!tagsSkippedSet.count(c))
+            ignored.emplace(c);
           return true;
         });
       }
 
     auto buildList = [&](const DataBlock &blk, ecs::Template::component_set &list, const ecs::Template::component_set &skipped,
-                       const char *name, int name_id, bool check) {
+                       const char *name, int name_id) {
       G_UNUSED(name);
-      G_UNUSED(check);
       int paramId = -1;
       while ((paramId = blk.findParam(name_id, paramId)) >= 0)
         if (blk.getParamType(paramId) == DataBlock::TYPE_STRING)
@@ -941,23 +944,15 @@ static void load_templates_blk_file(ecs::EntityManager &mgr, const char *path, c
           if (strpbrk(cName, "|^.$"))
             logerr("template %s:%s in list of %s has regexp <%s> instead of list of components. Regexps are not supported", templName,
               path, name, cName);
-          if (eastl::find_if(cmap.begin(), cmap.end(), [&](auto cl) { return cl.first == c; }) == cmap.end())
-          {
-            if (check)
-              logerr("template %s:%s in list of %s has component %s, which is not within it's components", templName, path, name,
-                cName);
-            continue;
-          }
 #endif
+          // the name can be a component of a parent template; parents are not resolved
+          // at parse time, so membership can not be checked here
           list.insert(c);
         }
     };
-    const bool check = false; // todo: replace me with true, as soon as we fix bugs
-    buildList(tblk, hiddenSet, tagsSkippedSet, "hidden", hiddenNid, check);
-    buildList(tblk, trackedSet, tagsSkippedSet, "tracked", trackedNid, check);
-    buildList(tblk, replicatedSet, tagsSkippedSet, "replicated", replicatedNid, check);
-    // buildList(tblk, ignoredSet, ignoredList, "skipInitialReplication", skipInitialNid, true);// we cant enable it now, as it will
-    // fail checks
+    buildList(tblk, hiddenSet, tagsSkippedSet, "hidden", hiddenNid);
+    buildList(tblk, trackedSet, tagsSkippedSet, "tracked", trackedNid);
+    buildList(tblk, replicatedSet, tagsSkippedSet, "replicated", replicatedNid);
 
     G_ASSERT(lctx.sets.tracked == &trackedSet);
     Template templ(templName, eastl::move(cmap), eastl::move(trackedSet), eastl::move(replicatedSet), eastl::move(ignored),

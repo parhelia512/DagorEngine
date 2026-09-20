@@ -21,6 +21,7 @@
 #include <util/dag_roHugeHierBitMap2d.h>
 #include <util/dag_stdint.h>
 #include <util/dag_fastIntList.h>
+#include <util/dag_oaHashNameMap.h>
 #include <util/dag_simpleString.h>
 #include <3d/dag_texIdSet.h>
 #include <vecmath/dag_vecMathDecl.h>
@@ -35,10 +36,17 @@
 #define RIGEN_PERINST_ADD_DATA_FOR_TOOLS _TARGET_PC_TOOLS_BUILD
 
 #ifndef FORCE_RI_VERBOSE_OUTPUT
-#define FORCE_RI_VERBOSE_OUTPUT _TARGET_PC || !DAGOR_HOSTED_INTERNAL_SERVER
+#define FORCE_RI_VERBOSE_OUTPUT (_TARGET_PC && !DAGOR_HOSTED_INTERNAL_SERVER)
 #endif
 
-#define RI_VERBOSE_OUTPUT (DAGOR_DBGLEVEL > 0) && FORCE_RI_VERBOSE_OUTPUT
+#define RI_VERBOSE_OUTPUT ((DAGOR_DBGLEVEL > 0) && FORCE_RI_VERBOSE_OUTPUT)
+
+#if RI_VERBOSE_OUTPUT
+namespace rendinst
+{
+bool is_ri_verbose_dump_expected();
+} // namespace rendinst
+#endif
 
 class IGenLoad;
 class Point4;
@@ -147,6 +155,9 @@ struct RendInstGenData
     eastl::bitvector<> riPaletteRotation;
     eastl::bitvector<> riZeroInstSeeds;
     Tab<const char *> riResName;
+    // pool index by riResName; -1 once substituted into riExtra, so repeated subst passes take a pool once
+    FastNameMap riResNameIds;
+    Tab<int> riResIdxByNameId;
     SmallTab<ElemMask, MidmemAlloc> riResElemMask; // bit-per-elem mask for rendinst::MAX_LOD_COUNT lod of each riRes
     SmallTab<bbox3f, MidmemAlloc> riResBb;
     SmallTab<bbox3f, MidmemAlloc> riCollResBb;
@@ -576,7 +587,7 @@ public:
     float cell_xz_sz, float cell_y_sz, bbox3f &cell_bbox);
   static CellRtData *(*riGenValidateGeneratedCell)(RendInstGenData *rgl, CellRtData *crt, int idx, int cx, int cz);
 
-  void renderRendinstShadowsToClipmap(const BBox2 &region, int cascadeNo);
+  bool tryRenderRendinstShadowsToClipmap(const BBox2 &region, int cascadeNo, int max_draws, int &draw_count);
   bool notRenderedClipmapShadowsBBox(BBox2 &box, int cascadeNo);
   bool notRenderedStaticShadowsBBox(BBox3 &box);
   bool notRenderedStaticShadowsBBoxes(Tab<BBox3> &boxes);
@@ -663,6 +674,8 @@ extern DataBlock ri_lod_ranges_ovr;
 int get_skip_nearest_lods(const char *name, bool has_impostors, int total_lods);
 bool is_ri_extra_for_inst_count_only(const char *name);
 int getPersistentPackType(RenderableInstanceLodsResource *res, int def);
+// getPersistentPackType for a whole set, resolving in the same layer order and to the same first match
+void getPersistentPackTypes(dag::ConstSpan<RenderableInstanceLodsResource *> res, int def, dag::Span<uint8_t> out_types);
 uint8_t getResHideMask(const char *res_name, const BBox3 *lbox);
 inline bool isResHidden(uint8_t hide_mask) { return ri_game_render_mode < 0 ? false : (hide_mask >> ri_game_render_mode) & 1; }
 

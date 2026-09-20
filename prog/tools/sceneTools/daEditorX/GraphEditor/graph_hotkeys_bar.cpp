@@ -22,6 +22,16 @@ constexpr int HOTKEYS_MARGIN = 10;          // inset from the canvas bottom and 
 
 constexpr ImU32 HOTKEYS_TEXT_COLOR = IM_COL32(0xFF, 0xFF, 0xFF, 0xFF);          // white labels + cap text
 constexpr ImU32 HOTKEYS_KEYCAP_BORDER_COLOR = IM_COL32(0x8C, 0x8C, 0x8C, 0xFF); // key-cap outline
+constexpr ImU32 HOTKEYS_HINT_COLOR = IM_COL32(0x81, 0xC5, 0xFF, 0xFF);          // a contextual entry, cap and label alike
+
+// A contextual entry draws only while its action is available, and is tinted to say so.
+enum class HotkeyHint
+{
+  Always,
+  PinJump,
+  AddNode,
+  AddTransitNode,
+};
 
 struct HotkeyEntry
 {
@@ -29,17 +39,23 @@ struct HotkeyEntry
   const char *iconName;
   const char *capText;
   const char *label;
+  HotkeyHint hint;
 };
 
+// The icon name is pasted into the path, so the "dark/" prefix pins these to commonData/icons/dark
+// whatever the active theme is -- the bar sits on the canvas, which never goes light.
 const HotkeyEntry HOTKEY_ENTRIES[] = {
-  {false, "mouse_wheel", nullptr, "Zoom"},
-  {false, "mouse_move", nullptr, "Pan"},
-  {true, nullptr, "Ctrl+Space", "Zoom and Center"},
-  {true, nullptr, "F1", "Tutorial"},
+  {true, nullptr, "Space", "Add node", HotkeyHint::AddNode},
+  {true, nullptr, "Shift+Space", "Add transit node", HotkeyHint::AddTransitNode},
+  {true, nullptr, "Tab", "Jump to opposite pin", HotkeyHint::PinJump},
+  {false, "dark/mouse_wheel", nullptr, "Zoom", HotkeyHint::Always},
+  {false, "dark/mouse_move", nullptr, "Pan", HotkeyHint::Always},
+  {true, nullptr, "Ctrl+Space", "Zoom and Center", HotkeyHint::Always},
+  {true, nullptr, "F1", "Tutorial", HotkeyHint::Always},
 };
 } // namespace
 
-void draw_graph_hotkeys_bar(const ImVec2 &canvas_max)
+void draw_graph_hotkeys_bar(const ImVec2 &canvas_max, const GraphHotkeyContext &context)
 {
   ImDrawList *dl = ImGui::GetWindowDrawList();
 
@@ -62,10 +78,26 @@ void draw_graph_hotkeys_bar(const ImVec2 &canvas_max)
     return iconSize;
   };
 
+  // Both passes must skip the same entries: the bar is right-aligned from totalWidth, so a filter
+  // applied to one loop only would shift every entry.
+  auto hidden = [&context](const HotkeyEntry &e) {
+    switch (e.hint)
+    {
+      case HotkeyHint::PinJump: return !context.pinJumpAvailable;
+      case HotkeyHint::AddNode: return !context.addNodeAvailable;
+      case HotkeyHint::AddTransitNode: return !context.addTransitNodeAvailable;
+      default: return false;
+    }
+  };
+
   float totalWidth = 0.0f;
   bool first = true;
   for (const HotkeyEntry &e : HOTKEY_ENTRIES)
   {
+    if (hidden(e))
+    {
+      continue;
+    }
     if (!first)
     {
       totalWidth += entryGap;
@@ -83,18 +115,24 @@ void draw_graph_hotkeys_bar(const ImVec2 &canvas_max)
   first = true;
   for (const HotkeyEntry &e : HOTKEY_ENTRIES)
   {
+    if (hidden(e))
+    {
+      continue;
+    }
     if (!first)
     {
       x += entryGap;
     }
     first = false;
 
+    const bool contextual = e.hint != HotkeyHint::Always;
+    const ImU32 textColor = contextual ? HOTKEYS_HINT_COLOR : HOTKEYS_TEXT_COLOR;
     if (e.isKeyCap)
     {
       const float capW = ImGui::CalcTextSize(e.capText).x + keycapPadX * 2.0f;
-      dl->AddRect(ImVec2(x, rowTop), ImVec2(x + capW, rowTop + rowH), HOTKEYS_KEYCAP_BORDER_COLOR, rounding, ImDrawFlags_None,
-        borderThickness);
-      dl->AddText(ImVec2(x + keycapPadX, textY), HOTKEYS_TEXT_COLOR, e.capText);
+      const ImU32 capBorder = contextual ? HOTKEYS_HINT_COLOR : HOTKEYS_KEYCAP_BORDER_COLOR;
+      dl->AddRect(ImVec2(x, rowTop), ImVec2(x + capW, rowTop + rowH), capBorder, rounding, ImDrawFlags_None, borderThickness);
+      dl->AddText(ImVec2(x + keycapPadX, textY), textColor, e.capText);
       x += capW;
     }
     else
@@ -108,7 +146,7 @@ void draw_graph_hotkeys_bar(const ImVec2 &canvas_max)
     }
 
     x += labelGap;
-    dl->AddText(ImVec2(x, textY), HOTKEYS_TEXT_COLOR, e.label);
+    dl->AddText(ImVec2(x, textY), textColor, e.label);
     x += ImGui::CalcTextSize(e.label).x;
   }
 }

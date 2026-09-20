@@ -261,8 +261,6 @@ public:
   Point2 fogOfWarLeftTop = Point2(0, 0);
   Point2 fogOfWarRightBottom = Point2(0, 0);
 
-  int tileLoadGeneration = 0; // incremented on freeAllPictures to invalidate in-flight async requests
-
   // track the previous data to avoid unnecessary updates in the fog of war
   int fogOfWarDataGen = 0;
   int fogOfWarPrevDataGen = -1;

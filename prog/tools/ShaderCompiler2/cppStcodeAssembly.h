@@ -292,10 +292,6 @@ struct DynamicStcodeRoutine : StcodeRoutine
 
   void reportStageUsage(ShaderStage stage) { isCompute = stage == STAGE_CS; }
 
-  // Needed for the following use case:
-  //  for global const block registers are allocated from the same 'buffered' reg allocator, but set in subranges
-  //  for each stage to different actual constbuffers. Therefore we can't use the range from the allocator, and
-  //  instead have to calculate from the actual routine mapping.
   HlslRegRange collectSetRegistersRange(ShaderStage stage) const
   {
     HlslRegRange range{};

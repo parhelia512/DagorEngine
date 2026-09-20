@@ -125,9 +125,8 @@ static dafg::NodeHandle makeEnviCoverNode(bool NBS)
       TextureInfo info;
       gbuf0Handle.view()->getinfo(info);
 
-      eastl::array<BaseTexture *, EnviCover::ENVI_COVER_MAX_RW_TARGETS> gbufTextures = {gbuf0Handle.view().getTex2D(),
-        gbuf1Handle.view().getTex2D(), gbuf2Handle.view().getTex2D(), gbuf3Handle.view().getTex2D(),
-        gbufExtraHandle.view().getTex2D()};
+      GbufRtArray gbufTextures = {gbuf0Handle.view().getTex2D(), gbuf1Handle.view().getTex2D(), gbuf2Handle.view().getTex2D(),
+        gbuf3Handle.view().getTex2D(), gbufExtraHandle.view().getTex2D()};
 
       auto &wr = *static_cast<WorldRenderer *>(get_world_renderer());
 
@@ -182,9 +181,8 @@ static dafg::NodeHandle makeCombinedNode(bool NBS)
         TextureInfo info;
         gbuf0Handle.view()->getinfo(info);
 
-        eastl::array<BaseTexture *, EnviCover::ENVI_COVER_MAX_RW_TARGETS> gbufTextures = {gbuf0Handle.view().getTex2D(),
-          gbuf1Handle.view().getTex2D(), gbuf2Handle.view().getTex2D(), gbuf3Handle.view().getTex2D(),
-          gbufExtraHandle.view().getTex2D()};
+        GbufRtArray gbufTextures = {gbuf0Handle.view().getTex2D(), gbuf1Handle.view().getTex2D(), gbuf2Handle.view().getTex2D(),
+          gbuf3Handle.view().getTex2D(), gbufExtraHandle.view().getTex2D()};
 
         auto &wr = *static_cast<WorldRenderer *>(get_world_renderer());
 
@@ -282,19 +280,15 @@ static dafg::NodeHandle makeSetReprojectionNode()
 
 static dafg::NodeHandle makeMotionVecRenameNode()
 {
-  return getNameSpaceRootOrMixing().registerNode("rename_motion_vector_node", DAFG_PP_NODE_SRC, [](dafg::Registry registry) {
-    registry.renameTexture("gbuf_3", "motion_vecs");
-    return []() {};
-  });
+  return getNameSpaceRootOrMixing().registerNode("rename_motion_vector_node", DAFG_PP_NODE_SRC,
+    [](dafg::Registry registry) { registry.renameTexture("gbuf_3", "motion_vecs"); });
 }
 
 static dafg::NodeHandle makeEnviCoverTokenProvider(bool has_motion_vecs)
 {
   auto ns = has_motion_vecs ? getNameSpaceRootOrMixing() : getNameSpaceStaticsOrMixing();
-  return ns.registerNode("envi_cover_token_provider_node", DAFG_PP_NODE_SRC, [](dafg::Registry registry) {
-    registry.createBlob<OrderingToken>("envi_cover_rendered");
-    return []() {};
-  });
+  return ns.registerNode("envi_cover_token_provider_node", DAFG_PP_NODE_SRC,
+    [](dafg::Registry registry) { registry.createBlob<OrderingToken>("envi_cover_rendered"); });
 }
 
 eastl::array<dafg::NodeHandle, 4> makeResolveMotionAndEnviCoverNode(bool has_motion_vecs, bool use_envi_cover_nodes, bool use_NBS)

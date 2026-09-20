@@ -182,6 +182,8 @@ public:
   void setSoftwareFeedbackRadius(int inner_tiles, int outer_tiles);
   void setSoftwareFeedbackMipTiles(int mip, int tiles_for_mip);
 
+  bool getCurrentFeedbackBox(BBox2 &ret) const;
+
   void startUAVFeedback();
   void endUAVFeedback();
   void increaseUAVAtomicPrefix(); // By increasing UAV atomic prefix following UAV feedback operations can overdraw feedback.

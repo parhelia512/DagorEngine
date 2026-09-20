@@ -92,6 +92,20 @@
     stroke:#000;
   }
 
+  .warningElemRectClass
+  {
+    fill:rgba(255, 160, 0, 0.8);
+    stroke-width:2px;
+    stroke:#000;
+    animation: warningNodePulse 1s ease-in-out infinite alternate;
+  }
+
+  @keyframes warningNodePulse
+  {
+    from { fill:rgba(255, 200, 80, 0.8); }
+    to   { fill:rgba(255, 160, 0, 0.8); }
+  }
+
   .elemPinClass
   {
     fill:rgb(0,180,255);
@@ -261,6 +275,14 @@
     font-weight: bold;
   }
 
+  .warningClass
+  {
+    background-color: rgba(255, 200, 40, 0.9);
+    color: black;
+    pointer-events: auto;
+    font-weight: bold;
+  }
+
   .selectedFilteredElem
   {
     border: 2px solid white;
@@ -345,6 +367,11 @@
 ...
 </div>
 
+<div id="warningMsgDiv" class="hintClass warningClass" style="position:absolute; top:96px; left:230px; visibility:hidden;"
+  onmousedown="onWarningMouseDown(event)">
+...
+</div>
+
 
 <div class="sidePanelClass" style="background:#444; border:1px solid #eee;">
   <div id="categoriesDiv" class="listClass" style="height:125px; width:100%; box-sizing:border-box;">
@@ -420,6 +447,9 @@ var errorState = false;
 var attached = false;
 var lastErrorString = null;
 var prevErrorString = null;
+var lastWarningString = null;
+var prevWarningString = null;
+var lastGraphWarnings = [];
 var lastRespondTime = Date.now();
 
 var queryQueue = [];
@@ -896,6 +926,21 @@ function onErrorMouseDown(event)
 }
 
 
+function onWarningMouseDown(event)
+{
+  if (!lastGraphWarnings || lastGraphWarnings.length == 0)
+    return;
+
+  var text = lastGraphWarnings.length + " warning(s):\n\n";
+  for (var i = 0; i < lastGraphWarnings.length; i++)
+    text += lastGraphWarnings[i].text + "\n\n";
+
+  editor.bigTextArea.style.visibility = "visible";
+  editor.bigTextArea.value = text;
+  setTimeout(function(){editor.bigTextArea.focus(); editor.bigTextArea.setSelectionRange(0, 0);}, 10);
+}
+
+
 function processGraphCommands(buf)
 {
   if (buf.indexOf("%subgraph_desc:") == 0)
@@ -1018,6 +1063,19 @@ function onTimer()
       elem.style.visibility = "hidden";
     }
     prevErrorString = lastErrorString;
+  }
+
+  if (prevWarningString != lastWarningString)
+  {
+    var warnElem = document.getElementById("warningMsgDiv");
+    if (lastWarningString)
+    {
+      warnElem.style.visibility = "visible";
+      warnElem.innerText = " " + lastWarningString + " ";
+    }
+    else
+      warnElem.style.visibility = "hidden";
+    prevWarningString = lastWarningString;
   }
 
   if (!attached)

@@ -42,7 +42,7 @@ shader temp_faces_count
     void count_collision_ps(VsOutput input)
     {
       int3 cell = int3(floor(input.cell));//int3(floor((worldPos - debug_count_tri_start)/debug_count_tri_cell.xyz));
-      if (any(cell<0 || cell >= int3(FILL_DEBUG_SIZE,FILL_DEBUG_SIZE_Y,FILL_DEBUG_SIZE)))
+      if (any(or(cell<0, cell >= int3(FILL_DEBUG_SIZE,FILL_DEBUG_SIZE_Y,FILL_DEBUG_SIZE))))
         discard;
       InterlockedAdd(structuredBufferAt(tri_count, cell.x+cell.y*FILL_DEBUG_SIZE+cell.z*FILL_DEBUG_SIZE*FILL_DEBUG_SIZE_Y), 1);
     }

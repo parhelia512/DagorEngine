@@ -56,13 +56,15 @@ float contactShadowRayCastWithScaleHitT(
   const float compareTolerance = abs( rayDepthScreenZ - rayStartScreen.z ) * stepLen * COMPARE_TOLERANCE_SCALE(linearDepth);
   const float selfOcclusionBias = compareTolerance * CONTACT_SHADOWS_SELF_OCCLUSION_BIAS_SCALE;
 
-  float sampleT = stepOffset * stepLen + stepLen;
+  const float firstSampleT = stepOffset * stepLen + stepLen;
+  const float3 tapStepUVz = rayStepUVz * stepLen;
+  float3 sampleUVz = rayStartUVz + rayStepUVz * firstSampleT;
+  // Number of steps should be <= 32.
+  uint hitMask = 0;
 
-  float hitT = 1.h;
-
+  [loop]
   for( int i = 0; i < numSteps; i++ )
   {
-    float3 sampleUVz = rayStartUVz + rayStepUVz * sampleT;
     #if FSR_DISTORTION
       float sampleDepth = float(tex2Dlod(depth_gbuf, float4(linearToDistortedTc(sampleUVz.xy), 0, 0)).r);
     #else
@@ -77,18 +79,19 @@ float contactShadowRayCastWithScaleHitT(
     if (hasHit)
     {
       hitUV = sampleUVz.xy;
-      return any(or(hitUV < 0, hitUV > 1)) ? 1.h : sampleT;
+      return any(or(hitUV < 0, hitUV > 1)) ? 1.h : firstSampleT + i * stepLen;
     }
     #else
-      hitT = hasHit ? min(hitT, sampleT) : hitT;
+      hitMask |= hasHit ? (1u << i) : 0;
     #endif
 
-    sampleT += stepLen;
+    sampleUVz += tapStepUVz;
   }
 
   #if EARLY_EXIT_CONTACT_SHADOWS
   return 1.h;
   #else
+  float hitT = hitMask != 0 ? min(1.h, firstSampleT + firstbitlow(hitMask) * stepLen) : 1.h;
   hitUV = rayStartUVz.xy + rayStepUVz.xy * hitT;
   return float(any(or(hitUV < 0, hitUV>1)) ? 1.h : hitT);
   #endif

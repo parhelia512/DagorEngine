@@ -10,6 +10,7 @@
 // see dag_fixedVectorSet.h for more info
 
 #include <generic/dag_fixedVectorSet.h>
+#include <util/dag_compilerDefs.h>
 
 
 namespace dag
@@ -17,8 +18,8 @@ namespace dag
 
 template <typename K, typename V, size_t inplace_count, bool allow_overflow = true, typename Allocator = MidmemAlloc,
   typename Counter = uint32_t>
-class FixedVectorMap : protected FixedVectorSet<eastl::pair<const K, V>, inplace_count, allow_overflow,
-                         eastl::use_first<eastl::pair<const K, V>>, Allocator, Counter>
+class DAGOR_WARN_IF_UNUSED FixedVectorMap : protected FixedVectorSet<eastl::pair<const K, V>, inplace_count, allow_overflow,
+                                              eastl::use_first<eastl::pair<const K, V>>, Allocator, Counter>
 {
 public:
   typedef FixedVectorSet<eastl::pair<const K, V>, inplace_count, allow_overflow, eastl::use_first<eastl::pair<const K, V>>, Allocator,

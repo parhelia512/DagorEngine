@@ -643,6 +643,27 @@ public:
         previousState.atTick * (double)timeStep, currentState.location.O.getQuat(), dpoint3(currentState.omega), currentStateTime,
         out_quat, out_omega);
   }
+  gamephys::Loc calcLocAtTime(double at_time) const
+  {
+    const double currentStateTime = currentState.atTick * (double)timeStep;
+    if (at_time > currentStateTime || currentState.atTick == previousState.atTick)
+    {
+      ExtrapolatedPhysState extrState;
+      extrapolateMinimalState(currentState, at_time, extrState);
+      return extrState.location;
+    }
+
+    const double previousStateTime = previousState.atTick * (double)timeStep;
+    gamephys::Loc loc;
+    Quat quat;
+    DPoint3 vel, omega;
+    gamephys::calc_pos_vel_at_time(at_time, previousState.location.P, dpoint3(previousState.velocity), previousStateTime,
+      currentState.location.P, dpoint3(currentState.velocity), currentStateTime, loc.P, vel);
+    gamephys::calc_quat_omega_at_time(at_time, previousState.location.O.getQuat(), dpoint3(previousState.omega), previousStateTime,
+      currentState.location.O.getQuat(), dpoint3(currentState.omega), currentStateTime, quat, omega);
+    loc.O.setQuat(quat);
+    return loc;
+  }
   inline void calculateCurrentVisualLocationError(double current_time, gamephys::Loc &out_current_visual_location_error) const
   {
     calc_current_vis_loc_error(current_time - visualLocationErrorProductionTime, visualLocationError,

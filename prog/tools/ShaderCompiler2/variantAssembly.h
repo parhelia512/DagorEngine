@@ -33,8 +33,7 @@ struct NamedConstDeclarationHlsl
 };
 
 eastl::optional<NamedConstDeclarationHlsl> build_hlsl_decl_for_named_const(const semantic::NamedConstDefInfo &def,
-  shc::VariantContext &ctx, int dest_register, const ShaderParser::VariablesMerger::MergedVarsMapsPerStage &var_merger_per_stage_maps,
-  const ShaderParser::VariablesMerger::MergedVarsMap &var_merger_global_blk_map);
+  shc::VariantContext &ctx, int dest_register, const ShaderParser::VariablesMerger::MergedVarsMapsPerStage &var_merger_per_stage_maps);
 
 void validate_hlsl_block_for_invalid_symbols(eastl::string_view hlsl_block, eastl::span<const char> invalid_symbols, Parser &parser,
   const semantic::NamedConstDefInfo &def);
@@ -45,7 +44,7 @@ bool build_stcode_for_named_const(const semantic::NamedConstDefInfo &def, int de
   dag::FixedMoveOnlyFunction<32, bool(int, void *)> register_sampler_var_id, IMemAlloc *tmp_memory = nullptr,
   bool add_sampler_vars = true);
 
-String build_hlsl_for_pair_sampler(const char *const_name, bool is_shadow, int dest_register);
+String build_hlsl_for_pair_sampler(const char *const_name, int dest_register);
 
 template <StcodeBuildFlags FLAGS>
 void build_stcode_for_pair_sampler(const char *const_name, const char *var_name, int dest_reg, ShaderStage stage, int var_id,
@@ -56,7 +55,7 @@ void build_cpp_declarations_for_used_bool_vars(StcodePass &out_cppstcode, const 
 
 eastl::pair<const char *, const char *> build_hlsl_type(semantic::VariableType vt);
 
-eastl::string build_placement_specifier(int dest_reg, bool is_array, int elem_count, HlslRegisterSpace rspace,
-  ShaderBlockLevel block_level, bool is_dynamic);
+eastl::string build_placement_specifier(int dest_reg, bool is_array, int elem_count, HlslRegisterSpace rspace, bool is_inside_cbuffer,
+  bool is_dynamic);
 
 } // namespace assembly

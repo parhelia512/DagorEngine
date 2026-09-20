@@ -146,6 +146,22 @@ CompositeEditorTreeDataNode *CompositeEditorTreeData::getTreeDataNodeByDataBlock
   return nullptr;
 }
 
+void CompositeEditorTreeData::traverseDepthFirst(CompositeEditorTreeDataNode &root,
+  const eastl::function<void(CompositeEditorTreeDataNode &, int)> &callback)
+{
+  int order = 0;
+  dag::Vector<CompositeEditorTreeDataNode *> stack;
+  stack.push_back(&root);
+  while (!stack.empty())
+  {
+    CompositeEditorTreeDataNode *node = stack.back();
+    stack.pop_back();
+    callback(*node, order++);
+    for (int i = node->nodeCount() - 1; i >= 0; --i)
+      stack.push_back(node->nodes[i].get());
+  }
+}
+
 CompositeEditorTreeDataNode *CompositeEditorTreeData::getTreeDataNodeParent(const CompositeEditorTreeDataNode &searchFor,
   CompositeEditorTreeDataNode &searchIn, int &nodeIndex)
 {

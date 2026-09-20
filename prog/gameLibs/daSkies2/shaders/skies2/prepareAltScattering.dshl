@@ -117,7 +117,10 @@ float4 prev_view_vecRT;
 float4 prev_view_vecLB;
 float4 prev_view_vecRB;
 int skies_continue_temporal = 1;
-float skies_froxels_history_blur = 0.1; // 0 = tent radius follows the reprojection delta, 1 = constant quarter texel, fractions blend
+float skies_froxels_history_blur_start = 0.1; // 0 = tent radius follows the reprojection delta, 1 = constant quarter texel, fractions blend
+float skies_froxels_history_blur_end = 1.0;
+float skies_froxels_history_blur_blend_from = 3000;
+float skies_froxels_history_blur_blend_to = 5000;
 
 int skies_render_panorama_scattering;
 interval skies_render_panorama_scattering:off<1, on;
@@ -126,6 +129,13 @@ float4 move_world_view_pos;
 
 
 macro FROXELS_SCATTERING(code)
+  // Above 5000m stripes on water appear. Increasing skies_froxels_history_blur on high camera altitudes that hides
+  // godrays but shouldn't be important then.
+  local float skies_froxels_history_blur_blend_range = max(skies_froxels_history_blur_blend_to - skies_froxels_history_blur_blend_from, 0.1);
+  local float skies_froxels_history_blur_blend_coeff = max(min((prepare_origin.y - skies_froxels_history_blur_blend_from) / skies_froxels_history_blur_blend_range, 1), 0);
+  local float skies_froxels_history_blur = skies_froxels_history_blur_end * skies_froxels_history_blur_blend_coeff +
+    skies_froxels_history_blur_start * (1.0 - skies_froxels_history_blur_blend_coeff);
+
   (code) {
     use_camera_altitude@f1 = (max(0.01, (prepare_origin.y-min_ground_offset)/1000), prepare_origin.y,0,0);//prepare_origin.y
     prepare_resolution@f3 = (1./skies_froxels_resolution.x,1./skies_froxels_resolution.y,1./skies_froxels_resolution.z);
@@ -444,7 +454,7 @@ shader skies_integrate_froxel_scattering_cs
       IrradianceSpectrum irradiance = IrradianceSpectrum(0.0f,0.0f,0.0f);
 
       ##if nuke_in_atmosphere == on
-        irradiance += get_nuke_fog_step(curWorldPos, throughput, medium.extinction, sampleTransmittance, c.viewVect);
+        irradiance += get_nuke_fog_step(curWorldPos, throughput, medium.extinction, sampleTransmittance, c.viewVect, dt);
       ##endif
 
       float3 primaryPhaseTimesScattering = medium.scatteringMie * c.primaryMiePhaseValue + medium.scatteringRay * c.primaryRayleighPhaseValue;

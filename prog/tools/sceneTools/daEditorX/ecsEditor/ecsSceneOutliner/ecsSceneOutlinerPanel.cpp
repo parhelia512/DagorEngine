@@ -271,6 +271,35 @@ void ECSSceneOutlinerPanel::onEntitySceneDataChanged(const ecs::EntityId eid)
   }
 }
 
+void ECSSceneOutlinerPanel::onSceneOrderChanged(const ecs::Scene::SceneId sid)
+{
+  if (const auto it = edObjToHandle.find(objConverter.getObjectFromSceneId(sid)); it != edObjToHandle.cend())
+  {
+    if (const ecs::Scene::SceneRecord *srecord = ecs::g_scenes->getActiveScene().getSceneRecordById(sid))
+    {
+      if (const auto sit = edObjToHandle.find(objConverter.getObjectFromSceneId(srecord->parent)); sit != edObjToHandle.cend())
+      {
+        reinsertLeafAtOrderedPosition(sit->second, it->second);
+      }
+    }
+  }
+}
+
+void ECSSceneOutlinerPanel::onSceneParentChanged(const ecs::Scene::SceneId sid)
+{
+  if (const auto it = edObjToHandle.find(objConverter.getObjectFromSceneId(sid)); it != edObjToHandle.cend())
+  {
+    if (const ecs::Scene::SceneRecord *srecord = ecs::g_scenes->getActiveScene().getSceneRecordById(sid))
+    {
+      if (const auto sit = edObjToHandle.find(objConverter.getObjectFromSceneId(srecord->parent)); sit != edObjToHandle.cend())
+      {
+        tree->setNewParent(it->second, sit->second);
+        reinsertLeafAtOrderedPosition(sit->second, it->second);
+      }
+    }
+  }
+}
+
 void ECSSceneOutlinerPanel::addNoSceneLeaf()
 {
   const PropPanel::TLeafHandle leafHandle = tree->createTreeLeaf(nullptr, "No Scene", "");
@@ -321,7 +350,7 @@ void ECSSceneOutlinerPanel::addSceneLeaf(PropPanel::TLeafHandle parent, const ec
   if (record.id == importRequested)
   {
     objEditor.getUndoSystem()->begin();
-    objEditor.getUndoSystem()->put(new AddImportUndoRedo(getSceneObject(record.id), objEditor));
+    objEditor.getUndoSystem()->put<AddImportUndoRedo>(getSceneObject(record.id), objEditor);
     objEditor.getUndoSystem()->accept("Add import");
 
     requestToastOnAdd = true;

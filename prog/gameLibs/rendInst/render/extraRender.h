@@ -142,7 +142,8 @@ inline int find_lod<8>(const float *__restrict lod_dists, float dist)
 __forceinline vec4f make_pos_and_rad(mat44f_cref tm, vec4f center_and_rad)
 {
   vec4f pos = v_mat44_mul_vec3p(tm, center_and_rad);
-  vec4f maxScale = v_max(v_length3_est(tm.col0), v_max(v_length3_est(tm.col1), v_length3_est(tm.col2)));
-  vec4f bb_ext = v_mul(v_splat_w(center_and_rad), maxScale);
+  // precise sqrt: length_est is 0*rsqrt_est(0)=NaN for zero-scale (destroyed) instances
+  vec4f maxScaleSq = v_max(v_length3_sq_x(tm.col0), v_max(v_length3_sq_x(tm.col1), v_length3_sq_x(tm.col2)));
+  vec4f bb_ext = v_mul(v_splat_w(center_and_rad), v_splat_x(v_sqrt_x(maxScaleSq)));
   return v_perm_xyzd(pos, bb_ext);
 }

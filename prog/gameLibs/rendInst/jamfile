@@ -69,7 +69,6 @@ if $(PlatformSpec) in vc15 vc16 vc17 && $(PlatformArch) in x86 {
   opt on riGrid.cpp = /GS- ;
 }
 
-CPPopt = -DUSE_GRID_FOR_RI=true ;
 if $(BuildingTools) = yes { Target = $(Target:S=~t.lib) ; CPPopt += -D_TARGET_PC_TOOLS_BUILD ; }
 
 UseProgLibs =

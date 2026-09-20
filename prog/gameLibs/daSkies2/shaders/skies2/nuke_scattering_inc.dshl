@@ -16,7 +16,7 @@ macro INIT_NUKE_FOG_LIGHT(code)
     nuke_atmospheric_light_effects_count@i1 = nuke_atmospheric_light_effects_count;
 
     nuke_atmospheric_light_effects@buf = nuke_atmospheric_light_effects hlsl {
-      Buffer<float4> nuke_atmospheric_light_effects@buf;
+      Buffer<uint4> nuke_atmospheric_light_effects@buf;
     }
 
     timePhase@f3 = (time_phase(0, 10) * 0.05, time_phase(0, 20)*0.05, time_phase(0, 5)*0.2);
@@ -25,13 +25,15 @@ endmacro
 
 macro USE_NUKE_FOG_LIGHT(code)
   hlsl(code) {
-    float3 get_nuke_fog_step(float3 cur_world_pos, float3 throughput, float3 extinction, float3 sample_transmittance, float3 view)
+    float3 get_nuke_fog_step(float3 cur_world_pos, float3 throughput, float3 extinction, float3 sample_transmittance, float3 view, float dl)
     {
       float3 result = 0;
       for (int i=0; i<nuke_atmospheric_light_effects_count; i++)
       {
-        float4 nukeLightColor = loadBuffer(nuke_atmospheric_light_effects, i * 2 + 0).xyzw;
-        float3 nukeLightPos = loadBuffer(nuke_atmospheric_light_effects, i * 2 + 1).xyz;
+        float4 nukeLightColor = asfloat(nuke_atmospheric_light_effects[i * 2 + 0].xyzw);
+        uint4 nukeLightPosGlowScale = nuke_atmospheric_light_effects[i * 2 + 1].xyzw;
+        float3 nukeLightPos = asfloat(nukeLightPosGlowScale.xyz);
+        float glowScale = f16tof32(nukeLightPosGlowScale.w);
         if (nukeLightColor.w > 0)
         {
 
@@ -39,6 +41,8 @@ macro USE_NUKE_FOG_LIGHT(code)
 
           float lightDist = length(cur_world_pos - nukeLightPos.xyz);
           float radFade = pow2(saturate((nukeLightColor.w-lightDist)/max(nukeLightColor.w, 0.0000001)));
+
+          sample_transmittance *= exp(-dl * glowScale * pow2(radFade)); // not physical at all, but adds more dramatic lighting from mushroom cloud
 
           // Attempt to add variance to nuke lighting, looks good
           float3 angs = (normalize(nukeLightPos.xyz - cur_world_pos) + timePhase) * 2.0f * 3.1415926f;
@@ -91,7 +95,7 @@ macro USE_NUKE_FOG_LIGHT_RAYMARCH(code)
         float3 sampleOpticalDepth = medium.extinction * dt;
         float3 sampleTransmittance = exp(-sampleOpticalDepth);
 
-        L += get_nuke_fog_step(curWorldPos, throughput, medium.extinction, sampleTransmittance, viewVect);
+        L += get_nuke_fog_step(curWorldPos, throughput, medium.extinction, sampleTransmittance, viewVect, dt);
 
         throughput *=sampleTransmittance;
       }

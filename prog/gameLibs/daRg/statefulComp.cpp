@@ -23,13 +23,11 @@ namespace darg
 using namespace sqfrp;
 
 const char *const stateful_builder_lock_msg =
-  "Creating observables or subscribing is not allowed in a stateful component builder; construct state in the component ctor";
+  "Creating observables, subscribing, or registering onDetach is not allowed in a stateful component builder; do it in the "
+  "component ctor";
 
-
-static bool is_primitive_or_null(SQObjectType tp)
-{
-  return tp == OT_NULL || tp == OT_INTEGER || tp == OT_FLOAT || tp == OT_BOOL || tp == OT_STRING;
-}
+static const char *const scope_teardown_msg =
+  "Creating state or subscribing is not allowed in a scope.onDetach handler; the scope is tearing down";
 
 
 static WatchedHandle *try_get_observable(const Sqrat::Object &obj)
@@ -37,6 +35,18 @@ static WatchedHandle *try_get_observable(const Sqrat::Object &obj)
   if (obj.GetType() != OT_INSTANCE)
     return nullptr;
   return Sqrat::ClassType<WatchedHandle>::GetInstanceFromObj(obj.GetObject());
+}
+
+
+// True for a 'mount'-prefixed argument name (mountConfig, mount_config): a
+// deliberate mount-time read that opts out of the dead-write report. The word
+// boundary keeps unrelated names like 'mountainInfo' out.
+static bool is_mount_arg_name(const char *n)
+{
+  if (!n || strncmp(n, "mount", 5) != 0)
+    return false;
+  const char c = n[5];
+  return c == '\0' || c == '_' || (c >= 'A' && c <= 'Z');
 }
 
 
@@ -87,9 +97,19 @@ SQInteger StatefulCompType::script_ctor(HSQUIRRELVM vm)
   if (ctorProto->_ndefaultparams > 0)
     return sq_throwerror(vm, "StatefulComp ctor must not have default parameter values (arguments arrive as observables)");
 
+  // '_scope' and '_' keep the static analyzer quiet when the ctor does not use the scope
+  const char *scopeParamName = ctorProto->_nparameters >= 2 ? _stringval(ctorProto->_parameters[1]) : "";
+  if (strcmp(scopeParamName, "scope") != 0 && strcmp(scopeParamName, "_scope") != 0 && strcmp(scopeParamName, "_") != 0)
+    return sq_throwerror(vm, "StatefulComp ctor must take 'scope' (or '_scope', '_' if unused) as its first parameter");
+
   eastl::unique_ptr<StatefulCompType> self(new StatefulCompType());
   self->ctorFunc = Sqrat::Object(hCtor, vm);
-  self->numArgs = ctorProto->_nparameters - 1; // skip 'this'
+  self->numArgs = ctorProto->_nparameters - 2; // skip 'this' and 'scope'
+
+  self->argDiagSilenced.resize(self->numArgs, false);
+  for (int k = 0; k < self->numArgs; ++k)
+    if (is_mount_arg_name(_stringval(ctorProto->_parameters[2 + k])))
+      self->argDiagSilenced[k] = true;
 
   if (top == 3 && sq_gettype(vm, 3) != OT_NULL)
   {
@@ -110,10 +130,10 @@ SQInteger StatefulCompType::script_ctor(HSQUIRRELVM vm)
     {
       const char *keyParamName = _stringval(keyProto->_parameters[iKey]);
       int argIdx = -1;
-      for (SQInt32 iCtor = 1; iCtor < ctorProto->_nparameters; ++iCtor)
+      for (SQInt32 iCtor = 2; iCtor < ctorProto->_nparameters; ++iCtor) // the key never sees 'scope'
         if (strcmp(keyParamName, _stringval(ctorProto->_parameters[iCtor])) == 0)
         {
-          argIdx = iCtor - 1;
+          argIdx = iCtor - 2;
           break;
         }
       if (argIdx < 0)
@@ -188,11 +208,6 @@ SQInteger StatefulCompType::call_mm(HSQUIRRELVM vm)
 
     HSQOBJECT hKeyVal;
     sq_getstackobj(vm, -1, &hKeyVal);
-    if (!is_primitive_or_null(sq_type(hKeyVal)))
-    {
-      sq_pop(vm, 2);
-      return sqstd_throwerrorf(vm, "StatefulComp key must be a primitive value or null, got %s", sq_objtypestr(sq_type(hKeyVal)));
-    }
     desc->keyValue = Sqrat::Object(hKeyVal, vm);
     sq_pop(vm, 2); // result + closure
   }
@@ -232,14 +247,14 @@ bool stateful_desc_matches_instance(const StatefulCompDesc *desc, const Stateful
 
 // The node is owned by the script handle, so a ctor closure that keeps the
 // cell past the instance only ends up with a cell nobody writes any more.
-// Non-deferred + eager pull: reconcile writes must be seen in the same pass.
+// Immediate + eager pull: reconcile writes must be seen in the same pass.
 static Sqrat::Object create_arg_cell(ObservablesGraph *graph, const Sqrat::Object &initial, NodeId &out_id)
 {
   HSQUIRRELVM vm = graph->vm;
   out_id = graph->createWatched(initial.GetObject());
   NodeSlot &s = graph->node(out_id);
-  s.isDeferred = false;
-  s.needImmediate = true;
+  s.isImmediate = true;
+  s.propagatesImmediate = true;
   s.eagerPull = true;
 
   auto *cd = Sqrat::ClassType<WatchedHandle>::getClassData(vm);
@@ -259,6 +274,225 @@ static Sqrat::Object create_arg_cell(ObservablesGraph *graph, const Sqrat::Objec
 }
 
 
+void StatefulScope::abandonScriptRefs()
+{
+  for (SubEntry &sub : subs)
+    abandon(sub.func);
+  for (Sqrat::Object &h : detachHandlers)
+    abandon(h);
+}
+
+
+void StatefulScope::unsubscribe()
+{
+  if (!graph)
+    return;
+  for (SubEntry &sub : subs)
+    graph->removeScriptSubscriber(sub.node, sub.func.GetObject());
+  subs.clear();
+
+  if (!detachHandlers.empty())
+  {
+    HSQUIRRELVM vm = graph->vm;
+    runningDetachHandlers = true;
+    SqStackChecker check(vm);
+    for (Sqrat::Object &h : detachHandlers)
+    {
+      sq_pushobject(vm, h.GetObject());
+      sq_pushnull(vm);
+      sq_call(vm, 1, SQFalse, SQTrue);
+      sq_pop(vm, 1);
+    }
+    runningDetachHandlers = false;
+    detachHandlers.clear();
+  }
+}
+
+
+void StatefulScope::dispose()
+{
+  if (!graph)
+    return;
+  unsubscribe();
+  for (NodeId id : ownedNodes)
+    graph->destroyNode(id);
+  ownedNodes.clear();
+  graph = nullptr;
+}
+
+
+// Creates through the real Watched/Computed class, so every ctor check and the
+// source collection stay in one place; the scope only records the node id.
+static SQInteger scope_create_node(HSQUIRRELVM vm, const HSQOBJECT &class_obj, bool immediate)
+{
+  StatefulScope *self = Sqrat::ClassType<StatefulScope>::GetInstance(vm, 1);
+  if (!self)
+    return SQ_ERROR;
+  if (!self->graph)
+    return sq_throwerror(vm, "The stateful component scope is already disposed");
+  if (self->runningDetachHandlers)
+    return sq_throwerror(vm, scope_teardown_msg);
+
+  SQInteger nArgs = sq_gettop(vm) - 1;
+  sq_pushobject(vm, class_obj);
+  sq_pushnull(vm); // env for the class call
+  for (SQInteger i = 0; i < nArgs; ++i)
+    sq_push(vm, 2 + i);
+  if (SQ_FAILED(sq_call(vm, 1 + nArgs, SQTrue, SQTrue)))
+  {
+    sq_pop(vm, 1); // the class; the error is already set
+    return SQ_ERROR;
+  }
+  sq_remove(vm, -2); // the class; the new instance stays on top
+
+  HSQOBJECT hInst;
+  sq_getstackobj(vm, -1, &hInst);
+  WatchedHandle *h = Sqrat::ClassType<WatchedHandle>::GetInstanceFromObj(hInst);
+  G_ASSERT_RETURN(h && h->graph == self->graph, sq_throwerror(vm, "Internal error: created observable is invalid"));
+
+  self->ownedNodes.push_back(h->id);
+  if (immediate)
+  {
+    h->setImmediate(true);
+    if (!self->graph->node(h->id).isComputed)
+      self->graph->node(h->id).eagerPull = true;
+  }
+  return 1;
+}
+
+
+static SQInteger scope_create_watched(HSQUIRRELVM vm, bool immediate)
+{
+  auto *cd = Sqrat::ClassType<WatchedHandle>::getClassData(vm);
+  G_ASSERT_RETURN(cd, sq_throwerror(vm, "Watched class is not registered"));
+  return scope_create_node(vm, cd->classObj, immediate);
+}
+
+
+static SQInteger scope_create_computed(HSQUIRRELVM vm, bool immediate)
+{
+  auto *cd = Sqrat::ClassType<ComputedHandle>::getClassData(vm);
+  G_ASSERT_RETURN(cd, sq_throwerror(vm, "Computed class is not registered"));
+  return scope_create_node(vm, cd->classObj, immediate);
+}
+
+
+SQInteger StatefulScope::sqWatched(HSQUIRRELVM vm) { return scope_create_watched(vm, false); }
+SQInteger StatefulScope::sqComputed(HSQUIRRELVM vm) { return scope_create_computed(vm, false); }
+SQInteger StatefulScope::sqWatchedImmediate(HSQUIRRELVM vm) { return scope_create_watched(vm, true); }
+SQInteger StatefulScope::sqComputedImmediate(HSQUIRRELVM vm) { return scope_create_computed(vm, true); }
+
+
+SQInteger StatefulScope::sqSubscribe(HSQUIRRELVM vm)
+{
+  StatefulScope *self = Sqrat::ClassType<StatefulScope>::GetInstance(vm, 1);
+  if (!self)
+    return SQ_ERROR;
+  if (!self->graph)
+    return sq_throwerror(vm, "The stateful component scope is already disposed");
+  if (self->runningDetachHandlers)
+    return sq_throwerror(vm, scope_teardown_msg);
+  if (self->graph->constructionLockMsg)
+    return sq_throwerror(vm, self->graph->constructionLockMsg);
+
+  Sqrat::Var<Sqrat::Object> obsVar(vm, 2);
+  WatchedHandle *h = try_get_observable(obsVar.value);
+  if (!h || h->graph != self->graph)
+    return sq_throwerror(vm, "scope.subscribe expects an observable of this scene");
+
+  SQInteger nparams = 0, nfreevars = 0;
+  G_VERIFY(SQ_SUCCEEDED(sq_getclosureinfo(vm, 3, &nparams, &nfreevars)));
+  if (nparams != 2 && nparams > -2)
+    return sqstd_throwerrorf(vm, "Subscriber function must accept 2 parameters (actual count is %d)", nparams);
+
+  HSQOBJECT func;
+  sq_getstackobj(vm, 3, &func);
+
+  switch (self->graph->addScriptSubscriber(h->id, func, /*check_behavior*/ true))
+  {
+    case ObservablesGraph::SubscribeResult::StaleNode: return sq_throwerror(vm, "Stale observable");
+    case ObservablesGraph::SubscribeResult::TooManyNoCheck:
+      return sq_throwerror(vm, "Non-checked subscriber count is 255 max. Limit exceeded.");
+    case ObservablesGraph::SubscribeResult::Duplicate:
+    {
+      // The node holds one entry per function identity. A repeated
+      // scope.subscribe is a no-op; a callback subscribed outside the scope
+      // cannot be owned here - it would silently outlive the instance.
+      bool ownedHere = false;
+      for (SubEntry &sub : self->subs)
+        if (sub.node == h->id && sq_obj_is_equal(vm, &func, &sub.func.GetObject()))
+        {
+          ownedHere = true;
+          break;
+        }
+      if (!ownedHere)
+        return sq_throwerror(vm, "scope.subscribe: this function is already subscribed to the observable outside the scope "
+                                 "and would outlive the component; use a distinct function");
+      break;
+    }
+    case ObservablesGraph::SubscribeResult::Added: self->subs.push_back(SubEntry{h->id, Sqrat::Object(func, vm)}); break;
+  }
+
+  sq_push(vm, 2); // the observable, for chaining like obs.subscribe
+  return 1;
+}
+
+
+SQInteger StatefulScope::sqOnDetach(HSQUIRRELVM vm)
+{
+  StatefulScope *self = Sqrat::ClassType<StatefulScope>::GetInstance(vm, 1);
+  if (!self)
+    return SQ_ERROR;
+  if (!self->graph)
+    return sq_throwerror(vm, "The stateful component scope is already disposed");
+  if (self->runningDetachHandlers)
+    return sq_throwerror(vm, scope_teardown_msg);
+  if (self->graph->constructionLockMsg)
+    return sq_throwerror(vm, self->graph->constructionLockMsg);
+
+  HSQOBJECT func;
+  sq_getstackobj(vm, 2, &func);
+  if (sq_type(func) == OT_CLOSURE)
+  {
+    SQFunctionProto *proto = _closure(func)->_function;
+    int required = proto->_nparameters - 1 - proto->_ndefaultparams;
+    if (required > 0)
+      return sqstd_throwerrorf(vm, "scope.onDetach handler must be callable with no arguments (%d required)", required);
+  }
+  else
+  {
+    SQInteger npc = _nativeclosure(func)->_nparamscheck;
+    if (npc > 1 || npc < -1)
+      return sq_throwerror(vm, "scope.onDetach handler must be callable with no arguments");
+  }
+  self->detachHandlers.push_back(Sqrat::Object(func, vm));
+  return 0;
+}
+
+
+static Sqrat::Object create_scope_object(ObservablesGraph *graph, StatefulScope *&out_scope)
+{
+  HSQUIRRELVM vm = graph->vm;
+  auto *cd = Sqrat::ClassType<StatefulScope>::getClassData(vm);
+  G_ASSERT_RETURN(cd, Sqrat::Object());
+  SqStackChecker check(vm);
+  sq_pushobject(vm, cd->classObj);
+  if (SQ_FAILED(sq_createinstance(vm, -1)))
+  {
+    sq_pop(vm, 1);
+    return Sqrat::Object();
+  }
+  sq_remove(vm, -2);
+  out_scope = new StatefulScope();
+  out_scope->graph = graph;
+  Sqrat::ClassType<StatefulScope>::SetManagedInstance(vm, -1, out_scope);
+  sq_setreleasehook(vm, -1, &release_bound_instance<StatefulScope>);
+  Sqrat::Var<Sqrat::Object> res(vm, -1);
+  sq_pop(vm, 1);
+  return res.value;
+}
+
+
 eastl::unique_ptr<StatefulInstance> stateful_mount(GuiScene *scene, StatefulCompDesc *desc, Component &out_comp)
 {
   ObservablesGraph *graph = scene->frpGraph.get();
@@ -270,10 +504,16 @@ eastl::unique_ptr<StatefulInstance> stateful_mount(GuiScene *scene, StatefulComp
   inst->type = desc->type;
   inst->keyValue = desc->keyValue;
   inst->graph = graph;
-  inst->ownerScope.sourcesImmediate = true;
 
-  // Cells are created outside the owner scope, so that disposing the scope
-  // cannot release them ahead of their readers.
+  inst->scopeRef = create_scope_object(graph, inst->scope);
+  if (inst->scopeRef.IsNull())
+  {
+    darg_immediate_error(vm, "StatefulComp: failed to create the scope object");
+    return nullptr;
+  }
+
+  // Cells are not owned by the scope, so that disposing the scope cannot
+  // release them ahead of their readers.
   inst->argSlots.reserve(desc->args.size());
   for (const Sqrat::Object &arg : desc->args)
   {
@@ -301,7 +541,6 @@ eastl::unique_ptr<StatefulInstance> stateful_mount(GuiScene *scene, StatefulComp
   Sqrat::Object ctorResult;
   {
     BuilderEvalGuard mutationDeny(vm);
-    OwnerScopeGuard scopeGuard(graph, &inst->ownerScope);
     // The ctor is the place to create state, even when the mount is reached
     // from inside a locked builder (calc_comp_size).
     ConstructionLockGuard unlock(graph, nullptr);
@@ -309,9 +548,10 @@ eastl::unique_ptr<StatefulInstance> stateful_mount(GuiScene *scene, StatefulComp
     SqStackChecker check(vm);
     sq_pushobject(vm, inst->type->ctorFunc.GetObject());
     sq_pushnull(vm);
+    sq_pushobject(vm, inst->scopeRef.GetObject());
     for (const StatefulInstance::ArgSlot &slot : inst->argSlots)
       sq_pushobject(vm, slot.observable.GetObject());
-    if (SQ_FAILED(sq_call(vm, 1 + SQInteger(inst->argSlots.size()), SQTrue, SQTrue)))
+    if (SQ_FAILED(sq_call(vm, 2 + SQInteger(inst->argSlots.size()), SQTrue, SQTrue)))
     {
       sq_pop(vm, 1); // the closure; the VM has already reported the error
       return nullptr;
@@ -388,16 +628,18 @@ void stateful_update_args(GuiScene *scene, const StatefulCompDesc *desc, Statefu
       }
 
 #if DAGOR_DBGLEVEL > 0
-      NodeSlot *watched = graph->resolve(slot.node);
+      NodeSlotData *watched = graph->resolveData(slot.node);
       HSQOBJECT hArg = arg.GetObject();
       bool changed = watched && !sq_obj_is_equal(vm, &watched->value, &hArg);
 #endif
       graph->setValue(slot.node, arg); // FRP ignores a write of an equal value
 #if DAGOR_DBGLEVEL > 0
-      // Nothing reads this observable reactively, so the new value cannot reach the
-      // screen: most likely the ctor read it once with get(). Says nothing
-      // about pinned observables, which are shared with the caller.
-      if (changed && !slot.reportedDeadWrite && !graph->nodeHasConsumers(slot.node))
+      // Nothing reads this observable reactively, so the new value cannot reach
+      // the screen: most likely the ctor read it once with get().
+      // Says nothing about pinned observables, which are shared with the caller.
+      // A 'mount'-prefixed ctor parameter opts out: the cell still updates, only the report is muted.
+      G_ASSERT(i < int(inst->type->argDiagSilenced.size()));
+      if (changed && !inst->type->argDiagSilenced[i] && !slot.reportedDeadWrite && !graph->nodeHasConsumers(slot.node))
       {
         slot.reportedDeadWrite = true;
         String ctorName;
@@ -416,8 +658,8 @@ void stateful_update_args(GuiScene *scene, const StatefulCompDesc *desc, Statefu
 
 void StatefulInstance::unsubscribe()
 {
-  if (graph)
-    graph->unsubscribeOwnerScope(ownerScope);
+  if (scope)
+    scope->unsubscribe();
 }
 
 
@@ -425,7 +667,12 @@ void StatefulInstance::dispose()
 {
   if (!graph)
     return;
-  graph->disposeOwnerScope(ownerScope);
+  if (scope)
+  {
+    scope->dispose();
+    scope = nullptr; // freed by the script release hook, possibly right below
+  }
+  scopeRef.Release();
   argSlots.clear();
   keyValue.Release();
   typeRef.Release();
@@ -444,6 +691,17 @@ void bind_stateful_comp(HSQUIRRELVM vm, Sqrat::Table &exports)
 
   ///@class daRg/StatefulCompDesc
   Sqrat::Class<StatefulCompDesc, Sqrat::NoConstructor<StatefulCompDesc>> descClass(vm, "StatefulCompDesc");
+
+  ///@class daRg/StatefulScope
+  Sqrat::Class<StatefulScope, Sqrat::NoConstructor<StatefulScope>> scopeClass(vm, "StatefulScope");
+  scopeClass //
+    .SquirrelFuncDeclString(StatefulScope::sqWatched, "instance.Watched([initial: any]): instance")
+    .SquirrelFuncDeclString(StatefulScope::sqComputed, "instance.Computed(fn: function): instance")
+    .SquirrelFuncDeclString(StatefulScope::sqWatchedImmediate, "instance.WatchedImmediate([initial: any]): instance")
+    .SquirrelFuncDeclString(StatefulScope::sqComputedImmediate, "instance.ComputedImmediate(fn: function): instance")
+    .SquirrelFuncDeclString(StatefulScope::sqSubscribe, "instance.subscribe(obs: any, handler: function): instance")
+    .SquirrelFuncDeclString(StatefulScope::sqOnDetach, "instance.onDetach(handler: function)")
+    /**/;
 
   exports.Bind("StatefulComp", typeClass);
 }

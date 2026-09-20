@@ -34,10 +34,7 @@ AddLibs += Version.lib ;
 
 CPPopt = -DINSIDE_DRIVER -FId3d_config.h ;
 
-if $(Platform) in windows && $(PlatformArch) in x86 x86_64 {
-  AddIncludes += $(_DEVTOOL)/nvapi-$(NvApiVer) ;
-  CPPopt += -DHAS_NVAPI ;
-}
+include $(Root)/prog/engine/drv/drv3d_commonCode/nvapi.jam ;
 
 if $(Platform) in windows &&
    $(PlatformArch) in x86 x86_64 &&
@@ -61,10 +58,6 @@ if $(Platform) in windows &&
   CPPopt += -DHAS_AFTERMATH ;
 }
 
-if $(Platform) in windows && $(PlatformArch) in x86 x86_64 {
-  AddIncludes += $(Root)/prog/3rdPartyLibs/streamline/include ;
-}
-
-UseProgLibs = engine/drv/drv3d_commonCode ;
+UseProgLibs = engine/drv/drv3d_commonCode engine/drv/shadersMetaData/dx11 ;
 
 include $(Root)/prog/_jBuild/build.jam ;

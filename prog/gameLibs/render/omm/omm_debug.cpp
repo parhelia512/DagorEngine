@@ -611,7 +611,7 @@ static void imgui_window()
   if (failedCount > 0)
     ImGui::TextColored(FAILED_COLOR, "%d failed bake(s)", failedCount);
 
-  ImGui::BeginChild("omm_bake_results", ImVec2(320.f, 0.f), true);
+  ImGui::BeginChild("omm_bake_results", ImVec2(320.f, 0.f), ImGuiChildFlags_Borders);
   for (int i : displayOrder)
   {
     const DebugEntry &entry = entries[i];
@@ -634,7 +634,7 @@ static void imgui_window()
 
   ImGui::SameLine();
 
-  ImGui::BeginChild("omm_bake_details", ImVec2(0.f, 0.f), true);
+  ImGui::BeginChild("omm_bake_details", ImVec2(0.f, 0.f), ImGuiChildFlags_Borders);
   draw_entry(entries[selectedEntry]);
   ImGui::EndChild();
 }

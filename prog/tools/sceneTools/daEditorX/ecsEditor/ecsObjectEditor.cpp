@@ -166,14 +166,6 @@ bool is_safe_to_set_parent(ECSEntityObject &child, ECSEntityObject &parent)
     loopObject = newParent;
   }
 }
-
-inline bool can_transform_object_freely(RenderableEditableObject *object)
-{
-  if (auto *entityObj = RTTI_cast<ECSEntityObject>(object))
-    return entityObj->canTransformFreely();
-
-  return true;
-}
 } // namespace
 
 ECSObjectEditor::ECSObjectEditor()
@@ -1198,7 +1190,7 @@ void ECSObjectEditor::deleteSelectedObjects(bool use_undo)
   Tab<RenderableEditableObject *> list(tmpmem);
   list.reserve(selection.size());
 
-  getUndoSystem()->begin();
+  getUndoSystem()->begin(true);
 
   for (int i = 0; i < selection.size(); ++i)
     if (selection[i]->mayDelete())
@@ -1519,7 +1511,7 @@ void ECSObjectEditor::applyChangeHierarchically(const HierarchyItem &parent, con
 {
   for (const HierarchyItem *child : parent.children)
   {
-    if (child->object->isSelected() && can_transform_object_freely(child->object))
+    if (child->object->isSelected() && child->object->canTransform())
     {
       applyChange(*child->object, delta);
       updateSingleHierarchyTransform(*child->object, false);
@@ -1527,7 +1519,7 @@ void ECSObjectEditor::applyChangeHierarchically(const HierarchyItem &parent, con
     }
     else
     {
-      if (parent_updated && can_transform_object_freely(child->object))
+      if (parent_updated && child->object->canTransform())
         updateSingleHierarchyTransform(*child->object, true);
 
       applyChangeHierarchically(*child, delta, parent_updated);
@@ -1539,7 +1531,7 @@ void ECSObjectEditor::makeTransformUndoForHierarchySelection(const HierarchyItem
 {
   for (const HierarchyItem *child : parent.children)
   {
-    if (child->object->isSelected() && can_transform_object_freely(child->object))
+    if (child->object->isSelected() && child->object->canTransform())
     {
       hierarchicalUndoGroup->addDirectlyChangedObject(*child->object);
       makeTransformUndoForHierarchySelection(*child, true);
@@ -1548,7 +1540,7 @@ void ECSObjectEditor::makeTransformUndoForHierarchySelection(const HierarchyItem
     {
       if (parent_updated)
       {
-        if (can_transform_object_freely(child->object))
+        if (child->object->canTransform())
           hierarchicalUndoGroup->addDirectlyChangedObject(*child->object);
         else
           hierarchicalUndoGroup->addIndirectlyChangedObject(*child->object);
@@ -1636,7 +1628,7 @@ void ECSObjectEditor::gizmoStarted()
     cloneStartPosition = getPt();
   }
 
-  getUndoSystem()->begin();
+  getUndoSystem()->begin(true);
   if (cloneMode)
   {
     clear_and_shrink(cloneObjs);

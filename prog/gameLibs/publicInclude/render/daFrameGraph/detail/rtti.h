@@ -81,7 +81,7 @@ RTTI make_rtti()
       }
     },
 #if DAFG_DEBUG_RTTI
-    TypeName<T>::Get(), String{}, RTTI::TypeFields{}
+    get_type_name<T>(), String{}, RTTI::TypeFields{}
 #endif
   };
 }

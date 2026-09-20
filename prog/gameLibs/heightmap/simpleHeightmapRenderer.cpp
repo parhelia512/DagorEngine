@@ -7,6 +7,7 @@
 #include <drv/3d/dag_vertexIndexBuffer.h>
 #include <drv/3d/dag_shaderConstants.h>
 #include <drv/3d/dag_buffers.h>
+#include <drv/3d/dag_driverDesc.h>
 #include <shaders/dag_shaders.h>
 #include <perfMon/dag_statDrv.h>
 #include <osApiWrappers/dag_atomic.h>
@@ -169,8 +170,7 @@ void SimpleHeightmapRenderer::render(const LodGridCullData &cull_data, const Sha
   d3d::setvsrc_ex(0, NULL, 0, 0);
   TIME_D3D_PROFILE(heightmap);
 
-  const int buffer_size =
-    d3d::set_vs_constbuffer_register_count(MAX_HW_INSTANCING + heightmap_scale_offset_c) - heightmap_scale_offset_c;
+  const int buffer_size = min<int>(MAX_HW_INSTANCING, d3d::get_driver_desc().maxvpconsts - heightmap_scale_offset_c);
   d3d::set_vs_const1(heightmap_scale_offset_c - 1, dim, bitwise_cast<float>(dim + 1), cull_data.scaleX, bitwise_cast<float>(dim_bits));
 
   if (!shElem->setStates(0, true))
@@ -190,8 +190,6 @@ void SimpleHeightmapRenderer::render(const LodGridCullData &cull_data, const Sha
     startIndex += indicesCnt;
   }
 
-  d3d::set_vs_constbuffer_register_count(0);
-
   ShaderGlobal::set_int(heightmap_has_morphVarId, 0);
 
   d3d::setind(nullptr);
@@ -204,8 +202,6 @@ void SimpleHeightmapRenderer::renderOnePatch(const Point2 &left_top, float world
     return;
   d3d::setvsrc_ex(0, NULL, 0, 0);
   d3d::setind(lod_grid_vdata[vDataIndex].ib);
-  d3d::set_vs_constbuffer_register_count(522);
-  FINALLY([]() { d3d::set_vs_constbuffer_register_count(0); });
   if (!shElem->setStates(0, true))
     return;
   TIME_D3D_PROFILE(heightmapOnePatch);

@@ -4,69 +4,53 @@
 #include <drv/3d/dag_shader.h>
 #include <drv/3d/dag_consts.h>
 #include <drv/3d/dag_platform.h>
-#include <drv/shadersMetaData/spirv/compiled_meta_data.h>
-#include <ioSys/dag_zlibIo.h>
-#include <ioSys/dag_memIo.h>
 #include <memory/dag_framemem.h>
 #include "globals.h"
 #include "shader/program_database.h"
 #include "device_context.h"
 #include "backend/cmd/debug.h"
+// after the driver headers: it pulls vulkan.h, which must see vulkan_api.h platform defines first
+#include <drv/shadersMetaData/spirv/unpack.h>
 
 using namespace drv3d_vulkan;
 
 static void decode_shader_binary(const uint32_t *metadata, uint32_t size, VkShaderStageFlags, Tab<spirv::ChunkHeader> &chunks,
   Tab<uint8_t> &chunk_data)
 {
-  G_UNUSED(size);
-  G_ASSERT(metadata[1] + 2 <= size);
-  if (spirv::SPIR_V_BLOB_IDENT == metadata[0])
-  {
-    InPlaceMemLoadCB crd(metadata + 2, metadata[1]);
-    ZlibLoadCB zlibCrd(crd, metadata[1]);
-    zlibCrd.readTab(chunks);
-    zlibCrd.readTab(chunk_data);
-    zlibCrd.ceaseReading();
-  }
-  else if (spirv::SPIR_V_BLOB_IDENT_UNCOMPRESSED == metadata[0])
-  {
-    InPlaceMemLoadCB crd(metadata + 2, metadata[1]);
-    crd.readTab(chunks);
-    crd.readTab(chunk_data);
-    crd.ceaseReading();
-  }
-  else
-    DAG_FATAL("vulkan: unknown shader binary ident %c%c%c%c", DUMP4C(metadata[0]));
+  eastl::string error;
+  if (!spirv::decode_chunked_metadata(make_span_const(reinterpret_cast<const uint8_t *>(metadata), size), chunks, chunk_data, &error))
+    DAG_FATAL("vulkan: %s", error.c_str());
 }
 
-static int create_shader_for_stage(const uint32_t *metadata, const ShaderSource &source, VkShaderStageFlagBits stage, uintptr_t size)
+static int create_shader_for_stage(const uint32_t *metadata, const ShaderSourceExt &source, VkShaderStageFlagBits stage,
+  uintptr_t size)
 {
-  if (spirv::SPIR_V_COMBINED_BLOB_IDENT == metadata[0])
+  auto metadataSpan = make_span_const(reinterpret_cast<const uint8_t *>(metadata), size);
+  if (spirv::is_combined(metadataSpan))
   {
-    uint32_t count = metadata[1];
-    auto comboHeaderChunks = reinterpret_cast<const spirv::CombinedChunk *>(metadata + 2);
-    auto comboData = reinterpret_cast<const uint8_t *>(comboHeaderChunks + count);
+    spirv::CombinedStageList stageRefs;
+    eastl::string error;
+    if (!spirv::decode_container(metadataSpan, stage, stageRefs, &error))
+      DAG_FATAL("vulkan: %s", error.c_str());
 
     dag::Vector<VkShaderStageFlagBits> comboStages;
     dag::Vector<Tab<spirv::ChunkHeader>> comboChunks;
     dag::Vector<Tab<uint8_t>> comboChunkData;
     dag::Vector<ShaderProgramData> comboBytecode;
-    comboStages.reserve(count);
-    comboChunks.reserve(count);
-    comboChunkData.reserve(count);
+    comboStages.reserve(stageRefs.size());
+    comboChunks.reserve(stageRefs.size());
+    comboChunkData.reserve(stageRefs.size());
 
-    uint32_t bytecodeOffset = 0;
-    for (auto &&chunk : make_span(comboHeaderChunks, count))
+    for (const spirv::CombinedStageRef &stageRef : stageRefs)
     {
       Tab<spirv::ChunkHeader> chunks;
       Tab<uint8_t> chunkData;
-      decode_shader_binary(reinterpret_cast<const uint32_t *>(comboData), chunk.size, chunk.stage, chunks, chunkData);
-      comboStages.push_back(chunk.stage);
+      decode_shader_binary(reinterpret_cast<const uint32_t *>(stageRef.metadata.data()), stageRef.metadata.size(), stageRef.stage,
+        chunks, chunkData);
+      comboStages.push_back(stageRef.stage);
       comboChunks.push_back(eastl::move(chunks));
       comboChunkData.push_back(eastl::move(chunkData));
-      comboBytecode.emplace_back(bytecodeOffset, chunk.bytecode_size);
-      comboData += chunk.size;
-      bytecodeOffset += chunk.bytecode_size;
+      comboBytecode.emplace_back(stageRef.bytecodeOffset, stageRef.bytecodeSize);
     }
     return Globals::shaderProgramDatabase
       .newShader(Globals::ctx, eastl::move(comboStages), eastl::move(comboChunks), eastl::move(comboChunkData),
@@ -82,7 +66,7 @@ static int create_shader_for_stage(const uint32_t *metadata, const ShaderSource 
   }
 }
 
-VPROG d3d::create_vertex_shader(const ShaderSource &data)
+VPROG d3d::create_vertex_shader(const ShaderSourceExt &data)
 {
   return create_shader_for_stage((const uint32_t *)data.metadata.data(), data, VK_SHADER_STAGE_VERTEX_BIT, data.metadata.size());
 }
@@ -90,7 +74,7 @@ VPROG d3d::create_vertex_shader(const ShaderSource &data)
 void d3d::delete_vertex_shader(VPROG vs) { Globals::shaderProgramDatabase.deleteShader(Globals::ctx, ShaderID(vs)); }
 
 
-FSHADER d3d::create_pixel_shader(const ShaderSource &data)
+FSHADER d3d::create_pixel_shader(const ShaderSourceExt &data)
 {
   return create_shader_for_stage((const uint32_t *)data.metadata.data(), data, VK_SHADER_STAGE_FRAGMENT_BIT, data.metadata.size());
 }
@@ -104,19 +88,25 @@ PROGRAM d3d::create_program(VPROG vs, FSHADER fs, VDECL vdecl, unsigned *, unsig
   return Globals::shaderProgramDatabase.newGraphicsProgram(Globals::ctx, InputLayoutID(vdecl), ShaderID(vs), ShaderID(fs)).get();
 }
 
-PROGRAM d3d::create_program_cs(const ShaderSource &data, CSPreloaded)
+PROGRAM d3d::create_program_cs(const ShaderSourceExt &data, CSPreloaded)
 {
   Tab<spirv::ChunkHeader> chunks;
   Tab<uint8_t> chunkData;
   decode_shader_binary((const uint32_t *)data.metadata.data(), data.metadata.size(), VK_SHADER_STAGE_COMPUTE_BIT, chunks, chunkData);
+  [[maybe_unused]] auto debugName = data.getDebugName();
 
   auto smh = spirv_extractor::getHeader(VK_SHADER_STAGE_COMPUTE_BIT, chunks, chunkData, 0);
   if (!smh)
     DAG_FATAL("Shader has no header");
 
-  auto smb = spirv_extractor::getBlob(*smh, data, {0, 0}, chunks, chunkData, 0);
+  auto smb = spirv_extractor::getBlob(*smh, data, {0, 0});
   if (smb.source.compressedData.empty())
     DAG_FATAL("Shader has no byte code blob");
+
+#if VULKAN_LOAD_SHADER_EXTENDED_DEBUG_DATA
+  if (!debugName.empty())
+    smb.name = String(debugName.data(), debugName.length());
+#endif
 
   // if we try to use CS that have raytracing yet device don't support it, return stub program
   // this avoids crashing/issues while keeping caller logic intact
@@ -132,6 +122,8 @@ PROGRAM d3d::create_program_cs(const ShaderSource &data, CSPreloaded)
 
 #if VULKAN_LOAD_SHADER_EXTENDED_DEBUG_DATA
   auto dbg = spirv_extractor::getDebugInfo(chunks, chunkData, 0);
+  if (!smb.name.empty())
+    dbg.name = dbg.debugName = smb.name;
   Globals::ctx.dispatchCmd<CmdAttachComputeProgramDebugInfo>({ProgramID(prog), eastl::make_unique<ShaderDebugInfo>(dbg).release()});
 #endif
 

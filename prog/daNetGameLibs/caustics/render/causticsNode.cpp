@@ -4,7 +4,7 @@
 
 #include <render/viewVecs.h>
 #include <shaders/dag_postFxRenderer.h>
-#include <render/world/cameraParams.h>
+#include <render/cameraParams.h>
 #include <render/world/frameGraphHelpers.h>
 #include <drv/3d/dag_renderTarget.h>
 #include <render/world/bvh.h>

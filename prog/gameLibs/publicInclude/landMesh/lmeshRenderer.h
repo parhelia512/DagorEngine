@@ -16,6 +16,7 @@
 #include <math/integer/dag_IBBox2.h>
 #include <math/integer/dag_IPoint2.h>
 #include <3d/dag_texMgr.h>
+#include <3d/dag_multidrawContext.h>
 #include <util/dag_simpleString.h>
 #include <ioSys/dag_dataBlock.h>
 #include <generic/dag_carray.h>
@@ -371,4 +372,11 @@ protected:
   shaders::OverrideStateId setStateDepthBias(StateDepthBias depth_bias);
 
   eastl::vector_map<uint32_t, eastl::vector<shaders::UniqueOverrideStateId>> overrideStateMap;
+
+  MultidrawContext<uint32_t> multidrawContext = {"lmesh_multidraw"};
+
+private:
+  template <class T>
+  bool renderCellDecalsImpl(LandMeshManager &provider, const RenderPassCtx &pass_ctx, const MirroredCellState &mirroredCell,
+    bool force_samplers_no_mipbias, T &cb);
 };

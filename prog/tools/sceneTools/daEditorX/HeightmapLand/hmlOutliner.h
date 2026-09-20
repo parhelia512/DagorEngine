@@ -47,7 +47,11 @@ public:
   void renameLayer(int type, int per_type_layer_index, const char *name) override;
 
   bool isObjectSelected(RenderableEditableObject &object) override;
+  bool isObjectVisible(RenderableEditableObject &object) override;
+  bool isObjectLocked(RenderableEditableObject &object) override;
   bool canSelectObject(RenderableEditableObject &object) override;
+  bool canChangeObjectVisibility(RenderableEditableObject &object) override;
+  bool canChangeObjectLock(RenderableEditableObject &object) override;
   bool canRenameObject(RenderableEditableObject &object, const char *name, String &error_message) override;
   bool getObjectTypeAndPerTypeLayerIndex(RenderableEditableObject &object, int &type, int &per_type_layer_index) override;
   const char *getObjectAssetName(RenderableEditableObject &object) override;
@@ -59,6 +63,8 @@ public:
   void setObjectSelected(RenderableEditableObject &object, bool selected) override;
   void endObjectSelection() override;
   void unselectAllObjects() override;
+  void toggleObjectVisibility(RenderableEditableObject &object) override;
+  void toggleObjectLock(RenderableEditableObject &object) override;
   void moveObjectsToLayer(dag::Span<RenderableEditableObject *> objects, int type, int per_type_destination_layer_index) override;
   void renameObject(RenderableEditableObject &object, const char *name) override;
   void changeObjectAsset(dag::Span<RenderableEditableObject *> objects) override;
@@ -72,6 +78,9 @@ private:
 
   bool canSelectObjectOnly(RenderableEditableObject &object);
   bool canSelectSubObjectOnly(RenderableEditableObject &object);
+
+  bool isLayerOrTypeHidden(RenderableEditableObject &object);
+  bool isLayerOrTypeLocked(RenderableEditableObject &object);
 
   static bool getObjectTypeAndLayerPropsIndex(RenderableEditableObject &object, int &type, int &layer_props_index);
   static const char *getAssetName(RenderableEditableObject &object);

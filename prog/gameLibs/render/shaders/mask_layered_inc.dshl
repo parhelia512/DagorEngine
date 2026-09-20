@@ -77,10 +77,6 @@ macro MASK_LAYERED_PS(has_sampler, isDynamic)
     #define detail_tile (get_detail_tile_invert_heights().x)
     #define invert_heights (get_detail_tile_invert_heights().yz)
 
-    #ifdef FORCE_EARLY_DEPTH_STENCIL
-      FORCE_EARLY_DEPTH_STENCIL
-    #endif
-
 #if RENDINST_IMPOSTOR_VOXEL
     VOXEL_BAKER_OUTPUT mask_layered_ps(VsOutput input INPUT_VFACE HW_USE_SCREEN_POS
       #if RI_HMAP_BLEND_ON
@@ -91,6 +87,9 @@ macro MASK_LAYERED_PS(has_sampler, isDynamic)
   #if VOXELIZE_ALBEDO_PASS
     void mask_layered_ps(VsOutput input INPUT_VFACE HW_USE_SCREEN_POS)
   #else
+    #ifdef FORCE_EARLY_DEPTH_STENCIL
+      FORCE_EARLY_DEPTH_STENCIL
+    #endif
     GBUFFER_OUTPUT mask_layered_ps(VsOutput input INPUT_VFACE HW_USE_SCREEN_POS
         #if RI_HMAP_BLEND_ON
           HW_USE_READ_SHADING_RATE
@@ -110,6 +109,8 @@ macro MASK_LAYERED_PS(has_sampler, isDynamic)
 
       #ifdef VOXELIZE_DISCARD_PRIM
         VOXELIZE_DISCARD_PRIM
+      #else
+        VOXEL_BAKER_PRE_DISCARD
       #endif
       #ifndef IS_DYNAMIC
         #define IS_DYNAMIC 0
@@ -127,7 +128,7 @@ macro MASK_LAYERED_PS(has_sampler, isDynamic)
 
     #if COLOR_NEEDED
       half2 lumins = half2(luminance(detailColor1.rgb), luminance(detailColor2.rgb));
-      half2 details = get_paint_details().xy * saturate(lumins * get_paint_points_tr().xz + get_paint_points_tr().yw);
+      half2 details = saturate(get_paint_details().xy * saturate(lumins * get_paint_points_tr().xz + get_paint_points_tr().yw));
       #if RENDINST_IMPOSTOR_VOXEL
         uint palRow = input.colorMul.x;
         uint palIndex = input.colorMul.y;
@@ -216,7 +217,7 @@ macro MASK_LAYERED_PS(has_sampler, isDynamic)
       #endif
 #if RENDINST_IMPOSTOR_VOXEL
       const half alpha = 1;
-      const float depth = voxel_baker_depth(worldPos, GET_SCREEN_POS(input.pos).xy);
+      VOXEL_BAKER_DEPTH(worldPos, GET_SCREEN_POS(input.pos).xy);
       return baker_output_from_gbuffer(gbuffer, depth, alpha,
         coloringMul, palRow, palIndex);
 #else

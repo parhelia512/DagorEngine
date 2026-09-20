@@ -601,7 +601,7 @@ TRegister::TRegister(Sbuffer *sb) : type(TYPE_NULL) //-V730
   if (!sb)
     return;
 
-  GenericBufferInterface *gb = (GenericBufferInterface *)sb;
+  GenericBufferInterface *gb = static_cast<GenericBufferInterface *>(sb);
   buf = gb->getBufferRef();
   if (!buf)
     buf = gb->fillFrameMemWithDummyData();
@@ -651,7 +651,7 @@ URegister::URegister(Sbuffer *sb)
   if (!sb)
     return;
 
-  GenericBufferInterface *gb = (GenericBufferInterface *)sb;
+  GenericBufferInterface *gb = static_cast<GenericBufferInterface *>(sb);
   buffer = gb->getBufferRef();
   if (!buffer)
     buffer = gb->fillFrameMemWithDummyData();

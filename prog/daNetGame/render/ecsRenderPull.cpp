@@ -25,6 +25,7 @@ extern size_t pull_das_daFrameGraph_aot_lib();
   RS(animCharHider)          \
   RS(tonemap)                \
   RS(shaderVars)             \
+  RS(animCharConsoleUtils)   \
   RS(resPtr)                 \
   RS(frameGraphNode)         \
   RS(RTPool)                 \
@@ -38,7 +39,7 @@ extern size_t pull_das_daFrameGraph_aot_lib();
   RS(skiesSettings)          \
   RS(camouflageOverrideParams)
 
-#define REG_SQM RS(bind_screencap) RS(bind_render)
+#define REG_SQM RS(bind_screencap) RS(bind_render) RS(bind_loading_screen)
 
 #define RS(x) ECS_DECL_PULL_VAR(x);
 REG_SYS

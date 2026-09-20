@@ -115,6 +115,17 @@ struct ImageLayoutInfo
     return false;
   }
 
+  bool allSubresInState(VkImageLayout in_val)
+  {
+    for (VkImageLayout i : data)
+    {
+      if (i != in_val)
+        return false;
+    }
+
+    return true;
+  }
+
   void init(uint32_t mips, uint32_t layers, VkImageLayout initial)
   {
     roSealTargetLayout = VK_IMAGE_LAYOUT_UNDEFINED;
@@ -193,6 +204,7 @@ public:
   static bool lazyAllocationFromCflags(uint32_t cflag) { return cflag & (TEXCF_SAMPLECOUNT_MASK | TEXCF_TRANSIENT); }
 
   ImageLayoutInfo layout;
+  size_t lastActivationWorkId = ~size_t(0);
 
   void setDerivedHandle(VulkanImageHandle new_handle)
   {

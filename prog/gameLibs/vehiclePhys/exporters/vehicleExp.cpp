@@ -168,11 +168,11 @@ public:
 class VehicleExporterPlugin : public IDaBuildPlugin
 {
 public:
-  virtual bool __stdcall init(const DataBlock &appblk) { return true; }
-  virtual void __stdcall destroy() { delete this; }
+  virtual bool __stdcall init(const DataBlock &appblk) override { return true; }
+  virtual void __stdcall destroy() override { delete this; }
 
-  virtual int __stdcall getExpCount() { return 2; }
-  virtual const char *__stdcall getExpType(int idx)
+  virtual int __stdcall getExpCount() override { return 2; }
+  virtual const char *__stdcall getExpType(int idx) override
   {
     switch (idx)
     {
@@ -181,7 +181,7 @@ public:
       default: return NULL;
     }
   }
-  virtual IDagorAssetExporter *__stdcall getExp(int idx)
+  virtual IDagorAssetExporter *__stdcall getExp(int idx) override
   {
     switch (idx)
     {
@@ -191,9 +191,9 @@ public:
     }
   }
 
-  virtual int __stdcall getRefProvCount() { return 1; }
-  virtual const char *__stdcall getRefProvType(int idx) { return getExpType(idx); }
-  virtual IDagorAssetRefProvider *__stdcall getRefProv(int idx) { return idx == 0 ? &refs : NULL; }
+  virtual int __stdcall getRefProvCount() override { return 1; }
+  virtual const char *__stdcall getRefProvType(int idx) override { return getExpType(idx); }
+  virtual IDagorAssetRefProvider *__stdcall getRefProv(int idx) override { return idx == 0 ? &refs : NULL; }
 
 protected:
   VehicleDescExporter expDesc;

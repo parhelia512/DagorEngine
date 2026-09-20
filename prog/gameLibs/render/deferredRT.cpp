@@ -77,7 +77,7 @@ void DeferredRT::setRt(DepthAccess depth_access, BaseTexture *depth_override)
   eastl::array<RenderTarget, 6> colorRts = {};
   int slotsUsed = numRt;
   for (int i = 0; i < numRt; ++i)
-    colorRts[i] = {mrts[i]->getTex2D(), 0, 0};
+    colorRts[i] = {mrts[i] ? mrts[i]->getTex2D() : nullptr, 0, 0};
   if (renderDbg)
   {
     colorRts[5] = {dbgTex.getTex2D(), 0, 0};
@@ -112,21 +112,9 @@ void DeferredRT::setVar()
     ShaderGlobal::set_texture(bvh_gbufVarId, mrts[4] ? mrts[4]->getTexId() : BAD_TEXTUREID);
     ShaderGlobal::set_sampler(bvh_gbuf_samplerstateVarId, baseSampler);
   }
-  else if (d3d::get_driver_code().is(d3d::vulkan || d3d::xboxOne || d3d::scarlett))
+  else if (deferred_rt_needs_bvh_dummy_tex())
   {
-    if (!blackPixelTex)
-    {
-      TexImage32 *texel = TexImage32::create(1, 1);
-      texel->getPixels()[0].u = 0;
-      String dummyName(128, "%s_bvh_dummy", name);
-      blackPixelTex = dag::create_tex(texel, 1, 1, TEXFMT_R32UI, 1, dummyName, RESTAG_TARGET);
-      delete texel;
-      d3d::SamplerInfo smpInfo;
-      smpInfo.filter_mode = d3d::FilterMode::Point;
-      smpInfo.mip_map_mode = d3d::MipMapMode::Point;
-      blackPixelSampler = d3d::request_sampler(smpInfo);
-    }
-    ShaderGlobal::set_texture(bvh_gbufVarId, blackPixelTex.getTexId());
+    ShaderGlobal::set_texture(bvh_gbufVarId, getOrCreateBvhDummyTex().getTexId());
     ShaderGlobal::set_sampler(bvh_gbuf_samplerstateVarId, blackPixelSampler);
   }
   else
@@ -138,12 +126,36 @@ void DeferredRT::setVar()
     ShaderGlobal::set_sampler(depth_gbuf_samplerstateVarId, baseSampler);
   }
 
+  publishSizeAndTransformVars();
+}
+
+void DeferredRT::publishSizeAndTransformVars() const
+{
   ShaderGlobal::set_float4(screen_pos_to_texcoordVarId, 1.f / width, 1.f / height, 0, 0);
   ShaderGlobal::set_float4(screen_sizeVarId, width, height, 1.0 / width, 1.0 / height);
   ShaderGlobal::set_int4(gbuffer_view_sizeVarId, width, height, 0, 0);
   ShaderGlobal::set_float4(gbuffer_uv_transformVarId, uvTransform);
   ShaderGlobal::set_int4(gbuffer_uv_transformiVarId, uvTransformI);
 }
+
+const ManagedTex &DeferredRT::getOrCreateBvhDummyTex()
+{
+  if (!blackPixelTex)
+  {
+    TexImage32 *texel = TexImage32::create(1, 1);
+    texel->getPixels()[0].u = 0;
+    String dummyName(128, "%s_bvh_dummy", name);
+    blackPixelTex = dag::create_tex(texel, 1, 1, TEXFMT_R32UI, 1, dummyName, RESTAG_TARGET);
+    delete texel;
+    d3d::SamplerInfo smpInfo;
+    smpInfo.filter_mode = d3d::FilterMode::Point;
+    smpInfo.mip_map_mode = d3d::MipMapMode::Point;
+    blackPixelSampler = d3d::request_sampler(smpInfo);
+  }
+  return blackPixelTex;
+}
+
+bool deferred_rt_needs_bvh_dummy_tex() { return d3d::get_driver_code().is(d3d::vulkan || d3d::xboxOne || d3d::scarlett); }
 
 void DeferredRT::resetVar()
 {
@@ -254,7 +266,6 @@ DeferredRT::DeferredRT(const char *name_, int w, int h, StereoMode stereo_mode, 
     if (texFmt && texFmt[i] == 0xFFFFFFFFU)
       continue;
 
-    String mrtName(128, "%s_mrt_%d", name, i);
     unsigned mrtFmt = texFmt ? texFmt[i] : TEXFMT_A8R8G8B8;
     mrtPools[i] = ResizableRTargetPool::get(cs.x, cs.y, mrtFmt | TEXCF_RTARGET | TEXCF_CLEAR_ON_CREATE | msaaFlag, 1);
     mrts[i] = mrtPools[i]->acquire();
@@ -313,23 +324,4 @@ const ManagedTex &DeferredRT::getDbgTex()
   initDebugTex();
 #endif
   return dbgTex;
-}
-
-void DeferredRT::acquirePooledRTs()
-{
-  for (int i = 0; i < numRt; ++i)
-  {
-    if (mrtPools[i] != nullptr)
-    {
-      if (mrts[i] == nullptr)
-        mrts[i] = mrtPools[i]->acquire();
-    }
-  }
-}
-
-void DeferredRT::releasePooledRT(uint32_t idx)
-{
-  if (idx >= MAX_NUM_MRT)
-    return;
-  mrts[idx] = nullptr;
 }

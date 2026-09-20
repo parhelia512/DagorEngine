@@ -24,11 +24,12 @@ void SplineObject::applyHmapModifier(HeightMapStorage &hm, Point2 hm_ofs, float 
 
   float maxLen = bezierSpline.getLength();
 
-  real minY = points[0]->getPt().y;
+  // knots, not props.pt: the fill level comes from the outline rasterized below, and a filleted corner is not on it
+  real minY = points[0]->getKnotPos().y;
   if (poly)
     for (int i = 1; i < points.size(); i++)
-      if (points[i]->getPt().y < minY)
-        minY = points[i]->getPt().y;
+      if (points[i]->getKnotPos().y < minY)
+        minY = points[i]->getKnotPos().y;
 
   float dY = 0;
   if (props.modifParams.additive)
@@ -145,23 +146,24 @@ void SplineObject::applyHmapModifier(HeightMapStorage &hm, Point2 hm_ofs, float 
   }
   if (poly && poly_pts.empty())
   {
+    // knots, not props.pt: a filleted corner is off the curve, and this test has to agree with the rasterized outline
     poly_pts.reserve(points.size());
     for (int i = 0; i < points.size(); i++)
-      poly_pts.push_back(points[i]->getPt());
+      poly_pts.push_back(points[i]->getKnotPos());
   }
 
   if (poly)
   {
-    Point3 diff = points[0]->getPt() - points.back()->getPt();
+    const Point3 firstKnot = points[0]->getKnotPos(), lastKnot = points.back()->getKnotPos();
+    Point3 diff = firstKnot - lastKnot;
     real diffLength = diff.length();
 
-    pt = points[0]->getPt() - Point3::x0y(hm_ofs);
+    pt = firstKnot - Point3::x0y(hm_ofs);
     pt.x /= hm_cell_size;
     pt.z /= hm_cell_size;
     for (float len = 0; len < diffLength; len += step)
     {
-      Point3 pt_next =
-        points[0]->getPt() * (1 - (len / diffLength)) + points.back()->getPt() * (len / diffLength) - Point3::x0y(hm_ofs);
+      Point3 pt_next = firstKnot * (1 - (len / diffLength)) + lastKnot * (len / diffLength) - Point3::x0y(hm_ofs);
       pt_next.x /= hm_cell_size;
       pt_next.z /= hm_cell_size;
 

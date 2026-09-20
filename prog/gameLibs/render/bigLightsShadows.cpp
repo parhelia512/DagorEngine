@@ -123,7 +123,7 @@ void BigLightsShadows::render(const Point4 *pos_rad, uint32_t cnt)
     {
       TIME_D3D_PROFILE(big_shadows_render);
       d3d::set_render_target({}, DepthAccess::RW, {{targetTex[2].getTex2D(), 0, 0}});
-      d3d::clearview(CLEAR_DISCARD, 0xFFFFFFFF, 1.0, 0);
+      d3d::clearview(DISCARD_ALL, 0xFFFFFFFF, 1.0, 0);
       render_big_light_shadows.render();
       d3d::resource_barrier({targetTex[2].getTex2D(), RB_RO_SRV | RB_STAGE_PIXEL, 0, 0});
     }
@@ -133,7 +133,7 @@ void BigLightsShadows::render(const Point4 *pos_rad, uint32_t cnt)
       ShaderGlobal::set_texture(big_shadows_prev_texVarId, targetTex[1 - current].getTexId());
       ShaderGlobal::set_texture(big_shadows_texVarId, targetTex[2].getTexId());
       d3d::set_render_target({}, DepthAccess::RW, {{targetTex[current].getTex2D(), 0, 0}});
-      d3d::clearview(CLEAR_DISCARD, 0xFFFFFFFF, 1.0, 0);
+      d3d::clearview(DISCARD_ALL, 0xFFFFFFFF, 1.0, 0);
       temporal_big_light_shadows.render();
       // end of blur
     }

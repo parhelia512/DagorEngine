@@ -30,6 +30,7 @@ void user_ui::set_fully_covering(bool) {}
 
 bool uishared::is_ui_available_in_build() { return false; }
 void uishared::init_early() { joystick_handler.reset(new darg::JoystickHandler()); }
+void uishared::set_visuallog_logerrs(int) {}
 void uishared::init() {}
 void uishared::term() {}
 void uishared::update() {}

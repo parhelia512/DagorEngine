@@ -21,7 +21,7 @@
 #include <render/daFrameGraph/ecs/frameGraphNode.h>
 #include <render/renderSettings.h>
 #include <render/world/frameGraphHelpers.h>
-#include <render/world/aimRender.h>
+#include <ecs/render/aimRender.h>
 #include <render/renderEvent.h>
 #include <render/adaptationSettingsEcs.h>
 #include <util/dag_convar.h>
@@ -61,13 +61,6 @@ AdaptationManager::AdaptationManager()
 
   ShaderGlobal::set_buffer(g_ExposureVarId, exposure.getExposureBufferId());
   uploadInitialExposure();
-
-  registerExposureNodeHandle = dafg::register_node("register_adaptation_resources", DAFG_PP_NODE_SRC,
-    [normFactorView = exposure.getNormalizationFactor()](dafg::Registry registry) {
-      registry.multiplex(dafg::multiplexing::Mode::None);
-      registry.registerTexture("exposure_normalization_factor", [normFactorView](auto) -> ManagedTexView { return normFactorView; });
-      registry.executionHas(dafg::SideEffects::External);
-    });
 }
 
 void AdaptationManager::afterDeviceReset()
@@ -305,11 +298,32 @@ static void adaptation_settings_tracking_es(const ecs::Event &,
     [&](AdaptationManager &adaptation__manager, dafg::NodeHandle &adaptation__update_readback_exposure_node,
       dafg::NodeHandle &adaptation__create_histogram_node, dafg::NodeHandle &adaptation__gen_histogram_forward_node,
       resource_slot::NodeHandleWithSlotsAccess &adaptation__gen_histogram_node, dafg::NodeHandle &adaptation__accumulate_histogram,
-      dafg::NodeHandle &adaptation__adapt_exposure_node, dafg::NodeHandle &adaptation__set_exposure_node) {
+      dafg::NodeHandle &adaptation__adapt_exposure_node, dafg::NodeHandle &adaptation__set_exposure_node,
+      dafg::NodeHandle &adaptation__register_exposure_node) {
+      adaptation__update_readback_exposure_node = {};
+      adaptation__register_exposure_node = {};
+      adaptation__set_exposure_node = {};
+      adaptation__create_histogram_node = {};
+      adaptation__gen_histogram_node = {};
+      adaptation__gen_histogram_forward_node = {};
+      adaptation__accumulate_histogram = {};
+      adaptation__adapt_exposure_node = {};
+
+      if (!adaptation__manager.isExposureValid())
+        return;
+
+      adaptation__manager.sheduleClear();
+
       adaptation__update_readback_exposure_node =
         makeUpdateReadbackExposureNode(adaptation__manager, render_settings__adaptation, render_settings__gpuResidentAdaptation);
 
-      adaptation__manager.sheduleClear();
+      adaptation__register_exposure_node = dafg::register_node("register_adaptation_resources", DAFG_PP_NODE_SRC,
+        [normFactorView = adaptation__manager.getNormalizationFactor()](dafg::Registry registry) {
+          registry.multiplex(dafg::multiplexing::Mode::None);
+          registry.registerTexture("exposure_normalization_factor",
+            [normFactorView](auto) -> ManagedTexView { return normFactorView; });
+          registry.executionHas(dafg::SideEffects::External);
+        });
 
       // Set exposure at beginnig of frame
       adaptation__set_exposure_node = dafg::register_node("set_exposure", DAFG_PP_NODE_SRC,
@@ -330,12 +344,6 @@ static void adaptation_settings_tracking_es(const ecs::Event &,
             ShaderGlobal::set_buffer(g_ExposureVarId, adaptation__manager.getExposureBufferId());
           };
         });
-
-      adaptation__create_histogram_node = {};
-      adaptation__gen_histogram_node = {};
-      adaptation__gen_histogram_forward_node = {};
-      adaptation__accumulate_histogram = {};
-      adaptation__adapt_exposure_node = {};
 
       if (!render_settings__adaptation)
         return;
@@ -447,7 +455,7 @@ ECS_REQUIRE(ecs::Object adaptation_override_settings)
 static void adaptation_override_settings_es(const ecs::Event &, ecs::EntityManager &manager) { updateSettings(manager); }
 
 ECS_TAG(render)
-ECS_ON_EVENT(AfterDeviceReset)
+ECS_ON_EVENT(EventAfterDeviceReset)
 static void adaptation_after_device_reset_es(const ecs::Event &, AdaptationManager &adaptation__manager)
 {
   adaptation__manager.afterDeviceReset();

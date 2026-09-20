@@ -54,7 +54,7 @@ def set_fixed_exposure(enabled : bool; exposure : float)
     if enabled
       adaptation_override_settings |> set("adaptation__on", false)
       adaptation_override_settings |> set("adaptation__fixedExposure", exposure)
-    else
+    elif !(get_bool(adaptation_override_settings, "adaptation__overriden_by_thermal_scope") ?? false)
       adaptation_override_settings |> erase("adaptation__on")
       adaptation_override_settings |> erase("adaptation__fixedExposure")
 

@@ -5,11 +5,16 @@
 #include <propPanel/control/panelWindow.h>
 
 #include <EASTL/string.h>
+#include <EASTL/unique_ptr.h>
+#include <EASTL/vector.h>
 #include <EASTL/vector_map.h>
+#include <EASTL/vector_set.h>
 
 #include <graphEditor/graph_data.h>
 
+class CurvePreviewControl;
 class DataBlock;
+class GraphDocument;
 class GraphEditorPlg;
 
 // Context-sensitive property grid. With no node selected it shows graph-level fields
@@ -19,7 +24,7 @@ class GraphEditorPlg;
 class PropertiesPanel final : public PropPanel::ControlEventHandler
 {
 public:
-  explicit PropertiesPanel(GraphEditorPlg &plugin);
+  PropertiesPanel(GraphEditorPlg &plugin, GraphDocument &doc);
   ~PropertiesPanel() override;
 
   PropPanel::PanelWindowPropertyControl *getPanelWindow() { return panelWindow; }
@@ -49,18 +54,26 @@ private:
 
   void commitNodeProperty(int pcb_id, PropPanel::ContainerPropertyControl *panel, bool finished);
 
+  bool shouldWarnOnce(int node_id, const char *prop_name);
+
   const GraphData::Node *findNodeById(int id) const;
-  const DataBlock *findPropertyDesc(const DataBlock *node_desc, const char *prop_name) const;
 
   PropPanel::PanelWindowPropertyControl *panelWindow = nullptr;
   GraphEditorPlg &plugin;
+  GraphDocument &doc;
 
   Mode currentMode = Mode::None;
   int lastRenderedNodeId = -1;
   eastl::string lastRenderedSourcePath;
   bool forceRebuild = false; // one-shot rebuild request from invalidateControls() (undo/redo refresh)
 
-  // Per-pid -> property name (for node mode). Wiped on every rebuild. PIDs are allocated
-  // sequentially starting at PID_NODE_PROP_BASE.
+  // Per-pid -> property name (node mode), wiped on every rebuild, keyed on the property's PID block
+  // base.
   eastl::vector_map<int, eastl::string> pidToPropertyName;
+
+  // gradient_preview strips, owned here because the holder control only borrows the pointer.
+  eastl::vector<eastl::unique_ptr<CurvePreviewControl>> curvePreviews;
+
+  // Malformed values already reported, so re-selecting the node does not repeat the warning.
+  eastl::vector_set<eastl::string> warnedProperties;
 };

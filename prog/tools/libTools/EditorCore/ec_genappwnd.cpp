@@ -774,7 +774,7 @@ void GenericEditorAppWindow::startWith(const char *select_workspace)
 
 void GenericEditorAppWindow::registerCommonEditorCommands(IEditorCommandSystem &command_system)
 {
-  command_system.addCommand(EditorCommandIds::ZOOM_AND_CENTER, ImGuiKey_Z);
+  command_system.addCommand(EditorCommandIds::ZOOM_AND_CENTER, ImGuiKey_Z, ImGuiKey_F);
   command_system.addCommand(EditorCommandIds::ZOOM_AND_CENTER_IN_FLY_MODE, ImGuiMod_Ctrl | ImGuiMod_Shift | ImGuiKey_Z);
   command_system.addCommand(EditorCommandIds::NAVIGATE);
   command_system.addCommand(EditorCommandIds::CAMERAS_FREE, ImGuiKey_Space);

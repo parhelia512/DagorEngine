@@ -4,7 +4,8 @@
 //
 #pragma once
 
-#include "dag_driverCode.h"
+#include <drv/3d/dag_driverCode.h>
+#include <drv/3d/dag_multi_interface.h>
 
 #include <EASTL/initializer_list.h>
 
@@ -132,7 +133,7 @@ enum class APISupport
 
 enum class GpuVendor : uint8_t;
 
-namespace d3d
+namespace d3d _MULTI_INTERFACE
 {
 
 /**
@@ -293,7 +294,7 @@ bool is_window_occluded();
  */
 bool should_use_compute_for_image_processing(std::initializer_list<unsigned> formats);
 
-} // namespace d3d
+} // namespace d3d _MULTI_INTERFACE
 
 #if _TARGET_D3D_MULTI
 #include <drv/3d/dag_interface_table.h>

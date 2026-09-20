@@ -323,16 +323,15 @@ public:
   float getRIMaxCellSz() const { return riMaxCellSz; }
   int getRIMaxGenLayerCellDiv() const { return riMaxGenLayerCellDivisor; }
 
-  void readLandDetailTexturePixel(unsigned &ret_u, unsigned &ret_u2, int cx, int cy, dag::ConstSpan<uint8_t> type_remap);
+  // the texel's weight of each landclass slot type_remap selects, the map's own 8-bit values
+  void readLandDetailWeights(int cx, int cy, dag::ConstSpan<uint8_t> type_remap, uint8_t out_wt[HMAX_DET_TEX_NUM]);
 
-  // Loads Land Datail Texture for LandMesh
-  void loadLandDetailTexture(int x0, int y0, Texture *tex1, Texture *tex2, carray<uint8_t, LMAX_DET_TEX_NUM> &detail_tex_ids,
-    bool *done_mark, int tex_size, int elem_size);
-
-  int loadLandDetailTexture(unsigned targetCode, int x0, int y0, char *imgPtr, int stride, char *imgPtr2, int stride2,
-    carray<uint8_t, LMAX_DET_TEX_NUM> &detail_tex_ids, bool *done_mark, int size, int elem_size, bool tex1_rgba, bool tex2_rgba);
-
-  int getMostUsedDetTex(int x0, int y0, int texDataSize, uint8_t *det_tex_ids, uint8_t *idx_remap, int max_dtn);
+  int getMostUsedDetTex(int x0, int y0, int w, int h, uint8_t *det_tex_ids, uint8_t *idx_remap, int max_dtn);
+  // the landclass slots of the cell at (x0, y0): the votes of its texels and of
+  // the apron around them, the neighbours' texels the weight atlas page border
+  // samples; a landclass that dies exactly at a cell edge needs a slot on both sides
+  static constexpr int DET_SELECT_APRON = 1;
+  int getCellDetTex(int x0, int y0, int elem_size, uint8_t *det_tex_ids, uint8_t *idx_remap, int max_dtn);
 
   // from IGatherStaticGeometry
   void gatherStaticVisualGeometry(StaticGeometryContainer &cont) override
@@ -352,7 +351,6 @@ public:
 
   // IDagorEdCustomCollider
   bool traceRay(const Point3 &p, const Point3 &dir, real &maxt, Point3 *norm) override;
-  bool shadowRayHitTest(const Point3 &p, const Point3 &dir, real maxt) override;
   const char *getColliderName() const override { return "HeightMap"; }
   bool isColliderVisible() const override;
 
@@ -381,9 +379,11 @@ public:
 
   bool traceRayPrivate(const Point3 &p, const Point3 &dir, real &maxt, Point3 *norm);
 
+  IBBox2 calcDetRectC(const BBox2 &rect, int divisor);
   void createHeightmapFile(CoolConsole &con);
   void upscaleHeightMap(CoolConsole &con);
-  void resizeHeightMapDet(CoolConsole &con);
+  void resizeHeightMapDet(CoolConsole &con, float def_value = 0.0f);
+  void recreateHeightMapDetForNewMain(CoolConsole &con);
   void createColormapFile(CoolConsole &con);
   void resizeLandClassMapFile(CoolConsole &con);
 
@@ -1122,6 +1122,8 @@ private:
   void recalcLightingInRect(const IBBox2 &rect);
   void updateRendererLighting();
 
+  bool resolveTileTex(const char *name, TEXTUREID &out_id, String *out_resolved_name = nullptr);
+
   void updateLandOnPaint(Brush *brush, bool finished);
   void delayedResetRenderer();
   void rebuildLandmeshDump();
@@ -1338,7 +1340,6 @@ private:
   bool snowDynPreview, snowSpherePreview;
   float ambSnowValue, dynSnowValue;
   int snowValSVId, snowPrevievSVId;
-  bool calculating_shadows; // calculating shadows - now
 
   DebugPrimitivesVbuffer *navMeshBuf;
   DebugPrimitivesVbuffer *coversBuf;

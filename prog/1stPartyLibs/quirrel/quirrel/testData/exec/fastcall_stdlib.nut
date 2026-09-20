@@ -13,9 +13,9 @@ println(swap4(0x11223344))
 println(castf2i(swapfloat(swapfloat(casti2f(0x40490FDB)))))
 
 // string leaves
-println("[" + strip("  hi  ") + "]")
-println("[" + lstrip("  hi  ") + "]")
-println("[" + rstrip("  hi  ") + "]")
+println($"[{strip("  hi  ")}]")
+println($"[{lstrip("  hi  ")}]")
+println($"[{rstrip("  hi  ")}]")
 println(startswith("hello", "he"))
 println(endswith("hello", "lo"))
 println(startswith("hi", "hello"))

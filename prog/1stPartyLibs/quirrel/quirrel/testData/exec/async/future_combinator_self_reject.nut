@@ -5,8 +5,8 @@ from "async" import Future
 // the combinator substitutes a diagnostic fault and still settles the result.
 
 async function check(label, f) {
-    try { let _ = await f; print(label + ": BUG fulfilled\n") }
-    catch (e) { print(label + ": " + e + "\n") }
+    try { let _ = await f; println($"{label}: BUG fulfilled") }
+    catch (e) { println($"{label}: {e}") }
 }
 
 let p1 = Future()

@@ -8,11 +8,17 @@
 #include <backend/resourceScheduling/barrierScheduler.h>
 #include <backend/resourceScheduling/resourcePropertyProvider.h>
 #include <render/daFrameGraph/history.h>
+#include <render/daFrameGraph/usage.h>
+#include <render/daFrameGraph/stage.h>
+#include <render/daFrameGraph/detail/access.h>
 #include <drv/3d/dag_heap.h>
 #include <drv/3d/dag_resource.h>
 #include <drv/3d/dag_texFlags.h>
+#include <util/dag_convar.h>
 #include <catch2/catch_test_macros.hpp>
 
+
+extern ConVarT<bool, false> fill_dedicated_fast_gpu_local;
 
 namespace
 {
@@ -20,14 +26,25 @@ namespace
 // Fake heap groups -- just need to be stable non-null pointers
 static int FAKE_GPU_HEAP_STORAGE;
 static int FAKE_GPU_HEAP_2_STORAGE;
+static int FAKE_DEDICATED_HEAP_STORAGE;
 static ResourceHeapGroup *const FAKE_GPU_HEAP = reinterpret_cast<ResourceHeapGroup *>(&FAKE_GPU_HEAP_STORAGE);
 static ResourceHeapGroup *const FAKE_GPU_HEAP_2 = reinterpret_cast<ResourceHeapGroup *>(&FAKE_GPU_HEAP_2_STORAGE);
+// Stands for ESRAM: small, and resources only land in it when asked to
+static ResourceHeapGroup *const FAKE_DEDICATED_HEAP = reinterpret_cast<ResourceHeapGroup *>(&FAKE_DEDICATED_HEAP_STORAGE);
+
+struct FillDedicatedHeapGuard
+{
+  const bool prevValue = fill_dedicated_fast_gpu_local.get();
+  explicit FillDedicatedHeapGuard(bool value = true) { fill_dedicated_fast_gpu_local.set(value); }
+  ~FillDedicatedHeapGuard() { fill_dedicated_fast_gpu_local.set(prevValue); }
+};
 
 struct MockPropertyProvider : dafg::IResourcePropertyProvider
 {
   size_t defaultSize = 1024;
   size_t defaultAlignment = 256;
   uint64_t maxHeapSize = 64u * 1024u * 1024u;
+  uint64_t dedicatedMaxHeapSize = 4096;
 
   // Per-resource overrides keyed by ResourceDescription::asBasicRes.cFlags
   // (each test resource gets a unique cFlags via nextCFlags in the fixture)
@@ -52,13 +69,14 @@ struct MockPropertyProvider : dafg::IResourcePropertyProvider
     return {size, defaultAlignment, group};
   }
 
-  ResourceHeapGroupProperties getResourceHeapGroupProperties(ResourceHeapGroup *) override
+  ResourceHeapGroupProperties getResourceHeapGroupProperties(ResourceHeapGroup *group) override
   {
     ResourceHeapGroupProperties props{};
     props.flags = 0;
     props.isGPULocal = true;
-    props.maxHeapSize = maxHeapSize;
     props.optimalMaxHeapSize = 0;
+    props.isDedicatedFastGPULocal = group == FAKE_DEDICATED_HEAP;
+    props.maxHeapSize = props.isDedicatedFastGPULocal ? dedicatedMaxHeapSize : maxHeapSize;
     return props;
   }
 };
@@ -86,9 +104,9 @@ struct ResourceSchedulerFixture
   // Starting from 1 to avoid collisions with TEXFMT_A8R8G8B8 (= 0).
   uint32_t nextCFlags = 1;
 
-  dafg::intermediate::ResourceIndex addGpuResource(dafg::History history = dafg::History::No)
+  dafg::intermediate::ResourceIndex addGpuResource(dafg::History history = dafg::History::No, uint32_t extra_cflags = 0)
   {
-    auto desc = make_tex_desc(nextCFlags++);
+    auto desc = make_tex_desc(nextCFlags++ | extra_cflags);
 
     dafg::intermediate::ScheduledResource scheduled;
     scheduled.description = desc;
@@ -111,7 +129,17 @@ struct ResourceSchedulerFixture
   // Returns the cFlags assigned to a resource (for use as sizeOverrides key)
   uint32_t cFlagsOf(dafg::intermediate::ResourceIndex idx)
   {
-    return eastl::get<ResourceDescription>(graph.resources[idx].asScheduled().description).asBasicRes.cFlags;
+    return graph.resources[idx].asScheduled().getGpuDescription().asBasicRes.cFlags;
+  }
+
+  // Changes the texture extent without touching cFlags, so the mock keeps
+  // reporting the same allocation size. This is what a resolution change looks
+  // like whenever both extents pad to the same gAPI tile-aligned image size.
+  void resizeResource(dafg::intermediate::ResourceIndex idx, uint32_t width, uint32_t height)
+  {
+    auto &desc = graph.resources[idx].asScheduled().getGpuDescription();
+    desc.asTexRes.width = width;
+    desc.asTexRes.height = height;
   }
 
   dafg::intermediate::NodeIndex addNode()
@@ -122,6 +150,17 @@ struct ResourceSchedulerFixture
     node.hasSideEffects = true;
     graph.nodeNames.emplaceAt(idx, "test_node");
     return idx;
+  }
+
+  // Resource usages are what the dedicated heap candidate scoring looks at
+  void addUsage(dafg::intermediate::NodeIndex node, dafg::intermediate::ResourceIndex res, dafg::Usage usage,
+    dafg::Access access = dafg::Access::READ_ONLY)
+  {
+    dafg::intermediate::Request request;
+    request.resource = res;
+    request.usage = {usage, access, dafg::Stage::POST_RASTER};
+    request.fromLastFrame = false;
+    graph.nodes[node].resourceRequests.push_back(request);
   }
 
   void ensureLifetimesSize()
@@ -186,6 +225,30 @@ struct ResourceSchedulerFixture
     return scheduler.computeSchedule(prev_frame, ctx);
   }
 };
+
+static eastl::optional<dafg::HeapIndex> find_heap_of_group(dafg::ResourceSchedule &schedule, ResourceHeapGroup *group)
+{
+  for (auto [idx, req] : schedule.heapRequests.enumerate())
+    if (req.group == group)
+      return idx;
+  return eastl::nullopt;
+}
+
+static bool is_in_dedicated_heap(dafg::ResourceSchedule &schedule, dafg::intermediate::ResourceIndex res, uint32_t frame)
+{
+  const auto dedicatedHeap = find_heap_of_group(schedule, FAKE_DEDICATED_HEAP);
+  return dedicatedHeap.has_value() && schedule.allocationLocations[frame].isMapped(res) &&
+         schedule.allocationLocations[frame][res].heap == *dedicatedHeap;
+}
+
+// A resource that natively asks for the dedicated heap. Without one there is no
+// dedicated heap request at all and nothing can be promoted into it.
+static dafg::intermediate::ResourceIndex add_dedicated_resource(ResourceSchedulerFixture &f)
+{
+  auto res = f.addGpuResource();
+  f.propertyProvider.heapGroupOverrides[f.cFlagsOf(res)] = FAKE_DEDICATED_HEAP;
+  return res;
+}
 
 } // namespace
 
@@ -498,6 +561,70 @@ TEST_CASE("history resource without a valid pairing is not marked preserved when
     CHECK_FALSE(f.scheduler.isResourcePreserved(frame, resA));
 }
 
+// Preservation means "the runtime may keep using the very same gAPI object".
+// The scheduler only ever compares memory layout -- heap, offset and byte size
+// -- but NativeResourceAllocator::placeResource keys its per-heap object cache
+// on the full ResourceDescription. So whenever the description changes while
+// the allocation size stays put, the allocator hands out a different texture at
+// the same offset, and preservation makes the runtime skip both the
+// deactivation of the old object and the activation of the new one. Consumers
+// then sample an image nothing ever wrote.
+//
+// The two tests below cover the two independent places that grant preservation:
+// the reused-heap fast path in scheduleResourcesIntoHeaps, and the pinning
+// block in scheduleHeap.
+
+TEST_CASE("history resource whose description changed is not preserved when its heap is reused", "[resourceScheduler]")
+{
+  FRAMEMEM_REGION;
+  ResourceSchedulerFixture f;
+  f.propertyProvider.defaultSize = 1024;
+
+  auto resA = f.addGpuResource(dafg::History::ClearZeroOnFirstFrame);
+  auto node0 = f.addNode();
+  auto node1 = f.addNode();
+  f.addTemporalLifetime(resA, node0, node1);
+
+  auto schedule1 = f.computeSchedule(0);
+
+  // Every input the placement-changed test looks at stays equal, so the heap
+  // qualifies for wholesale reuse, but the texture is a different one now.
+  f.resizeResource(resA, 8, 8);
+
+  auto schedule2 = f.computeSchedule(1, schedule1.heapRequests, false);
+
+  for (int frame = 0; frame < dafg::SCHEDULE_FRAME_WINDOW; ++frame)
+    CHECK_FALSE(f.scheduler.isResourcePreserved(frame, resA));
+}
+
+TEST_CASE("history resource whose description changed is not preserved when its heap is repacked", "[resourceScheduler]")
+{
+  FRAMEMEM_REGION;
+  ResourceSchedulerFixture f;
+  f.propertyProvider.defaultSize = 1024;
+
+  auto resA = f.addGpuResource(dafg::History::ClearZeroOnFirstFrame);
+  auto resB = f.addGpuResource();
+  auto node0 = f.addNode();
+  auto node1 = f.addNode();
+  f.addTemporalLifetime(resA, node0, node1);
+  f.addLifetime(resB, node0, node1);
+
+  auto schedule1 = f.computeSchedule(0);
+  REQUIRE(schedule1.allocationLocations[0][resA].heap == schedule1.allocationLocations[0][resB].heap);
+
+  // resB grows, which disqualifies the shared heap from wholesale reuse and
+  // sends it through the packer. resA keeps its size and its old location, so
+  // the packer pins it and preservation is granted -- but its extent changed.
+  f.propertyProvider.sizeOverrides[f.cFlagsOf(resB)] = 2048;
+  f.resizeResource(resA, 8, 8);
+
+  auto schedule2 = f.computeSchedule(1, schedule1.heapRequests, false);
+
+  for (int frame = 0; frame < dafg::SCHEDULE_FRAME_WINDOW; ++frame)
+    CHECK_FALSE(f.scheduler.isResourcePreserved(frame, resA));
+}
+
 TEST_CASE("schedule is self-consistent after back-to-back recompilations", "[resourceScheduler]")
 {
   // Regression test: simulates the testIncrementality remove+restore cycle.
@@ -678,4 +805,180 @@ TEST_CASE("temporal resource does not pin at non-temporal history pair location"
       REQUIRE(s2.heapRequests.isMapped(heap));
       CHECK(offset + f.propertyProvider.defaultSize <= s2.heapRequests[heap].size);
     }
+}
+
+TEST_CASE("resources get promoted into the dedicated heap", "[resourceScheduler]")
+{
+  FRAMEMEM_REGION;
+  FillDedicatedHeapGuard guard;
+  ResourceSchedulerFixture f;
+
+  auto dedicated = add_dedicated_resource(f);
+  auto resA = f.addGpuResource();
+  auto resB = f.addGpuResource();
+  auto node0 = f.addNode();
+  auto node1 = f.addNode();
+  for (auto res : {dedicated, resA, resB})
+    f.addLifetime(res, node0, node1);
+
+  auto schedule = f.computeSchedule();
+
+  for (uint32_t frame = 0; frame < dafg::SCHEDULE_FRAME_WINDOW; ++frame)
+    for (auto res : {dedicated, resA, resB})
+      CHECK(is_in_dedicated_heap(schedule, res, frame));
+
+  // Nothing is left for the regular heap, and the dedicated one is always
+  // requested at its full size.
+  auto regularHeap = find_heap_of_group(schedule, FAKE_GPU_HEAP);
+  if (regularHeap.has_value())
+    CHECK(schedule.heapRequests[*regularHeap].size == 0);
+
+  auto dedicatedHeap = find_heap_of_group(schedule, FAKE_DEDICATED_HEAP);
+  REQUIRE(dedicatedHeap.has_value());
+  CHECK(schedule.heapRequests[*dedicatedHeap].size == f.propertyProvider.dedicatedMaxHeapSize);
+}
+
+TEST_CASE("resources that do not fit the dedicated heap stay where they were", "[resourceScheduler]")
+{
+  FRAMEMEM_REGION;
+  FillDedicatedHeapGuard guard;
+  ResourceSchedulerFixture f;
+
+  // Room for the native resource plus exactly one promoted one
+  f.propertyProvider.dedicatedMaxHeapSize = 2 * f.propertyProvider.defaultSize;
+
+  auto dedicated = add_dedicated_resource(f);
+  auto resA = f.addGpuResource();
+  auto resB = f.addGpuResource();
+  auto resC = f.addGpuResource();
+  auto node0 = f.addNode();
+  auto node1 = f.addNode();
+  for (auto res : {dedicated, resA, resB, resC})
+    f.addLifetime(res, node0, node1);
+
+  auto schedule = f.computeSchedule();
+
+  uint32_t promotedCount = 0;
+  for (auto res : {resA, resB, resC})
+    if (is_in_dedicated_heap(schedule, res, 0))
+    {
+      ++promotedCount;
+      // Which candidate wins is up to the scoring, but it wins on every frame
+      CHECK(is_in_dedicated_heap(schedule, res, 1));
+    }
+  CHECK(promotedCount == 1);
+
+  // The rejected ones did not get lost on the way: they are packed into the
+  // regular heap, which is sized to hold exactly the two of them (their frame
+  // copies have disjoint lifetimes and hence alias).
+  auto regularHeap = find_heap_of_group(schedule, FAKE_GPU_HEAP);
+  REQUIRE(regularHeap.has_value());
+  CHECK(schedule.heapRequests[*regularHeap].size == 2 * f.propertyProvider.defaultSize);
+
+  for (uint32_t frame = 0; frame < dafg::SCHEDULE_FRAME_WINDOW; ++frame)
+    for (auto res : {resA, resB, resC})
+    {
+      REQUIRE(schedule.allocationLocations[frame].isMapped(res));
+      auto [heap, offset] = schedule.allocationLocations[frame][res];
+      CHECK((heap == *regularHeap || is_in_dedicated_heap(schedule, res, frame)));
+      CHECK(offset + f.propertyProvider.defaultSize <= schedule.heapRequests[heap].size);
+    }
+}
+
+TEST_CASE("cpu accessible resources are not promoted", "[resourceScheduler]")
+{
+  FRAMEMEM_REGION;
+  FillDedicatedHeapGuard guard;
+  ResourceSchedulerFixture f;
+
+  auto dedicated = add_dedicated_resource(f);
+  auto resGpu = f.addGpuResource();
+  auto resCpu = f.addGpuResource(dafg::History::No, TEXCF_SYSMEM);
+  auto node0 = f.addNode();
+  auto node1 = f.addNode();
+  for (auto res : {dedicated, resGpu, resCpu})
+    f.addLifetime(res, node0, node1);
+
+  auto schedule = f.computeSchedule();
+
+  for (uint32_t frame = 0; frame < dafg::SCHEDULE_FRAME_WINDOW; ++frame)
+  {
+    CHECK(is_in_dedicated_heap(schedule, resGpu, frame));
+    CHECK_FALSE(is_in_dedicated_heap(schedule, resCpu, frame));
+  }
+}
+
+TEST_CASE("history resources are not promoted", "[resourceScheduler]")
+{
+  FRAMEMEM_REGION;
+  FillDedicatedHeapGuard guard;
+  ResourceSchedulerFixture f;
+
+  auto dedicated = add_dedicated_resource(f);
+  auto resPlain = f.addGpuResource();
+  auto resHistory = f.addGpuResource(dafg::History::DiscardOnFirstFrame);
+  auto node0 = f.addNode();
+  auto node1 = f.addNode();
+  f.addLifetime(dedicated, node0, node1);
+  f.addLifetime(resPlain, node0, node1);
+  f.addTemporalLifetime(resHistory, node0, node1);
+
+  auto schedule = f.computeSchedule();
+
+  for (uint32_t frame = 0; frame < dafg::SCHEDULE_FRAME_WINDOW; ++frame)
+  {
+    CHECK(is_in_dedicated_heap(schedule, resPlain, frame));
+    CHECK_FALSE(is_in_dedicated_heap(schedule, resHistory, frame));
+  }
+}
+
+TEST_CASE("heavily used resources are promoted first", "[resourceScheduler]")
+{
+  FRAMEMEM_REGION;
+  FillDedicatedHeapGuard guard;
+  ResourceSchedulerFixture f;
+
+  // Room for the native resource plus exactly one promoted one
+  f.propertyProvider.dedicatedMaxHeapSize = 2 * f.propertyProvider.defaultSize;
+
+  auto dedicated = add_dedicated_resource(f);
+  auto resHot = f.addGpuResource();
+  auto resCold = f.addGpuResource();
+  auto node0 = f.addNode();
+  auto node1 = f.addNode();
+  for (auto res : {dedicated, resHot, resCold})
+    f.addLifetime(res, node0, node1);
+
+  // Same size, so the only thing telling them apart is bandwidth usage
+  f.addUsage(node0, resHot, dafg::Usage::COLOR_ATTACHMENT);
+
+  auto schedule = f.computeSchedule();
+
+  for (uint32_t frame = 0; frame < dafg::SCHEDULE_FRAME_WINDOW; ++frame)
+  {
+    CHECK(is_in_dedicated_heap(schedule, resHot, frame));
+    CHECK_FALSE(is_in_dedicated_heap(schedule, resCold, frame));
+  }
+}
+
+TEST_CASE("nothing is promoted unless asked for", "[resourceScheduler]")
+{
+  FRAMEMEM_REGION;
+  FillDedicatedHeapGuard guard(false);
+  ResourceSchedulerFixture f;
+
+  auto dedicated = add_dedicated_resource(f);
+  auto resA = f.addGpuResource();
+  auto node0 = f.addNode();
+  auto node1 = f.addNode();
+  f.addLifetime(dedicated, node0, node1);
+  f.addLifetime(resA, node0, node1);
+
+  auto schedule = f.computeSchedule();
+
+  for (uint32_t frame = 0; frame < dafg::SCHEDULE_FRAME_WINDOW; ++frame)
+  {
+    CHECK(is_in_dedicated_heap(schedule, dedicated, frame));
+    CHECK_FALSE(is_in_dedicated_heap(schedule, resA, frame));
+  }
 }

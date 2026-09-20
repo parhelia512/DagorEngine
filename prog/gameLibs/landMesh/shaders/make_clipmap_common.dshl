@@ -1,0 +1,60 @@
+
+bool allow_lmesh_decals_multidraw = in_editor_assume == no && (hardware.dx12 || hardware.ps4 || hardware.ps5 || (hardware.vulkan && hardware.bindless));
+
+macro ENABLE_MULTI_DRAW_LMESH_DECALS(use_drawid_vs_only)
+  if (allow_lmesh_decals_multidraw)
+  {
+    supports __static_multidraw_cbuf;
+    USE_INDIRECT_DRAW()
+
+    hlsl {
+      #define SET_UP_MULTIDRAW 1
+      #define SET_DRAW_CALL_ID(draw_call_id) DRAW_CALL_ID = draw_call_id;
+    }
+
+    if (hardware.dx12)
+    {
+      supports __draw_id;
+
+      hlsl {
+        #define VSOUT_DRAW_ID
+      }
+      hlsl(vs) {
+        #define INIT_MULTIDRAW(vsoutput)
+      }
+      hlsl(ps) {
+        #define GET_MATERIAL_OFFSET(psinput) (get_draw_id())
+      }
+    }
+    else
+    {
+      hlsl {
+        #define VSOUT_DRAW_ID nointerpolation uint drawId : TEXCOORD14;
+      }
+
+      hlsl(vs) {
+    ##if use_drawid_vs_only
+          #define INIT_PS_INPUT(vsoutput)
+    ##else
+          #define INIT_PS_INPUT(vsoutput)  vsoutput.drawId = instance_offset_id
+    ##endif
+
+        #define INIT_MULTIDRAW(vsoutput)\
+          INIT_PS_INPUT(vsoutput)
+      }
+      hlsl(ps) {
+        #if WAVE_INTRINSICS
+          #define GET_MATERIAL_OFFSET(psinput) (WaveReadFirstLane(psinput.drawId))
+        #else
+          #define GET_MATERIAL_OFFSET(psinput) (psinput.drawId)
+        #endif
+      }
+    }
+  }
+  else
+  {
+    hlsl {
+      #define VSOUT_DRAW_ID
+    }
+  }
+endmacro

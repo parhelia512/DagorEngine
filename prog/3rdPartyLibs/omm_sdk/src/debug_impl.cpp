@@ -557,7 +557,7 @@ namespace omm
                 // Calculate later
                 
                 if (indices.find(vmIdx) == indices.end())
-                    indices.insert(std::make_pair<uint, OmmDescInfo>(vmIdx, { 1, area ? area[i] : 0}));
+                    indices.emplace(vmIdx, OmmDescInfo{ 1, area ? area[i] : 0 });
                 else
                 {
                     indices[vmIdx].numReferences++;

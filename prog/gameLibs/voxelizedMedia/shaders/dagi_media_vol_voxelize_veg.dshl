@@ -1,0 +1,79 @@
+include "shader_global.dshl"
+include "giHelpers/voxelize_gs.dshl"
+include "dagi_media_vol_bake_write.dshl"
+
+texture dagi_media_vol_veg_tex;
+texture dagi_media_vol_veg_alpha_tex; // set = the mask lives there, unset = diffuse alpha
+float dagi_media_vol_veg_atest = 0;   // cutout threshold, 0 leaves an opaque elem uncut
+
+// the media bake draws every vegetation elem with this one shader, so a project needs no
+// media variant in its own vegetation shaders. it reads POSITION and TEXCOORD0 only: the
+// vertex declaration comes from the source elem, and an elem whose format or material can
+// not feed it is skipped (VegetationMediaVoxelizer::voxelize)
+shader dagi_media_vol_voxelize_veg
+{
+  supports none; // the bake sets no block, a game frame around it may have global_frame
+  supports global_frame;
+  no_ablend;
+  z_write = false;
+  z_test = false;
+  cull_mode = none; // every axis must rasterize both leaf plane faces
+
+  channel float3 pos = pos;
+  channel float2 tc[0] = tc[0];
+
+  (ps) {
+    veg_tex@smp2d = dagi_media_vol_veg_tex;
+    veg_atest@f1 = (dagi_media_vol_veg_atest);
+  }
+  if (dagi_media_vol_veg_alpha_tex != NULL)
+  {
+    (ps) { veg_alpha_tex@smp2d = dagi_media_vol_veg_alpha_tex; }
+  }
+
+  TO_VOXELIZE_SPACE(vs)
+  USE_VOXELIZE_SPACE(vs)
+  DAGI_MEDIA_VOL_BAKE_WRITE_INIT(ps)
+  DAGI_MEDIA_VOL_BAKE_WRITE_USE(ps)
+
+  hlsl {
+    struct VsOutput
+    {
+      VS_OUT_POSITION(pos)
+      float2 tc: TEXCOORD0;
+      float3 localPos: TEXCOORD1;
+    };
+  }
+  hlsl(vs) {
+    struct VsInput
+    {
+      float3 pos: POSITION;
+      float2 tc: TEXCOORD0;
+    };
+    // the type mesh renders at the origin, so the vertex position already is the type's
+    // local box space. one instance per voxelize axis covers all three in one draw
+    VsOutput dagi_media_vol_veg_vs(VsInput input, uint axis : SV_InstanceID)
+    {
+      VsOutput output;
+      output.pos = worldPosToVoxelSpace(input.pos, axis);
+      output.localPos = input.pos;
+      output.tc = input.tc;
+      return output;
+    }
+  }
+  hlsl(ps) {
+    void dagi_media_vol_veg_ps(VsOutput input)
+    {
+      half4 diffuse = tex2D(veg_tex, input.tc);
+      ##if dagi_media_vol_veg_alpha_tex != NULL
+      half alpha = tex2D(veg_alpha_tex, input.tc).r;
+      ##else
+      half alpha = diffuse.a;
+      ##endif
+      clip(alpha - veg_atest); // plain cutout: no camera angle or lod dissolve fade in a bake
+      dagi_media_vol_bake_write(input.localPos, diffuse.rgb);
+    }
+  }
+  compile("target_vs", "dagi_media_vol_veg_vs");
+  compile("target_ps", "dagi_media_vol_veg_ps");
+}

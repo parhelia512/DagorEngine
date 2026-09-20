@@ -49,7 +49,11 @@ public:
   virtual void renameLayer(int type, int per_type_layer_index, const char *name) = 0;
 
   virtual bool isObjectSelected(RenderableEditableObject &object) = 0;
+  virtual bool isObjectVisible(RenderableEditableObject &object) = 0;
+  virtual bool isObjectLocked(RenderableEditableObject &object) = 0;
   virtual bool canSelectObject(RenderableEditableObject &object) = 0;
+  virtual bool canChangeObjectVisibility(RenderableEditableObject &object) = 0;
+  virtual bool canChangeObjectLock(RenderableEditableObject &object) = 0;
   virtual bool canRenameObject(RenderableEditableObject &object, const char *name, String &error_message) = 0;
   virtual bool getObjectTypeAndPerTypeLayerIndex(RenderableEditableObject &object, int &type, int &per_type_layer_index) = 0;
   virtual const char *getObjectAssetName(RenderableEditableObject &object) = 0;
@@ -66,6 +70,8 @@ public:
   virtual void setObjectSelected(RenderableEditableObject &object, bool selected) = 0;
   virtual void endObjectSelection() = 0;
   virtual void unselectAllObjects() = 0;
+  virtual void toggleObjectVisibility(RenderableEditableObject &object) = 0;
+  virtual void toggleObjectLock(RenderableEditableObject &object) = 0;
   virtual void moveObjectsToLayer(dag::Span<RenderableEditableObject *> objects, int type, int per_type_destination_layer_index) = 0;
   virtual void renameObject(RenderableEditableObject &object, const char *name) = 0;
   virtual void changeObjectAsset(dag::Span<RenderableEditableObject *> objects) = 0;

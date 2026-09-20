@@ -25,6 +25,7 @@ __forceinline pool_index get_node_pool(mat44f_cref node);
 __forceinline uint32_t get_node_flags(mat44f_cref node);
 __forceinline uint32_t check_node_flags(mat44f_cref node, const uint32_t flag); // if flag is compile time const, it is faster than
                                                                                 // (get_node_flags(m)&flag)
+__forceinline bool is_node_invalid(mat44f_cref node);                           // node was destroyed
 __forceinline float get_node_bsphere_rad(mat44f_cref node);
 __forceinline vec4f get_node_bsphere_vrad(mat44f_cref node);
 __forceinline vec4f get_node_bsphere(mat44f_cref node);
@@ -33,6 +34,9 @@ __forceinline uint32_t &get_node_pool_flags_ref(mat44f &node);
 __forceinline uint32_t get_node_pool_flags(mat44f_cref node);
 __forceinline void set_node_flags(mat44f &node, uint16_t flags); // Adds flags to existing ones, doesn't replace all flag bits.
 __forceinline void unset_node_flags(mat44f &node, uint16_t flags);
+__forceinline void construct_camplanes_transposed(mat44f_cref clip, vec4f &plane03X, vec4f &plane03Y, vec4f &plane03Z, vec4f &plane03W,
+  vec4f &plane47X, vec4f &plane47Y, vec4f &plane47Z, vec4f &plane47W);
+__forceinline bbox3f frustum_box_from_clip(mat44f_cref clip);
 
 enum : uint32_t
 {
@@ -151,6 +155,17 @@ public:
     PREFETCH_DATA(0, &getNodeInternal(node).col3);
   };
 
+  // same, through an already hoisted nodes pointer: cull loops keep nodes.data() in a local
+  // (an opaque callback in the loop forces a member reload otherwise), and the prefetch must
+  // not bring that member read back
+  static __forceinline void prefetchNodeData(const mat44f *nodes_data, uint32_t index)
+  {
+    G_UNUSED(nodes_data); // PREFETCH_DATA is a no-op on some platforms
+    G_UNUSED(index);
+    PREFETCH_DATA(0, &nodes_data[index].col0);
+    PREFETCH_DATA(0, &nodes_data[index].col3);
+  }
+
 protected:
   friend class iterator;
 
@@ -159,7 +174,7 @@ protected:
   inline uint32_t getIndexPoolFlags(uint32_t index) const { return get_node_pool_flags(nodes.data()[index]); }
   inline pool_index getIndexPool(uint32_t index) const { return getIndexPoolFlags(index) & 0xFFFF; }
   inline uint32_t getIndexFlags(uint32_t index) const { return getIndexPoolFlags(index) >> 16; }
-  inline bool isInvalidIndex(uint32_t index) const { return ((uint32_t *)(char *)&nodes.data()[index].col0)[3] == 0xFFFFFFFF; }
+  inline bool isInvalidIndex(uint32_t index) const { return is_node_invalid(nodes.data()[index]); }
   inline bool isFreeIndex(uint32_t index) const { return index < firstAlive || index >= nodes.size() || isInvalidIndex(index); }
   inline bbox3f_cref getPoolBboxInternal(pool_index pool) const { return poolBox.data()[pool]; }
 
@@ -234,6 +249,9 @@ inline uint32_t scene::get_node_pool_flags(mat44f_cref node) { return (((uint32_
 inline scene::pool_index scene::get_node_pool(mat44f_cref node) { return get_node_pool_flags(node) & 0xFFFF; }
 
 inline uint32_t scene::get_node_flags(mat44f_cref node) { return get_node_pool_flags(node) >> 16; }
+
+inline bool scene::is_node_invalid(mat44f_cref node) { return (((const uint32_t *)(const char *)&node.col0)[3]) == 0xFFFFFFFF; }
+
 __forceinline uint32_t scene::check_node_flags(mat44f_cref node, const uint32_t flag)
 {
   return get_node_pool_flags(node) & (flag << 16);
@@ -253,6 +271,52 @@ inline vec4f scene::get_node_bsphere(mat44f_cref node)
 inline void scene::set_node_flags(mat44f &node, uint16_t flags) { get_node_pool_flags_ref(node) |= uint32_t(flags) << 16; }
 
 inline void scene::unset_node_flags(mat44f &node, uint16_t flags) { get_node_pool_flags_ref(node) &= ~(uint32_t(flags) << 16); }
+
+// Same values as v_construct_camplanes + v_norm3 of all 6 planes + the two v_mat44_transpose
+// calls that produce the SoA layout the sphere tests take (bit for bit on SSE). Each clip
+// column already holds one component of all four Gribb-Hartmann plane rows, so the SoA form
+// comes straight from the columns with no transposes, and each plane group normalizes with
+// one vertical sqrt instead of a serial sqrt+div per plane.
+__forceinline void scene::construct_camplanes_transposed(mat44f_cref clip, vec4f &plane03X, vec4f &plane03Y, vec4f &plane03Z,
+  vec4f &plane03W, vec4f &plane47X, vec4f &plane47Y, vec4f &plane47Z, vec4f &plane47W)
+{
+  // side planes: lanes are (right, left, top, bottom) = (w-x, w+x, w-y, w+y) of each column
+  const vec4f negXZ = v_and(v_cast_vec4f(V_CI_SIGN_MASK), v_cast_vec4f(V_CI_MASK1010));
+  plane03X = v_add(v_splat_w(clip.col0), v_xor(v_merge_hw(clip.col0, clip.col0), negXZ));
+  plane03Y = v_add(v_splat_w(clip.col1), v_xor(v_merge_hw(clip.col1, clip.col1), negXZ));
+  plane03Z = v_add(v_splat_w(clip.col2), v_xor(v_merge_hw(clip.col2, clip.col2), negXZ));
+  plane03W = v_add(v_splat_w(clip.col3), v_xor(v_merge_hw(clip.col3, clip.col3), negXZ));
+  // x*x + z*z + y*y in this order: matches v_dot3 inside v_norm3 bitwise
+  vec4f len03 = v_sqrt(v_madd(plane03Y, plane03Y, v_madd(plane03Z, plane03Z, v_mul(plane03X, plane03X))));
+  plane03X = v_div(plane03X, len03);
+  plane03Y = v_div(plane03Y, len03);
+  plane03Z = v_div(plane03Z, len03);
+  plane03W = v_div(plane03W, len03);
+
+  // near/far pair duplicated into 4 lanes: (w-z, z, w-z, z) of each column
+  const vec4f lanes13 = v_cast_vec4f(V_CI_MASK0101);
+  vec4f z0 = v_splat_z(clip.col0), z1 = v_splat_z(clip.col1), z2 = v_splat_z(clip.col2), z3 = v_splat_z(clip.col3);
+  plane47X = v_sel(v_sub(v_splat_w(clip.col0), z0), z0, lanes13);
+  plane47Y = v_sel(v_sub(v_splat_w(clip.col1), z1), z1, lanes13);
+  plane47Z = v_sel(v_sub(v_splat_w(clip.col2), z2), z2, lanes13);
+  plane47W = v_sel(v_sub(v_splat_w(clip.col3), z3), z3, lanes13);
+  vec4f len47 = v_sqrt(v_madd(plane47Y, plane47Y, v_madd(plane47Z, plane47Z, v_mul(plane47X, plane47X))));
+  plane47X = v_div(plane47X, len47);
+  plane47Y = v_div(plane47Y, len47);
+  plane47Z = v_div(plane47Z, len47);
+  plane47W = v_div(plane47W, len47);
+}
+
+// world-space box of the frustum of a clip (globtm) matrix; assumes valid plane
+// intersections, same contract as v_frustum_box_unsafe
+__forceinline bbox3f scene::frustum_box_from_clip(mat44f_cref clip)
+{
+  vec3f cp0, cp1, cp2, cp3, cp4, cp5;
+  v_construct_camplanes(clip, cp0, cp1, cp2, cp3, cp4, cp5);
+  bbox3f box;
+  v_frustum_box_unsafe(box, cp0, cp1, cp2, cp3, cp4, cp5);
+  return box;
+}
 
 inline scene::SimpleScene::iterator::iterator(const SimpleScene &ss, uint32_t index) : mSs(ss), nodeIndex(index)
 {
@@ -365,9 +429,13 @@ void scene::SimpleScene::nodesInRange(vec4f pos_distscale, uint32_t test_flags, 
   test_flags <<= 16;
   equal_flags <<= 16;
   const bool hasFree = freeIndices.size() != 0;
+  // stays in a register: visible_nodes is an opaque call, so the member read would
+  // otherwise repeat for every node; the callback must not reallocate nodes
+  const mat44f *nodesData = nodes.data();
   for (int i = firstAlive, ei = (node_index)nodes.size(), localIndex = 0; i < ei; ++i)
   {
-    if (hasFree && isInvalidIndex(i))
+    const mat44f &m = nodesData[i];
+    if (hasFree && is_node_invalid(m))
       continue;
     if (localIndex < start_index)
     {
@@ -378,14 +446,13 @@ void scene::SimpleScene::nodesInRange(vec4f pos_distscale, uint32_t test_flags, 
       break;
     localIndex++;
 
-    const mat44f &m = nodes.data()[i];
-
     uint32_t poolFlags = get_node_pool_flags(m);
     if (use_flags && ((test_flags & poolFlags) != equal_flags))
       continue;
 
-    vec4f sphere = get_node_bsphere(m);
-    vec3f distToSphereSqScaled = v_mul_x(v_length3_sq_x(v_sub(pos_distscale, sphere)), v_splat_w(pos_distscale));
+    // bsphere center without merging rad into center.w: only xyz is read below
+    vec4f sphereCenter = v_madd(m.col1, v_splat_w(m.col1), m.col3);
+    vec3f distToSphereSqScaled = v_mul_x(v_length3_sq_x(v_sub(pos_distscale, sphereCenter)), v_splat_w(pos_distscale));
     if (v_test_vec_x_lt(v_splat_w(m.col0), distToSphereSqScaled))
       continue;
 
@@ -403,30 +470,28 @@ void scene::SimpleScene::frustumCull(mat44f_cref globtm, vec4f pos_distscale, ui
   }
   test_flags <<= 16;
   equal_flags <<= 16;
-  vec3f plane03X, plane03Y, plane03Z, plane03W, plane47X, plane47Y, plane47Z, plane47W;
-  v_construct_camplanes(globtm, plane03X, plane03Y, plane03Z, plane03W, plane47X, plane47Y);
-  plane03X = v_norm3(plane03X);
-  plane03Y = v_norm3(plane03Y);
-  plane03Z = v_norm3(plane03Z);
-  plane03W = v_norm3(plane03W);
-  plane47X = v_norm3(plane47X);
-  plane47Y = v_norm3(plane47Y);
-  v_mat44_transpose(plane03X, plane03Y, plane03Z, plane03W);
-  plane47Z = plane47X, plane47W = plane47Y; // we can use some useful planes instead of replicating
-  v_mat44_transpose(plane47X, plane47Y, plane47Z, plane47W);
+  vec4f plane03X, plane03Y, plane03Z, plane03W, plane47X, plane47Y, plane47Z, plane47W;
+  construct_camplanes_transposed(globtm, plane03X, plane03Y, plane03Z, plane03W, plane47X, plane47Y, plane47Z, plane47W);
   const bool hasFree = freeIndices.size() != 0;
+  // Local copies stay in registers: visible_nodes is an opaque call, so these member
+  // loads would otherwise repeat for every node. As a consequence the callback must
+  // not reallocate nodes or poolBox (allocate(), reserve(), setPoolBBox()).
+  const mat44f *nodesData = nodes.data();
+  const bbox3f *poolBoxData = poolBox.data();
+  const uint32_t poolBoxCount = poolBox.size();
 
   for (int i = firstAlive, ei = (node_index)nodes.size(); i < ei; ++i)
   {
-    if (hasFree && isInvalidIndex(i))
+    const mat44f &m = nodesData[i];
+    if (hasFree && is_node_invalid(m))
       continue;
-    const mat44f &m = nodes.data()[i];
 
     uint32_t poolFlags = get_node_pool_flags(m);
     if (use_flags && ((test_flags & poolFlags) != equal_flags))
       continue;
-    vec4f sphere = get_node_bsphere(m); // broad phase
-    vec4f sphereRad = v_splat_w(sphere);
+    // broad phase; bsphere without merging rad into center.w: tests below use xyz and the splatted rad only
+    vec4f sphereRad = get_node_bsphere_vrad(m);
+    vec4f sphere = v_madd(m.col1, v_splat_w(m.col1), m.col3);
     int sphereVis;
     if (!use_pools || use_occlusion)
       sphereVis =
@@ -443,12 +508,12 @@ void scene::SimpleScene::frustumCull(mat44f_cref globtm, vec4f pos_distscale, ui
       continue;
 
     poolFlags &= 0xFFFF;
-    if (use_pools && (use_occlusion || sphereVis == 2) && poolFlags < poolBox.size())
+    if (use_pools && (use_occlusion || sphereVis == 2) && poolFlags < poolBoxCount)
     {
       // narrow check
       mat44f clipTm;
       v_mat44_mul43(clipTm, globtm, m);
-      bbox3f pool = poolBox.data()[poolFlags];
+      bbox3f pool = poolBoxData[poolFlags];
       // if (v_test_vec_x_lt(v_splat_w(pool.bmin), invClipSpaceRadius))
       //   continue;
       if (use_occlusion)
@@ -474,35 +539,42 @@ void scene::SimpleScene::boxCull(bbox3f_cref box, uint32_t test_flags, uint32_t 
   test_flags <<= 16;
   equal_flags <<= 16;
   const bool hasFree = freeIndices.size() != 0;
+  // Local copies stay in registers: visible_nodes is opaque to the compiler, so these
+  // member/by-ref loads would otherwise repeat for every node. As a consequence the
+  // callback must not reallocate nodes or poolBox (allocate(), reserve(), setPoolBBox()).
+  const mat44f *nodesData = nodes.data();
+  const bbox3f *poolBoxData = poolBox.data();
+  const uint32_t poolBoxCount = poolBox.size();
+  const bbox3f cullBox = box;
 
   for (int i = firstAlive, ei = (node_index)nodes.size(); i < ei; ++i)
   {
-    if (hasFree && isInvalidIndex(i))
+    const mat44f &m = nodesData[i];
+    if (hasFree && is_node_invalid(m))
       continue;
-    const mat44f &m = nodes.data()[i];
 
     uint32_t poolFlags = get_node_pool_flags(m);
     if (use_flags && ((test_flags & poolFlags) != equal_flags))
       continue;
-    vec4f sphere = get_node_bsphere(m); // broad phase
-    vec4f sphereRad = v_splat_w(sphere);
+    // broad phase; get_node_bsphere without merging rad into center.w: tests below use xyz only
+    vec4f sphereRad = get_node_bsphere_vrad(m);
+    vec4f sphereCenter = v_madd(m.col1, v_splat_w(m.col1), m.col3);
     bbox3f sphereBox;
-    sphereBox.bmin = v_sub(sphere, sphereRad);
-    sphereBox.bmax = v_add(sphere, sphereRad);
-    if (!v_bbox3_test_box_intersect(box, sphereBox))
+    sphereBox.bmin = v_sub(sphereCenter, sphereRad);
+    sphereBox.bmax = v_add(sphereCenter, sphereRad);
+    if (!v_bbox3_test_box_intersect(cullBox, sphereBox))
       continue;
-    const bool fullyInside = v_bbox3_test_box_inside(box, sphereBox);
-    if (!fullyInside && !use_pools && !v_bbox3_test_sph_intersect(box, sphere, v_splat_w(v_mul(sphere, sphere))))
+    const bool fullyInside = v_bbox3_test_box_inside(cullBox, sphereBox);
+    if (!fullyInside && !use_pools && !v_bbox3_test_sph_intersect(cullBox, sphereCenter, v_mul_x(sphereRad, sphereRad)))
       continue;
     if (use_pools && !fullyInside)
     {
       poolFlags &= 0xFFFF;
-      if (poolFlags < poolBox.size())
+      if (poolFlags < poolBoxCount)
       {
         bbox3f transformed;
-        bbox3f pool = poolBox.data()[poolFlags];
-        v_bbox3_init(transformed, m, pool);
-        if (!v_bbox3_test_box_intersect(transformed, box))
+        v_bbox3_init(transformed, m, poolBoxData[poolFlags]);
+        if (!v_bbox3_test_box_intersect(transformed, cullBox))
           continue;
       }
     }

@@ -2,13 +2,14 @@
 
 Rarely used: almost all engine math is single precision. This exists for the places that must
 keep `DPoint3` precision (large world coordinates, some physics) and want them vectorized.
-Implementation is `dag_vecMath_double.h` (SSE/AVX and NEON in one file), included via
+Implementation is `dag_vecMath_double.h` (SSE/AVX, NEON and scalar in one file), included via
 `dag_vecMath.h`. The API is `vd_`-prefixed.
 
 ## Layout
-One `__m256d` on AVX, else two 128-bit halves (.xy, .zw). The layout therefore differs between
-AVX and non-AVX translation units, so keep `vec4d` a local compute type - do not put it in a
-struct that crosses TU boundaries or gets serialized.
+One `__m256d` on AVX, else two 128-bit halves (.xy, .zw); the scalar backend keeps a plain
+`double d[4]`. The layout therefore differs between AVX and non-AVX translation units, so keep
+`vec4d` a local compute type - do not put it in a struct that crosses TU boundaries or gets
+serialized.
 
 ## API shape
 No lane-wise 3-component forms: add/sub/mul/neg get `.w` for free from the packed op, and

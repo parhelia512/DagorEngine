@@ -72,7 +72,7 @@ int GenericBufferInterface::lock(unsigned ofs_bytes, unsigned size_bytes, void *
     lockPush(ptr);
   else if (isDMAPathAvailable())
     lockDMA(ptr);
-  else if (bufferLockedForRead())
+  else if (bufferLockedForRead() || stagingIsPersistent())
     lockStaging(ptr);
   else
     lockPush(ptr);

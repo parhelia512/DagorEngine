@@ -18,7 +18,8 @@ GraphicsProgram::GraphicsProgram(const CreationInfo &info) :
   fragmentShader(info.fs),
   geometryShader(info.vs->geometryShader.get()),
   controlShader(info.vs->controlShader.get()),
-  evaluationShader(info.vs->evaluationShader.get())
+  evaluationShader(info.vs->evaluationShader.get()),
+  idPayload(createInfoToIDPayload(info))
 {}
 
 void GraphicsProgram::addToContext(DeviceContext &ctx, ProgramID prog, const CreationInfo &)
@@ -84,6 +85,8 @@ void GraphicsProgram::addToContext(DeviceContext &ctx, ProgramID prog, const Cre
 
   ctx.dispatchCmdNoLock(cmd);
 }
+
+ComputeProgram::ComputeProgram(const CreationInfo &info) : idPayload(createInfoToIDPayload(info)) {}
 
 void ComputeProgram::addToContext(DeviceContext &ctx, ProgramID prog, const CreationInfo &info)
 {

@@ -124,6 +124,8 @@ struct BlobDescription
   CtorFunc ctor;
   DtorFunc dtor;
   CopyFunc copy;
+
+  bool operator==(const BlobDescription &) const = default;
 };
 
 struct DynamicParameter
@@ -132,20 +134,35 @@ struct DynamicParameter
 
   ResourceSubtypeTag projectedTag;
   detail::TypeErasedProjector projector;
+
+  bool operator==(const DynamicParameter &) const = default;
 };
 
 enum class ClearStage
 {
   None,       ///< No clear stage, resource is not cleared
   Activation, ///< Resource is cleared on activation
-  RenderPass  ///< Resource is cleared in render pass
+  RenderPass, ///< Resource is cleared in render pass
+
+  MAX_VAL = RenderPass,
 };
 
 using EnhancedBarrier = eastl::variant<eastl::monostate, d3d::BufferBarrier, d3d::TextureBarrier>;
 
+struct GpuDescription : ResourceDescription
+{
+  using ResourceDescription::ResourceDescription;
+  GpuDescription(const ResourceDescription &desc) : ResourceDescription{desc} {}
+
+  bool operator==(const GpuDescription &other) const
+  {
+    return ResourceDescription::operator==(other) && asBasicRes.activation == other.asBasicRes.activation;
+  }
+};
+
 struct ScheduledResource
 {
-  eastl::variant<ResourceDescription, BlobDescription> description;
+  eastl::variant<GpuDescription, BlobDescription> description;
   ResourceType resourceType;
   eastl::optional<AutoResolutionData> resolutionType;
   ClearStage clearStage;
@@ -153,9 +170,10 @@ struct ScheduledResource
   ResourceClearFlags clearFlags;
   History history;
   bool autoMipCount;
-  EnhancedBarrier untrackedReleaseBarrier;
 
-  bool isGpuResource() const { return eastl::holds_alternative<ResourceDescription>(description); }
+  bool operator==(const ScheduledResource &) const = default;
+
+  bool isGpuResource() const { return eastl::holds_alternative<GpuDescription>(description); }
   bool isCpuResource() const { return eastl::holds_alternative<BlobDescription>(description); }
 
   bool isUntracked() const
@@ -170,10 +188,15 @@ struct ScheduledResource
     return false;
   }
 
+  ResourceDescription &getGpuDescription()
+  {
+    G_ASSERT(isGpuResource());
+    return eastl::get<GpuDescription>(description);
+  }
   const ResourceDescription &getGpuDescription() const
   {
     G_ASSERT(isGpuResource());
-    return eastl::get<ResourceDescription>(description);
+    return eastl::get<GpuDescription>(description);
   }
   const BlobDescription &getCpuDescription() const
   {
@@ -187,18 +210,36 @@ struct ScheduledResource
 struct BufferInfo
 {
   int flags;
+
+  bool operator==(const BufferInfo &) const = default;
 };
 
 struct ExternalResource
 {
   eastl::variant<TextureInfo, BufferInfo> info;
+
+  bool operator==(const ExternalResource &other) const
+  {
+    if (const auto *tex = eastl::get_if<TextureInfo>(&info))
+    {
+      const auto *otherTex = eastl::get_if<TextureInfo>(&other.info);
+      return otherTex && tex->w == otherTex->w && tex->h == otherTex->h && tex->d == otherTex->d && tex->a == otherTex->a &&
+             tex->mipLevels == otherTex->mipLevels && tex->type == otherTex->type && tex->isCommitted == otherTex->isCommitted &&
+             tex->cflg == otherTex->cflg;
+    }
+    const auto *buf = eastl::get_if<BufferInfo>(&info);
+    const auto *otherBuf = eastl::get_if<BufferInfo>(&other.info);
+    return buf && otherBuf && *buf == *otherBuf;
+  }
 };
 
 // Backbuffers are not available on the main thread and their acquisition
 // is deferred to the driver thread, so we handle them separately.
 // Currently, this is can only be the backbuffer.
 struct DriverDeferredTexture
-{};
+{
+  bool operator==(const DriverDeferredTexture &) const = default;
+};
 
 using ConcreteResource = eastl::variant<eastl::monostate, ScheduledResource, ExternalResource, DriverDeferredTexture>;
 
@@ -215,9 +256,7 @@ struct Resource
   // Multiplexing iteration this resource is produced on
   MultiplexingIndex multiplexingIndex{Invalid};
 
-  // Base of the SCHEDULE_FRAME_WINDOW bindless descriptor slots assigned to this
-  // resource for bindlessShaderVar requests (frame f uses baseBindlessSlot + f).
-  uint32_t baseBindlessSlot = static_cast<uint32_t>(-1);
+  bool operator==(const Resource &) const = default;
 
   bool isExternal() const { return eastl::holds_alternative<ExternalResource>(resource); }
   bool isScheduled() const { return eastl::holds_alternative<ScheduledResource>(resource); }
@@ -405,21 +444,9 @@ struct Graph
   void validate() const;
 };
 
-// Remaps a desired node ordering to preserve old sorted positions where possible,
-// minimizing churn in the sparse intermediateGraph.
-// Returns a mapping: unsorted index -> new sorted index.
-// Some entries may remain NODE_NOT_MAPPED if no free slot was found (caller must handle fallback).
-IdIndexedMapping<NodeIndex, NodeIndex, framemem_allocator> try_remap_node_order(const Graph &graph,
-  const IdIndexedMapping<NodeIndex, NodeIndex, framemem_allocator> &desired, const IdIndexedMapping<NodeIndex, NodeIndex> &prev);
-
-// Incrementally applies a new node ordering to graph, preserving unchanged nodes.
-// Erases stale nodes, remaps positions, emplaces new/moved nodes from source_graph,
-// refreshes predecessors. Populates out_nodes_changed with which destination
-// nodes were added or changed.
-// Caller must ensure out_nodes_changed has sufficient capacity.
 IdIndexedMapping<NodeIndex, NodeIndex, framemem_allocator> apply_node_remap(Graph &graph, const Graph &source_graph,
-  const IdIndexedMapping<NodeIndex, NodeIndex, framemem_allocator> &desired_mapping,
-  const IdIndexedMapping<NodeIndex, NodeIndex> &prev_mapping,
+  const IdIndexedMapping<NodeIndex, NodeIndex, framemem_allocator> &source_to_desired,
+  const IdIndexedMapping<NodeIndex, NodeIndex> &source_to_prev_dst,
   const IdIndexedFlags<NodeIndex, framemem_allocator> &source_nodes_changed,
   IdIndexedFlags<NodeIndex, framemem_allocator> &out_nodes_changed);
 

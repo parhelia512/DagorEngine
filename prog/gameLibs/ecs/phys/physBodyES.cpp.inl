@@ -76,6 +76,8 @@ struct PhysBodyCreationContext
 
   PhysBodyCreationContext(const ecs::EntityManager &mgr, ecs::EntityId eid) //-V1077
   {
+    pbcd.debugName = mgr.getOr(eid, ECS_HASH("collres__res"), ecs::nullstr);
+
     const char *collType = mgr.getOr(eid, ECS_HASH(ANAME(coll_type)), ecs::nullstr);
     if (collType)
       coll = set_coll_type(mgr, eid, collType, collStor);
@@ -131,5 +133,7 @@ ECS_DEF_PULL_VAR(phys_body);
 ECS_NO_ORDER
 static void update_phys_body_transform_es(const ecs::UpdateStageInfoAct &, TMatrix &transform, const physbody_t &phys_body)
 {
+  if (!phys_body.isValid())
+    return;
   phys_body.getTm(transform);
 }

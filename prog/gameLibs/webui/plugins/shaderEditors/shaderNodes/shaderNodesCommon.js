@@ -2513,6 +2513,30 @@ function generateAdditionalText(graph, useVarPool)
   var hlsl = "";
   var blk = newLine;
 
+  var warnings = [];
+  var addWarning = function(i, msg)
+  {
+    var elem = graph.elems[i];
+
+    if (!elem)
+      return;
+
+    var permId = typeof elem.permutationId === "number" ? elem.permutationId : -1;
+    var permStr = "";
+    if (permId >= 0)
+    {
+      var permInfo = graph.additionalIncludesPermTable ? graph.additionalIncludesPermTable[permId] : null;
+      permStr = permInfo ? " (perm G" + permInfo.g + ":P" + permInfo.p + ")": " (permId " + permId + ")";
+    }
+    else
+    {
+      permStr = " (root)";
+    }
+
+    warnings.push({text: "Warning: [" + elem.descName + " #" + i + permStr + "] " + msg, nodeId: i,
+      uid: elem.srcUid ? elem.srcUid : elem.uid, permutationId: permId});
+  }
+
   for (var i = 0; i < graph.edgeCount; i++)
   {
     var edge = graph.edges[i];
@@ -2902,6 +2926,11 @@ function generateAdditionalText(graph, useVarPool)
       {
         var p = e.pins[j];
         var pinType = getPinType(e, p);
+
+        if (p.role === "ctrl" && !p.connected)
+        {
+          addWarning(i, "Control pin is not connected, performance is wasted!");
+        }
 
         if (p.role === "in" && p.data && p.data.result_color)
         {
@@ -3462,6 +3491,11 @@ function generateAdditionalText(graph, useVarPool)
     return t;
   }
 
+  function getOutPinVarName(elemIndex, pinIndex, p)
+  {
+    return p.customVarPoolName ? p.customVarPoolName : (p.customVarName ? "" + p.customVarName : "_v_" + elemIndex + "_" + pinIndex);
+  }
+
   function processSubGroup(subGroup, branchStack, permutationId)
   {
     var changed = true;
@@ -3570,15 +3604,33 @@ function generateAdditionalText(graph, useVarPool)
     }
     else
     {
-      var outputVar = "outputVariable" + branch.nodeId;
       var branchNode = graph.elems[branch.nodeId];
-      var outputName = "_v_" + branch.nodeId + "_" + branch.outputPinIdx;
 
       var newStack = branchStack;
       newStack.push(branch.branchIndex);
 
-      hlsl += indent + "NBSGbuffer " + outputVar + " = " + substitute("$gbuffer$", branchNode) + ";" + newLine;
-      hlsl += indent + "// Control Gen for " + outputVar +  ";" + newLine;
+      var outPins = [];
+      branch.outputPinIdxs.sort(function(a, b) { return a - b; });
+      for (var i = 0; i < branch.outputPinIdxs.length; i++)
+      {
+        var pinIdx = branch.outputPinIdxs[i];
+        var p = branchNode.pins[pinIdx];
+        if (p.data && p.data.code)
+          outPins.push({
+            type: getPinType(branchNode, p),
+            innerVar: getOutPinVarName(branch.nodeId, pinIdx, p),
+            outerVar: "outputVariable" + branch.nodeId + "_" + pinIdx
+          });
+      }
+
+      hlsl += indent + "// Output var gen for node " + branch.nodeId + newLine;
+      for (var i = 0; i < outPins.length; i++)
+      {
+        var defVal = outPins[i].type === "NBSGbuffer" ? substitute("$gbuffer$", branchNode) : GE_defaultValuesZero[outPins[i].type];
+        hlsl += indent + pinTypeToCodeType(outPins[i].type) + " " + outPins[i].outerVar + " = " + defVal + ";" + newLine;
+      }
+
+      hlsl += indent + "// Control Gen for node " + branch.nodeId + newLine;
       removeBranchDependencies(branch.branchIndex, false);
       processSubGroup(branch.ctrlGroup, newStack, permutationId);
 
@@ -3593,11 +3645,13 @@ function generateAdditionalText(graph, useVarPool)
       processSubGroup(branch.layerGroup, newStack, permutationId);
 
       processGraphElem(branch.nodeId, newStack, permutationId);
-      hlsl += indent + outputVar + " = " + outputName + ";" + newLine;
+      for (var i = 0; i < outPins.length; i++)
+        hlsl += indent + outPins[i].outerVar + " = " + outPins[i].innerVar + ";" + newLine;
 
       decrementIndent();
       hlsl += indent + "}" + newLine;
-      hlsl += indent + "NBSGbuffer " + outputName + " = " + outputVar + ";" + newLine;
+      for (var i = 0; i < outPins.length; i++)
+        hlsl += indent + pinTypeToCodeType(outPins[i].type) + " " + outPins[i].innerVar + " = " + outPins[i].outerVar + ";" + newLine;
 
       branch.processed = true;
     }
@@ -3684,9 +3738,13 @@ function generateAdditionalText(graph, useVarPool)
 
               if (p.connected)
               {
-                var varName = p.customVarPoolName ? p.customVarPoolName : (p.customVarName ? "" + p.customVarName : "_v_" + elemIndex + "_" + j);
+                var varName = getOutPinVarName(elemIndex, j, p);
                 hlsl += indent + pinTypeToCodeType(t) +
                   " " + varName + " = " + substitute(p.data.code, e) + ";" + newLine;
+              }
+              else if (p.data.sideEffect)
+              {
+                hlsl += indent + substitute(p.data.code, e) + ";" + newLine;
               }
               else if (p.customPinOutput)
               {
@@ -3777,6 +3835,7 @@ function generateAdditionalText(graph, useVarPool)
   blk = "/*SHADER_BLK_START*/" + blk + "/*SHADER_BLK_END*/";
 
   graph["code"] = blk;
+  graph["warnings"] = warnings;
   graph["hashOfCode"] = "/*HASH_OF_CODE_START*/" + hashCode31(blk) + "/*HASH_OF_CODE_END*/";
 }
 

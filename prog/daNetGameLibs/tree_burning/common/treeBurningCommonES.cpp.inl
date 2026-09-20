@@ -42,15 +42,21 @@ bool riex_collision_is_soft(rendinst::riex_handle_t handle)
   bool hasSoftNode = false;
   for (const CollisionNode &node : collRes->getAllNodes())
   {
-    if (!(node.behaviorFlags & CollisionNode::PHYS_COLLIDABLE))
+    if (!collRes->checkNodeBehaviorFlags(node.nodeIndex, CollisionNode::PHYS_COLLIDABLE))
       continue;
-    int matId = node.physMatId;
-    if (matId == PHYSMAT_INVALID || matId == PHYSMAT_DEFAULT) // node has no own material -> the pool override is used
-      matId = poolMatId;
-    if (collision_mat_is_soft(matId))
-      hasSoftNode = true;
-    else
-      return false; // a hard collidable node (e.g. a tree trunk) -> not a bush, keep its collision
+    // ALL of the node's materials must be soft, so a node holding several is asked about each.
+    // A node with no material of its own holds none to walk, yet still has one question to answer, and it reads PHYSMAT_INVALID at
+    // index 0 -- hence the floor of one iteration.
+    const int matCount = collRes->getNodePhysMatCount(node.nodeIndex);
+    for (int i = 0, e = matCount > 0 ? matCount : 1; i < e; ++i)
+    {
+      int matId = collRes->getNodePhysMatId(node.nodeIndex, i);
+      if (matId == PHYSMAT_INVALID || matId == PHYSMAT_DEFAULT) // no own material -> the pool override is used
+        matId = poolMatId;
+      if (!collision_mat_is_soft(matId))
+        return false; // a hard collidable node (e.g. a tree trunk) -> not a bush, keep its collision
+    }
+    hasSoftNode = true;
   }
   return hasSoftNode;
 }

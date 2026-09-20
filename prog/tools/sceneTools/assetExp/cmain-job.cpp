@@ -234,6 +234,12 @@ static int do_main(bool debugmode)
   appblk.setBool("strip_d3dres", dabuild_strip_d3d_res);
   appblk.setBool("collapse_packs", dabuild_collapse_packs);
   appblk.setInt("dabuildJobCount", jobMem->jobCount);
+  if (jobMem->validateAlphaTest)
+  {
+    DataBlock &b = *appblk.addBlock("assets")->addBlock("build")->addBlock("validateAlphaTest");
+    b.setBool("validate", true);
+    b.setBool("strict", jobMem->validateAlphaTest > 1);
+  }
 
   DataBlock::setRootIncludeResolver(app_dir);
 
@@ -262,12 +268,7 @@ static int do_main(bool debugmode)
     return 0;
   }
 
-  // load exporter plugins
-  if (!dabuild->loadExporterPlugins())
-  {
-    dabuild->unloadExporterPlugins();
-    return 13;
-  }
+  // AssetExportCache's shared data is passed to the plugin DLLs in loadExporterPlugins(), so it must be set up before that.
 
   AssetExportCache::createSharedData(String(260, "%s/develop/.asset-local/assets-hash.bin", app_dir));
   AssetExportCache::sharedDataResetRebuildTypesList();
@@ -278,6 +279,14 @@ static int do_main(bool debugmode)
       dabuild_force_dxp_rebuild = true;
   }
   dabuild->setExpCacheSharedData(AssetExportCache::getSharedDataPtr());
+
+  // load exporter plugins
+  if (!dabuild->loadExporterPlugins())
+  {
+    dabuild->unloadExporterPlugins();
+    return 13;
+  }
+
   dabuild->processSrcHashForDestPacks();
 
   log.level = (ILogWriter::MessageType)jobMem->logLevel;

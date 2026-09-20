@@ -32,9 +32,9 @@ void ensure_all_ri_extra_pools_are_synced()
 {
   // check, if rend inst pool list has changed, and updates synced rendinsts,
   // if nothing has changed (most cases) this call is free
-  if (rendinst::getRIExtraMapSize() != prev_ri_extra_map_size)
+  if (rendinst::getRiGenExtraResCount() != prev_ri_extra_map_size)
   {
-    prev_ri_extra_map_size = rendinst::getRIExtraMapSize();
+    prev_ri_extra_map_size = rendinst::getRiGenExtraResCount();
     is_pool_sync_sent = false;
     riexsync::sync_all_ri_extra_pools();
   }

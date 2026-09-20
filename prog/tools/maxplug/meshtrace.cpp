@@ -10,7 +10,7 @@ inline T *__memchk(T *o, const char *f, int l)
 {
   if (!o)
   {
-    debug("Not enough memory in file <%s>, line <%d>", f, l);
+    debug("Not enough memory in file <{}>, line <{}>", f, l);
     assert(false);
   }
   return o;
@@ -18,21 +18,11 @@ inline T *__memchk(T *o, const char *f, int l)
 
 #define nomemchk(o) __memchk(o, __FILE__, __LINE__)
 
-#ifndef nomem
-#define nomem(a)                                                              \
-  {                                                                           \
-    if (!(a))                                                                 \
-      fatal("Not enough memory in file <%s>, line <%d>", __FILE__, __LINE__); \
-  }
-#endif
-
 #define bugchk(a) assert(a)
 
 #define MAX_LEAF_FACES  16
 #define MAX_LEAF_LENGTH MAX_REAL
 #define MIN_LEAF_FACES  16
-
-#define MAX_SCENE_LEAF_FACES 16
 
 
 class StaticMeshRTracer : public StaticMeshRayTracer

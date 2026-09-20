@@ -122,7 +122,9 @@ shader debug_final_gbuffer
 
   if (show_gbuffer >= debug_mesh)
   {
-    supports global_const_block;
+    (ps) {
+      from_sun_direction@f3 = from_sun_direction;
+    }
     hlsl(ps) {
       #include <debug_mesh.hlsli>
       #include "luminance_heatmap.hlsli"

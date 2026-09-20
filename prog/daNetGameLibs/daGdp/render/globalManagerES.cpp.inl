@@ -37,7 +37,7 @@ static void dagdp_update_es(
 }
 
 ECS_TAG(render)
-static void dagdp_after_device_reset_es(const AfterDeviceReset &, dagdp::GlobalManager &dagdp__global_manager)
+static void dagdp_after_device_reset_es(const EventAfterDeviceReset &, dagdp::GlobalManager &dagdp__global_manager)
 {
   // Force recreation of all GPU buffers.
   dagdp__global_manager.invalidateViews();
@@ -86,7 +86,7 @@ static void dagdp_on_shader_reload_es(const AfterShaderReload &, dagdp::GlobalMa
 }
 
 ECS_TAG(render)
-static void dagdp_on_level_unload_es(const UnloadLevel &, dagdp::GlobalManager &dagdp__global_manager)
+static void dagdp_on_level_unload_es(const EventRenderSceneUnload &, dagdp::GlobalManager &dagdp__global_manager)
 {
   GlobalConfig emptyConfig; // Everything disabled by default.
   dagdp__global_manager.reconfigure(emptyConfig);
@@ -246,6 +246,20 @@ static void dagdp_level_settings_changed_es(const ecs::Event &, ecs::EntityManag
   manager_ecs_query(manager, [](dagdp::GlobalManager &dagdp__global_manager) { dagdp__global_manager.invalidateRules(); });
 }
 
+ECS_TAG(render)
+ECS_TRACK(render_settings__dagdpDensityMul)
+ECS_ON_EVENT(OnRenderSettingsReady)
+ECS_NO_ORDER
+static void dagdp_global_density_mul_settings_es(
+  const ecs::Event &, ecs::EntityManager &manager, float render_settings__dagdpDensityMul)
+{
+  if (GlobalManager::globalDensityMul == render_settings__dagdpDensityMul)
+    return;
+  GlobalManager::globalDensityMul = render_settings__dagdpDensityMul;
+  // Consumed at view build time, in the placer view process handlers.
+  manager_ecs_query(manager, [](dagdp::GlobalManager &dagdp__global_manager) { dagdp__global_manager.invalidateViews(); });
+}
+
 template <typename Callable>
 static inline void grass_range_mul_ecs_query(ecs::EntityManager &manager, Callable);
 
@@ -285,6 +299,15 @@ static bool dagdp_console_handler(const char *argv[], int argc)
     if (argc > 1)
       set_grass_range_mul(console::to_real(argv[1]));
     console::print("dagdp.grassRendInstRangeMul: %f", get_grass_range_mul());
+  }
+  CONSOLE_CHECK_NAME("dagdp", "globalDensityMul", 1, 2)
+  {
+    if (argc > 1)
+    {
+      GlobalManager::globalDensityMul = clamp(console::to_real(argv[1]), MIN_GLOBAL_DENSITY_MUL, 1.0f);
+      manager_ecs_query(*g_entity_mgr, [](dagdp::GlobalManager &dagdp__global_manager) { dagdp__global_manager.invalidateViews(); });
+    }
+    console::print("dagdp.globalDensityMul: %f [%f..1]", GlobalManager::globalDensityMul, MIN_GLOBAL_DENSITY_MUL);
   }
   return found;
 }

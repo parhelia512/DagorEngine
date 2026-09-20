@@ -8,7 +8,6 @@
 #include <generic/dag_tab.h>
 #include <generic/dag_functionRef.h>
 #include <ioSys/dag_genIo.h>
-#include <ioSys/dag_readToUncached.h>
 #include <debug/dag_debug.h>
 #include <meshoptimizer/include/meshoptimizer.h>
 #include <drv/3d/dag_vertexIndexBuffer.h>
@@ -145,16 +144,11 @@ void GlobalVertexData::unpackToBuffers(IGenLoad &zcrd, bool update_ib_vb_only, T
 {
   if (!testFlags(VDATA_NO_VB))
   {
-    bool cached_dest_mem = false;
-#if _TARGET_PC_WIN
-    cached_dest_mem = true;
-#endif
-
     void *p = nullptr;
     d3d_err(vb->lock(0, 0, &p, VBLOCK_WRITEONLY));
     if (p)
     {
-      read_to_device_mem(zcrd, p, getVbSize(), cached_dest_mem);
+      zcrd.read(p, getVbSize());
       d3d_err(vb->unlock());
     }
     else
@@ -176,11 +170,6 @@ void GlobalVertexData::unpackToBuffers(IGenLoad &zcrd, bool update_ib_vb_only, T
 
   if (!testFlags(VDATA_NO_IB))
   {
-    bool cached_dest_mem = false;
-#if _TARGET_PC_WIN
-    cached_dest_mem = true;
-#endif
-
     void *p = nullptr;
     d3d_err(getIB()->lock(0, 0, &p, VBLOCK_WRITEONLY));
     // debug("%p.unpackToBuffers iCnt=%d iPackedSz=%d flags=0x%X", this, iCnt, iPackedSz, cflags);
@@ -189,7 +178,7 @@ void GlobalVertexData::unpackToBuffers(IGenLoad &zcrd, bool update_ib_vb_only, T
       if (testFlags(VDATA_PACKED_IB))
         decode_result = meshopt_decodeIndexSequence(p, iCnt, getIbElemSz(), tmp_decoder_stor.data(), iPackedSz);
       else
-        read_to_device_mem(zcrd, p, getIbSize(), cached_dest_mem);
+        zcrd.read(p, getIbSize());
       d3d_err(getIB()->unlock());
     }
     else if (!testFlags(VDATA_PACKED_IB))

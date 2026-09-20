@@ -274,6 +274,12 @@ bool SharedLandClassAssetData::loadAsset(const DataBlock &blk)
       const DataBlock &detTexBlk = *detailsBlk.getBlock(bi);
       const int biomeIndex = detTexBlk.getInt("index", 0);
       const char *mat = detTexBlk.getStr("physMat", NULL);
+      if (biomeIndex < 0 || biomeIndex >= (int)indexedPhysMatId.size())
+      {
+        DAEDITOR3.conError("physMatIndices index %d out of range [0, %d) in asset: %s", biomeIndex, (int)indexedPhysMatId.size(),
+          loadingAssetFname);
+        continue;
+      }
       indexedPhysMatId[biomeIndex] = PhysMat::getMaterialId(mat);
       if (PhysMat::getMaterialId(mat) == PHYSMAT_INVALID)
         DAEDITOR3.conError("bad physMat <%s> in asset: %s", mat, loadingAssetFname);
@@ -331,6 +337,11 @@ bool SharedLandClassAssetData::loadAsset(const DataBlock &blk)
               const DataBlock *detail = detailsBlk->getBlock(i);
               if (detail->getBlockNameId() != detailNameId)
                 continue;
+              if (detail_idx >= (int)indexedPhysMatId.size())
+              {
+                DAEDITOR3.conError("too many detail blocks in asset: %s (max %d)", loadingAssetFname, (int)indexedPhysMatId.size());
+                break;
+              }
               const char *detailGroup = detail->getStr("detail_group", defaultGroupName);
               indexedPhysMatId[detail_idx++] = detailGroup ? detailGroupPhysMats[eastl::string(detailGroup)] : physMatForDefaultGroup;
             }

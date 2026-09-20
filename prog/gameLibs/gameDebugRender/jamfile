@@ -14,9 +14,20 @@ Sources =
   primitivesCache.cpp
   primitives2dCache.cpp
   primitivesRender.cpp
-  debugDraw.cpp
+  crosshairPrimitive.cpp
   textRender.cpp
 ;
+
+if $(Dedicated) != yes && ($(Config) != rel || $(ForceDebugInterface) = yes) {
+  Sources +=
+    debugDraw.cpp
+  ;
+}
+else {
+  Sources +=
+    debugDrawStub.cpp
+  ;
+}
 
 UseProgLibs +=
   gameLibs/damageModel

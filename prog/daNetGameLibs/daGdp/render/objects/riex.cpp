@@ -460,9 +460,8 @@ static void rebuild_cache(RiexPersistentData &persistent_data)
             continue;
 
           ScriptedShaderElement &sElem = rElem.e->native();
-          const auto dvState = shaders::get_dynamic_variant_state(sElem);
-
-          if (dvState.variant == -1) // "Don't render".
+          const auto dvState = get_dynamic_variant_states(sElem);
+          if (!is_valid(dvState)) // "Don't render".
             continue;
 
           auto &call = protoDrawCallsFmem.push_back();
@@ -665,7 +664,7 @@ static void render(SubPass sub_pass,
       else
 #endif
       {
-        set_states_for_variant(*call.sElem, call.dvState.variant, call.dvState.program, call.dvState.state_index);
+        set_states_for_variant(*call.sElem, call.dvState);
 
         lastSElem = call.sElem;
         lastDvState = call.dvState;
@@ -829,9 +828,9 @@ static dafg::NodeHandle create_bvh_indirect_args_node(const eastl::shared_ptr<Ri
 
       dag::Vector<DagdpBvhMapping, framemem_allocator> mappingData;
       const auto &multiCallSpan = persistent_data->cache.multiCallSpans[eastl::to_underlying(SubPass::BVH)];
-      for (auto multiCall : multiCallSpan)
+      for (const auto &multiCall : multiCallSpan)
       {
-        for (auto preMapping : multiCall.preMappings)
+        for (const auto &preMapping : multiCall.preMappings)
         {
           auto data = bvhManager->getMappingData(preMapping);
           if (data.blas.x == 0 && data.blas.y == 0)

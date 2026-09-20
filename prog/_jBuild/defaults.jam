@@ -58,7 +58,7 @@ if ! $(__DEFAULTS_INCLUDED) {
   Config        ?= dev ;
   KernelLinkage ?= static ;
   UseGDK        ?= no ; # explicitly enabled later for xboxes
-  GdkVer        ?= 250401 ;
+  GdkVer        ?= 260403 ;
   GdkWinSdk     ?= 22621 ;
   PS4SdkVer     ?= 1050 ;
   local 1200 = 1000 ;
@@ -104,6 +104,7 @@ if ! $(__DEFAULTS_INCLUDED) {
   DefFreeTypeVer = 2.8 ;
   FreeTypeVer   ?= $(DefFreeTypeVer) ;
   FidelityFXVer ?= 2.1.1 ;
+  StreamlineVer ?= 2.14.1 ;
 
   if $(Config) != rel { AgsSdkVer ?= 6.3.0 ; }
 
@@ -152,6 +153,8 @@ if ! $(__DEFAULTS_INCLUDED) {
     SSEVersion ?= 2 ;
   }
   VCMathOption ?= -fp:fast ;
+  # TBAA (-fstrict-aliasing): on by default for posix/sony compilers, off for *-windows-msvc triple
+  if $(Platform) in windows xboxOne scarlett android || $(VCMathOption) != -fp:fast { StrictAliasing ?= no ; } else { StrictAliasing ?= yes ; }
 
   if $(FullOOPEnabled) = yes {
     Exceptions ?= yes ;
@@ -252,6 +255,15 @@ if ! $(__DEFAULTS_INCLUDED) {
   OpenXrSdkPath = $(_DEVTOOL)/openxr-$(OpenXrVer) ;
   if $(VRDeviceSupport) = yes && ! [ GLOB $(OpenXrSdkPath) : * ] {
     exit OpenXr SDK not found in $(OpenXrSdkPath), please update devtools ;
+  }
+
+  StreamlineSdkPath = $(_DEVTOOL)/streamline-$(StreamlineVer) ;
+  if $(StreamlineFeatures) && $(Platform) in windows && $(PlatformArch) in x86_64 arm64 {
+    if ! [ GLOB $(StreamlineSdkPath) : * ] {
+      exit Streamline SDK not found in $(StreamlineSdkPath), please update devtools ;
+    }
+    # drv3d_commonCode, drv3d_vulkan and copy_bundles.jam must agree, so decide once here
+    UseStreamline = yes ;
   }
 
   if $(GOUT_ROOT) {

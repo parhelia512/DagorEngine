@@ -1400,7 +1400,9 @@ static unsigned get_texformat_usage_impl(int cflg, D3DResourceType type, const c
 
 unsigned d3d::get_texformat_usage(int cflg, D3DResourceType type) { return get_texformat_usage_impl(cflg, type); }
 
-namespace d3d
+// TODO: move to drv3d_dx11, this is dx11-specific implementation detail
+// _MULTI_INTERFACE is used to make this overload visible within d3d::inline multi_dx11 namespace
+namespace d3d _MULTI_INTERFACE
 {
 static bool check_texformat(int cflg, D3DResourceType type, const char **out_reason = nullptr)
 {
@@ -1417,7 +1419,7 @@ static bool check_texformat(int cflg, D3DResourceType type, const char **out_rea
   }
   return (flags & mask) == mask ? true : false;
 }
-} // namespace d3d
+} // namespace d3d _MULTI_INTERFACE
 
 bool d3d::check_texformat(int cflg) { return check_texformat(cflg, D3DResourceType::TEX); }
 

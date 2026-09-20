@@ -34,8 +34,6 @@ void phys_bullet_add_impulse(int body_ind, const Point3 &pos, const Point3 &delt
   add_impulse(body_ind, pos, delta, spring_factor, damper_factor, dt);
 }
 
-bool phys_bullet_load_collision(IGenLoad &crd) { return pw && pw->loadSceneCollision(crd, 0); }
-
 void phys_bullet_install_tracer(bool (*traceray)(const Point3 &p, const Point3 &d, float &mt, Point3 &out_n, int &out_pmid))
 {
   IPhysVehicle::bulletSetStaticTracer(traceray);

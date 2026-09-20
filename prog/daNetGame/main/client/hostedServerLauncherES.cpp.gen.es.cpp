@@ -28,7 +28,8 @@ static ecs::EntitySystemDesc event_start_internal_server_es_es_desc
 static void event_stop_internal_server_es_all_events(const ecs::Event &__restrict evt, const ecs::QueryView &__restrict components)
 {
   G_UNUSED(components);
-  event_stop_internal_server_es(evt
+  G_FAST_ASSERT(evt.is<EventHostedInternalServerToStop>());
+  event_stop_internal_server_es(static_cast<const EventHostedInternalServerToStop&>(evt)
         );
 }
 static ecs::EntitySystemDesc event_stop_internal_server_es_es_desc

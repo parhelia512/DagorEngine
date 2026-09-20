@@ -30,7 +30,7 @@ private:
   void lockBuffers(ImDrawVert *&vbdata, const uint32_t vtx_count, ImDrawIdx *&ibdata, const uint32_t idx_count);
   void unlockBuffers();
   bool copyDrawData(const ImDrawData *draw_data, ImDrawVert *&vbdata, ImDrawIdx *&ibdata);
-  void processDrawDataToRT(const ImDrawData *draw_data, int &global_idx_offset, int &global_vtx_offset);
+  void processDrawDataToRT(const ImDrawData *draw_data, int &global_idx_offset, int &global_vtx_offset, int prerotate_angle);
 
   static void updateTextureData(ImTextureData &td);
   static void releaseTextureData(ImTextureData &td);

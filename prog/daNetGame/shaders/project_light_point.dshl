@@ -276,7 +276,11 @@ macro PROJECT_LIGHT_POINT_SCREEN_VOXEL_LIT_SCENE(code)
 endmacro
 
 macro PROJECT_GET_SKY_RADIANCE_AT(code)
-  (code) { envi_probe_specular@smpCube = envi_probe_specular; }//todo: use pre-averaged octahedral of a reasonable resolution!
+  (code) { envi_probe_specular@texCube = envi_probe_specular; }//todo: use pre-averaged octahedral of a reasonable resolution!
+  INIT_GLOBAL_LINEAR_WRAP_SAMPLER(code)
+  hlsl(code) {
+    #define envi_probe_specular_samplerstate global_linear_wrap_sampler
+  }
   hlsl(code) {
     //when ray miss the scene
     float3 dagi_get_sky_radiance_at(float3 worldPosAt, float3 rayDir)
@@ -293,6 +297,32 @@ macro PROJECT_GET_SKY_RADIANCE_AT(code)
       #endif
 
       return darkening*texCUBElod(envi_probe_specular, float4(rayDir,3)).rgb;// todo: better use preintegrated octahedral!
+    }
+  }
+endmacro
+
+// media voxel lit color for the daGI2 media volumes: static shadowed sun + GI ambient on
+// the front side, the back side lit through the translucency color (a leaf cloud
+// transmits); the ambient is lost to the canopy above (dagi_media_vols_atten)
+macro PROJECT_DAGI_MEDIA_VOLS_AMBIENT(code)
+  SUN_SKY_LIGHT_POINT_TRACE_HIT(code)
+  (code) {
+    dagi_media_vols_sky_mean@f3 = (enviSPH0.w, enviSPH1.w, enviSPH2.w, 0);
+  }
+  hlsl(code) {
+    float3 dagi_media_vols_ambient(float3 world_pos, float3 world_normal, float3 albedo, float3 translucency_color,
+      float voxel_size)
+    {
+      float atten = dagi_media_vols_atten(world_pos, voxel_size);
+      // the irradiance grid sampler writes the inouts only inside its clips (bool return
+      // it cannot surface through this call): everywhere else the mean sky irradiance is
+      // the fallback, an uninitialized register otherwise ends up stored in the scene
+      float3 ambient = dagi_media_vols_sky_mean, backAmbient = dagi_media_vols_sky_mean;
+      // the step samples the ambient above the voxel and the sun shadow toward the sun: a
+      // crown center otherwise reads both through its own crown slab
+      float step = dagi_media_vols_light_step(voxel_size);
+      return get_sun_sky_lit_color_both(world_pos + float3(0, step, 0), world_pos, world_normal, albedo, translucency_color,
+        ambient, backAmbient, step, atten);
     }
   }
 endmacro

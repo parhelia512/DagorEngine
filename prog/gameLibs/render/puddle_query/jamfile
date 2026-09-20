@@ -1,0 +1,25 @@
+ModuleDependsOnVars = HaveRenderer ;
+HaveRenderer ?= yes ;
+
+Root    ?= ../../../.. ;
+Module = puddle_query ;
+Location = prog/gameLibs/render/$(Module) ;
+
+AddIncludes =
+  $(Root)/prog/gameLibs
+  $(Root)/prog/gameLibs/publicInclude
+  $(Root)/prog/1stPartyLibs/daScript/include
+;
+
+local AllSrcFolder_CPP = dasModules ;
+local AllSrcFolder_ES = ;
+local AllSrcFolder_DAS = ;
+
+if $(HaveRenderer) = yes {
+  AllSrcFolder_ES += . ;
+  AllSrcFolder_CPP += . ;
+} else {
+  AllSrcFolder_CPP += stub ;
+}
+
+include $(Root)/prog/gameLibs/build_module.jam ;

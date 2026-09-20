@@ -71,4 +71,4 @@ wait.time 500
 editor.command Plugin.MissionEditor.ReloadBlkData
 wait.time 5000
 
-app.terminate 0
+exit no

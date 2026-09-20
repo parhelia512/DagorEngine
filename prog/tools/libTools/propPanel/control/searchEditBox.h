@@ -36,6 +36,8 @@ public:
   }
 
 private:
+  const char *getImguiTypeName() const override { return "SearchEditBox"; }
+
   void updateImguiInput(const char *input_label, bool &text_changed, bool &deactivated_after_edit) override
   {
     const bool patchColors = valueHighlightColor == ColorOverride::EDIT_BOX_SEARCH_TEXT_SET_BACKGROUND;
@@ -46,8 +48,10 @@ private:
     }
 
     ImRect inputRect;
+    ImGuiID inputId = 0;
     text_changed = ImguiHelper::searchInput(this, input_label, placeholderText, controlValue, iconMain, iconClear, &textInputFocused,
-      nullptr, &inputRect, &deactivated_after_edit);
+      &inputId, &inputRect, &deactivated_after_edit);
+    setImguiTestItemInfoById(inputId);
 
     if (patchColors)
       ImGui::PopStyleColor(2);

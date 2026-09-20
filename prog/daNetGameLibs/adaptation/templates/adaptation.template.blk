@@ -9,6 +9,7 @@ adaptation_manager {
   "adaptation__accumulate_histogram:dafg::NodeHandle"{}
   "adaptation__adapt_exposure_node:dafg::NodeHandle"{}
   "adaptation__set_exposure_node:dafg::NodeHandle"{}
+  "adaptation__register_exposure_node:dafg::NodeHandle"{}
   adaptation__fade_mul:r=1.0
   adaptation__exposure:r=1.0
   adaptation__track_changes:b=false

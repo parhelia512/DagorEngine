@@ -359,7 +359,7 @@ protected:
 
     binPack.Init(texSz.x, texSz.y);
     binPack.Insert(cornerResv, cornerResv, true, binPack.RectBestShortSideFit, binPack.SplitMinimizeArea, false);
-    bool upd_ok = tmp_tex->updateSubRegion(t, 0, 0, 0, 0, cornerResv, cornerResv, 1, 0, 0, 0, 0);
+    bool upd_ok = d3d::update_sub_region(t, 0, 0, 0, 0, cornerResv, cornerResv, 1, tmp_tex, 0, 0, 0, 0);
 #if DAGOR_DBGLEVEL > 0
     if (!upd_ok)
       logerr("%s: failed to update corner quad %dx%d (tex %dx%d cflg=0x%X)", name, cornerResv, cornerResv, texSz.x, texSz.y, ti.cflg);
@@ -376,7 +376,7 @@ protected:
         continue;
       }
       ItemData &g = itemData[new_rects[i].id];
-      upd_ok = tmp_tex->updateSubRegion(t, 0, g.x0 - marginLtOfs, g.y0 - marginLtOfs, 0, g.w + margin, g.h + margin, 1, 0,
+      upd_ok = d3d::update_sub_region(t, 0, g.x0 - marginLtOfs, g.y0 - marginLtOfs, 0, g.w + margin, g.h + margin, 1, tmp_tex, 0,
         new_rects[i].x, new_rects[i].y, 0);
 #if DAGOR_DBGLEVEL > 0
       if (!upd_ok)
@@ -394,7 +394,7 @@ protected:
     }
     logwarn("-> allocated %d rects, new_rect=%d,%d %dx%d", new_rects.size(), r.x, r.y, r.width, r.height);
 
-    upd_ok = t->updateSubRegion(tmp_tex, 0, 0, 0, 0, texSz.x, texSz.y, 1, 0, 0, 0, 0);
+    upd_ok = d3d::update_sub_region(tmp_tex, 0, 0, 0, 0, texSz.x, texSz.y, 1, t, 0, 0, 0, 0);
 #if DAGOR_DBGLEVEL > 0
     if (!upd_ok)
       logerr("%s: failed to swap/copy image (tex %dx%d cflg=0x%X, marginLtOfs=%d margin=%d)", name, texSz.x, texSz.y, ti.cflg,

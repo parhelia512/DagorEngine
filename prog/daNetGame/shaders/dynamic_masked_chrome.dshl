@@ -1,5 +1,6 @@
 include "dynamic_masked_chrome_inc.dshl"
 include "simplified_rendering_inc.dshl"
+include "cloth_sim_skinning_inc.dshl"
 
 int dynamic_texture_hdr_pass = 0;
 interval dynamic_texture_hdr_pass : no < 1, yes;
@@ -13,14 +14,10 @@ shader dynamic_masked_chrome_bump, dynamic_masked_chrome_bump_colored
 
   SUPPORT_MULTIDRAW(false)
   USE_SIMPLIFIED_RENDERING()
+  INIT_OPTIONAL_CLOTH_SIM_SKINNING()
   COMMON_MASKED_CHROME_SHADER_INIT()
 
-  hlsl(vs) {
-    void vs_post_function(VsInput input, inout VsOutput output)
-    {
-      init_burning_and_wounds(input, output);
-    }
-  }
+  USE_CLOTH_SIM_SKINNING_VS_POST_FUNCTION(init_burning_and_wounds)
 
   DYNAMIC_SIMPLE_VS_BASE_SHADERBODY()
   COMMON_MASKED_CHROME_PS()

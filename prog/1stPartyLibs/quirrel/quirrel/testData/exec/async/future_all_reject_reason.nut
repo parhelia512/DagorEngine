@@ -12,8 +12,8 @@ async function main() {
         print("BUG: all did not reject\n")
     }
     catch (e) {
-        print("all rejected with: " + e + "\n")              // the-reason
-        print("reason is string: " + (typeof e == "string") + "\n")  // true (bare value, not a Future)
+        println($"all rejected with: {e}")                   // the-reason
+        println($"reason is string: {typeof e == "string"}")         // true (bare value, not a Future)
     }
 }
 main()

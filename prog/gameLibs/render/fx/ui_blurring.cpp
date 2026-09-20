@@ -31,8 +31,7 @@ GLOBAL_VARS_LIST
 
 const int FIRST_GAUSS_SIZE = 3, SECOND_GAUSS_SIZE = 3 * 7 + 1;
 constexpr int FIRST_REG = 16; // same as in shader
-constexpr int CB_SIZE = 4096 - FIRST_REG;
-constexpr int VS_CB_SIZE = 4094;
+constexpr int CB_SIZE = 4078;
 d3d::SamplerHandle clamp_sampler;
 
 static void init_blur_shader_vars()
@@ -91,7 +90,6 @@ static void blur_mip(int tex_mip, TextureIDHolder &tex, TextureIDHolder &interm_
 
   blur.getElem()->setStates();
   const uint32_t quadCount = quad - quad_buffer;
-  d3d::set_vs_constbuffer_register_count(VS_CB_SIZE);
   d3d::set_vs_const(FIRST_REG, quad_buffer, quadCount);
   d3d::draw_instanced(PRIM_TRISTRIP, 0, 2, quadCount);
 
@@ -190,7 +188,6 @@ void update_blurred_from(const TextureIDPair &src, const TextureIDPair &backgrou
     if (quadCount > 0)
     {
       downsample_first_step.getElem()->setStates();
-      d3d::set_vs_constbuffer_register_count(VS_CB_SIZE);
       d3d::set_vs_const(FIRST_REG, quadBuffer, quadCount);
       d3d::draw_instanced(PRIM_TRISTRIP, 0, 2, quadCount);
     }
@@ -255,7 +252,6 @@ void update_blurred_from(const TextureIDPair &src, const TextureIDPair &backgrou
       if (quadCount > 0)
       {
         downsample_4.getElem()->setStates();
-        d3d::set_vs_constbuffer_register_count(VS_CB_SIZE);
         d3d::set_vs_const(FIRST_REG, quadBuffer, quadCount);
         d3d::draw_instanced(PRIM_TRISTRIP, 0, 2, quadCount);
       }
@@ -281,7 +277,6 @@ void update_blurred_from(const TextureIDPair &src, const TextureIDPair &backgrou
     d3d::resource_barrier({ui_mip.getTex2D(), RB_RO_SRV | RB_STAGE_PIXEL, unsigned(max_ui_mip - 1), 1});
     intermediate.getTex2D()->texmiplevel(-1, -1);
     ui_mip.getTex2D()->texmiplevel(-1, -1);
-    d3d::set_vs_constbuffer_register_count(0);
   }
   shaders::overrides::reset();
   ShaderElement::invalidate_cached_state_block();

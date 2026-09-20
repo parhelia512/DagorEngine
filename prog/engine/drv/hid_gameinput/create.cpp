@@ -4,7 +4,7 @@
 #include "gamepad_device.h"
 #include "flightstick_classdrv.h"
 #include "keyboard_classdrv.h"
-#include "mouse_emu.h"
+#include "pointing_classdrv.h"
 #include "gameinput.h"
 
 #include <drv/hid/dag_hiCreate.h>
@@ -61,26 +61,30 @@ IGenKeyboardClassDrv *HumanInput::createGameInputKeyboardClassDriver()
 }
 
 
-static MouseEmuDriver mouse_emu_drv;
+static GameInputPointingClassDriver pointing_drv;
 
-IGenPointingClassDrv *HumanInput::createMouseEmuClassDriver()
+IGenPointingClassDrv *HumanInput::createGameInputPointingClassDriver(bool emu_mouse, bool hw_mouse)
 {
   memset(&raw_state_pnt, 0, sizeof(raw_state_pnt));
   gameinput::init();
-  mouse_emu = &mouse_emu_drv;
-  return &mouse_emu_drv;
+
+  pointing_drv.composite.emuEnabled = emu_mouse;
+  pointing_drv.composite.hwMouseEnabled = hw_mouse;
+  pointing_drv.composite.init();
+
+  mouse_emu = &pointing_drv;
+  return &pointing_drv;
 }
 
 
 void enable_xbox_hw_mouse(bool en)
 {
-  mouse_emu_drv.hwMouseEnabled = en;
-  stg_pnt.mouseEnabled = (mouse_emu_drv.emuDriverEnabled && (mouse_emu_drv.emuCursorEnabled || mouse_emu_drv.emuButtonsEnabled)) ||
-                         mouse_emu_drv.hwMouseEnabled;
+  pointing_drv.composite.hwMouseEnabled = en;
+  pointing_drv.composite.updateStgMouseEnabled();
 }
 
 
-bool is_xbox_hw_mouse_enabled() { return mouse_emu_drv.hwMouseEnabled; }
+bool is_xbox_hw_mouse_enabled() { return pointing_drv.composite.hwMouseEnabled; }
 
 
 bool gameinput_is_keyboard_connected() { return gameinput::has_input_device_of_kind(GameInputKindKeyboard); }
@@ -91,8 +95,7 @@ bool gameinput_is_mouse_connected() { return gameinput::has_input_device_of_kind
 
 void enable_xbox_emulated_mouse(bool cursor, bool buttons)
 {
-  mouse_emu_drv.emuCursorEnabled = cursor;
-  mouse_emu_drv.emuButtonsEnabled = buttons;
-  stg_pnt.mouseEnabled = (mouse_emu_drv.emuDriverEnabled && (mouse_emu_drv.emuCursorEnabled || mouse_emu_drv.emuButtonsEnabled)) ||
-                         mouse_emu_drv.hwMouseEnabled;
+  pointing_drv.composite.emuMouse.cursorEnabled = cursor;
+  pointing_drv.composite.emuMouse.buttonsEnabled = buttons;
+  pointing_drv.composite.updateStgMouseEnabled();
 }

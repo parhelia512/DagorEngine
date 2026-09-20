@@ -14,9 +14,11 @@
 #include <perfMon/dag_statDrv.h>
 #include <shaders/dag_shaderBlock.h>
 #include <util/dag_convar.h>
+#include <util/dag_threadPool.h>
+#include <memory/dag_mem.h>
 
 #include <render/renderEvent.h>
-#include <render/world/cameraInCamera.h>
+#include <render/cameraInCamera/cameraInCamera.h>
 #include <render/world/frameGraphHelpers.h>
 #include <render/world/overridden_params.h>
 
@@ -36,6 +38,120 @@ CONSOLE_INT_VAL("render", volfog_force_invalidate, 0, 0, 2); // 0 - off, 1 - inv
 // defines bbox around camera that limit dynamic objects passed into dynamic light shadow updates
 static constexpr float DEFAULT_LIGHTS_SHADOW_DYN_OBJECTS_UPDATE_RANGE = 5;
 CONSOLE_FLOAT_VAL("render", lights_shadow_dyn_objects_update_range, DEFAULT_LIGHTS_SHADOW_DYN_OBJECTS_UPDATE_RANGE);
+CONSOLE_BOOL_VAL("render", async_scene_shadow_ri, true);
+
+static void cull_scene_shadow_ri_view(RiGenVisibility *vis, mat44f_cref glob_tm, const Point3 &light_pos, bool dynamic_casters)
+{
+  rendinst::setRIGenVisibilityRendering(vis,
+    dynamic_casters ? rendinst::VisibilityRenderingFlag::Dynamic : rendinst::VisibilityRenderingFlag::Static);
+  rendinst::prepareRIGenExtraVisibility(glob_tm, light_pos, *vis, false, nullptr);
+  if (!dynamic_casters) // the dynamic casters pass draws riex only
+    rendinst::prepareRIGenVisibility(Frustum(glob_tm), light_pos, vis, false, nullptr);
+}
+
+struct SceneShadowRiCullJob final : public cpujobs::IJob
+{
+  mat44f globTm;
+  Point3 lightPos;
+  RiGenVisibility *visibility = nullptr;
+  bool dynamicCasters = false;
+
+  const char *getJobName(bool &) const override { return DAPROFILER_STRING("sceneShadowRiVisibility"); }
+  void doJob() override { cull_scene_shadow_ri_view(visibility, globTm, lightPos, dynamicCasters); }
+};
+static constexpr int SCENE_SHADOW_RI_CULL_JOBS = 8;
+static carray<SceneShadowRiCullJob, SCENE_SHADOW_RI_CULL_JOBS> scene_shadow_ri_cull_jobs;
+
+static RiGenVisibility *take_scene_shadow_ri_visibility(int update_index,
+  int view_index,
+  const dynamic_shadow_render::FrameUpdates &updates,
+  const dynamic_shadow_render::FrameVector<int> &slot_map)
+{
+  if (update_index < 0 || update_index >= (int)slot_map.size() || update_index >= (int)updates.size() || slot_map[update_index] < 0 ||
+      view_index < 0 || view_index >= updates[update_index].numViews)
+    return nullptr;
+  TIME_PROFILE(wait_scene_shadow_ri_visibility);
+  auto &job = scene_shadow_ri_cull_jobs[slot_map[update_index] + view_index];
+  threadpool::wait(&job, 0, threadpool::PRIO_NORMAL);
+  return job.visibility;
+}
+
+void wait_scene_shadow_ri_cull_jobs()
+{
+  for (auto &job : scene_shadow_ri_cull_jobs)
+    threadpool::wait(&job);
+}
+
+void close_scene_shadow_ri_visibility()
+{
+  wait_scene_shadow_ri_cull_jobs();
+  for (auto &job : scene_shadow_ri_cull_jobs)
+    if (job.visibility)
+      rendinst::destroyRIGenVisibility(eastl::exchange(job.visibility, nullptr));
+}
+
+void shrink_scene_shadow_ri_visibility()
+{
+  wait_scene_shadow_ri_cull_jobs();
+  for (auto &job : scene_shadow_ri_cull_jobs)
+    if (job.visibility)
+      rendinst::shrinkRIGenVisibility(job.visibility);
+}
+
+static int start_scene_shadow_ri_cull_jobs(const dynamic_shadow_render::FrameUpdates &updates,
+  dynamic_shadow_render::FrameVector<int> &slot_map,
+  bool dynamic_casters,
+  int first_slot,
+  bool enabled)
+{
+  slot_map.assign(updates.size(), -1);
+  if (!enabled)
+    return first_slot;
+
+  int nextSlot = first_slot;
+  for (int i = 0; i < updates.size(); ++i)
+  {
+    const auto &upd = updates[i];
+    // GPU objects need a gpu objects cascade on the visibility, only the shared one has it
+    const bool needsGpuObjects = !dynamic_casters && upd.renderGPUObjects != DynamicShadowRenderGPUObjects::NO;
+    if (needsGpuObjects || nextSlot + upd.numViews > SCENE_SHADOW_RI_CULL_JOBS)
+      continue;
+    slot_map[i] = nextSlot;
+    for (int v = 0; v < upd.numViews; ++v, ++nextSlot) // nextSlot increase [we start jobs for views]
+    {
+      auto &job = scene_shadow_ri_cull_jobs[nextSlot];
+      threadpool::wait(&job); // a job from a frame whose render node did not run may still be pending
+      if (!job.visibility)
+        job.visibility = rendinst::createRIGenVisibility(midmem);
+      job.dynamicCasters = dynamic_casters;
+      v_mat44_mul(job.globTm, upd.proj, upd.views[v].view);
+      v_stu_p3(&job.lightPos.x, upd.views[v].invView.col3);
+      threadpool::add(&job, threadpool::PRIO_NORMAL, false);
+    }
+  }
+  return nextSlot;
+}
+
+void prepare_scene_shadows_in_lights_job(WorldRenderer &wr, vec3f view_pos, mat44f_cref globtm, float hk)
+{
+  if (!dynamic_lights.get() || wr.canChangeAltitudeUnexpectedly)
+    return;
+
+  vec4f dynRange = v_splats(lights_shadow_dyn_objects_update_range);
+  bbox3f dynBox = {v_sub(view_pos, dynRange), v_add(view_pos, dynRange)};
+  Point3 viewPos;
+  v_stu_p3(&viewPos.x, view_pos);
+
+  SceneShadowRenderData &renderData = wr.sceneShadowRenderData;
+  wr.lights.framePrepareShadows(renderData.volumeData, viewPos, globtm, hk, make_span_const(&dynBox, 1), true);
+
+  TIME_PROFILE(start_scene_shadow_ri_cull_jobs);
+  const bool async = async_scene_shadow_ri.get() && !wr.sceneShadowRiGpuObjectsPending;
+  int nextSlot = start_scene_shadow_ri_cull_jobs(renderData.volumeData.staticUpdates, renderData.staticRiSlots, false, 0, async);
+  nextSlot = start_scene_shadow_ri_cull_jobs(renderData.volumeData.dynamicUpdates, renderData.dynamicRiSlots, true, nextSlot, async);
+  if (nextSlot > 0)
+    threadpool::wake_up_all();
+}
 
 dafg::NodeHandle makePrepareLightsNode()
 {
@@ -72,12 +188,13 @@ eastl::array<dafg::NodeHandle, 2> makeSceneShadowPassNodes(const DataBlock *leve
     registry.orderMeAfter("prepare_lights_node");
     registry.requestState().setFrameBlock("global_frame");
 
-    auto cameraHndl = registry.readBlob<CameraParams>("current_camera").handle();
-    auto volumesHndl = registry.createBlob<dynamic_shadow_render::VolumesVector>("scene_shadow_volumes_to_render").handle();
-    auto updatesHndl = registry.createBlob<dynamic_shadow_render::FrameUpdates>("scene_shadow_updates").handle();
+    auto renderDataHndl = registry.createBlob<SceneShadowRenderData>("scene_shadow_render_data").handle();
 
-    return [cameraHndl, volumesHndl, updatesHndl] {
+    return [renderDataHndl](const dafg::multiplexing::Index multiplex_index) {
       auto &wr = *static_cast<WorldRenderer *>(get_world_renderer());
+
+      SceneShadowRenderData &renderData = renderDataHndl.ref();
+      renderData.clear();
 
       // May change every frame, therefore no node recreation
       if (wr.canChangeAltitudeUnexpectedly)
@@ -90,19 +207,10 @@ eastl::array<dafg::NodeHandle, 2> makeSceneShadowPassNodes(const DataBlock *leve
         return;
       }
 
-      const auto &camera = cameraHndl.ref();
-      auto &volumesToRender = volumesHndl.ref();
-      auto &updates = updatesHndl.ref();
+      if (multiplex_index != dafg::multiplexing::Index{})
+        return;
 
-      vec4f vpos = v_ldu_p3(camera.viewItm[3]);
-      vec4f dynRange = v_splats(lights_shadow_dyn_objects_update_range);
-      bbox3f dynBox = {v_sub(vpos, dynRange), v_add(vpos, dynRange)};
-
-      mat44f globTm;
-      v_mat44_make_from_44cu(globTm, &camera.jitterGlobtm._11);
-
-      wr.lights.framePrepareShadows(volumesToRender, camera.viewItm.getcol(3), (mat44f_cref)camera.jitterGlobtm, camera.jitterPersp.hk,
-        make_span_const(&dynBox, 1), &updates);
+      renderData = eastl::move(wr.sceneShadowRenderData);
     };
   });
 
@@ -114,49 +222,68 @@ eastl::array<dafg::NodeHandle, 2> makeSceneShadowPassNodes(const DataBlock *leve
     registry.createBlob<OrderingToken>("dynamic_lights_shadow_buffers_ready_token");
 
     auto cameraHndl = registry.readBlob<CameraParams>("current_camera").handle();
-    auto volumesHndl = registry.readBlob<dynamic_shadow_render::VolumesVector>("scene_shadow_volumes_to_render").handle();
+    auto renderDataHndl = registry.readBlob<SceneShadowRenderData>("scene_shadow_render_data").handle();
 
     auto *wr = static_cast<WorldRenderer *>(get_world_renderer());
     if (wr->shadowRenderExtender)
       wr->shadowRenderExtender->declareAll(registry);
 
-    return [wr, cameraHndl, volumesHndl, rendinstDepthSceneBlockId = ShaderGlobal::getBlockId("rendinst_depth_scene")] {
+    return [wr, cameraHndl, renderDataHndl, rendinstDepthSceneBlockId = ShaderGlobal::getBlockId("rendinst_depth_scene")] {
       const auto &camera = cameraHndl.ref();
-      const auto &volumesToRender = volumesHndl.ref();
+      const SceneShadowRenderData &renderData = renderDataHndl.ref();
+      const Point3 dynCameraPos = camera.viewItm.getcol(3);
 
       wr->lights.frameRenderShadows(
-        volumesToRender,
-        [wr, rendinstDepthSceneBlockId](mat44f_cref globTm, mat44f_cref /*projTm*/, const TMatrix &viewItm, int updateIndex,
-          int viewIndex, DynamicShadowRenderGPUObjects render_gpu_objects) {
+        renderData.volumeData,
+        [&](mat44f_cref globTm, mat44f_cref /*projTm*/, const TMatrix &viewItm, int updateIndex, int viewIndex,
+          DynamicShadowRenderGPUObjects render_gpu_objects) {
           Point3 cameraPos = viewItm.getcol(3);
+          RiGenVisibility *vis =
+            take_scene_shadow_ri_visibility(updateIndex, viewIndex, renderData.volumeData.staticUpdates, renderData.staticRiSlots);
+          if (!vis) // synchronous path
           {
-            // Added culling here because renderRendinst no longer uses the rendinst::renderRIGen
-            // function with built in visibility.
-            // Also forShadow is false, because it's rendered with depth flag, not shadow.
+            vis = wr->rendinst_dynamic_shadow_visibility;
             SCENE_LAYER_GUARD(rendinstDepthSceneBlockId);
-            rendinst::prepareRIGenExtraVisibility(globTm, cameraPos, *wr->rendinst_dynamic_shadow_visibility, false, nullptr);
-            rendinst::prepareRIGenVisibility(globTm, cameraPos, wr->rendinst_dynamic_shadow_visibility, false, nullptr);
+            cull_scene_shadow_ri_view(vis, globTm, cameraPos, false);
           }
           if (render_gpu_objects == DynamicShadowRenderGPUObjects::NO)
-            rendinst::gpuobjects::clear_from_visibility(wr->rendinst_dynamic_shadow_visibility);
+            rendinst::gpuobjects::clear_from_visibility(vis);
           else
-            rendinst::render::before_draw(rendinst::RenderPass::Depth, wr->rendinst_dynamic_shadow_visibility, globTm, nullptr);
+            rendinst::render::before_draw(rendinst::RenderPass::Depth, vis, globTm, nullptr);
 
-          wr->renderStaticSceneOpaque(RENDER_DYNAMIC_SHADOW, cameraPos, viewItm, globTm);
+          wr->renderStaticSceneOpaque(RENDER_DYNAMIC_SHADOW, cameraPos, viewItm, globTm, vis);
 
           if (wr->shadowRenderExtender && updateIndex != -1 && viewIndex != -1)
             wr->shadowRenderExtender->executeAll(updateIndex, viewIndex);
         },
-        [wr, &camera](const TMatrix &view_itm, const mat44f &view_tm, const mat44f &proj_tm) {
+        [&](const TMatrix &view_itm, const mat44f &view_tm, const mat44f &proj_tm, int updateIndex, int viewIndex) {
           alignas(16) TMatrix viewTm;
           v_mat_43ca_from_mat44(viewTm.m[0], view_tm);
 
           alignas(16) TMatrix4 projTm;
           (mat44f &)projTm = proj_tm;
 
+          {
+            RiGenVisibility *vis =
+              take_scene_shadow_ri_visibility(updateIndex, viewIndex, renderData.volumeData.dynamicUpdates, renderData.dynamicRiSlots);
+            SCENE_LAYER_GUARD(rendinstDepthSceneBlockId);
+            if (!vis) // synchronous path
+            {
+              vis = wr->rendinst_dynamic_shadow_visibility;
+              mat44f globTm;
+              v_mat44_mul(globTm, proj_tm, view_tm);
+              cull_scene_shadow_ri_view(vis, globTm, view_itm.getcol(3), true);
+            }
+            rendinst::gpuobjects::clear_from_visibility(vis);
+            rendinst::render::renderRIGen(rendinst::RenderPass::Depth, vis, view_itm, rendinst::LayerFlag::Opaque,
+              rendinst::OptimizeDepthPass::No);
+          }
+
           ScopeFrustumPlanesShaderVars scopedFrustumPlaneVars;
-          wr->renderDynamicOpaque(RENDER_DYNAMIC_SHADOW, view_itm, viewTm, projTm, camera.viewItm.getcol(3));
+          wr->renderDynamicOpaque(RENDER_DYNAMIC_SHADOW, view_itm, viewTm, projTm, dynCameraPos);
         });
+
+      rendinst::setRIGenVisibilityRendering(wr->rendinst_dynamic_shadow_visibility, rendinst::VisibilityRenderingFlag::All);
     };
   });
 
@@ -363,8 +490,6 @@ eastl::array<dafg::NodeHandle, 10> makeVolumetricLightsNodes()
         smpInfo.filter_mode = d3d::FilterMode::Point;
         registry.create("volfog_hist_far_downsampled_depth_sampler_2").blob<d3d::SamplerHandle>(d3d::request_sampler(smpInfo));
       }
-
-      return []() {};
     });
 
   auto volfog_df_raymarch_node =
@@ -451,10 +576,6 @@ eastl::array<dafg::NodeHandle, 10> makeVolumetricLightsNodes()
         .bindToShaderVar("downsampled_far_depth_tex_samplerstate");
 
       bindShaderVar(registry, "downsampled_shadows", "downsampled_shadows").optional();
-      registry.read("downsampled_shadows_sampler")
-        .blob<d3d::SamplerHandle>()
-        .bindToShaderVar("downsampled_shadows_samplerstate")
-        .optional();
 
       bindShaderVar(registry, "fom_shadows_sin", "fom_shadows_sin").optional();
       bindShaderVar(registry, "fom_shadows_cos", "fom_shadows_cos").optional();

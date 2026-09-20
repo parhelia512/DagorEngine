@@ -111,15 +111,8 @@ public:
 
   void setDefNodeVis();
 
-  enum GeomObjRayTrayceFlags
-  {
-    TRACE_USE_NODEVIS = 1 << 0,
-    TRACE_INVISIBLE = 1 << 1,
-  };
-
   StaticSceneRayTracer *getRayTracer();
   bool reloadRayTracer();
-  bool shadowRayHitTest(const Point3 &p, const Point3 &dir, real maxt, int trace_flags = 0);
   bool traceRay(const Point3 &p, const Point3 &dir, real &maxt, Point3 *norm);
   bool hasCollision();
 

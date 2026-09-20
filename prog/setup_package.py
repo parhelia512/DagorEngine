@@ -103,7 +103,7 @@ folder {{
 
 def setup_package(libsListOrPath=None, gamelibs=None, basePath=None, dngLibsPath=None, gamelibsBasePath=None,
   vromfsOutputPath=None, vromfsName=None, templateOutputPath=None, dasInitPath=None, jamPath=None, jamPathAot=None, shadersPath=None,
-  forTools=False):
+  forTools=False, gen2=False):
 
   if libsListOrPath is None or basePath is None or dngLibsPath is None:
     print("libsListOrPath, basePath and dngLibsPath is required. \n  Usage: setup_package(libsListOrPath=, basePath=, dngLibsPath=)")
@@ -135,6 +135,8 @@ def setup_package(libsListOrPath=None, gamelibs=None, basePath=None, dngLibsPath
   PYTHON_LIKE_CODEGEN_COMMENT = "\n#THIS FILE CREATED BY CODEGEN, DON'T CHANGE THIS!!! USE setup_libs.py INSTEAD!!!\n\n"
 
   dasInit = open(dasInitPath, 'w')
+  if gen2:
+    dasInit.write("options gen2\n")
   dasInit.write(C_LIKE_CODEGEN_COMMENT)
 
   vromfsOutput = jam = jamAot = shaders = templateOutput = None
@@ -175,7 +177,26 @@ def setup_package(libsListOrPath=None, gamelibs=None, basePath=None, dngLibsPath
   dasInitRequires = dngRequires + gameRequires
   dasInitLoads = dngLoads + gameLoads
   varOrLet = "var" if len(dasInitLoads) else "let"
-  dasInit.write(
+  if gen2:
+    dasInit.write(
+f'''
+options no_aot = true
+{dasInitRequires}
+def load_libs() : bool {{
+  {varOrLet} ok = true
+{dasInitLoads}
+  return ok
+}}
+
+[export]
+def test_all {{
+  let ok = load_libs()
+  assert(ok)
+}}
+
+''')
+  else:
+    dasInit.write(
 f'''
 options no_aot = true
 {dasInitRequires}

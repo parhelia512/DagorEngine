@@ -1,10 +1,7 @@
 // Copyright (C) Gaijin Games KFT.  All rights reserved.
 #pragma once
 
-#include <EASTL/fixed_vector.h>
-#include <free_list_utils.h>
-#include <value_range.h>
-#include <drv/3d/dag_resourceTag.h>
+#include "debug/names.h"
 
 #if _TARGET_XBOX
 #define REPORT_HEAP_INFO 1
@@ -24,6 +21,12 @@
 #include "resource_manager/buffer_components.h"
 #include "resource_manager/rtx_components.h"
 
+#include <value_range.h>
+#include <drv/3d/dag_resourceTag.h>
+
+#include <EASTL/fixed_vector.h>
+
+
 struct ResourceDumpTexture;
 struct ResourceDumpBuffer;
 struct ResourceDumpRayTrace;
@@ -33,6 +36,8 @@ namespace drv3d_dx12
 {
 struct ScratchBuffer
 {
+  static constexpr char debug_name[] = "ScratchBuffer";
+
   ID3D12Resource *buffer = nullptr;
   size_t offset = 0;
 
@@ -127,6 +132,21 @@ protected:
   void destroyTextures(eastl::span<Image *> textures, frontend::BindlessManager &bindless_manager);
 };
 
+/// d3d user heap handles are indices into the alias heap table, biased by one, because index zero
+/// would be a nullptr and that means "no heap" to d3d.
+inline ::ResourceHeap *make_user_heap_handle(uintptr_t index) { return reinterpret_cast<::ResourceHeap *>(index + 1); }
+inline uintptr_t user_heap_handle_to_index(const ::ResourceHeap *handle) { return reinterpret_cast<uintptr_t>(handle) - 1; }
+
+/// Index of the handle that Device::newUserHeap hands out when the device is ill and no heap was
+/// created. It is not a nullptr, so the caller does not walk into its out of memory path, and the
+/// alias heap table can never grow far enough to contain it. The functions that act on a heap test
+/// for it and refuse: placing a buffer or a texture, mapping tiles and freeing the heap.
+/// getUserHeapMemory is the exception, it answers with an empty memory range for every handle it can
+/// not resolve, and its only caller tests the handle before it asks.
+inline constexpr uintptr_t ill_device_user_heap_index = 0xFFFFFFFE;
+inline ::ResourceHeap *make_ill_device_user_heap_handle() { return make_user_heap_handle(ill_device_user_heap_index); }
+inline bool is_ill_device_user_heap_handle(const ::ResourceHeap *handle) { return make_ill_device_user_heap_handle() == handle; }
+
 class AliasHeapProvider : public TextureImageFactory
 {
   using BaseType = TextureImageFactory;
@@ -213,12 +233,24 @@ protected:
   }
 
 public:
-  ::ResourceHeap *newUserHeap(DXGIAdapter *adapter, Device &device, ::ResourceHeapGroup *group, size_t size,
+  using UserHeapResult = dag::Expected<::ResourceHeap *, MemoryAllocationError>;
+
+  /// E_UNEXPECTED means the allocation failed and the device is ill, so the failure must not be
+  /// read as an out of memory, see the sentinel handling in Device::newUserHeap.
+  UserHeapResult newUserHeap(DXGIAdapter *adapter, Device &device, ::ResourceHeapGroup *group, size_t size,
     ResourceHeapCreateFlags flags, ResourceTagType tag);
   // assumes mutex is locked
   void freeUserHeap(ID3D12Device *device, ::ResourceHeap *ptr);
-  ResourceAllocationProperties getResourceAllocationProperties(ID3D12Device *device, const ResourceDescription &desc);
-  ImageCreateResult placeTextureInHeap(DXGIAdapter *adapter, ID3D12Device *device, ::ResourceHeap *heap,
+  using ResourceAllocationPropertiesResult = dag::Expected<ResourceAllocationProperties, MemoryAllocationError>;
+
+  /// Fails with E_INVALIDARG when the runtime rejects the description, no allocation is attempted.
+  ResourceAllocationPropertiesResult getResourceAllocationProperties(ID3D12Device *device, const ResourceDescription &desc);
+  /// How placeTextureInHeap, placeBufferInHeap and aliasTexture classify a failure: E_INVALIDARG for
+  /// a request the caller got wrong, like a heap handle the table does not know, E_UNEXPECTED for the
+  /// handle of an ill device, and the HRESULT of the call that failed for a resource creation.
+  using ImageCreateResultOrError = dag::Expected<ImageCreateResult, MemoryAllocationError>;
+
+  ImageCreateResultOrError placeTextureInHeap(DXGIAdapter *adapter, ID3D12Device *device, ::ResourceHeap *heap,
     const ResourceDescription &desc, size_t offset, const ResourceAllocationProperties &alloc_info, const char *name);
   ResourceHeapGroupProperties getResourceHeapGroupProperties(::ResourceHeapGroup *heap_group);
 
@@ -229,11 +261,14 @@ protected:
   void processAutoFree();
 
 public:
-  BufferState placeBufferInHeap(DXGIAdapter *adapter, ID3D12Device *device, ::ResourceHeap *heap, const ResourceDescription &desc,
-    size_t offset, const ResourceAllocationProperties &alloc_info, const char *name);
+  /// Fails as described on ImageCreateResultOrError.
+  BufferAllocationResult placeBufferInHeap(DXGIAdapter *adapter, ID3D12Device *device, ::ResourceHeap *heap,
+    const ResourceDescription &desc, size_t offset, const ResourceAllocationProperties &alloc_info, const char *name);
   bool detachBuffer(const BufferState &buf);
 
-  ImageCreateResult aliasTexture(DXGIAdapter *adapter, ID3D12Device *device, const ImageInfo &ii, Image *base, const char *name);
+  /// Fails as described on ImageCreateResultOrError.
+  ImageCreateResultOrError aliasTexture(DXGIAdapter *adapter, ID3D12Device *device, const ImageInfo &ii, Image *base,
+    const char *name);
 
   void freeUserHeapOnFrameCompletion(::ResourceHeap *ptr)
   {
@@ -268,17 +303,22 @@ protected:
     dag::Vector<BasicBuffer> deletedScratchBuffers;
   };
 
+  using ScratchBufferResult = dag::Expected<ScratchBuffer, MemoryAllocationError>;
+
   struct TempScratchBufferState
   {
     BasicBuffer buffer = {};
     size_t allocatedSpace = 0;
 
-    bool ensureSize(DXGIAdapter *adapter, ID3D12Device *device, size_t size, size_t alignment, ScratchBufferProvider *heap)
+    /// Every way this can fail carries a reason, either from the heap allocator or from the
+    /// resource creation, so there is no plain "did not grow" answer.
+    dag::Expected<void, MemoryAllocationError> ensureSize(DXGIAdapter *adapter, ID3D12Device *device, size_t size, size_t alignment,
+      ScratchBufferProvider *heap)
     {
       auto spaceNeeded = align_value(allocatedSpace, alignment) + size;
       if (spaceNeeded <= buffer.getBufferMemorySize())
       {
-        return true;
+        return {};
       }
       // default to times 2 so we stop to realloc at some point
       auto nextSize = max<size_t>(scartch_buffer_min_size, buffer.getBufferMemorySize() * 2);
@@ -316,53 +356,50 @@ protected:
       allocInfo.Alignment = desc.Alignment;
 
       auto memoryProperties = heap->getScratchBufferHeapProperties();
-      auto allocationResult = heap->allocate(adapter, device, memoryProperties, allocInfo, {});
-      if (!allocationResult.has_value())
-      {
-        return false;
-      }
+      return heap->allocate(adapter, device, memoryProperties, allocInfo, {})
+        .and_then([&, this](auto &&memory) -> dag::Expected<void, MemoryAllocationError> {
+          auto errorCode = buffer.create(device, desc, memory, D3D12_RESOURCE_STATE_INITIAL_BUFFER_STATE, false,
+            debug::make_pool_object_name(ScratchBuffer::debug_name));
 
-      auto &memory = allocationResult.value();
+          allocatedSpace = 0;
+          if (DX12_CHECK_FAIL(errorCode))
+          {
+            heap->free(memory);
+            return unexpected_memory_allocation_error(errorCode);
+          }
 
-      auto errorCode = buffer.create(device, desc, memory, D3D12_RESOURCE_STATE_INITIAL_BUFFER_STATE, false);
+          heap->recordScratchBufferAllocated(desc.Width);
+          heap->updateMemoryRangeUse(memory, ScratchBufferReference{buffer.getResourcePtr()});
 
-      allocatedSpace = 0;
-      if (DX12_CHECK_OK(errorCode))
-      {
-        heap->recordScratchBufferAllocated(desc.Width);
-        heap->updateMemoryRangeUse(memory, ScratchBufferReference{buffer.getResourcePtr()});
-      }
-      else
-      {
-        heap->free(memory);
-      }
-
-      return DX12_CHECK_OK(errorCode);
+          return {};
+        });
     }
 
-    ScratchBuffer getSpace(DXGIAdapter *adapter, ID3D12Device *device, size_t size, size_t alignment, ScratchBufferProvider *heap)
+    ScratchBufferResult getSpace(DXGIAdapter *adapter, ID3D12Device *device, size_t size, size_t alignment,
+      ScratchBufferProvider *heap)
     {
-      ScratchBuffer result{};
-      ensureSize(adapter, device, size, alignment, heap);
-      if (buffer)
-      {
+      return ensureSize(adapter, device, size, alignment, heap).and_then([&, this]() -> ScratchBufferResult {
+        if (!buffer)
+        {
+          return unexpected_memory_allocation_error(E_FAIL);
+        }
+
+        ScratchBuffer result{};
         result.buffer = buffer.getResourcePtr();
         result.offset = align_value(allocatedSpace, alignment);
         // keep allocatedSpace as it is only used for one operation and can be reused on the next
-      }
-      return result;
+        return result;
+      });
     }
 
-    ScratchBuffer getPersistentSpace(DXGIAdapter *adapter, ID3D12Device *device, size_t size, size_t alignment,
+    ScratchBufferResult getPersistentSpace(DXGIAdapter *adapter, ID3D12Device *device, size_t size, size_t alignment,
       ScratchBufferProvider *heap)
     {
-      auto space = getSpace(adapter, device, size, alignment, heap);
-      if (space)
-      {
+      return getSpace(adapter, device, size, alignment, heap).transform([&, this](auto space) {
         // alter allocatedSpace to turn this transient space into persistent
         allocatedSpace = space.offset + size;
-      }
-      return space;
+        return space;
+      });
     }
 
     void reset(ScratchBufferProvider *heap)
@@ -404,41 +441,60 @@ protected:
     return {desc, allocInfo};
   }
 
-  BasicBuffer allocateNewScratchBuffer(DXGIAdapter *adapter, ID3D12Device *device, uint32_t size, AllocationFlags allocation_flags,
-    ScratchBufferWrapper::AccessToken &scratchBufferAccess)
+  /// Empty for the two ordinary answers defragmentation has to live with: no memory is left for a
+  /// second scratch buffer, or the attempt was refused because the defragmentation generation moved
+  /// on. A failed resource creation is an error.
+  dag::Expected<eastl::optional<BasicBuffer>, MemoryAllocationError> allocateNewScratchBuffer(DXGIAdapter *adapter,
+    ID3D12Device *device, uint32_t size, AllocationFlags allocation_flags)
   {
     const auto [desc, allocInfo] = get_scratch_buffer_desc_alloc_info(size);
 
     auto memoryProperties =
       getProperties(D3D12_RESOURCE_FLAG_NONE, DeviceMemoryClass::DEVICE_RESIDENT_BUFFER, D3D12_DEFAULT_RESOURCE_PLACEMENT_ALIGNMENT);
     auto allocationResult = allocate(adapter, device, memoryProperties, allocInfo, allocation_flags);
-    BasicBuffer newBuffer;
     if (!allocationResult.has_value())
     {
-      return newBuffer;
+      if (is_oom_error_code(allocationResult.error().errorCode) || E_ABORT == allocationResult.error().errorCode)
+      {
+        return eastl::optional<BasicBuffer>{};
+      }
+      return dag::Unexpected{allocationResult.error()};
     }
     auto &memory = allocationResult.value();
 
-    const auto errorCode = newBuffer.create(device, desc, memory, D3D12_RESOURCE_STATE_INITIAL_BUFFER_STATE, false);
-    if (DX12_CHECK_OK(errorCode))
+    BasicBuffer newBuffer;
+    const auto errorCode = newBuffer.create(device, desc, memory, D3D12_RESOURCE_STATE_INITIAL_BUFFER_STATE, false,
+      debug::make_pool_object_name(ScratchBuffer::debug_name));
+    if (DX12_CHECK_FAIL(errorCode))
     {
-      recordScratchBufferAllocated(desc.Width);
-      updateMemoryRangeUse(memory, ScratchBufferReference{scratchBufferAccess->buffer.getResourcePtr()});
-    }
-    else
       free(memory);
-    return newBuffer;
+      return unexpected_memory_allocation_error(errorCode);
+    }
+
+    recordScratchBufferAllocated(desc.Width);
+    // Has to name the buffer this memory belongs to. Defragmentation compares the tag against the
+    // current scratch buffer to decide whether the range can still be moved.
+    updateMemoryRangeUse(memory, ScratchBufferReference{newBuffer.getResourcePtr()});
+    return eastl::optional<BasicBuffer>{eastl::move(newBuffer)};
   }
 
   bool tryMoveScratchBuffer(ScratchBufferWrapper::AccessToken &scratchBufferAccess, DXGIAdapter *adapter, ID3D12Device *device,
-    AllocationFlags allocation_flags)
+    AllocationFlags allocation_flags, HeapID heap_id, bool is_emergency_defragmentation)
   {
-    auto movedBuffer = allocateNewScratchBuffer(adapter, device, scratchBufferAccess->buffer.getBufferMemorySize(), allocation_flags,
-      scratchBufferAccess);
-    if (!movedBuffer)
+    auto allocationResult =
+      allocateNewScratchBuffer(adapter, device, scratchBufferAccess->buffer.getBufferMemorySize(), allocation_flags);
+    if (!allocationResult.has_value())
+    {
+      D3D_ERROR("DX12: Unable to move scratch buffer %p out of heap %u (%u:%u) during %s defragmentation, %s",
+        scratchBufferAccess->buffer.getResourcePtr(), heap_id.raw, heap_id.group, heap_id.index,
+        is_emergency_defragmentation ? "emergency" : "regular", dxgi_error_code_to_string(allocationResult.error().errorCode));
+      return false;
+    }
+    if (!allocationResult.value())
     {
       return false;
     }
+    auto movedBuffer = eastl::move(allocationResult.value().value());
     // queue current buffer for deletion and replace it with the new one
     accessRecodingPendingFrameCompletion<PendingForCompletedFrameData>(
       [=, &scratchBufferAccess](auto &data) { data.deletedScratchBuffers.push_back(eastl::move(scratchBufferAccess->buffer)); });
@@ -462,10 +518,10 @@ protected:
 public:
   // Memory is used for one operation an can be reused by the next (for inter resource copy for
   // example)
-  ScratchBuffer getTempScratchBufferSpace(DXGIAdapter *adapter, Device &device, size_t size, size_t alignment);
+  ScratchBufferResult getTempScratchBufferSpace(DXGIAdapter *adapter, Device &device, size_t size, size_t alignment);
 
   // Memory can be used anytime by multiple distinct operations until the frame has ended.
-  ScratchBuffer getPersistentScratchBufferSpace(DXGIAdapter *adapter, Device &device, size_t size, size_t alignment);
+  ScratchBufferResult getPersistentScratchBufferSpace(DXGIAdapter *adapter, Device &device, size_t size, size_t alignment);
 
   void completeFrameExecution(const CompletedFrameExecutionInfo &info, PendingForCompletedFrameData &data)
   {
@@ -499,28 +555,32 @@ class SamplerDescriptorProvider : public ScratchBufferProvider
 
   using SamplerInfo = SamplerDescriptorAndState;
 
+  using SamplerLookupResult = dag::Expected<dag::Vector<SamplerInfo>::const_iterator, MemoryAllocationError>;
+
   struct State
   {
     dag::Vector<SamplerInfo> samplers;
     DescriptorHeap<SamplerStagingPolicy> descriptors;
 
-    dag::Vector<SamplerInfo>::const_iterator get(ID3D12Device *device, SamplerState state)
+    /// Nothing is stored when the descriptor can not be allocated. Sampler entries live as long as
+    /// the driver does and their index is the handle, so a null descriptor stored here would be
+    /// handed out for the rest of the run.
+    SamplerLookupResult get(ID3D12Device *device, SamplerState state)
     {
       auto ref = eastl::find_if(begin(samplers), end(samplers), [state](auto &info) { return state == info.state; });
-      if (ref == end(samplers))
+      if (ref != end(samplers))
       {
-        D3D12_SAMPLER_DESC desc = state.asDesc();
-        SamplerInfo sampler{descriptors.allocate(device)
-                              .transform([&](auto handle) {
-                                device->CreateSampler(&desc, handle);
-                                return handle;
-                              })
-                              .value_or({}),
-          state};
-
-        ref = samplers.insert(ref, sampler);
+        return dag::Vector<SamplerInfo>::const_iterator{ref};
       }
-      return ref;
+
+      return descriptors.allocate(device)
+        .transform_error([](HRESULT errorCode) { return memory_allocation_error(errorCode); })
+        .transform([&, this](auto descriptor) {
+          D3D12_SAMPLER_DESC desc = state.asDesc();
+          device->CreateSampler(&desc, descriptor);
+
+          return dag::Vector<SamplerInfo>::const_iterator{samplers.insert(ref, SamplerInfo{descriptor, state})};
+        });
     }
   };
   ContainerMutexWrapper<State, OSSpinlock> samplers;
@@ -550,16 +610,20 @@ protected:
 
     auto access = samplers.access();
     access->descriptors.init(setup.device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_SAMPLER));
-    // if we are restoring try to restore all samplers
+    // if we are restoring try to restore all samplers. Entries have to keep their index because it
+    // is the handle the callers hold, so one that can not be restored stays with a null descriptor.
     for (auto &info : access->samplers)
     {
+      auto descriptorResult = access->descriptors.allocate(setup.device);
+      if (!descriptorResult.has_value())
+      {
+        D3D_ERROR("DX12: Unable to restore sampler descriptor, %s", dxgi_error_code_to_string(descriptorResult.error()));
+        info.sampler = {};
+        continue;
+      }
       D3D12_SAMPLER_DESC desc = info.state.asDesc();
-      info.sampler = access->descriptors.allocate(setup.device)
-                       .transform([&](auto handle) {
-                         setup.device->CreateSampler(&desc, handle);
-                         return handle;
-                       })
-                       .value_or({});
+      setup.device->CreateSampler(&desc, descriptorResult.value());
+      info.sampler = descriptorResult.value();
     }
   }
 
@@ -581,14 +645,18 @@ protected:
     // keep sampler list as we can restore it later
   }
 
-  d3d::SamplerHandle createSampler(ID3D12Device *device, SamplerState state)
+  using SamplerHandleResult = dag::Expected<d3d::SamplerHandle, MemoryAllocationError>;
+  using SamplerDescriptorResult = dag::Expected<D3D12_CPU_DESCRIPTOR_HANDLE, MemoryAllocationError>;
+
+  SamplerHandleResult createSampler(ID3D12Device *device, SamplerState state)
   {
     state.normalizeSelf();
 
     auto access = samplers.access();
-    auto ref = access->get(device, state);
-    uint64_t index = ref - begin(access->samplers) + 1;
-    return d3d::SamplerHandle(index);
+    return access->get(device, state).transform([&access](auto ref) {
+      // the handle is the index of the entry, biased by one so that it is never zero
+      return d3d::SamplerHandle(ref - begin(access->samplers) + 1);
+    });
   }
   D3D12_CPU_DESCRIPTOR_HANDLE getSampler(d3d::SamplerHandle handle)
   {
@@ -596,13 +664,12 @@ protected:
     accessSampler(handle, [&descriptor](auto &info) { descriptor = info.sampler; });
     return descriptor;
   }
-  D3D12_CPU_DESCRIPTOR_HANDLE getSampler(ID3D12Device *device, SamplerState state)
+  SamplerDescriptorResult getSampler(ID3D12Device *device, SamplerState state)
   {
     state.normalizeSelf();
 
     auto access = samplers.access();
-    auto ref = access->get(device, state);
-    return ref->sampler;
+    return access->get(device, state).transform([](auto ref) { return ref->sampler; });
   }
   SamplerDescriptorAndState getSamplerInfo(d3d::SamplerHandle handle)
   {
@@ -615,7 +682,7 @@ protected:
 #define DEFRAG_LOGGING_ENABLED 0
 
 template <class... ARG_TYPE>
-void defragLogdbg(bool is_emergency_defragmentation, ARG_TYPE... args)
+void defragLogdbg(bool is_emergency_defragmentation, const ARG_TYPE &...args)
 {
   bool isRegularDefragmentationLogsEnabled = false;
 #if DEFRAG_LOGGING_ENABLED
@@ -626,7 +693,7 @@ void defragLogdbg(bool is_emergency_defragmentation, ARG_TYPE... args)
 }
 
 template <class... ARG_TYPE>
-void defragLogdbg(ARG_TYPE... args)
+void defragLogdbg(const ARG_TYPE &...args)
 {
   defragLogdbg(false, args...);
 }
@@ -1401,14 +1468,14 @@ public:
 
   using BaseType::getDeviceLocalAvailablePoolBudget;
   using BaseType::getDeviceLocalBudget;
+  using BaseType::getDeviceLocalCurrentUsage;
 #if _TARGET_PC_WIN
   using BaseType::getDeviceLocalPhysicalLimit;
 #endif
   using BaseType::getFeatureSet;
   using BaseType::getHostLocalAvailablePoolBudget;
   using BaseType::getHostLocalBudget;
-
-  using BaseType::setTempBufferShrinkThresholdSize;
+  using BaseType::getHostLocalCurrentUsage;
 
   using BaseType::popEvent;
   using BaseType::pushEvent;

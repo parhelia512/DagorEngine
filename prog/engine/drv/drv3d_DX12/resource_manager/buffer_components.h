@@ -8,13 +8,21 @@
 #include "host_shared_components.h"
 #include "heap_suballocator_impl.h"
 
+#include <EASTL/string_view.h>
 #include <EASTL/vector.h>
 #include <debug/dag_log.h>
 #include <generic/dag_expected.h>
+#include <stdio.h>
 
 
 namespace drv3d_dx12::resource_manager
 {
+
+template <size_t N>
+inline eastl::string_view make_buffer_heap_name(char (&name_buffer)[N], uint32_t heap_index)
+{
+  return {name_buffer, static_cast<size_t>(sprintf_s(name_buffer, "Buffer#%u", heap_index))};
+}
 
 class BufferHeap : public PersistentBidirectionalMemoryProvider
 {
@@ -153,19 +161,19 @@ protected:
 
     Heap &getHeap(uint32_t index) { return bufferHeaps[index]; }
 
-    size_t freeBufferHeap(BufferHeap *manager, uint32_t index, const char *name, bool is_heaps_lock_required);
-    size_t freeBufferHeap(BufferHeap *manager, uint32_t index, ValueRange<uint64_t> range, const char *name);
+    size_t freeBufferHeap(BufferHeap *manager, uint32_t index, eastl::string_view name, bool is_heaps_lock_required);
+    size_t freeBufferHeap(BufferHeap *manager, uint32_t index, ValueRange<uint64_t> range, eastl::string_view name);
     BufferHeapAllocationResult createBufferHeapInMemory(BufferHeap *manager, ID3D12Device *device, uint64_t allocation_size,
       D3D12_RESOURCE_FLAGS flags, D3D12_RESOURCE_STATES initial_state, const D3D12_RESOURCE_DESC &desc,
       const ResourceMemory &allocation, ResourceHeapProperties allocatedProperties, bool can_suballocate);
 
     BufferHeapAllocationResult createBufferHeap(BufferHeap *manager, DXGIAdapter *adapter, ID3D12Device *device,
       uint64_t allocation_size, ResourceHeapProperties properties, D3D12_RESOURCE_FLAGS flags, D3D12_RESOURCE_STATES initial_state,
-      const char *name, bool can_suballocate, AllocationFlags allocation_flags = {});
+      eastl::string_view name, bool can_suballocate, AllocationFlags allocation_flags = {});
 
     bool isValidBuffer(const BufferState &buf);
 
-    size_t freeBuffer(BufferHeap *manager, const BufferState &buf, BufferHeap::FreeReason free_reason, const char *name);
+    size_t freeBuffer(BufferHeap *manager, const BufferState &buf, BufferHeap::FreeReason free_reason, eastl::string_view name);
 
     void clear(ResourceMemoryHeapProvider *provider);
 

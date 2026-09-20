@@ -4,17 +4,20 @@
 //
 #pragma once
 
+#include <render/lights/lightsBase.h>
 #include <render/lights/omniLightsManager.h>
 #include <render/lights/spotLightsManager.h>
 #include <render/lights/reallocatableLightsConstBuffer.h>
 #include <render/lights/lightsResources.h>
 #include <render/lights/lightsSorter.h>
+#include <render/lights/lightsVisibilityChecker.h>
 #include <drv/3d/dag_buffers.h>
 #include <math/dag_frustum.h>
 #include <shaders/dag_shaders.h>
+#include <shaders/dag_computeShaders.h>
+#include <shaders/dag_shaderVariableInfo.h>
 #include <3d/dag_resourceTags.h>
-
-class Occlusion;
+#include <EASTL/array.h>
 
 class LightsPartition
 {
@@ -34,35 +37,32 @@ public:
 
   void init(bool use_gpu_partition);
   bool isGPU() const;
-  void executeOmniLightsCPUPartition(const Frustum &frustum, Tab<uint16_t> &lights_inside_plane, Tab<uint16_t> &lights_outside_plane,
-    eastl::bitset<OmniLightsManager::MAX_LIGHTS> *visible_id_bitset, Occlusion *, vec4f znear_plane,
-    float mark_small_lights_as_far_limit = 0, vec3f camera_pos = v_zero(),
-    OmniLightMaskType require_any_mask = OmniLightMaskType::OMNI_LIGHT_MASK_NONE, float cutoff_dist_sq = 0.f) const;
-  void executeOmniLightsCPUPartition(const Frustum &frustum, Tab<uint16_t> &lights_inside_plane, Tab<uint16_t> &lights_outside_plane,
-    Occlusion *, vec4f znear_plane, float mark_small_lights_as_far_limit = 0, vec3f camera_pos = v_zero(),
-    OmniLightMaskType require_any_mask = OmniLightMaskType::OMNI_LIGHT_MASK_NONE, float cutoff_dist_sq = 0.f) const;
-  void executeSpotLightsCPUPartition(const Frustum &frustum, Tab<uint16_t> &lights_inside_plane, Tab<uint16_t> &lights_outside_plane,
-    eastl::bitset<SpotLightsManager::MAX_LIGHTS> *visible_id_bitset, Occlusion *occ, vec4f znear_plane,
-    float mark_small_lights_as_far_limit, vec3f camera_pos, SpotLightMaskType require_any_mask, float cutoff_dist_sq = 0.f) const;
-  void executeSpotLightsCPUPartition(const Frustum &frustum, Tab<uint16_t> &lights_inside_plane, Tab<uint16_t> &lights_outside_plane,
-    eastl::bitset<SpotLightsManager::MAX_LIGHTS> *visible_id_bitset, Occlusion *occ, vec4f znear_plane,
-    SpotLightMaskType require_any_mask, float cutoff_dist_sq = 0.f);
-  void prepareClusteredAndFarOmniLightBuffersCPU(const Frustum &frustum, Occlusion *, vec4f znear_plane,
-    float mark_small_lights_as_far_limit = 0, vec3f camera_pos = v_zero(),
-    OmniLightMaskType require_any_mask = OmniLightMaskType::OMNI_LIGHT_MASK_NONE, float cutoff_dist_sq = 0.f);
-  void prepareClusteredAndFarSpotLightBuffersCPU(const Frustum &frustum, Occlusion *occ, vec4f znear_plane,
-    float mark_small_lights_as_far_limit, vec3f camera_pos, SpotLightMaskType require_any_mask, float cutoff_dist_sq = 0.f);
+  bool isGPUSortAvailable() const;
+  struct ExecuteLightsCPUPartitionParams
+  {
+    const LightsVisibilityChecker &checker;
+    Tab<uint16_t> &omniLightsFar;
+    Tab<uint16_t> &omniLightsClustered;
+    Tab<uint16_t> &spotLightsFar;
+    Tab<uint16_t> &spotLightsClustered;
+  };
+  void executeLightsCPUPartition(const ExecuteLightsCPUPartitionParams &params) const;
 
-  void executeLightsGPUPartition(const Frustum &frustum, vec4f znear_plane, float mark_small_lights_as_far_limit, vec3f camera_pos,
-    OmniLightMaskType omni_require_any_mask, SpotLightMaskType spot_require_any_mask, float cutoff_dist_sq = 0.f);
+  void prepareClusteredAndFarLightBuffersCPU(const LightsVisibilityChecker &checker);
+  void prepareClusteredAndFarLightBuffersGPU(const LightsVisibilityChecker::TestParameters &test_params, float zfar);
+
+  void executeLightsGPUPartition(const LightsVisibilityChecker::TestParameters &test_params, float zfar, bool update_variables = true);
 
   void close();
 
-  void updateBuffersForVisibleFarLights();
-  void updateBuffersForVisibleClusteredLights(int omni_count, int spot_count);
+  void updateBuffersForVisibleFarLights(LightBufferSlot buffer_slot);
+  void updateBuffersForVisibleClusteredLights(LightBufferSlot buffer_slot, int omni_count, int spot_count);
 
   const Tab<uint16_t> &getVisibleClusteredSpotLightsIds() const;
   const Tab<uint16_t> &getVisibleClusteredOmniLightsIds() const;
+
+  const Tab<uint16_t> &getVisibleFarSpotLightsIds() const;
+  const Tab<uint16_t> &getVisibleFarOmniLightsIds() const;
 
   const Tab<RenderOmniLight> &getRenderOmniLightsFar() const;
   const Tab<RenderSpotLight> &getRenderSpotLightsFar() const;
@@ -70,42 +70,33 @@ public:
   const Tab<vec4f> &getVisibleClusteredSpotLightsBounds() const;
   const Tab<vec4f> &getVisibleClusteredOmniLightsBounds() const;
 
-  const OmniLightsCB &getVisibleClusteredOmniLightsCB() const;
-  const OmniLightsCB &getVisibleFarOmniLightsCB() const;
-  const SpotLightsCB &getVisibleClusteredSpotLightsCB() const;
-  const SpotLightsCB &getVisibleFarSpotLightsCB() const;
+  const OmniLightsCB &getVisibleClusteredOmniLightsCB(LightBufferSlot buffer_slot) const;
+  const OmniLightsCB &getVisibleFarOmniLightsCB(LightBufferSlot buffer_slot) const;
+  const SpotLightsCB &getVisibleClusteredSpotLightsCB(LightBufferSlot buffer_slot) const;
+  const SpotLightsCB &getVisibleFarSpotLightsCB(LightBufferSlot buffer_slot) const;
 
   const UniqueBuf &getVisibleClusteredSpotLightsMasksSB() const;
   const UniqueBuf &getVisibleClusteredOmniLightsMasksSB() const;
 
-  const UniqueBuf &getVisibleClusteredOmniLightsIdsBuffer() const;
-  const UniqueBuf &getVisibleClusteredOmniLightsCountBuffer() const;
-
-  const UniqueBuf &getVisibleClusteredSpotLightsIdsBuffer() const;
-  const UniqueBuf &getVisibleClusteredSpotLightsCountBuffer() const;
-
-  const UniqueBuf &getVisibleFarOmniLightsIdsBuffer() const;
-  const UniqueBuf &getVisibleFarOmniLightsCountBuffer() const;
-
-  const UniqueBuf &getVisibleFarSpotLightsIdsBuffer() const;
-  const UniqueBuf &getVisibleFarSpotLightsCountBuffer() const;
-
-  bool isLightVisible(uint32_t id) const;
+  const UniqueBuf &getVisibleLightsDataBuffer() const;
+  const UniqueBuf &getVisibleLightsCountsBuffer() const;
 
 private:
-  template <typename LightsManager>
-  static void executeLightsCPUPartition(const LightsManager *lights_manager, const Frustum &frustum, Tab<uint16_t> &lights_inside,
-    Tab<uint16_t> &lights_outside, eastl::bitset<LightsManager::MAX_LIGHTS> *visible_id_bitset, Occlusion *occlusion,
-    vec4f znear_plane, float mark_small_lights_as_far_limit, vec3f camera_pos, typename LightsManager::MaskType require_any_mask,
-    float cutoff_dist_sq);
-
-  void trimVisibleLightsIdLists(Tab<uint16_t> &clustered_lights, Tab<uint16_t> &far_lights, int max_clustered_count);
+  static void executeLightsCPUPartition(LightType light_type, int max_index, const LightsVisibilityChecker &checker,
+    Tab<uint16_t> &clustered_lights, Tab<uint16_t> &far_lights);
 
   template <typename LightsManager>
   static void fillDerivativeLightsLists(const LightsManager *lights_manager, const Tab<uint16_t> &clustered_lights_ids,
     const Tab<uint16_t> &far_lights_ids, Tab<typename LightsManager::RenderLight> &clustered_render_lights,
     Tab<typename LightsManager::RenderLight> &far_render_lights, Tab<typename LightsManager::MaskType> &clustered_lights_masks,
     Tab<vec4f> &clustered_lights_bounds, typename LightsManager::MaskType default_mask_type);
+
+  void updatePartitionFrustumUniforms(const Frustum &frustum, vec4f znear_plane, vec3f camera_pos, float zfar);
+
+  void bindPartitionBuffers(const Frustum &frustum, vec4f znear_plane, vec3f camera_pos, float zfar);
+  void unbindPartitionBuffers();
+
+  void handleVisibleLightsIdListsOverflowCPU(Tab<uint16_t> &clustered_lights, Tab<uint16_t> &far_lights, int max_clustered_count);
 
   OmniLightsManager *omniLights;
   SpotLightsManager *spotLights;
@@ -121,9 +112,6 @@ private:
   Tab<uint16_t> visibleFarSpotLightsIds;
   Tab<uint16_t> visibleFarOmniLightsIds;
 
-  eastl::bitset<OmniLightsManager::MAX_LIGHTS> visibleOmniLightsIdSet;
-  eastl::bitset<SpotLightsManager::MAX_LIGHTS> visibleSpotLightsIdSet;
-
   Tab<RenderOmniLight> renderOmniLightsClustered, renderOmniLightsFar;
   Tab<RenderSpotLight> renderSpotLightsClustered, renderSpotLightsFar;
 
@@ -133,26 +121,16 @@ private:
   Tab<vec4f> visibleClusteredSpotLightsBounds;
   Tab<vec4f> visibleClusteredOmniLightsBounds;
 
-  OmniLightsCB visibleClusteredOmniLightsCB, visibleFarOmniLightsCB;
-  SpotLightsCB visibleClusteredSpotLightsCB, visibleFarSpotLightsCB;
+  eastl::array<OmniLightsCB, LIGHTS_BUFFER_SLOTS> visibleClusteredOmniLightsCB, visibleFarOmniLightsCB;
+  eastl::array<SpotLightsCB, LIGHTS_BUFFER_SLOTS> visibleClusteredSpotLightsCB, visibleFarSpotLightsCB;
 
   UniqueBuf visibleClusteredSpotLightsMasksSB;
   UniqueBuf visibleClusteredOmniLightsMasksSB;
 
-  ComputeShader partitionOmniCS;
-  ComputeShader partitionSpotCS;
+  ComputeShader partitionCS;
 
   UniqueBuf frustumPlanesCB;
 
-  UniqueBuf visibleClusteredOmniLightsIdsBuffer;
-  UniqueBuf visibleClusteredOmniLightsCountBuffer;
-
-  UniqueBuf visibleClusteredSpotLightsIdsBuffer;
-  UniqueBuf visibleClusteredSpotLightsCountBuffer;
-
-  UniqueBuf visibleFarOmniLightsIdsBuffer;
-  UniqueBuf visibleFarOmniLightsCountBuffer;
-
-  UniqueBuf visibleFarSpotLightsIdsBuffer;
-  UniqueBuf visibleFarSpotLightsCountBuffer;
+  UniqueBuf visibleLightsDataBuffer;
+  UniqueBuf visibleLightsCountsBuffer;
 };

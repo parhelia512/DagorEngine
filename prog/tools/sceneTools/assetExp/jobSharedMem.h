@@ -24,6 +24,7 @@ struct DabuildJobSharedMem
   bool stripD3Dres;
   bool collapsePacks;
   bool expTex, expRes;
+  int validateAlphaTest;
 
   volatile int cmdGen, respGen;
 

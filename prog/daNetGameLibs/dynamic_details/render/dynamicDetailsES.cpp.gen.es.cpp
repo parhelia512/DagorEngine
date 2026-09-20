@@ -71,9 +71,9 @@ static constexpr ecs::ComponentDesc dynamic_detials_after_reset_es_comps[] =
 };
 static void dynamic_detials_after_reset_es_all_events(const ecs::Event &__restrict evt, const ecs::QueryView &__restrict components)
 {
-  G_FAST_ASSERT(evt.is<AfterDeviceReset>());
+  G_FAST_ASSERT(evt.is<EventAfterDeviceReset>());
   auto comp = components.begin(), compE = components.end(); G_ASSERT(comp!=compE); do
-    dynamic_detials_after_reset_es(static_cast<const AfterDeviceReset&>(evt)
+    dynamic_detials_after_reset_es(static_cast<const EventAfterDeviceReset&>(evt)
         , ECS_RW_COMP(dynamic_detials_after_reset_es_comps, "dynamic_details_mgr", DynamicDetailsTextureManager)
     );
   while (++comp != compE);
@@ -87,7 +87,7 @@ static ecs::EntitySystemDesc dynamic_detials_after_reset_es_es_desc
   empty_span(),
   empty_span(),
   empty_span(),
-  ecs::EventSetBuilder<AfterDeviceReset>::build(),
+  ecs::EventSetBuilder<EventAfterDeviceReset>::build(),
   0
 );
 static constexpr ecs::ComponentDesc create_dynamic_details_ecs_query_comps[] =

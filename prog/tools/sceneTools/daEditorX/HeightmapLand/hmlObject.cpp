@@ -51,6 +51,9 @@
 
 #include <winGuiWrapper/wgw_dialogs.h>
 
+#include <EASTL/string_view.h>
+#include <ska_hash_map/flat_hash_map2.hpp>
+
 using editorcore_extapi::dagGeom;
 using editorcore_extapi::dagInput;
 using editorcore_extapi::dagRender;
@@ -140,6 +143,28 @@ struct TraceSplineCache
   }
 } spline_cache;
 
+static void apply_layer_idx_to_entities(RenderableEditableObject *o, bool use_render_layer = true)
+{
+  if (!HmapLandObjectEditor::doesObjectSupportHiding(*o))
+    return;
+
+  if (LandscapeEntityObject *entityObj = RTTI_cast<LandscapeEntityObject>(o))
+    entityObj->applyLayerIdxToEntity(use_render_layer);
+  else if (SplineObject *spline = RTTI_cast<SplineObject>(o))
+    spline->applyLayerIdxToEntities(use_render_layer);
+  else
+    G_ASSERT(false);
+}
+
+static void apply_object_hide_to_entities(PtrTab<RenderableEditableObject> &objects, bool hide)
+{
+  for (int i = 0; i < objects.size(); ++i)
+  {
+    RenderableEditableObject *o = objects[i];
+    if (o->isHidden())
+      apply_layer_idx_to_entities(o, hide);
+  }
+}
 
 HmapLandObjectEditor::HmapLandObjectEditor() :
   inGizmo(false),
@@ -691,12 +716,12 @@ void HmapLandObjectEditor::render()
       for (int i = 0; i < objects.size(); ++i)
       {
         LandscapeEntityObject *p = RTTI_cast<LandscapeEntityObject>(objects[i]);
-        if (p && !p->getProps().notes.empty())
+        if (p && !p->isHidden() && !p->getProps().notes.empty())
           SplinePointObject::renderPoint(*ptDynBuf, toPoint4(p->getPos(), 1) * gtm, 3 * scale * SplinePointObject::ptScreenRad,
             E3DCOLOR(50, 60, 255));
       }
       for (int i = 0; i < splines.size(); ++i)
-        if (!splines[i]->getProps().notes.empty())
+        if (!splines[i]->isHidden() && !splines[i]->getProps().notes.empty())
           SplinePointObject::renderPoint(*ptDynBuf, toPoint4(splines[i]->points[0]->getPos(), 1) * gtm,
             3 * scale * SplinePointObject::ptScreenRad, E3DCOLOR(50, 160, 255));
 
@@ -861,17 +886,16 @@ void HmapLandObjectEditor::renderGeometry(bool opaque)
 
   ISplineGenService::LayerIndexList loft_layers(0);
   ISplineGenService::LayerIndexList order_layers;
-  Tab<SplineObject *> renderRoadsSplines;
+  renderRoadsSplinesCache.clear();
   if (st_mask & SplineObject::roadsSubtypeMask)
   {
-    renderRoadsSplines.reserve(splines.size());
+    renderRoadsSplinesCache.reserve(splines.size());
     for (auto *s : splines)
       if (s->shouldRenderRoadsGeom(frustum))
       {
         order_layers.set(s->getLayer());
-        renderRoadsSplines.push_back(s);
+        renderRoadsSplinesCache.push_back(s);
       }
-    renderRoadsSplines.shrink_to_fit();
   }
   splSrv->gatherGeneratedGeomOrderLayers(order_layers);
   if (st_mask & SplineObject::splineSubtypeMask)
@@ -880,7 +904,7 @@ void HmapLandObjectEditor::renderGeometry(bool opaque)
   loft_layers.iterate_layers([&](unsigned ll) {
     order_layers.iterate_layers([&](unsigned l) {
       if (ll == 0)
-        for (auto *s : renderRoadsSplines)
+        for (auto *s : renderRoadsSplinesCache)
           if (s->getLayer() == l)
             s->renderRoadsGeom(opaque, frustum);
       splSrv->renderGeneratedGeom(ll, opaque, frustum, l);
@@ -1100,18 +1124,21 @@ void HmapLandObjectEditor::_removeObjects(RenderableEditableObject **obj, int nu
       HmapLandPlugin::self->setApplyModOnHeightBakeSplineEdit(prevApplyHeightbake);
       rebuild_hmap_modif = true;
     }
-    if (remSplines[i]->isClosed())
+    // put() with no operation open runs restore() at once, which would rebuild a spline that is being torn down
+    if (use_undo && remSplines[i]->isClosed())
       getUndoSystem()->put(remSplines[i]->makePointListUndo());
     remSplines[i]->points.clear();
   }
 
   if (use_undo)
   {
+    // removing the seam point drops the closure duplicate too, and re-adding the point alone would leave the spline open,
+    // so record the point list. Points of removed splines need no entry here, their whole list is recorded above
     Tab<SplineObject *> undoPointsListSplines(tmpmem);
-    for (int i = 0; i < remPoints.size(); i++)
-      if (remPoints[i]->arrId == 0 && remPoints[i]->spline->isClosed())
-        if (find_value_idx(undoPointsListSplines, remPoints[i]->spline) == -1)
-          undoPointsListSplines.push_back(remPoints[i]->spline);
+    for (int i = 0; i < remPt0.size(); i++)
+      if (remPt0[i]->arrId == 0 && remPt0[i]->spline && remPt0[i]->spline->isClosed())
+        if (find_value_idx(undoPointsListSplines, remPt0[i]->spline) == -1)
+          undoPointsListSplines.push_back(remPt0[i]->spline);
 
     for (int i = 0; i < undoPointsListSplines.size(); i++)
       getUndoSystem()->put(undoPointsListSplines[i]->makePointListUndo());
@@ -1139,6 +1166,11 @@ void HmapLandObjectEditor::_removeObjects(RenderableEditableObject **obj, int nu
   if (rebuild_hmap_modif)
     HmapLandPlugin::self->applyHmModifiers();
 
+  // the split may have been waiting for a second point on a polygon that just went away,
+  // and the cursor may have been hovering a point that went with it
+  stopPolySplittingIfPickGone();
+  dropHoverState();
+
   HmapLandPlugin::self->onObjectsRemove();
 }
 
@@ -1153,18 +1185,18 @@ bool HmapLandObjectEditor::canSelectObj(RenderableEditableObject *o)
 
   if (LandscapeEntityObject *e = RTTI_cast<LandscapeEntityObject>(o))
   {
-    if (EditLayerProps::layerProps[e->getEditLayerIdx()].isLayerOrTypeLocked())
+    if (isObjectLocked(*e))
       return false;
   }
   else if (SplineObject *s = RTTI_cast<SplineObject>(o))
   {
-    if (EditLayerProps::layerProps[s->getEditLayerIdx()].isLayerOrTypeLocked())
+    if (isObjectLocked(*s))
       return false;
   }
   else if (SplinePointObject *p = RTTI_cast<SplinePointObject>(o))
   {
     if (SplineObject *s = p->spline)
-      if (EditLayerProps::layerProps[s->getEditLayerIdx()].isLayerOrTypeLocked())
+      if (s->isHidden() || isObjectLocked(*s))
         return false;
   }
 
@@ -1218,6 +1250,12 @@ void HmapLandObjectEditor::onObjectFlagsChange(RenderableEditableObject *obj, in
       outlinerWindow->onObjectSelectionChanged(getMainObjectForOutliner(*obj));
     HmapLandPlugin::self->onObjectSelectionChanged(obj);
   }
+
+  if ((changed_flags & RenderableEditableObject::FLG_HIDDEN) != 0)
+    apply_layer_idx_to_entities(obj);
+
+  if ((changed_flags & (RenderableEditableObject::FLG_HIDDEN | RenderableEditableObject::FLG_LOCKED)) != 0)
+    DAGORED2->invalidateViewportCache();
 }
 
 
@@ -1410,6 +1448,91 @@ void HmapLandObjectEditor::save(DataBlock &splBlk, DataBlock &polBlk, DataBlock 
     LandscapeEntityObject::saveColliders(entBlk);
 }
 
+void HmapLandObjectEditor::saveObjectLocalStates(DataBlock &local_data)
+{
+  DataBlock *objectStatesBlk = nullptr;
+  for (int i = 0; i < objects.size(); ++i)
+  {
+    RenderableEditableObject *o = objects[i];
+
+    const char *objectName = o->getName();
+    if (!objectName || !*objectName)
+      continue;
+
+    const bool hidden = doesObjectSupportHiding(*o) && o->isHidden();
+    const bool locked = doesObjectSupportLocking(*o) && o->isLocked();
+    if (!hidden && !locked)
+      continue;
+
+    if (!objectStatesBlk)
+      objectStatesBlk = local_data.addBlock("objectLocalStates");
+
+    DataBlock *objectBlk = objectStatesBlk->addNewBlock("object");
+    objectBlk->setStr("name", objectName);
+    if (hidden)
+      objectBlk->setBool("hidden", hidden);
+    if (locked)
+      objectBlk->setBool("locked", locked);
+  }
+}
+
+void HmapLandObjectEditor::loadObjectLocalStates(const DataBlock &local_data)
+{
+  const DataBlock *objectStatesBlk = local_data.getBlockByName("objectLocalStates");
+  if (!objectStatesBlk)
+    return;
+
+  const int objectNid = objectStatesBlk->getNameId("object");
+  if (objectNid < 0)
+    return;
+
+  ska::flat_hash_map<eastl::string_view, RenderableEditableObject *> objectsByName;
+  objectsByName.reserve(objects.size());
+  for (int i = 0; i < objects.size(); ++i)
+  {
+    const eastl::string_view objectName = objects[i]->getNameStringView();
+    if (!objectName.empty())
+      objectsByName.emplace(objectName, objects[i]); // A repeated name keeps the first object, matching getObjectByName().
+  }
+
+  for (int i = 0; i < objectStatesBlk->blockCount(); ++i)
+  {
+    const DataBlock *objectBlk = objectStatesBlk->getBlock(i);
+    if (objectBlk->getBlockNameId() != objectNid)
+      continue;
+
+    const auto objectIt = objectsByName.find(objectBlk->getStr("name", ""));
+    if (objectIt == objectsByName.end())
+      continue;
+
+    RenderableEditableObject *o = objectIt->second;
+    if (objectBlk->getBool("hidden", false) && doesObjectSupportHiding(*o))
+      o->hideObject();
+    if (objectBlk->getBool("locked", false) && doesObjectSupportLocking(*o))
+      o->lockObject();
+  }
+}
+
+bool HmapLandObjectEditor::doesObjectSupportHiding(RenderableEditableObject &object)
+{
+  return RTTI_cast<LandscapeEntityObject>(&object) || RTTI_cast<SplineObject>(&object);
+}
+
+bool HmapLandObjectEditor::doesObjectSupportLocking(RenderableEditableObject &object) { return doesObjectSupportHiding(object); }
+
+bool HmapLandObjectEditor::isObjectLocked(const LandscapeEntityObject &object)
+{
+  return object.isLocked() || EditLayerProps::layerProps[object.getEditLayerIdx()].isLayerOrTypeLocked();
+}
+
+bool HmapLandObjectEditor::isObjectLocked(const SplineObject &object)
+{
+  return object.isLocked() || EditLayerProps::layerProps[object.getEditLayerIdx()].isLayerOrTypeLocked();
+}
+
+void HmapLandObjectEditor::showHiddenObjectsForBuild() { apply_object_hide_to_entities(objects, false); }
+
+void HmapLandObjectEditor::restoreHiddenObjectsAfterBuild() { apply_object_hide_to_entities(objects, true); }
 
 void HmapLandObjectEditor::load(const DataBlock &main_blk)
 {
@@ -1655,6 +1778,7 @@ void HmapLandObjectEditor::recalcCatmul()
 void HmapLandObjectEditor::setEditMode(int cm)
 {
   stopSplineCreation();
+  stopPolySplitting();
 
   memset(catmul, 0, sizeof(catmul));
 
@@ -1768,7 +1892,7 @@ void HmapLandObjectEditor::setSelectMode(int cm)
   {
     bool desel = false;
 
-    getUndoSystem()->begin();
+    getUndoSystem()->begin(true);
     for (int i = selection.size() - 1; i >= 0; i--)
       if (!canSelectObj(selection[i]))
       {
@@ -1805,7 +1929,7 @@ void HmapLandObjectEditor::setSelectMode(int cm)
 
     if (desel)
     {
-      getUndoSystem()->put(new UndoSelModeChange(this, old_mode));
+      getUndoSystem()->put<UndoSelModeChange>(this, old_mode);
       getUndoSystem()->accept("Change select mode");
     }
     else
@@ -2050,6 +2174,8 @@ void HmapLandObjectEditor::markCrossRoadChanged(SplinePointObject *p)
 
 void HmapLandObjectEditor::updateCrossRoads(SplinePointObject *p)
 {
+  if (p && p->isFilletGen) // derived fillet points never form crosses
+    return;
   if (!p)
   {
     for (int i = 0; i < crossRoads.size(); i++)
@@ -2078,20 +2204,19 @@ void HmapLandObjectEditor::updateCrossRoads(SplinePointObject *p)
       }
 
     updateCrossRoadsOnPointAdd(p);
-    if (p->arrId > 0 && p->spline->points[p->arrId - 1]->isCross)
-    {
-      markCrossChanged(crossRoads, p->spline->points[p->arrId - 1]);
-      crossRoadsChanged = true;
-    }
-    if (p->arrId + 1 < p->spline->points.size() && p->spline->points[p->arrId + 1]->isCross)
-    {
-      markCrossChanged(crossRoads, p->spline->points[p->arrId + 1]);
-      crossRoadsChanged = true;
-    }
+    for (int dir = -1; dir <= 1; dir += 2)
+      if (SplinePointObject *n = p->spline->nextRealPoint(p->arrId, dir))
+        if (n->isCross)
+        {
+          markCrossChanged(crossRoads, n);
+          crossRoadsChanged = true;
+        }
   }
 }
 void HmapLandObjectEditor::updateCrossRoadsOnPointAdd(SplinePointObject *p)
 {
+  if (p->isFilletGen)
+    return;
   SplineObject *pspl = p->spline;
   Point3 p3 = p->getProps().pt;
   static Tab<SplinePointObject *> cr(tmpmem);
@@ -2101,7 +2226,8 @@ void HmapLandObjectEditor::updateCrossRoadsOnPointAdd(SplinePointObject *p)
     if (splines[i] && (splines[i] != pspl || pspl->getProps().maySelfCross) && (splines[i]->getSplineBox() & p->getPt()))
     {
       for (int j = splines[i]->points.size() - 1; j >= 0; j--)
-        if (splines[i]->points[j] != p && splines[i]->points[j] && lengthSq(splines[i]->points[j]->getProps().pt - p3) < 1e-4)
+        if (splines[i]->points[j] != p && splines[i]->points[j] && !splines[i]->points[j]->isFilletGen &&
+            lengthSq(splines[i]->points[j]->getProps().pt - p3) < 1e-4)
         {
           if (!dest)
             dest = addCross(crossRoads, splines[i]->points[j], p);
@@ -2278,31 +2404,6 @@ bool HmapLandObjectEditor::traceRay(const Point3 &p, const Point3 &dir, real &ma
 
   return hit;
 }
-bool HmapLandObjectEditor::shadowRayHitTest(const Point3 &p, const Point3 &dir, real maxt)
-{
-  if (maxt <= 0)
-    return false;
-
-  int st_mask = DAEDITOR3.getEntitySubTypeMask(IObjEntityFilter::STMASK_TYPE_COLLISION);
-  if (!(st_mask & SplineObject::roadsSubtypeMask))
-    return false;
-
-  for (int i = 0; i < splines.size(); i++)
-    for (int j = splines[i]->points.size() - 1; j >= 0; j--)
-    {
-      GeomObject *geom = splines[i]->points[j]->getRoadGeom();
-      if (geom && dagGeom->geomObjectShadowRayHitTest(*geom, p, dir, maxt))
-        return true;
-    }
-
-  for (int i = 0; i < crossRoads.size(); i++)
-  {
-    GeomObject *geom = crossRoads[i]->getRoadGeom();
-    if (geom && dagGeom->geomObjectShadowRayHitTest(*geom, p, dir, maxt))
-      return true;
-  }
-  return false;
-}
 bool HmapLandObjectEditor::isColliderVisible() const
 {
   return HmapLandPlugin::self->getVisible() &&
@@ -2343,37 +2444,6 @@ bool HmapLandObjectEditor::LoftAndGeomCollider::traceRay(const Point3 &p, const 
       hit = true;
   }
   return hit;
-}
-bool HmapLandObjectEditor::LoftAndGeomCollider::shadowRayHitTest(const Point3 &p, const Point3 &dir, real maxt)
-{
-  if (maxt <= 0)
-    return false;
-
-  ISplineGenService *splSrv = HmapLandPlugin::splSrv;
-  if (loft)
-  {
-    int end_layer = loftLayerOrder < 0 ? LAYER_ORDER_MAX : min(loftLayerOrder, (int)LAYER_ORDER_MAX);
-    if (dir.y < -0.999)
-    {
-      for (int layer = 0; layer < end_layer; ++layer)
-        if (bm_loft_mask[layer].isMarked(p.x, p.z))
-          if (splSrv->shadowRayFoundationLoftGeomHitTest(layer, p, dir, maxt))
-            return true;
-      return false;
-    }
-
-    if (splSrv->shadowRayFoundationLoftGeomHitTest(-1, p, dir, maxt))
-      return true;
-  }
-  else
-  {
-    if (dir.y < -0.999)
-      if (!bm_poly_mask.isMarked(p.x, p.z))
-        return false;
-    if (splSrv->shadowRayFoundationPolyGeomHitTest(-1, p, dir, maxt))
-      return true;
-  }
-  return false;
 }
 bool HmapLandObjectEditor::LoftAndGeomCollider::isColliderVisible() const { return false; }
 
@@ -2451,7 +2521,7 @@ void HmapLandObjectEditor::getPixelPerfectHits(IPixelPerfectSelectionService &se
       continue;
 
     LandscapeEntityObject *landscapeEntityObject = RTTI_cast<LandscapeEntityObject>(object);
-    if (!landscapeEntityObject)
+    if (!landscapeEntityObject || EditLayerProps::layerProps[landscapeEntityObject->getEditLayerIdx()].isLayerOrTypeHidden())
       continue;
 
     IObjEntity *entity = landscapeEntityObject->getEntity();

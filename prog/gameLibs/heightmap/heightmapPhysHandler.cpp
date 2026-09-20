@@ -84,6 +84,7 @@ void HeightmapPhysHandler::initRaw(const uint16_t *raw, float cell, uint16_t w, 
     raw, hmapWidth.x, hmapWidth.y, blockShift, hrbSubSz);
 
   finalizeLoad();
+  measureMaxGradient();
 }
 
 bool HeightmapPhysHandler::loadDump(IGenLoad &loadCb, int skip_mips)
@@ -98,7 +99,7 @@ bool HeightmapPhysHandler::loadDump(IGenLoad &loadCb, int skip_mips)
   int version = width_version >> HMAP_WIDTH_BITS;
   hmapWidth.x = (width_version & HMAP_WIDTH_MASK) >> skip_mips;
   const uint32_t heightMirrored = loadCb.readInt();
-  mirror = heightMirrored >> 31;
+  mirror = heightMirrored >> 31; // "mirror" initial state is used to decide whether the land tracer is needed.
   const uint32_t height = heightMirrored & 0x7FFFFFFF;
   hmapWidth.y = (height >> skip_mips);
   excludeBounding[0].x = loadCb.readInt();
@@ -246,6 +247,7 @@ bool HeightmapPhysHandler::loadDump(IGenLoad &loadCb, int skip_mips)
   }
 
   finalizeLoad();
+  measureMaxGradient();
   unsigned grid_res = compressed.getBestHtRangeBlocksResolution(), grid_step = compressed.getW() / grid_res;
   debug("heightmap of size %dx%d at %@, minH=%g(real=%g) maxH=%g(real=%g)  memSz=%dK (%s), hier-grid %dx%d,L%d (blocks of %dx%d)"
         " [fmt=%d:%dK skip=%d] decoded for %d ms",
@@ -289,6 +291,7 @@ bool HeightmapPhysHandler::repackCompressedData(uint8_t use_hrb_subsz)
   hmap_data = alloc_hmap_data(allocatedDataSize);
 
   compressed = CompressedHeightmap::compress((uint8_t *)hmap_data, allocatedDataSize, hmap16.data(), w, h, block_shift, use_hrb_subsz);
+  measureMaxGradient(); // close() dropped the bound, the heights did not change
   return true;
 }
 
@@ -329,6 +332,16 @@ void HeightmapPhysHandler::close()
     free_hmap_data(hmap_data, allocatedDataSize);
     hmap_data = NULL;
   }
+  // closed is a no-data state: a measure over it must see none
+  compressed = {};
+  maxGradient = 1e9f;
+  maxGradientDirty.setEmpty();
+}
+
+void HeightmapPhysHandler::measureMaxGradient()
+{
+  maxGradient = compressed && hmapCellSize > 0 ? calc_hmap_max_neighbor_delta(compressed) * hScaleRaw / hmapCellSize : 1e9f;
+  maxGradientDirty.setEmpty();
 }
 
 Point3 HeightmapPhysHandler::getClippedOrigin(const Point3 &origin_pos) const

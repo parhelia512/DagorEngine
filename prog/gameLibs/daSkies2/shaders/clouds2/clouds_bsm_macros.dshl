@@ -1,3 +1,5 @@
+include "clouds_shadow_ms_curve.dshl"
+
 macro INIT_CLOUDS_BSM_CONSTS(code)
   (code) {
     clouds_bsm_world@f4 = clouds_bsm_world;
@@ -30,6 +32,7 @@ macro INIT_CLOUDS_BSM_TEX(code)
 endmacro
 
 macro USE_CLOUDS_BSM(code)
+  CLOUDS_SHADOW_MS_CURVE(code)
   hlsl(code) {
     #include <atmosphere/statistical_clouds_shadow.hlsli>
     #define CLOUDS_BSM_DEPTH_RANGE 32000.
@@ -127,13 +130,9 @@ macro USE_CLOUDS_BSM(code)
         return t;
       return lerp(t, clouds_bsm_stat_transmittance(world_pos), fade);
     }
-    //the multiple scattering brightening receivers apply on top of the last-octave
-    //transmittance (hardcoded ms attenuation and contribution instead of 2 pow)
     half clouds_bsm_shadow_curve(half t)
     {
-      t *= t;
-      half t3 = t*t*t;
-      return t*(0.4h + t3*0.6h);
+      return clouds_shadow_ms_curve(t);
     }
     //ready-to-use shadow term: fetch + ms curve, no gate - an unbound (null) map
     //reads zero, which decodes to unshadowed. The single-fetch variant is for

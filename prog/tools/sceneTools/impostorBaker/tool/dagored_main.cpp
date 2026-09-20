@@ -271,40 +271,7 @@ int DagorWinMain(int nCmdShow, bool /*debugmode*/)
   ShaderGlobal::set_int(get_shader_variable_id("dgs_tex_anisotropy", true), ::dgs_tex_anisotropy);
   ShaderGlobal::set_float(get_shader_variable_id("mip_bias", true), 0.f);
 
-  DataBlock impostorShaderVarsBlk;
-  const DataBlock *impostorBlock = blk.getBlockByName("impostor");
-  String folder;
-  if (impostorBlock)
-  {
-    G_ASSERTF(impostorBlock->paramExists("data_folder"), "Add data_folder:t to the assets/impostor block in %s",
-      options.appBlk.c_str());
-    make_eff_app_relative_path(folder, impostorBlock->getStr("data_folder"), true);
-  }
-  else
-  {
-    G_ASSERTF(blk.paramExists("impostor_data_folder"), "Add the assets/impostor block to %s", options.appBlk.c_str());
-    make_eff_app_relative_path(folder, blk.getStr("impostor_data_folder"), true);
-  }
-  String impostorShaderVarsFile = String(0, "%simpostor_shader_vars.blk", folder.c_str());
-  debug("impostorShaderVarsFile: looking for a file at <%s>", impostorShaderVarsFile);
-  bool impostorShaderVarsLoaded = false;
-  if (::dd_file_exists(impostorShaderVarsFile.c_str()))
-  {
-    debug("impostorShaderVarsFile: was found");
-    impostorShaderVarsLoaded = impostorShaderVarsBlk.load(impostorShaderVarsFile.c_str());
-  }
-  else
-  {
-    debug("impostorShaderVarsFile: was not found");
-  }
-
   ShaderGlobal::set_vars_from_blk(*::dgs_get_settings()->getBlockByNameEx("shaderVar"), true);
-  if (impostorShaderVarsLoaded)
-  {
-    const DataBlock *shaderBlock = impostorShaderVarsBlk.getBlockByName("shaderVar");
-    G_ASSERTF(shaderBlock != nullptr, "Add shaderVar{} block to the impostor_shader_vars.blk");
-    ShaderGlobal::set_vars_from_blk(*shaderBlock, true);
-  }
 
   startup_game(RESTART_ALL);
 

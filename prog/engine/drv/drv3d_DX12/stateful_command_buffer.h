@@ -450,12 +450,14 @@ public:
     accessor(cmd.get());
     ++unknownWrittenCommands;
   }
+#if HAS_NVAPI
   template <typename T>
   void recordExternalCommands4(T &&accessor)
   {
     accessor(cmd.as<ID3D12GraphicsCommandList4>());
     ++unknownWrittenCommands;
   }
+#endif
 
   void dirtyAll()
   {

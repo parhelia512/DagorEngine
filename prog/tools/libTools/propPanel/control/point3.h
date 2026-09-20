@@ -95,6 +95,8 @@ public:
 
   void setDefaultValue(Variant var) override { defaultValue = var.convert<Point3>(); }
 
+  const char *getImguiTypeName() const override { return "Point3"; }
+
   void updateImgui() override
   {
     ScopedImguiBeginDisabled scopedDisabled(!controlEnabled);
@@ -109,15 +111,15 @@ public:
 
     ImGui::PushMultiItemsWidths(3, ImGui::GetContentRegionAvail().x);
 
-    spinEditX.updateImgui(*this, &controlTooltip, this);
+    spinEditX.updateImgui(*this, &controlTooltip, this, this, "x");
     ImGui::PopItemWidth();
 
     ImGui::SameLine(0.0f, ImGui::GetStyle().ItemInnerSpacing.x); // NOTE: PushMultiItemsWidths calculated with ItemInnerSpacing.
-    spinEditY.updateImgui(*this, &controlTooltip, this);
+    spinEditY.updateImgui(*this, &controlTooltip, this, this, "y");
     ImGui::PopItemWidth();
 
     ImGui::SameLine(0.0f, ImGui::GetStyle().ItemInnerSpacing.x); // NOTE: PushMultiItemsWidths calculated with ItemInnerSpacing.
-    spinEditZ.updateImgui(*this, &controlTooltip, this);
+    spinEditZ.updateImgui(*this, &controlTooltip, this, this, "z");
     ImGui::PopItemWidth();
 
     if (valueHighlightColorSet)

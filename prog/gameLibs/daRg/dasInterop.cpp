@@ -246,7 +246,7 @@ void DasFunction::register_script_class(Sqrat::Table &exports)
   Sqrat::Class<DasFunction, Sqrat::NoCopy<DasFunction>> clsDasFunc(vm, "DasFunction");
   clsDasFunc //
     .SquirrelCtor(script_ctor, 3, ".xs")
-    .SquirrelFunc("_call", script_call, -1, "x", "Call the function with the given arguments")
+    .SquirrelFunc("_call", script_call, -1, "x", SQ_DOC("Call the function with the given arguments"))
     /**/;
 
   exports.Bind("DasFunction", clsDasFunc);

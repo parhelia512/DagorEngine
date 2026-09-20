@@ -71,10 +71,6 @@ public:
 
   /// Load DataBlock tree from specified text.
   /// Filename is for error output only.
-  bool loadText(const char *text, int text_length, const char *filename = NULL);
-
-  /// Load DataBlock tree from specified text.
-  /// Filename is for error output only.
   /// @note This method will modify @b text when including files.
   bool loadText(std::string &text, const char *filename = NULL);
 
@@ -86,6 +82,8 @@ public:
 
   /// Load DataBlock tree from a text file
   bool load(const std::filesystem::path &fname);
+
+  void saveToTextStream(std::ostream &os) const;
 
   /// Save this DataBlock (and its sub-tree) to the specified file (text form)
   bool saveToTextFile(const std::filesystem::path &filename) const;
@@ -177,7 +175,7 @@ protected:
 
   /// Save this DataBlock (and its sub-tree) in the text form.
   /// level is used for text indentation.
-  void saveText(std::ofstream &os, int level = 0) const;
+  void saveText(std::ostream &os, int level = 0) const;
 
   std::shared_ptr<NameMap> nameMap;
   int nameId;

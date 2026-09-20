@@ -174,6 +174,7 @@ bool read_interpolate_2d_tab_p3(Interpolate2D &tab, const DataBlock &blk, ReadFu
 
 
 bool read_interpolate_tab_float_p2(InterpolateTabFloat &tab, const DataBlock &blk);
+bool read_interpolate_tab_float_p2(InterpolateTabMemPtrFloat &tab, const DataBlock &blk);
 
 bool read_interpolate_2d_tab_float_p2(Interpolate2DTabFloat &tab, const DataBlock &blk, const char *x_param_name);
 bool read_interpolate_2d_tab_float_p3(Interpolate2DTabFloat &tab, const DataBlock &blk);

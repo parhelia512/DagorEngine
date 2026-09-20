@@ -8,6 +8,7 @@
 #include <generic/dag_span.h>
 #include <drv/3d/dag_resource.h>
 #include <drv/3d/dag_decl.h>
+#include <drv/3d/dag_multi_interface.h>
 #include <math/dag_e3dColor.h>
 
 class BaseTexture;
@@ -42,7 +43,7 @@ struct RenderTarget
   uint32_t layer;     ///< Layer to set as render target.
 };
 
-namespace d3d
+namespace d3d _MULTI_INTERFACE
 {
 /**
  * @brief Copy the current render target to a texture. It is useful to get a backbuffer content on such drivers as Metal.
@@ -160,7 +161,7 @@ bool get_render_target_size(int &w, int &h, BaseTexture *rt_tex, uint8_t level =
 /**
  * @brief Clear the view. What is view will be explained in the params.
  *
- * @param what The view to clear. It can be one of the CLEAR_*** enum. It will clears either color, depth, or stencil buffer.
+ * @param what Bit mask of CLEAR_* flags (fill with the given value) and DISCARD_* flags (content becomes undefined).
  * @param c The color to clear the view with.
  * @param z The depth to clear the view with.
  * @param stencil The stencil to clear the view with.
@@ -197,7 +198,7 @@ Texture *get_backbuffer_tex();
  */
 Texture *get_secondary_backbuffer_tex();
 
-} // namespace d3d
+} // namespace d3d _MULTI_INTERFACE
 
 #if _TARGET_D3D_MULTI
 #include <drv/3d/dag_interface_table.h>

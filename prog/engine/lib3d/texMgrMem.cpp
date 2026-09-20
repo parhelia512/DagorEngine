@@ -77,21 +77,22 @@ void tql::get_tex_streaming_stats(int &_mem_used_discardable_kb, int &_mem_used_
   _tex_used_persistent_cnt = interlocked_relaxed_load(tex_used_persistent_cnt);
   _max_mem_used_overdraft_kb = 0 /*-mem_quota_reserve_kb*/;
 }
-static bool schedule_trim_discardable_tex_mem = false;
+// set from driver code on memory pressure, consumed in on_frame_finished()
+static int trim_discardable_tex_mem_pending = 0;
 void tql::schedule_trim_discardable_tex_mem()
 {
   if (!tql::streaming_enabled)
     return;
-  ::schedule_trim_discardable_tex_mem = true;
+  interlocked_release_store(trim_discardable_tex_mem_pending, 1);
 }
 void tql::trim_discardable_tex_mem()
 {
   if (!tql::streaming_enabled)
     return;
   int memUsedDiscardableKb = interlocked_relaxed_load(mem_used_discardable_kb);
-  int memUsedPersistentKb = get_total_used_persistent_mem_kb();
-  free_up_gpu_mem(memUsedDiscardableKb, memUsedPersistentKb, true);
-  debug("Force trim discardable texture memory: %dKb", memUsedDiscardableKb);
+  int actualQuotaKb = tql::mem_quota_kb - get_total_used_persistent_mem_kb() - mem_quota_reserve_kb;
+  free_up_gpu_mem(memUsedDiscardableKb, actualQuotaKb, true);
+  debug("Force trim discardable texture memory: %dKb (strmQuota=%dKb)", memUsedDiscardableKb, actualQuotaKb);
 }
 
 // TODO: implement inside of dag_atomic.h through intrinsics with this as fallback
@@ -401,8 +402,21 @@ static void on_frame_finished()
                                   max(int64_t(msx.ullAvailPageFile >> 10) - (int64_t(sys_mem_min_avail_commit_mb) << 10), int64_t(0));
         if (commit_quota_kb < new_quota_kb)
         {
-          debug("freeGPUmem= quota clamped by commit: %dM -> %dM, availCommit=%dM", new_quota_kb >> 10, commit_quota_kb >> 10,
-            msx.ullAvailPageFile >> 20);
+          // keyed on free commit (the quota itself stays almost flat while textures consume it)
+          // and on the requested quota; the quiet period keeps an active clamp visible
+          static int64_t lastLoggedAvailKb = -1, lastLoggedQuotaKb = -1;
+          static int64_t lastLoggedReft = 0;
+          const int64_t availKb = int64_t(msx.ullAvailPageFile >> 10);
+          const int64_t thresholdKb = min(int64_t(64 << 10), max(lastLoggedAvailKb / 8, int64_t(16 << 10)));
+          if (lastLoggedAvailKb < 0 || availKb < lastLoggedAvailKb - thresholdKb || availKb > lastLoggedAvailKb + thresholdKb ||
+              abs(new_quota_kb - lastLoggedQuotaKb) > (64 << 10) || profile_usec_passed(lastLoggedReft, 60 * 1000000))
+          {
+            debug("freeGPUmem= quota clamped by commit: %dM -> %dM, availCommit=%dM", new_quota_kb >> 10, commit_quota_kb >> 10,
+              msx.ullAvailPageFile >> 20);
+            lastLoggedAvailKb = availKb;
+            lastLoggedQuotaKb = new_quota_kb;
+            lastLoggedReft = profile_ref_ticks();
+          }
           new_quota_kb = int(commit_quota_kb);
         }
       }
@@ -423,12 +437,13 @@ static void on_frame_finished()
           tql::mem_quota_kb = new_quota_kb;
         }
       }
-      if (schedule_trim_discardable_tex_mem)
-      {
-        tql::trim_discardable_tex_mem();
-        schedule_trim_discardable_tex_mem = false;
-      }
     }
+  }
+
+  if (interlocked_acquire_load(trim_discardable_tex_mem_pending))
+  {
+    interlocked_release_store(trim_discardable_tex_mem_pending, 0);
+    tql::trim_discardable_tex_mem();
   }
 
   int actual_quota_kb = tql::mem_quota_kb - observedMemUsedPersistentKb - mem_quota_reserve_kb;
@@ -437,8 +452,6 @@ static void on_frame_finished()
 
   if (!(dagor_frame_no() & 0x3FF))
     dump_texture_streaming_memory_state();
-
-  RMGR.copyMaxReqLevToPrev();
 
   if (reload_jobmgr_id < 0)
     return;
@@ -636,7 +649,8 @@ static void free_up_gpu_mem(int mem_to_free_kb, int actual_quota_kb, bool should
               BREAK_WHEN_CLEANED_ENOUGH_GPUMEM();
             }
         }
-        else if (downgraded < 10 && RMGR.resQS[i].getLdLev() > RMGR.resQS[i].getMaxLev() && !RMGR.resQS[i].isReading())
+        else if (downgraded < 10 && max<unsigned>(RMGR.resQS[i].getLdLev(), RMGR.getTexAllocLev(i)) > RMGR.resQS[i].getMaxLev() &&
+                 !RMGR.resQS[i].isReading())
         {
           if (BaseTexture *t = RMGR.baseTexture(i))
             if (RMGR.downgradeTexQuality(i, *t, RMGR.resQS[i].getMaxLev()))
@@ -892,14 +906,16 @@ void dump_texture_streaming_memory_state()
 bool texmgr_internal::D3dResMgrDataFinal::downgradeTexQuality(int idx, BaseTexture &this_tex, int req_lev)
 {
   unsigned ld_lev = resQS[idx].getLdLev();
-  if (ld_lev <= 1 || (ld_lev <= req_lev && getTexAddMemSizeNeeded4K(idx) != 0)) //==
+  if (ld_lev <= 1 || (ld_lev <= req_lev && getTexAllocLev(idx) <= req_lev))
     return false;
+  // the resized object holds only filled mips, so it can not be larger than what is loaded
+  req_lev = min<int>(req_lev, ld_lev);
 
   if (texDesc[idx].dim.stubIdx >= 0 && req_lev == 1 && getTexMemSize4K(idx) > 1 && RMGR.startReading(idx, 1))
   {
     RMGR.incRefCountAndDecReadyForDiscardTex(idx);
     this_tex.discardTex();
-    RMGR.changeTexUsedMem(idx, tql::sizeInKb(this_tex.getSize()), (getTexMemSize4K(idx) + getTexAddMemSizeNeeded4K(idx)) * 4);
+    RMGR.changeTexUsedMem(idx, tql::sizeInKb(this_tex.getSize()), (getTexMemSize4K(idx) + getTexAddMemSizeNeeded4K(idx)) * 4, 1);
     resQS[idx].setCurQL(TQL_stub);
     resQS[idx].setLdLev(1);
     resQS[idx].setMaxReqLev(1);
@@ -918,12 +934,20 @@ bool texmgr_internal::D3dResMgrDataFinal::downgradeTexQuality(int idx, BaseTextu
 
     if (auto tmpTex = tql::makeResizedTmpTexResCopy(&this_tex, w, h, d, l, ld_lev))
     {
-      RMGR.changeTexUsedMem(idx, tql::sizeInKb(tmpTex->getSize()), (getTexMemSize4K(idx) + getTexAddMemSizeNeeded4K(idx)) * 4);
+      RMGR.changeTexUsedMem(idx, tql::sizeInKb(tmpTex->getSize()), (getTexMemSize4K(idx) + getTexAddMemSizeNeeded4K(idx)) * 4,
+        req_lev);
       RMGR.completeTextureUpdateAsync(idx, &this_tex, tmpTex, 0, l - 1, [req_lev](int idx) {
         resQS[idx].setCurQL(req_lev < resQS[idx].getQLev() ? calcCurQL(idx, req_lev) : resQS[idx].getMaxQL());
         resQS[idx].setLdLev(req_lev);
         resQS[idx].setMaxReqLev(req_lev);
       });
+    }
+    else
+    {
+      // undo startReading; not cancelReading: that drops a base tex ref taken only by scheduleReading
+      resQS[idx].setRdLev(0);
+      RMGR.decRefCountAndIncReadyForDiscardTex(idx);
+      return false;
     }
 
     RMGR.decRefCountAndIncReadyForDiscardTex(idx);

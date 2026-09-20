@@ -12,6 +12,9 @@
 #include <de3_bitMaskMgr.h>
 
 
+#define HEIGHTMAP_FILENAME "heightmap.dat"
+
+
 class HeightmapImporter
 {
 public:
@@ -371,6 +374,28 @@ bool HmapLandPlugin::importHeightmap(String &filename, HeightmapTypes type)
 
   importer->hMin = hMin;
   importer->hScale = hScale;
+
+  if (!hms->isFileOpened())
+  {
+    const char *storageName = nullptr;
+
+    if (type == HeightmapTypes::HEIGHTMAP_MAIN)
+      storageName = HEIGHTMAP_FILENAME;
+    else if (type == HeightmapTypes::HEIGHTMAP_DET)
+      storageName = "det-" HEIGHTMAP_FILENAME;
+
+    if (storageName)
+    {
+      String storagePath(DAGORED2->getPluginFilePath(this, storageName));
+
+      if (!hms->getInitialMap().createFile(storagePath))
+      {
+        con.addMessage(ILogWriter::ERROR, "Cannot create destination heightmap storage <%s>", storagePath.str());
+        con.endLog();
+        return false;
+      }
+    }
+  }
 
   bool useDetRect = type == HeightmapTypes::HEIGHTMAP_DET;
   if (!importer->importHeightmap(filename, *hms, con, *this, importRect[0].x, importRect[0].y, importRect[1].x, importRect[1].y))

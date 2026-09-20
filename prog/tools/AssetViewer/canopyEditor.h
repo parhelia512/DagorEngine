@@ -79,7 +79,7 @@ private:
   void refreshPanel(bool rebuild_parameters_panel = true);
   void rebuildParametersPanel();
   void rebuildParametersPanel(PropPanel::ContainerPropertyControl &panel, DataBlock &block, eastl::vector<int> &block_path);
-  void applyEditorText(bool rebuild_parameters_panel);
+  bool applyEditorText(bool rebuild_parameters_panel);
   bool flushPendingEditorTextBeforeVisualChange();
   void syncTextFromRecognizedParameters();
   void updateViewportFxState();
@@ -117,6 +117,7 @@ private:
   bool viewportFxAvailable = false;
   bool updatingControls = false;
   bool pendingTextParse = false;
+  bool textParseError = false;
   int lastTextChangeMs = 0;
   TextEditor *parametersTextEditor = nullptr;
 };

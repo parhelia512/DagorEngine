@@ -200,7 +200,7 @@ macro VOLFOG_USE_DYNAMIC_LIGHTS(stage)
         #endif
         RenderOmniLight ol = omni_lights_cb[omni_light_index];
         float4 pos_and_radius = ol.posRadius;
-        float2 shadowZnZfar = ol.shadowZnZf_pad.xy;
+        float2 shadowZnZfar = ol.shadowZnZf_flags_packedDataBits.xy;
         half4 color_and_specular = getFinalColor(ol, worldPos);
         half3 point2light = half3(pos_and_radius.xyz-worldPos.xyz);
         half distSqFromLight = dot(point2light,point2light);
@@ -267,8 +267,10 @@ endmacro
 
 macro VOLFOG_INITIAL_COMMON(stage, warp_size_z)
   bool use_improved_light_leak_offset = true; // only disable for testing
-
-  supports global_const_block;
+  (stage) {
+    from_sun_direction@f3 = from_sun_direction;
+    sun_color_0@f3 = sun_color_0;
+  }
 
   VIEW_VEC_OPTIMIZED(stage)
   INIT_ESM_SHADOW(stage)

@@ -313,7 +313,6 @@ private:
       fillTreeInternal(favorites_tree, *subFolder, subFolderTreeLeaf);
     }
 
-    String imageName;
     for (const DagorAsset *asset : tree_folder.assets)
     {
       const PropPanel::IconId icon = AssetSelectorCommon::getAssetTypeIcon(asset->getType());

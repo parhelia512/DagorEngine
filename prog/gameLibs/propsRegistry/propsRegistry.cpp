@@ -115,6 +115,12 @@ int propsreg::get_props_id(const char *name, const char *class_name)
   return propId;
 }
 
+int propsreg::get_props_count(const char *class_name)
+{
+  int classId = type_classes.getNameId(class_name);
+  return classId >= 0 ? (int)class_registry[classId].propNames.size() : -1;
+}
+
 void propsreg::clear_registry()
 {
   for (auto &creg : class_registry)

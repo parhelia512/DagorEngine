@@ -55,10 +55,10 @@ public:
   bool canSaveSelectedAsComposite();
 
   void createNode();
-  void deleteSelectedNodes(bool needsConfirmation = true);
-  void updateSelectedNodeTransform(const TMatrix &tm);
+  void deleteSelectedNodes();
   void updateMultipleNodesTransforms(const dag::Vector<CompositeEditorTreeDataNode *> &nodes, const dag::Vector<TMatrix> &tms);
-  void cloneSelectedNode();
+  // out_clones_by_selection_idx[i] is the clone of selectedTreeDataNodes[i], null if not cloneable.
+  void cloneSelectedNodes(dag::Vector<CompositeEditorTreeDataNode *> &out_clones_by_selection_idx);
   void splitSelectedCompositeNode(bool recursive);
 
   IObjEntity *getSubEntityByDataBlockId(unsigned dataBlockId);
@@ -66,7 +66,7 @@ public:
   void copySelectedNodeParams();
   static bool getNodeParamsFromClipboard(DataBlock &block);
   void pasteParamsToSelectedNode();
-  void duplicateSelectedNode();
+  void duplicateSelectedNodes();
 
   void enterSubCompositeEditing();
   void exitSubCompositeEditing();
@@ -160,10 +160,13 @@ private:
 
   void createNode(CompositeEditorTreeDataNode &parent, bool show_dialog = true);
 
-  void cloneSelectedNodeInternal(CompositeEditorRefreshType refreshType);
+  bool cloneSelectedNodesInternal(CompositeEditorRefreshType refreshType,
+    dag::Vector<CompositeEditorTreeDataNode *> *out_clones_by_selection_idx);
 
   void recalcMatrixInParentBase(CompositeEditorTreeDataNode *oldParent, CompositeEditorTreeDataNode *treeDataNode,
     CompositeEditorTreeDataNode *newParent);
+  static void recalcMatrixInParentBase(CompositeEditorTreeDataNode *treeDataNode, const TMatrix &oldParentMatrix,
+    const TMatrix &newParentMatrix);
 
   void onDelayedRefresh(const DagorAsset *asset, CompositeEditorRefreshType refreshType);
   static void onDelayedRefreshEntity(const DagorAsset *asset);

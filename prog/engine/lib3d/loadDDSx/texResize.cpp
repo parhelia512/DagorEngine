@@ -2,6 +2,7 @@
 
 #include <3d/tql.h>
 #include <drv/3d/dag_tex3d.h>
+#include <drv/3d/dag_texture.h>
 #include <math/dag_adjpow2.h>
 #include <util/dag_delayedAction.h>
 #include <osApiWrappers/dag_miscApi.h>
@@ -51,7 +52,7 @@ BaseTexture *tql::makeResizedTmpTexResCopy(BaseTexture *t, unsigned w, unsigned 
       return nullptr;
     }
 
-    return t->downSize(w, h, d, l, start_src_level, lev_ofs);
+    return d3d::down_size_tex(t, w, h, d, l, start_src_level, lev_ofs);
   }
   else
   {
@@ -67,7 +68,7 @@ BaseTexture *tql::makeResizedTmpTexResCopy(BaseTexture *t, unsigned w, unsigned 
       return nullptr;
     }
 
-    return t->upSize(w, h, d, l, start_src_level, lev_ofs);
+    return d3d::up_size_tex(t, w, h, d, l, start_src_level, lev_ofs);
   }
 
   return nullptr;

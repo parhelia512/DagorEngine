@@ -9,6 +9,7 @@
 #include <drv/3d/dag_draw.h>
 #include <drv/3d/dag_driverDesc.h>
 #include <drv/3d/dag_lock.h>
+#include <drv/3d/dag_texture.h>
 
 #include <util/dag_convar.h>
 #include <osApiWrappers/dag_miscApi.h>
@@ -209,9 +210,9 @@ void GenNoise::compressBC4(const ManagedTex &tex, const ManagedTex &dest)
     // BC4 packs 4x4 texel blocks, one CS thread per block: dispatch over block dims, not source dims
     compress3D.render(buffer, 0, IPoint3(blockW, blockH, d));
     d3d::resource_barrier({buffer.getVolTex(), RB_RO_COPY_SOURCE, 0, 0});
-    dest->updateSubRegion(buffer.getVolTex(), 0, 0, 0, 0, // source mip, x,y,z
-      blockW, blockH, d,                                  // width x height x depth
-      i, 0, 0, 0);                                        // dest mip, x,y,z
+    d3d::update_sub_region(buffer.getVolTex(), 0, 0, 0, 0, // source tex, mip, x,y,z
+      blockW, blockH, d,                                   // width x height x depth
+      dest.getBaseTex(), i, 0, 0, 0);                      // dest tex, mip, x,y,z
   }
   tex->texmiplevel(-1, -1);
   ShaderElement::invalidate_cached_state_block();
@@ -247,7 +248,7 @@ bool GenNoise::renderCurl()
         genCurl2dCompressed->dispatchThreads(CLOUD_CURL_RES, CLOUD_CURL_RES, 1);
       }
       d3d::resource_barrier({curlBlocks.getTex2D(), RB_RO_COPY_SOURCE, 0, 0});
-      cloudsCurl2d->updateSubRegion(curlBlocks.getTex2D(), 0, 0, 0, 0, blocksRes, blocksRes, 1, 0, 0, 0, 0);
+      d3d::update_sub_region(curlBlocks.getTex2D(), 0, 0, 0, 0, blocksRes, blocksRes, 1, cloudsCurl2d.getBaseTex(), 0, 0, 0, 0);
     }
     else if (genCurl2d)
     {
@@ -281,7 +282,8 @@ bool GenNoise::renderCurl()
         genCurl3dCompressed->dispatchThreads(CLOUD_CURL_3D_RES, CLOUD_CURL_3D_RES, CLOUD_CURL_3D_RES);
       }
       d3d::resource_barrier({curlBlocks.getVolTex(), RB_RO_COPY_SOURCE, 0, 0});
-      cloudsCurl3d->updateSubRegion(curlBlocks.getVolTex(), 0, 0, 0, 0, blocksRes, blocksRes, CLOUD_CURL_3D_RES, 0, 0, 0, 0);
+      d3d::update_sub_region(curlBlocks.getVolTex(), 0, 0, 0, 0, blocksRes, blocksRes, CLOUD_CURL_3D_RES, cloudsCurl3d.getBaseTex(), 0,
+        0, 0, 0);
     }
     else
       genCurl3d.render(cloudsCurl3d);

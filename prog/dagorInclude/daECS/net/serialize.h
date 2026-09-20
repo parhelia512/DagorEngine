@@ -49,6 +49,9 @@ struct BitstreamSerializer final : public ecs::SerializerCb
   InternedStringsRepl *objectKeys = nullptr;
   using ObjectKeysBitVector = eastl::bitvector<framemem_allocator, uint64_t, eastl::vector<uint64_t, framemem_allocator>>;
   ObjectKeysBitVector *outObjectKeysUsed = nullptr;
+  // component being written, set only where it is known - it makes serialization logerrs actionable
+  ecs::EntityId curEid;
+  ecs::component_index_t curCidx = ecs::INVALID_COMPONENT_INDEX;
   BitstreamSerializer(ecs::EntityManager &mgr, danet::BitStream &bs_) : mgr(mgr), bs(bs_) {}
   BitstreamSerializer(ecs::EntityManager &mgr, danet::BitStream &bs_, InternedStringsRepl *object_keys,
     ObjectKeysBitVector *out_keys_used) :

@@ -107,7 +107,7 @@ static ecs::EntitySystemDesc close_bvh_scene_es_es_desc
   empty_span(),
   make_span(close_bvh_scene_es_comps+0, 1)/*rq*/,
   empty_span(),
-  ecs::EventSetBuilder<UnloadLevel>::build(),
+  ecs::EventSetBuilder<EventRenderSceneUnload>::build(),
   0
 ,"render");
 static constexpr ecs::ComponentDesc bvh_destroy_es_comps[] =
@@ -261,7 +261,7 @@ static ecs::EntitySystemDesc rt_set_resolution_es_es_desc
 ,"render");
 static constexpr ecs::ComponentDesc bvh_render_settings_changed_es_comps[] =
 {
-//start of 16 ro components at [0]
+//start of 14 ro components at [0]
   {ECS_HASH("render_settings__enableBVH"), ecs::ComponentTypeInfo<bool>()},
   {ECS_HASH("render_settings__enableRTSM"), ecs::ComponentTypeInfo<ecs::string>()},
   {ECS_HASH("render_settings__enableRTR"), ecs::ComponentTypeInfo<bool>()},
@@ -275,9 +275,7 @@ static constexpr ecs::ComponentDesc bvh_render_settings_changed_es_comps[] =
   {ECS_HASH("render_settings__antialiasing_mode"), ecs::ComponentTypeInfo<ecs::string>()},
   {ECS_HASH("render_settings__rayReconstruction"), ecs::ComponentTypeInfo<bool>()},
   {ECS_HASH("render_settings__bvhDynModels"), ecs::ComponentTypeInfo<bool>()},
-  {ECS_HASH("render_settings__RTpreset"), ecs::ComponentTypeInfo<ecs::string>()},
-  {ECS_HASH("render_settings__useRTRCheckerboardDepth"), ecs::ComponentTypeInfo<bool>()},
-  {ECS_HASH("render_settings__useRTRSmartDepth"), ecs::ComponentTypeInfo<bool>()}
+  {ECS_HASH("render_settings__RTpreset"), ecs::ComponentTypeInfo<ecs::string>()}
 };
 static void bvh_render_settings_changed_es_all_events(const ecs::Event &__restrict evt, const ecs::QueryView &__restrict components)
 {
@@ -298,8 +296,6 @@ static void bvh_render_settings_changed_es_all_events(const ecs::Event &__restri
     , ECS_RO_COMP(bvh_render_settings_changed_es_comps, "render_settings__rayReconstruction", bool)
     , ECS_RO_COMP(bvh_render_settings_changed_es_comps, "render_settings__bvhDynModels", bool)
     , ECS_RO_COMP(bvh_render_settings_changed_es_comps, "render_settings__RTpreset", ecs::string)
-    , ECS_RO_COMP(bvh_render_settings_changed_es_comps, "render_settings__useRTRCheckerboardDepth", bool)
-    , ECS_RO_COMP(bvh_render_settings_changed_es_comps, "render_settings__useRTRSmartDepth", bool)
     );
   while (++comp != compE);
 }
@@ -309,13 +305,33 @@ static ecs::EntitySystemDesc bvh_render_settings_changed_es_es_desc
   "prog/daNetGame/render/world/bvhES.cpp.inl",
   ecs::EntitySystemOps(nullptr, bvh_render_settings_changed_es_all_events),
   empty_span(),
-  make_span(bvh_render_settings_changed_es_comps+0, 16)/*ro*/,
+  make_span(bvh_render_settings_changed_es_comps+0, 14)/*ro*/,
   empty_span(),
   empty_span(),
   ecs::EventSetBuilder<ChangeRenderFeaturesEarly,
                        OnRenderSettingsReady>::build(),
   0
-,"render","render_settings__RTRWater,render_settings__RTpreset,render_settings__antialiasing_mode,render_settings__bare_minimum,render_settings__bvhDagdp,render_settings__bvhDynModels,render_settings__enableBVH,render_settings__enablePTGI,render_settings__enableRTAO,render_settings__enableRTGI,render_settings__enableRTR,render_settings__enableRTSM,render_settings__enableRTTR,render_settings__rayReconstruction,render_settings__useRTRCheckerboardDepth");
+,"render","render_settings__RTRWater,render_settings__RTpreset,render_settings__antialiasing_mode,render_settings__bare_minimum,render_settings__bvhDagdp,render_settings__bvhDynModels,render_settings__enableBVH,render_settings__enablePTGI,render_settings__enableRTAO,render_settings__enableRTGI,render_settings__enableRTR,render_settings__enableRTSM,render_settings__enableRTTR,render_settings__rayReconstruction");
+//static constexpr ecs::ComponentDesc rtr_checkerboard_depth_convar_es_comps[] ={};
+static void rtr_checkerboard_depth_convar_es_all_events(const ecs::Event &__restrict evt, const ecs::QueryView &__restrict components)
+{
+  G_FAST_ASSERT(evt.is<UpdateStageInfoBeforeRender>());
+  rtr_checkerboard_depth_convar_es(static_cast<const UpdateStageInfoBeforeRender&>(evt)
+        , components.manager()
+    );
+}
+static ecs::EntitySystemDesc rtr_checkerboard_depth_convar_es_es_desc
+(
+  "rtr_checkerboard_depth_convar_es",
+  "prog/daNetGame/render/world/bvhES.cpp.inl",
+  ecs::EntitySystemOps(nullptr, rtr_checkerboard_depth_convar_es_all_events),
+  empty_span(),
+  empty_span(),
+  empty_span(),
+  empty_span(),
+  ecs::EventSetBuilder<UpdateStageInfoBeforeRender>::build(),
+  0
+,"dev,render");
 static constexpr ecs::ComponentDesc bvh_update_animchar_es_comps[] =
 {
 //start of 1 rq components at [0]
@@ -598,7 +614,7 @@ inline void bvh_check_is_binocular_ecs_query(ecs::EntityManager &manager, Callab
 }
 static constexpr ecs::ComponentDesc recreate_bvh_nodes_ecs_query_comps[] =
 {
-//start of 18 rw components at [0]
+//start of 16 rw components at [0]
   {ECS_HASH("bvh__update_node"), ecs::ComponentTypeInfo<dafg::NodeHandle>()},
   {ECS_HASH("denoiser_prepare_node"), ecs::ComponentTypeInfo<dafg::NodeHandle>()},
   {ECS_HASH("rtsm_prepare_node"), ecs::ComponentTypeInfo<dafg::NodeHandle>()},
@@ -612,16 +628,14 @@ static constexpr ecs::ComponentDesc recreate_bvh_nodes_ecs_query_comps[] =
   {ECS_HASH("rtao_trace_node"), ecs::ComponentTypeInfo<dafg::NodeHandle>()},
   {ECS_HASH("rtao_denoise_node"), ecs::ComponentTypeInfo<dafg::NodeHandle>()},
   {ECS_HASH("ptgi_node"), ecs::ComponentTypeInfo<dafg::NodeHandle>()},
-  {ECS_HASH("water_rt_early_before_envi_node"), ecs::ComponentTypeInfo<dafg::NodeHandle>()},
-  {ECS_HASH("water_rt_early_after_envi_node"), ecs::ComponentTypeInfo<dafg::NodeHandle>()},
-  {ECS_HASH("water_rt_late_node"), ecs::ComponentTypeInfo<dafg::NodeHandle>()},
+  {ECS_HASH("water_rt_node"), ecs::ComponentTypeInfo<dafg::NodeHandle>()},
   {ECS_HASH("bvh_register_fom_shadows"), ecs::ComponentTypeInfo<dafg::NodeHandle>()},
   {ECS_HASH("rt_persistent_textures"), ecs::ComponentTypeInfo<RTPersistentTexturesECS>()}
 };
 static ecs::CompileTimeQueryDesc recreate_bvh_nodes_ecs_query_desc
 (
   "recreate_bvh_nodes_ecs_query",
-  make_span(recreate_bvh_nodes_ecs_query_comps+0, 18)/*rw*/,
+  make_span(recreate_bvh_nodes_ecs_query_comps+0, 16)/*rw*/,
   empty_span(),
   empty_span(),
   empty_span());
@@ -647,9 +661,7 @@ inline void recreate_bvh_nodes_ecs_query(ecs::EntityManager &manager, Callable f
             , ECS_RW_COMP(recreate_bvh_nodes_ecs_query_comps, "rtao_trace_node", dafg::NodeHandle)
             , ECS_RW_COMP(recreate_bvh_nodes_ecs_query_comps, "rtao_denoise_node", dafg::NodeHandle)
             , ECS_RW_COMP(recreate_bvh_nodes_ecs_query_comps, "ptgi_node", dafg::NodeHandle)
-            , ECS_RW_COMP(recreate_bvh_nodes_ecs_query_comps, "water_rt_early_before_envi_node", dafg::NodeHandle)
-            , ECS_RW_COMP(recreate_bvh_nodes_ecs_query_comps, "water_rt_early_after_envi_node", dafg::NodeHandle)
-            , ECS_RW_COMP(recreate_bvh_nodes_ecs_query_comps, "water_rt_late_node", dafg::NodeHandle)
+            , ECS_RW_COMP(recreate_bvh_nodes_ecs_query_comps, "water_rt_node", dafg::NodeHandle)
             , ECS_RW_COMP(recreate_bvh_nodes_ecs_query_comps, "bvh_register_fom_shadows", dafg::NodeHandle)
             , ECS_RW_COMP(recreate_bvh_nodes_ecs_query_comps, "rt_persistent_textures", RTPersistentTexturesECS)
             );
@@ -722,16 +734,15 @@ inline void bvh_create_ri_visibility_ecs_query(ecs::EntityManager &manager, Call
 }
 static constexpr ecs::ComponentDesc set_resolved_rt_settings_ecs_query_comps[] =
 {
-//start of 1 rw components at [0]
+//start of 2 rw components at [0]
   {ECS_HASH("resolved_rt_settings"), ecs::ComponentTypeInfo<ResolvedRTSettings>()},
-//start of 1 ro components at [1]
   {ECS_HASH("needs_water_heightmap"), ecs::ComponentTypeInfo<bool>()}
 };
 static ecs::CompileTimeQueryDesc set_resolved_rt_settings_ecs_query_desc
 (
   "set_resolved_rt_settings_ecs_query",
-  make_span(set_resolved_rt_settings_ecs_query_comps+0, 1)/*rw*/,
-  make_span(set_resolved_rt_settings_ecs_query_comps+1, 1)/*ro*/,
+  make_span(set_resolved_rt_settings_ecs_query_comps+0, 2)/*rw*/,
+  empty_span(),
   empty_span(),
   empty_span());
 template<typename Callable>
@@ -744,7 +755,35 @@ inline void set_resolved_rt_settings_ecs_query(ecs::EntityManager &manager, Call
         {
           function(
               ECS_RW_COMP(set_resolved_rt_settings_ecs_query_comps, "resolved_rt_settings", ResolvedRTSettings)
-            , ECS_RO_COMP(set_resolved_rt_settings_ecs_query_comps, "needs_water_heightmap", bool)
+            , ECS_RW_COMP(set_resolved_rt_settings_ecs_query_comps, "needs_water_heightmap", bool)
+            );
+
+        }while (++comp != compE);
+    }
+  );
+}
+static constexpr ecs::ComponentDesc set_resolved_rtr_settings_ecs_query_comps[] =
+{
+//start of 1 rw components at [0]
+  {ECS_HASH("resolved_rt_settings"), ecs::ComponentTypeInfo<ResolvedRTSettings>()}
+};
+static ecs::CompileTimeQueryDesc set_resolved_rtr_settings_ecs_query_desc
+(
+  "set_resolved_rtr_settings_ecs_query",
+  make_span(set_resolved_rtr_settings_ecs_query_comps+0, 1)/*rw*/,
+  empty_span(),
+  empty_span(),
+  empty_span());
+template<typename Callable>
+inline void set_resolved_rtr_settings_ecs_query(ecs::EntityManager &manager, Callable function)
+{
+  perform_query(&manager, set_resolved_rtr_settings_ecs_query_desc.getHandle(),
+    [&function](const ecs::QueryView& __restrict components)
+    {
+        auto comp = components.begin(), compE = components.end(); G_ASSERT(comp != compE); do
+        {
+          function(
+              ECS_RW_COMP(set_resolved_rtr_settings_ecs_query_comps, "resolved_rt_settings", ResolvedRTSettings)
             );
 
         }while (++comp != compE);
@@ -792,8 +831,9 @@ static constexpr ecs::ComponentDesc bvh_iterate_over_animchars_ecs_query_comps[]
   {ECS_HASH("additional_data"), ecs::ComponentTypeInfo<ecs::Point4List>(), ecs::CDF_OPTIONAL},
   {ECS_HASH("animchar_render__nodeVisibleStgFilters"), ecs::ComponentTypeInfo<ecs::UInt8List>(), ecs::CDF_OPTIONAL},
   {ECS_HASH("animchar_bsph"), ecs::ComponentTypeInfo<vec4f>()},
-//start of 2 no components at [6]
+//start of 3 no components at [6]
   {ECS_HASH("excludeFromAnimcharRender"), ecs::ComponentTypeInfo<ecs::Tag>()},
+  {ECS_HASH("excludeFromBvh"), ecs::ComponentTypeInfo<ecs::Tag>()},
   {ECS_HASH("invisibleUpdatableAnimchar"), ecs::ComponentTypeInfo<ecs::Tag>()}
 };
 static ecs::CompileTimeQueryDesc bvh_iterate_over_animchars_ecs_query_desc
@@ -802,7 +842,7 @@ static ecs::CompileTimeQueryDesc bvh_iterate_over_animchars_ecs_query_desc
   empty_span(),
   make_span(bvh_iterate_over_animchars_ecs_query_comps+0, 6)/*ro*/,
   empty_span(),
-  make_span(bvh_iterate_over_animchars_ecs_query_comps+6, 2)/*no*/);
+  make_span(bvh_iterate_over_animchars_ecs_query_comps+6, 3)/*no*/);
 template<typename Callable>
 inline void bvh_iterate_over_animchars_ecs_query(ecs::EntityManager &manager, Callable function)
 {

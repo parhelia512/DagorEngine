@@ -41,7 +41,7 @@ void *dag_tab_insert2(void *ptr, uint32_t &total, uint32_t &used, IMemAlloc *mem
       void *nt = mem->alloc(newSize, &asz);
       if (at)
         memcpy(nt, ptr, atSize);
-      if (used - at)
+      if (used - at != 0)
         memcpy((char *)nt + atSize + addSize, (char *)ptr + atSize, (used - at) * sz);
       if (ptr)
         mem->free(ptr);
@@ -52,7 +52,7 @@ void *dag_tab_insert2(void *ptr, uint32_t &total, uint32_t &used, IMemAlloc *mem
   }
   else
   {
-    if (used - at)
+    if (used - at != 0)
       memmove((char *)ptr + (at + n) * sz, (char *)ptr + at * sz, (used - at) * sz);
     used += n;
   }

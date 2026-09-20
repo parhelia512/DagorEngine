@@ -26,22 +26,12 @@ public:
   };
   real x, y, z;
 
-  INLINE Point3() = default;
+  constexpr INLINE Point3() = default;
   INLINE Point3(const Point3 &) = default;
-  INLINE Point3(real ax, real ay, real az)
-  {
-    x = ax;
-    y = ay;
-    z = az;
-  }
+  constexpr INLINE Point3(real ax, real ay, real az) : x(ax), y(ay), z(az) {}
   /// constructs from #real array
-  INLINE Point3(const real *p, CtorPtrMark /*check*/)
-  {
-    x = p[0];
-    y = p[1];
-    z = p[2];
-  }
-  INLINE explicit Point3(const DPoint3 &p);
+  constexpr INLINE Point3(const real *p, CtorPtrMark /*check*/) : x(p[0]), y(p[1]), z(p[2]) {}
+  constexpr INLINE explicit Point3(const DPoint3 &p);
   Point3 &operator=(const Point3 &) = default;
 
   static const Point3 ZERO;
@@ -65,8 +55,8 @@ public:
   INLINE Point3 operator-() const { return Point3(-x, -y, -z); }
   INLINE Point3 operator+() const { return *this; }
 
-  INLINE Point3 operator+(const Point3 &a) const { return Point3(x + a.x, y + a.y, z + a.z); }
-  INLINE Point3 operator-(const Point3 &a) const { return Point3(x - a.x, y - a.y, z - a.z); }
+  constexpr INLINE Point3 operator+(const Point3 &a) const { return Point3(x + a.x, y + a.y, z + a.z); }
+  constexpr INLINE Point3 operator-(const Point3 &a) const { return Point3(x - a.x, y - a.y, z - a.z); }
   /// dot product
   INLINE real operator*(const Point3 &a) const { return x * a.x + y * a.y + z * a.z; }
   /// cross product
@@ -224,6 +214,9 @@ public:
   }
 };
 
+inline constexpr Point3 Point3::ZERO(0, 0, 0);
+inline constexpr Point3 Point3::ONE(1, 1, 1);
+
 /// dot product
 INLINE float dot(const Point3 &a, const Point3 &b) { return a * b; }
 /// cross product
@@ -291,25 +284,10 @@ public:
   };
   double x, y, z;
 
-  INLINE DPoint3() = default;
-  INLINE DPoint3(double ax, double ay, double az)
-  {
-    x = ax;
-    y = ay;
-    z = az;
-  }
-  INLINE DPoint3(const double *p, CtorPtrMark /*check*/)
-  {
-    x = p[0];
-    y = p[1];
-    z = p[2];
-  }
-  INLINE explicit DPoint3(const Point3 &p)
-  {
-    x = p.x;
-    y = p.y;
-    z = p.z;
-  }
+  constexpr INLINE DPoint3() = default;
+  constexpr INLINE DPoint3(double ax, double ay, double az) : x(ax), y(ay), z(az) {}
+  constexpr INLINE DPoint3(const double *p, CtorPtrMark /*check*/) : x(p[0]), y(p[1]), z(p[2]) {}
+  constexpr INLINE explicit DPoint3(const Point3 &p) : x(p.x), y(p.y), z(p.z) {}
 
   INLINE void zero()
   {
@@ -505,12 +483,7 @@ public:
   }
 };
 
-INLINE Point3::Point3(const DPoint3 &p)
-{
-  x = p.x;
-  y = p.y;
-  z = p.z;
-}
+constexpr INLINE Point3::Point3(const DPoint3 &p) : x(p.x), y(p.y), z(p.z) {}
 
 INLINE DPoint3 operator*(double a, const DPoint3 &p) { return DPoint3(p.x * a, p.y * a, p.z * a); }
 INLINE double lengthSq(const DPoint3 &a) { return a.x * a.x + a.y * a.y + a.z * a.z; }

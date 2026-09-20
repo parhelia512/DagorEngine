@@ -22,10 +22,11 @@
 #include <render/waterObjects.h>
 #include <render/rain.h>
 #include <render/deferredRenderer.h>
+#include <render/specialVision/specialVision.h>
 #include <render/cascadeShadows.h>
 #include <render/lightCube.h>
 #include <render/ssao.h>
-#include <render/screenSpaceReflections.h>
+#include <screenSpaceReflections_api.h>
 #include <render/downsampleDepth.h>
 #include <render/motionVectorAccess.h>
 #include <render/viewVecs.h>
@@ -81,6 +82,7 @@
 #include <osApiWrappers/dag_miscApi.h>
 #include <debug/dag_debug.h>
 #include <debug/dag_debug3d.h>
+#include <perfMon/dag_cpuFreq.h>
 #include <shaders/dag_overrideStateId.h>
 #include <shaders/dag_overrideStates.h>
 #include <shaders/dag_renderStateId.h>
@@ -92,6 +94,8 @@
 
 #include <drv/dag_vr.h>
 #include <shaders/dag_shaderMesh.h>
+
+#include "thermalVision.h"
 
 #if _TARGET_PC_WIN
 #include <windows.h>
@@ -213,11 +217,13 @@ public:
     RTYPE_DYNAMIC_DEFERRED = IDynRenderService::RTYPE_DYNAMIC_DEFERRED,
   };
   int rtype;
-  bool reqEnviProbeUpdate;
+  bool reqEnviProbeUpdate = false;
+  int enviProbeTexCheckAtMs = 0, enviProbeCaptureDeadlineMs = 0;
   int dbgShowType;
   int effects_depth_texVarId = -1;
   bool renderMatrixOk;
   bool tryToggleVr = false;
+  ThermalVision thermalVision;
   shaders::OverrideStateId geomEnviId;
   shaders::RenderStateId defaultRenderStateId;
   shaders::RenderStateId alphaWriterRenderStateId;
@@ -255,7 +261,6 @@ public:
     enviProbe = NULL;
     enviProbeBlack = NULL;
     deferredCsm = NULL;
-    reqEnviProbeUpdate = true;
     deferredRtFmt = TEXFMT_A8R8G8B8 | TEXCF_SRGBREAD | TEXCF_SRGBWRITE;
     postfxRtFmt = TEXFMT_A8R8G8B8;
     deferred_mrt_cnt = 0;
@@ -348,6 +353,13 @@ public:
 
   void toggleVrMode() { tryToggleVr = true; }
 
+  void setThermalVision(bool on)
+  {
+    if (on == thermalVision.isEnabled())
+      return;
+    thermalVision.setEnabled(on);
+  }
+
   void onTonemapSettingsChanged()
   {
     if (tonemapLUT)
@@ -357,6 +369,10 @@ public:
   const ManagedTex &getDownsampledFarDepth()
   {
     return DAEDITOR3.getStereoIndex() == StereoIndex::Mono ? downsampledFarDepth : vrResources.downsampledFarDepth;
+  }
+  const ManagedTex &getPrevDownsampledFarDepth()
+  {
+    return DAEDITOR3.getStereoIndex() == StereoIndex::Mono ? downsampledFarDepthPrev : vrResources.downsampledFarDepthPrev;
   }
 
   void actScene() override
@@ -426,12 +442,22 @@ public:
     if (skip_next_frame)
       return;
 
-    if (rtype == RTYPE_DYNAMIC_DEFERRED && reqEnviProbeUpdate && enviProbe && isDaSkiesTexReady())
+    if (rtype == RTYPE_DYNAMIC_DEFERRED && reqEnviProbeUpdate && enviProbe && isDaSkiesTexReady() &&
+        get_time_msec() >= enviProbeTexCheckAtMs)
     {
-      debug("deferredRender: update enviProbe, grs_cur_view.pos=%@", grs_cur_view.pos);
-      gatherRendSrv();
-      updateEnviProbe();
-      reqEnviProbeUpdate = false;
+      // A capture renders 6 cube faces, so make one only when texture loading is idle and the sky lighting has
+      // converged. A capture taken while the sky still converges bakes in a darker ambient color, and nothing refreshes
+      // it later. Give up at the deadline, because asset rebuilds or a sky that never converges can keep this pending
+      // indefinitely.
+      unsigned int pendingTexCount = 0;
+      const bool texLoadIdle = !EDITORCORE->getPendingTextureLoadTotalCount(pendingTexCount) || pendingTexCount == 0;
+      if ((texLoadIdle && isDaSkiesLightingConverged()) || get_time_msec() >= enviProbeCaptureDeadlineMs)
+      {
+        debug("deferredRender: update enviProbe, grs_cur_view.pos=%@", grs_cur_view.pos);
+        gatherRendSrv();
+        updateEnviProbe();
+        reqEnviProbeUpdate = false;
+      }
     }
     if (tonemapLUT)
       tonemapLUT->render();
@@ -442,6 +468,12 @@ public:
   {
     if (ISkiesService *skiesSrv = EDITORCORE->queryEditorInterface<ISkiesService>())
       return skiesSrv->areCloudTexturesReady();
+    return true;
+  }
+  static bool isDaSkiesLightingConverged()
+  {
+    if (ISkiesService *skiesSrv = EDITORCORE->queryEditorInterface<ISkiesService>())
+      return skiesSrv->isLightingConverged();
     return true;
   }
 
@@ -571,6 +603,15 @@ public:
     if (!deferredTarget)
       return sceneRt;
 
+    if (isThermalVisionActive())
+    {
+      if (::grs_draw_wire)
+        d3d::setwire(0);
+      thermalVision.apply(sceneRt, postfxRt);
+      d3d::set_render_target({deferredTarget->getDepth(), 0, 0}, DepthAccess::SampledRO, {{postfxRt, 0, 0}});
+      return postfxRt;
+    }
+
     if (use_postfx)
     {
       if (::grs_draw_wire)
@@ -647,15 +688,8 @@ public:
     d3d::get_render_target(rt);
     d3d::getview(viewportX, viewportY, viewportW, viewportH, viewportMinZ, viewportMaxZ);
 
-    if (renderNoPostfx)
-      setExposure(1.0f);
-
     if (use_heat_haze)
-    {
-      auto renderHazeParticles = [this]() { renderGeomDistortionFx(); };
-      auto renderHazeRI = [this]() { renderGeomDistortion(); };
-      heat_haze_glue.setFunctions(renderHazeParticles, renderHazeRI);
-    }
+      setHeatHazeFunctions();
 
     if (cached_render && sceneRt && viewportW == targetW && viewportH == targetH && hdr_render_format == sceneFmt)
       goto skip_render_scene;
@@ -664,8 +698,6 @@ public:
 
     updateBackBufSize(viewportW, viewportH);
     use_postfx = (::hdr_render_mode != HDR_MODE_NONE) && postFx && !renderNoPostfx;
-    if (renderNoPostfx)
-      setExposure(1.0f);
     if (!sceneRt)
       goto empty_render;
 
@@ -700,7 +732,7 @@ public:
       deferredRender(vpw->getViewTm(), projTm, false);
     }
 
-    if (use_heat_haze)
+    if (use_heat_haze && !isThermalVisionActive())
       heat_haze_glue.render();
 
   skip_render_scene:
@@ -808,9 +840,6 @@ public:
     updateBackBufSize(viewportW, viewportH);
 
     bool use_postfx = (::hdr_render_mode != HDR_MODE_NONE) && postFx && !renderNoPostfx;
-
-    if (renderNoPostfx)
-      setExposure(1.0f);
 
   render_again:
     beforeRender();
@@ -964,7 +993,8 @@ public:
       return;
     }
 
-    ShaderGlobal::setBlock(-1, ShaderGlobal::LAYER_FRAME);
+    // restore the caller's frame block on exit; deferredRender resolve relies on it staying bound
+    FRAME_LAYER_GUARD(-1);
     BBox3 viewBox;
     static Point3 oldViewPos(0, 0, 0);
     if (lengthSq(curView.pos - oldViewPos) > 400)
@@ -1149,9 +1179,12 @@ public:
       }
     }
 
-    if (hasExposure() && hasExposureChanged)
-      if (writeExposure(exposure))
-        hasExposureChanged = false;
+    const float wanted = getEffectiveExposure();
+    if (hasExposure() && wanted != writtenExposure)
+      writeExposure(wanted);
+
+    if (globalFrameBlockId != -1)
+      ShaderGlobal::setBlock(globalFrameBlockId, ShaderGlobal::LAYER_FRAME);
   }
 
 
@@ -1197,15 +1230,11 @@ public:
     if (renderNoEnvRefl || no_ess) // set light probe only after updateEnviProbe() called at least once
     {
       ShaderGlobal::set_texture(local_light_probe_texVarId, *light_probe::getManagedTex(renderNoEnvRefl ? enviProbeBlack : enviProbe));
-      ShaderGlobal::set_sampler(get_shader_variable_id("local_light_probe_tex_samplerstate", true), d3d::request_sampler({}));
     }
   }
 
   void deferredRender(const TMatrix &view_tm, const TMatrix4 &proj_tm, bool vr_mode)
   {
-    static int global_frame_const_blockid = ShaderGlobal::getBlockId("global_const_block");
-    ShaderGlobal::setBlock(global_frame_const_blockid, ShaderGlobal::LAYER_GLOBAL_CONST);
-
     if (render_shadow())
     {
       deferredCsm->renderShadowsCascades();
@@ -1220,6 +1249,7 @@ public:
     auto deferredTarget = vr_mode ? vrResources.deferredTarget.get() : this->deferredTarget.get();                            //-V688
     auto &resolvedDepth = vr_mode ? vrResources.resolvedDepth : this->resolvedDepth;                                          //-V688
     auto &downsampledFarDepth = vr_mode ? vrResources.downsampledFarDepth : this->downsampledFarDepth;                        //-V688
+    auto &downsampledFarDepthPrev = vr_mode ? vrResources.downsampledFarDepthPrev : this->downsampledFarDepthPrev;            //-V688
     auto &combinedShadowsTex = vr_mode ? vrResources.combinedShadowsTex : this->combinedShadowsTex;                           //-V688
     auto sceneRt = vr_mode ? vrResources.sceneRt.getTex2D() : this->sceneRt;                                                  //-V688
     bool renderSSR = vr_mode ? false : (bool)::renderSSR;                                                                     //-V688
@@ -1273,7 +1303,10 @@ public:
 
     // always downsample depth to downsampledFarDepth
     {
+      static int downsampledFarDepthTexVarId = get_shader_variable_id("downsampled_far_depth_tex");
       deferredTarget->setVar();
+      eastl::swap(downsampledFarDepth, downsampledFarDepthPrev);
+      ShaderGlobal::set_texture(downsampledFarDepthTexVarId, downsampledFarDepth.getTexId());
       TextureIDPair fullDepthPair = TextureIDPair(deferredTarget->getDepthAll().getTex2D(), deferredTarget->getDepthAll().getTexId());
       TextureIDPair farDepthPair = TextureIDPair(downsampledFarDepth.getTex2D(), downsampledFarDepth.getTexId());
       TextureIDPair normalPair = TextureIDPair(downsampledNormals.getTex2D(), downsampledNormals.getTexId());
@@ -1281,7 +1314,6 @@ public:
 
       downsample_depth::downsamplePS(fullDepthPair.getTex2D(), deferredTarget->getWidth(), deferredTarget->getHeight(),
         farDepthPair.getTex2D(), nullptr, normalPair.getTex2D(), nullptr, nullptr, checkerDepthPair.getTex2D());
-      downsampledFarDepth.setVar();
       downsampledNormals.setVar();
       checkerboardDepth.setVar();
       if (upscaleSamplingRenderer)
@@ -1334,9 +1366,10 @@ public:
     if (effects_depth_texVarId != -1)
       ShaderGlobal::set_texture(effects_depth_texVarId, deferredTarget->getDepthId());
 
-    ShaderGlobal::setBlock(global_frame_const_blockid, ShaderGlobal::LAYER_GLOBAL_CONST);
-
-    deferredTarget->resolve(sceneRt, view_tm, proj_tm);
+    if (isThermalVisionActive())
+      thermalVision.resolve(*deferredTarget, sceneRt, view_tm, proj_tm);
+    else
+      deferredTarget->resolve(sceneRt, view_tm, proj_tm);
 
     d3d::set_render_target({deferredTarget->getDepth(), 0, 0}, DepthAccess::SampledRO, {{sceneRt, 0, 0}});
 
@@ -1483,11 +1516,11 @@ public:
       d3d::setwire(false);
       shaders::overrides::set(geomEnviId);
 
-      if (!preparing_light_probe)
+      if (!preparing_light_probe && !isThermalVisionActive())
         if (auto *hlp = EDITORCORE->queryEditorInterface<IRenderHelperService>())
         {
           if (BaseTexture *bt = acquire_managed_tex(enviCubeTexId))
-            hlp->renderEnviCubeTexture(bt, Color4(1, 1, 1, 1) * getExposure(), Color4(0, 0, 0, 1));
+            hlp->renderEnviCubeTexture(bt, Color4(1, 1, 1, 1) * getEffectiveExposure(), Color4(0, 0, 0, 1));
           release_managed_tex(enviCubeTexId);
         }
 
@@ -1497,12 +1530,24 @@ public:
       return;
     }
 
+    static int earthColorVarId = ::get_shader_variable_id("earth_color_for_editor", true);
+    Color4 oldEarthColor;
+    bool thermalOn = isThermalVisionActive() && !preparing_light_probe;
+    if (thermalOn)
+    {
+      oldEarthColor = ShaderGlobal::get_float4(earthColorVarId);
+      ShaderGlobal::set_float4(earthColorVarId, Color4(0, 0, 0, 0));
+    }
+
     for (int i = 0; i < rendSrv.size(); i++)
       rendSrv[i]->renderGeometry(IRenderingService::STG_RENDER_ENVI);
     if (enviReqSceneBlk)
       ShaderGlobal::setBlock(-1, ShaderGlobal::LAYER_SCENE);
     for (int i = 0; i < rendSrv.size(); i++)
       rendSrv[i]->renderGeometry(IRenderingService::STG_RENDER_CLOUDS);
+
+    if (thermalOn)
+      ShaderGlobal::set_float4(earthColorVarId, oldEarthColor);
   }
   void renderGeomOpaque()
   {
@@ -1559,6 +1604,11 @@ public:
     TIME_D3D_PROFILE_NAME(render_vsm, "render_distortion_fx");
     for (int i = 0; i < rendSrv.size(); i++)
       rendSrv[i]->renderGeometry(IRenderingService::STG_RENDER_FX_DISTORTION);
+  }
+  // every render path must arm the glue: it holds the callbacks by value, not this object
+  void setHeatHazeFunctions()
+  {
+    heat_haze_glue.setFunctions([this]() { renderGeomDistortionFx(); }, [this]() { renderGeomDistortion(); });
   }
   void renderGeomForShadows()
   {
@@ -1635,6 +1685,7 @@ public:
     enviProbe = light_probe::create("envi", blk.getInt("lightProbeSz", 128), fmt);
     enviProbeBlack = light_probe::create("enviBlack", 4, TEXFMT_A16B16G16R16F);
     resetEnviProbesToBlack(true);
+    requestEnviProbeUpdate();
 
     deferredRtFmt = parseTexFmt(blk.getStr("sceneFmt", "A2B10G10R10"), TEXFMT_A8R8G8B8 | TEXCF_SRGBREAD | TEXCF_SRGBWRITE);
     postfxRtFmt = parseTexFmt(blk.getStr("postfxFmt", "ARGB8"), TEXFMT_A8R8G8B8);
@@ -1670,6 +1721,7 @@ public:
     downsample_depth::init("downsample_depth2x");
     volFogCallback.init();
     noPfxResolve.init("deferred_no_postfx_resolve", true);
+    thermalVision.init();
     preIntegratedGF = render_preintegrated_fresnel_GGX("preIntegratedGF", PREINTEGRATE_SPECULAR_DIFFUSE_QUALITY_MAX);
 
     shaders::OverrideState state;
@@ -1738,6 +1790,17 @@ public:
     resolvedDepthRenderer.init("intz_scene_to_float", true);
   }
 
+  bool isThermalVisionSupported() const { return rtype == RTYPE_DYNAMIC_DEFERRED && thermalVision.isSupported(); }
+
+  bool isThermalVisionActive() const { return thermalVision.isActive(); }
+
+  void requestEnviProbeUpdate()
+  {
+    reqEnviProbeUpdate = true;
+    enviProbeTexCheckAtMs = get_time_msec() + 250;
+    enviProbeCaptureDeadlineMs = get_time_msec() + 5000;
+  }
+
   void resetEnviProbesToBlack(bool set_sph_harm_vars)
   {
     G_ASSERT(enviProbeBlack);
@@ -1769,6 +1832,9 @@ public:
   {
     float cur_exposure = getExposure();
     setExposure(1.0f);
+    bool cur_thermal = isThermalVisionActive();
+    if (cur_thermal)
+      thermalVision.setEnabled(false);
     ShaderGlobal::setBlock(-1, ShaderGlobal::LAYER_FRAME);
     for (auto *rs : rendSrv)
       rs->renderGeometry(IRenderingService::STG_BEFORE_RENDER);
@@ -1816,10 +1882,10 @@ public:
 
     d3d::set_render_target();
 
+    thermalVision.setEnabled(cur_thermal);
     setExposure(cur_exposure);
     ShaderGlobal::setBlock(-1, ShaderGlobal::LAYER_FRAME);
     ShaderGlobal::set_texture(get_shader_variable_id("envi_probe_specular"), *light_probe::getManagedTex(enviProbe));
-    ShaderGlobal::set_sampler(get_shader_variable_id("envi_probe_specular_samplerstate"), d3d::request_sampler({}));
 
 #if 0 // NOTE: can use console command `tex.show envi_probe_specular#2 rgb` for visualization
     static int ord = 0;
@@ -1834,13 +1900,16 @@ public:
 
   void afterD3DReset(bool full_reset)
   {
+    // A device reset leaves preIntegratedGF blank, and every environment lit surface loses its ambient light.
+    if (preIntegratedGF.getTex2D())
+      render_preintegrated_fresnel_GGX(preIntegratedGF.getTex2D(), nullptr, 0, 1);
     if (ssao)
       ssao->reset();
     if (enviProbe)
     {
       resetEnviProbesToBlack(false);
-      updateEnviProbe(); // call this once before reqEnviProbeUpdate to get non-black probe
-      reqEnviProbeUpdate = true;
+      updateEnviProbe(); // get the sky light, but scene textures are still loading
+      requestEnviProbeUpdate();
     }
     if (deferredCsm)
       deferredCsm->invalidate();
@@ -1855,6 +1924,7 @@ public:
     blackTex.close();
     downsampledNormals.close();
     downsampledFarDepth.close();
+    downsampledFarDepthPrev.close();
     checkerboardDepth.close();
     downsampledOpaqueTarget.close();
     tonemapLUT.reset();
@@ -1959,7 +2029,9 @@ public:
       downsampledNormals.close();
       downsampledOpaqueTarget.close();
       downsampledFarDepth.close();
+      downsampledFarDepthPrev.close();
       checkerboardDepth.close();
+      thermalVision.closeTargets();
       volFogCallback.depthId = BAD_TEXTUREID;
     }
 
@@ -2071,10 +2143,13 @@ public:
       }
 
       lowresFxTex = dag::create_tex(nullptr, targetW / 2, targetH / 2, fmt | TEXCF_RTARGET, 1, "low_res_fx_rt");
+      thermalVision.resize(targetW, targetH);
 
+      downsampledFarDepthPrev =
+        dag::create_tex(nullptr, targetW / 2, targetH / 2, TEXCF_RTARGET | TEXFMT_R32F, 1, "downsampled_far_depth_tex_prev");
       downsampledFarDepth =
         dag::create_tex(nullptr, targetW / 2, targetH / 2, TEXCF_RTARGET | TEXFMT_R32F, 1, "downsampled_far_depth_tex");
-      downsampledFarDepth.setVar();
+      ShaderGlobal::set_texture(get_shader_variable_id("downsampled_far_depth_tex"), downsampledFarDepth.getTexId());
       {
         d3d::SamplerInfo smpInfo;
         smpInfo.address_mode_u = smpInfo.address_mode_v = smpInfo.address_mode_w = d3d::AddressMode::Border;
@@ -2084,10 +2159,11 @@ public:
       }
 
 
-      vrResources.downsampledFarDepth = UniqueTexWithShaderVar(
-        dag::create_tex(nullptr, targetW / 2, targetH / 2, TEXCF_RTARGET | TEXFMT_R32F, 1, "downsampled_far_depth_tex_vr"),
-        "downsampled_far_depth_tex");
-      vrResources.downsampledFarDepth.setVar();
+      vrResources.downsampledFarDepthPrev =
+        dag::create_tex(nullptr, targetW / 2, targetH / 2, TEXCF_RTARGET | TEXFMT_R32F, 1, "downsampled_far_depth_tex_vr_prev");
+      vrResources.downsampledFarDepth =
+        dag::create_tex(nullptr, targetW / 2, targetH / 2, TEXCF_RTARGET | TEXFMT_R32F, 1, "downsampled_far_depth_tex_vr");
+      ShaderGlobal::set_texture(get_shader_variable_id("downsampled_far_depth_tex"), vrResources.downsampledFarDepth.getTexId());
 
       checkerboardDepth =
         dag::create_tex(nullptr, targetW / 2, targetH / 2, TEXCF_RTARGET | TEXFMT_DEPTH32, 1, "downsampled_checkerboard_depth_tex");
@@ -2274,11 +2350,14 @@ public:
 
   float getExposure() const { return exposure; }
 
-  void setExposure(float exposure_value)
+  float getEffectiveExposure() const
   {
-    exposure = exposure_value;
-    hasExposureChanged = true;
+    if (isThermalVisionActive())
+      return render::special_vision::exposureThermal;
+    return renderNoPostfx ? 1.0f : exposure;
   }
+
+  void setExposure(float exposure_value) { exposure = exposure_value; }
 
 private:
   bool writeExposure(float exposure_value)
@@ -2288,6 +2367,7 @@ private:
       if (exposureParamsVarId != VariableMap::BAD_ID)
       {
         ShaderGlobal::set_float4(exposureParamsVarId, exposure_value, 1.0f / max(1e-4f, exposure_value), 1.0f, 0.0f);
+        writtenExposure = exposure_value;
         return true;
       }
       return false;
@@ -2302,6 +2382,7 @@ private:
         EXPOSURE_MAX_LOG - EXPOSURE_MIN_LOG, 1.0f / (EXPOSURE_MAX_LOG - EXPOSURE_MIN_LOG)};
       memcpy(exposureDestination, exposureData, EXPOSURE_BUF_SIZE * sizeof(float));
       exposureBuffer.getBuf()->unlock();
+      writtenExposure = exposure_value;
       return true;
     }
     else
@@ -2357,7 +2438,8 @@ private:
   bool srgb_backbuf_wr;
   eastl::unique_ptr<SSAORenderer> ssao;
   eastl::unique_ptr<ScreenSpaceReflections> ssr;
-  UniqueTexWithShaderVar downsampledNormals, downsampledOpaqueTarget, downsampledFarDepth, checkerboardDepth;
+  UniqueTexWithShaderVar downsampledNormals, downsampledOpaqueTarget, checkerboardDepth;
+  UniqueTex downsampledFarDepth, downsampledFarDepthPrev;
   UniqueTex lowresFxTex;
   UniqueTex blackTex;
   eastl::unique_ptr<UpscaleSamplingTex> upscaleSamplingRenderer;
@@ -2374,7 +2456,7 @@ private:
   UniqueBufWithShaderVar exposureBuffer;
   int exposureParamsVarId = VariableMap::BAD_ID;
   float exposure = 1.0f;
-  bool hasExposureChanged = true;
+  float writtenExposure = -1.0f;
 
   struct VolFogCallback : public DemonPostFxCallback
   {
@@ -2433,7 +2515,7 @@ private:
     UniqueTex sceneRt, postfxRt;
     UniqueTex resolvedDepth;
     UniqueTex imguiTex;
-    UniqueTexWithShaderVar downsampledFarDepth;
+    UniqueTex downsampledFarDepth, downsampledFarDepthPrev;
     UniqueTexWithShaderVar combinedShadowsTex;
 
     eastl::unique_ptr<SSAORenderer> ssao;
@@ -2448,6 +2530,7 @@ private:
       resolvedDepth.close();
       imguiTex.close();
       downsampledFarDepth.close();
+      downsampledFarDepthPrev.close();
       combinedShadowsTex.close();
       ssao.reset();
       upscaleSamplingRenderer.reset();
@@ -2530,7 +2613,10 @@ private:
     deferredRender(viewTransform, projTransform, true);
 
     if (use_heat_haze)
+    {
+      setHeatHazeFunctions();
       heat_haze_glue.render();
+    }
 
     bool use_postfx = (::hdr_render_mode != HDR_MODE_NONE) && postFx && !renderNoPostfx;
 
@@ -2609,6 +2695,7 @@ public:
   Tab<const char *> dbgShowTypeNm;
   Tab<int> dbgShowTypeVal;
   int dbgShowType;
+  int thermalShowTypeIdx = -1;
   DynamicRenderOption *dynRendOpt[ROPT_COUNT];
   Tab<const char *> shadowQualityNm;
   Tab<const DataBlock *> shadowQualityProps;
@@ -2733,6 +2820,12 @@ public:
       dynScene->initClassic();
     else if (dynScene->rtype == RTYPE_DYNAMIC_DEFERRED)
       dynScene->initDeferred(deferredBlk, shadowQualityProps[shadowQuality]);
+    if (thermalShowTypeIdx < 0 && dynScene->isThermalVisionSupported())
+    {
+      thermalShowTypeIdx = dbgShowTypeNm.size();
+      dbgShowTypeNm.push_back("thermal vision");
+      dbgShowTypeVal.push_back(-1);
+    }
     init_draw_cached_debug_twocolored_shader();
   }
   void term() override
@@ -2774,7 +2867,7 @@ public:
   void onLightingSettingsChanged() override
   {
     if (dynScene)
-      dynScene->reqEnviProbeUpdate = true;
+      dynScene->requestEnviProbeUpdate();
   }
 
   void beforeD3DReset(bool full_reset) override {}
@@ -2829,10 +2922,12 @@ public:
   {
     if (t < 0 || t >= dbgShowTypeNm.size())
       return false;
+    dynScene->setThermalVision(t == thermalShowTypeIdx);
     dbgShowType = t;
     dynScene->dbgShowType = dbgShowTypeVal[t];
     return true;
   }
+  bool isThermalVisionActive() const override { return dynScene && dynScene->isThermalVisionActive(); }
 
   const char *getRenderOptName(int ropt) override { return (ropt >= 0 && ropt < ROPT_COUNT) ? dynRendOpt[ropt]->name : NULL; }
   bool getRenderOptSupported(int ropt) override
@@ -2853,10 +2948,6 @@ public:
         case ROPT_SHADOWS: dynScene->updateCsm(); break;
         case ROPT_SHADOWS_VSM: dynScene->updateVsm(); break;
       }
-    if (ropt == ROPT_NO_POSTFX && !enable)
-    {
-      setExposure(1.0f);
-    }
   }
   bool getRenderOptEnabled(int ropt) override
   {
@@ -2898,6 +2989,8 @@ public:
       return 0.0f;
   };
 
+  float getEffectiveExposure() override { return dynScene ? dynScene->getEffectiveExposure() : 0.0f; }
+
   void getPostFxSettings(DemonPostFxSettings &set) override
   {
     if (dynScene)
@@ -2922,6 +3015,7 @@ public:
   static void onTonemapSettingsChanged();
 
   const ManagedTex &getDownsampledFarDepth() override { return dynScene->getDownsampledFarDepth(); }
+  const ManagedTex &getPrevDownsampledFarDepth() override { return dynScene->getPrevDownsampledFarDepth(); }
 
   void toggleVrMode() override { dynScene->toggleVrMode(); }
 

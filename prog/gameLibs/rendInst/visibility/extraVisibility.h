@@ -16,6 +16,9 @@ struct RiGenExtraVisibility
   bool forcedLocalPoolOrder = false; // ri res order won't be overwritten by a global pool order (must-have if same visibility is used
                                      // for multiple frames)
   rendinst::VisibilityRenderingFlags rendering = rendinst::VisibilityRenderingFlag::All;
+  // only the main view may prefetch lods of destroyed models, any other view would false-require them
+  // not inherited by filterVisibility() on purpose: off can only miss a prefetch, never false-require
+  bool requestDestrLods = false;
   int forcedExtraLod = -1;
   struct Order
   {

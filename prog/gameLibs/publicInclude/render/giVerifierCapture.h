@@ -43,12 +43,16 @@ namespace gi_verify
 // capture written to a fresh directory, so that is acceptable; a consumer
 // that archives captures should treat a folder as valid only once complete.
 
-// The environment plane is handed to the caller to encode rather than written
-// here: gameLibs/render is linked by every game, and an image encoder is not a
-// dependency they should all inherit for a developer capture (save_exr pulls
-// in tinyexr). `rgba16f` is tightly packed, w*h texels of 4 halves. Pass
-// nullptr to skip the environment plane; the blk then records env{valid:b=no}.
+// The environment plane is handed to a writer rather than encoded here, so that
+// gameLibs/render, which every game links, does not make them all inherit an
+// image encoder for a developer capture. `rgba16f` is tightly packed, w*h
+// texels of 4 halves. Pass nullptr to skip the environment plane; the blk then
+// records env{valid:b=no}.
 using EnvWriter = bool (*)(const char *path, const uint16_t *rgba16f, int w, int h);
+
+// Stock EnvWriter, in its own object file: naming it is what pulls save_exr in,
+// so a game that passes it must also link engine/image and tinyexr.
+bool write_env_exr(const char *path, const uint16_t *rgba16f, int w, int h);
 
 bool save_capture(const char *dir, const TMatrix &view_itm, const Driver3dPerspective &persp, int width, int height,
   const Point3 &dir_to_sun, const char *source_dump, const char *level_bin, EnvWriter env_writer);

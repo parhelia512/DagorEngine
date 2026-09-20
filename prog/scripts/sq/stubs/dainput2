@@ -3,6 +3,13 @@ return {
   BAD_ACTION_SET_HANDLE = 0xFFFF
   get_actions_count = @() 0
   get_action_handle_by_ord = @(_i) null
+  get_action_sets_count = @() 0
+  get_action_set_handle_by_ord = @(_i) 0
+  get_action_set_name = @(_set) ""
+  get_action_set_handle = @(_name) 0xFFFF // BAD_ACTION_SET_HANDLE, as the engine answers for a name it does not know
+  get_action_set_actions = @(_set) []
+  get_action_set_priority = @(_set) 0
+  are_action_sets_exclusive = @(_a, _b) false
   get_action_handle = @(...) 0
   set_double_click_time = @(dur_ms) assert(type(dur_ms)=="integer")
   set_long_press_time = @(dur_ms) assert(type(dur_ms)=="integer")
@@ -54,7 +61,10 @@ return {
   get_action_binding = @(_a, _column, _binding) null
   set_action_binding = @(_a, _column, _binding) null
   reset_action_binding = @(_a, _column) null
+  action_binding_changed = @(...) null
   check_bindings_conflicts = @(_a, _binding) null
+  check_bindings_conflicts_one = @(_a1, _column1, _a2, _column2) false
+  check_bindings_hides_action = @(_a, _binding) null
   is_recording_complete = @() true
   finish_recording_bindings = @(_blk) false
   send_action_event = @(_a) null

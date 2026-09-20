@@ -82,7 +82,7 @@ public:
   void setWaveletTextures(TEXTUREID chopWaterDetailCombined, TEXTUREID foamDissolveTex, TEXTUREID whiteNoise64Tex,
     TEXTUREID detailWaveletTexture);
 
-  void Update(float water_time, bool detail_waves_enabled = false);
+  void Update(float water_time, float scaled_dt, bool detail_waves_enabled = false);
   void setWind(float speed, const Point2 &wind_dir);
   float getWindSpeed() const { return genProps.wind_speed; }
 

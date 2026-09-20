@@ -27,11 +27,11 @@ void EditorCoreMenuCommon::EditorCommandMenuItem::onEditorCommandKeyChordChanged
   shortcut = command->getKeyChordsAsText();
 }
 
-bool EditorCoreMenuCommon::EditorCommandMenuItem::updateImguiButton(bool is_checked, bool is_bullet)
+bool EditorCoreMenuCommon::EditorCommandMenuItem::updateImguiButton(bool is_checked, bool is_bullet, const PropPanel::MenuStyle &style)
 {
   const bool hotkeyEditorContextMenuOpen = HotkeyEditorContextMenu::isMenuContextMenuOpen(this);
   const bool result = PropPanel::ImguiHelper::menuItemExWithLeftSideCheckmark(getTitle(), /*icon = */ nullptr, shortcut, is_checked,
-    enabled, is_bullet, hotkeyEditorContextMenuOpen);
+    enabled, is_bullet, hotkeyEditorContextMenuOpen, style, secondaryIsComment);
 
   if (ImGui::IsItemHovered() && ImGui::IsMouseClicked(ImGuiMouseButton_Right))
     HotkeyEditorContextMenu::createMenuContextMenu(editorCommandId, this);

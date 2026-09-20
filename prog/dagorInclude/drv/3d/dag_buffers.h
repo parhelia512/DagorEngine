@@ -11,6 +11,7 @@
 #include <drv/3d/dag_decl.h>
 #include <drv/3d/dag_tex3d.h>
 #include <drv/3d/dag_resourceChecker.h>
+#include <drv/3d/dag_multi_interface.h>
 #include <3d/dag_resourceTags.h>
 
 /**
@@ -225,7 +226,7 @@ public:
   }
 };
 
-namespace d3d
+namespace d3d _MULTI_INTERFACE
 {
 /**
  * @brief Creates a buffer with the specified parameters.
@@ -264,7 +265,7 @@ bool set_buffer(unsigned shader_stage, unsigned slot, Sbuffer *buffer);
  */
 bool set_rwbuffer(unsigned shader_stage, unsigned slot, Sbuffer *buffer);
 
-} // namespace d3d
+} // namespace d3d _MULTI_INTERFACE
 
 /*!
  * \file

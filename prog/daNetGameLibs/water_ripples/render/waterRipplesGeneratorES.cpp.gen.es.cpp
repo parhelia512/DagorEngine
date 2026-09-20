@@ -110,7 +110,7 @@ static ecs::EntitySystemDesc reset_water_ripples_es_es_desc
   empty_span(),
   empty_span(),
   empty_span(),
-  ecs::EventSetBuilder<AfterDeviceReset>::build(),
+  ecs::EventSetBuilder<EventAfterDeviceReset>::build(),
   0
 ,"render");
 static constexpr ecs::ComponentDesc update_water_ripples_es_comps[] =

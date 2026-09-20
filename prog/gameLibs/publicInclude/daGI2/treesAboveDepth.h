@@ -10,7 +10,7 @@
 #include <vecmath/dag_vecMath.h>
 #include <math/integer/dag_IPoint3.h>
 #include <render/toroidalHelper.h>
-#include <3d/dag_textureIDHolder.h>
+#include <3d/dag_resPtr.h>
 #include <shaders/dag_postFxRenderer.h>
 #include <EASTL/fixed_function.h>
 #include <generic/dag_tab.h>
@@ -33,8 +33,8 @@ protected:
   void renderRegionAlpha(IBBox2 &reg);
   void renderRegion(IBBox2 &reg, float texelSize, float minZ, float maxZ, const render_cb &cb, bool depth_min);
   ToroidalHelper trees2dHelper;
-  TextureIDHolderWithVar trees2d;
-  TextureIDHolderWithVar trees2dDepth, trees2dDepthMin;
+  UniqueTexWithShaderVar trees2d;
+  UniqueTexWithShaderVar trees2dDepth, trees2dDepthMin;
   float trees2dDist = 384;
   PostFxRenderer writeDepthToAlpha, clearRegions;
   Tab<IBBox2> regionsToClear, regionsToUpdate;

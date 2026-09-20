@@ -25,23 +25,11 @@ public:
   };
   real x, y, z, w;
 
-  INLINE Point4() = default;
-  INLINE Point4(real ax, real ay, real az, real aw)
-  {
-    x = ax;
-    y = ay;
-    z = az;
-    w = aw;
-  }
+  constexpr INLINE Point4() = default;
+  constexpr INLINE Point4(real ax, real ay, real az, real aw) : x(ax), y(ay), z(az), w(aw) {}
   // Point4(const Point4& p) {x=p.x;y=p.y;z=p.z;w=p.w;}
   // Point4& operator =(const Point4& p) {x=p.x;y=p.y;z=p.z;w=p.w;return *this;}
-  INLINE Point4(const real *p, CtorPtrMark /*check*/)
-  {
-    x = p[0];
-    y = p[1];
-    z = p[2];
-    w = p[3];
-  }
+  constexpr INLINE Point4(const real *p, CtorPtrMark /*check*/) : x(p[0]), y(p[1]), z(p[2]), w(p[3]) {}
 
   static const Point4 ZERO;
   static const Point4 ONE;
@@ -206,6 +194,9 @@ public:
     x = a.x, y = a.y, z = a.z, w = v;
   }
 };
+
+inline constexpr Point4 Point4::ZERO(0, 0, 0, 0);
+inline constexpr Point4 Point4::ONE(1, 1, 1, 1);
 
 /// dot product
 INLINE float dot(const Point4 &a, const Point4 &b) { return a * b; }

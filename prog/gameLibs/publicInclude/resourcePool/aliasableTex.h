@@ -34,6 +34,7 @@ protected:
   AliasMap aliasesMap;
   key_t currentKey = 0;
   resid_t lastResId = Helper<ManagedTex>::BAD_ID;
+  uint32_t lastResetGeneration = 0;
   BaseTexture *originalTexture = nullptr;
   int defaultWidth = 0;
   int defaultHeight = 0;
@@ -44,6 +45,7 @@ protected:
     eastl::swap(aliasesMap, other.aliasesMap);
     eastl::swap(currentKey, other.currentKey);
     eastl::swap(lastResId, other.lastResId);
+    eastl::swap(lastResetGeneration, other.lastResetGeneration);
     eastl::swap(originalTexture, other.originalTexture);
     eastl::swap(defaultWidth, other.defaultWidth);
     eastl::swap(defaultHeight, other.defaultHeight);
@@ -51,6 +53,7 @@ protected:
   AliasableManagedTex2D() = default;
   void calcKey();
   void recreate(int width, int height, int flags, int levels, key_t new_key);
+  void resetAliasCacheIfStale();
 
 public:
   void alias(int width, int height, int flags, int levels);

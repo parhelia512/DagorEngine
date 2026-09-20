@@ -363,10 +363,7 @@ static void send_phys_snapshots(double curTime,
 
 void net_send_phys_snapshots(double curTime, float /*dt*/)
 {
-  // Designed to run on the main thread; if a different thread reaches here it's a wiring bug.
-  G_ASSERTF(is_main_thread(), "net_send_phys_snapshots off main thread (cur=%lld)", (long long)get_current_thread_id());
-  // Intentional skip in eden user-thread net mode: no phys snapshots there (ecs_net_server handles replication).
-  if (!net::is_this_thread_net_em_owner())
+  if (!net::is_net_lifecycle_thread())
     return;
 
   net::CNetwork *netw = is_server() ? GET_NET() : nullptr;

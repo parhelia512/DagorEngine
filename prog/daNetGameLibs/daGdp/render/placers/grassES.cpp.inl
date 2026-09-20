@@ -104,9 +104,11 @@ static inline void grass_view_process_es(
         return;
       }
 
+      const float density = dagdp__density * GlobalManager::clampedGlobalDensityMul();
+
       GrassGrid *matchingGrid = nullptr;
       for (auto &grid : builder.grids)
-        if (grid.density == dagdp__density)
+        if (grid.density == density)
         {
           matchingGrid = &grid;
           break;
@@ -115,7 +117,7 @@ static inline void grass_view_process_es(
       if (!matchingGrid)
       {
         matchingGrid = &builder.grids.push_back();
-        matchingGrid->density = dagdp__density;
+        matchingGrid->density = density;
       }
 
       for (const auto biomeIndex : dagdp__biomes)

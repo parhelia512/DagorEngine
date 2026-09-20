@@ -121,7 +121,6 @@ public:
     das::addConstant<int>(*this, "LAYER_FRAME", ShaderGlobal::LAYER_FRAME);
     das::addConstant<int>(*this, "LAYER_SCENE", ShaderGlobal::LAYER_SCENE);
     das::addConstant<int>(*this, "LAYER_OBJECT", ShaderGlobal::LAYER_OBJECT);
-    das::addConstant<int>(*this, "LAYER_GLOBAL_CONST", ShaderGlobal::LAYER_GLOBAL_CONST);
 
 #define ADD_METHOD(name, side_effects)                         \
   using method_##name = DAS_CALL_MEMBER(ShaderMaterial::name); \

@@ -11,6 +11,7 @@
 #include <dag/dag_relocatable.h>
 #include <debug/dag_assert.h>
 #include <util/dag_globDef.h>
+#include <util/dag_compilerDefs.h>
 
 EA_DISABLE_VC_WARNING(4146) // unary minus operator applied to unsigned type, result still unsigned
 
@@ -72,7 +73,7 @@ template <typename T>
 using supports_read_type = decltype(supports_read_type_test(eastl::declval<T>()));
 }; // namespace internal
 
-class BitStream
+class DAGOR_WARN_IF_UNUSED BitStream
 {
 public:
   BitStream(IMemAlloc *a = defaultmem) : bitsUsed(0), dataOwner(0), allocator(a) {}

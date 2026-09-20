@@ -33,7 +33,7 @@ public:
   String processConsoleCmd(const char *argv[], int argc);
   void setTargetSize(const Point2 &target_size);
   void hideTex();
-  void render();
+  void render(int pre_rotation_angle = 0);
 
 private:
   class TextureWrapper
@@ -44,7 +44,7 @@ private:
     ~TextureWrapper();
     void reset();
     String initFromConsoleCmd(const char *argv[], int argc, const Point2 &target_size);
-    void render(const Point2 &targetSize, const PostFxRenderer &renderer);
+    void render(const Point2 &targetSize, const PostFxRenderer &renderer, int pre_rotation_angle);
 
   private:
     enum

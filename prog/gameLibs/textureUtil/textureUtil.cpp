@@ -6,6 +6,7 @@
 #include <drv/3d/dag_shaderConstants.h>
 #include <drv/3d/dag_driver.h>
 #include <drv/3d/dag_commands.h>
+#include <drv/3d/dag_texture.h>
 #include <3d/dag_textureIDHolder.h>
 #include <perfMon/dag_statDrv.h>
 #include <math/integer/dag_IPoint4.h>
@@ -50,7 +51,7 @@ static bool stitch_textures_impl(dag::ConstSpan<BaseTexture *> source_textures, 
       return false;
     source_textures[i]->getinfo(texInfo);
 
-    if (!dest_texture->updateSubRegion(source_textures[i], 0, 0, 0, 0, texInfo.w, texInfo.h, 1, 0, is_vertical ? 0 : offset,
+    if (!d3d::update_sub_region(source_textures[i], 0, 0, 0, 0, texInfo.w, texInfo.h, 1, dest_texture, 0, is_vertical ? 0 : offset,
           is_vertical ? offset : 0, 0))
       return false;
     offset += is_vertical ? texInfo.h : texInfo.w;

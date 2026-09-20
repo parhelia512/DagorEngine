@@ -163,7 +163,8 @@ struct DataBlockShared
     F_ROBUST_LD = 1u << 0,
     F_ROBUST_OPS = 1u << 1,
     F_BINONLY_LD = 1u << 2,
-    F_VALID = 1u << 3
+    F_VALID = 1u << 3,
+    F_NO_INCLUDES = 1u << 4
   };
   unsigned blkFlags = F_VALID; // BLK property flags
 
@@ -171,11 +172,13 @@ struct DataBlockShared
   unsigned blkRobustOps() const { return blkFlags & F_ROBUST_OPS; }
   unsigned blkBinOnlyLoad() const { return blkFlags & F_BINONLY_LD; }
   unsigned blkValid() const { return blkFlags & F_VALID; }
+  unsigned blkNoIncludes() const { return blkFlags & F_NO_INCLUDES; }
   void setBlkFlag(unsigned f, bool v) { v ? blkFlags |= f : blkFlags &= ~f; }
   void setBlkRobustLoad(bool v) { setBlkFlag(F_ROBUST_LD, v); }
   void setBlkRobustOps(bool v) { setBlkFlag(F_ROBUST_OPS, v); }
   void setBlkBinOnlyLoad(bool v) { setBlkFlag(F_BINONLY_LD, v); }
   void setBlkValid(bool v) { setBlkFlag(F_VALID, v); }
+  void setBlkNoIncludes(bool v) { setBlkFlag(F_NO_INCLUDES, v); }
 
 #if DATABLOCK_USES_FIXED_BLOCK_ALLOCATOR
   FixedBlockAllocator blocksAllocator = {sizeof(DataBlock), 1};

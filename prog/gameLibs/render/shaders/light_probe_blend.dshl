@@ -21,9 +21,17 @@ shader blend_light_probes
   no_ablend;
 
   (ps) {
-    dynamic_cube_tex_1@smpCube = dynamic_cube_tex_1;
-    dynamic_cube_tex_2@smpCube = dynamic_cube_tex_2;
+    dynamic_cube_tex_1@texCube = dynamic_cube_tex_1;
+    dynamic_cube_tex_2@texCube = dynamic_cube_tex_2;
     dynamic_cube_tex_blend_level@f2 = (dynamic_cube_tex_blend, dynamic_cube_tex_level,0,0);
+  }
+  if (!maybe(global_frame_has_linear_clamp_sampler))
+  {
+    INIT_GLOBAL_LINEAR_CLAMP_SAMPLER(ps)
+  }
+  hlsl(ps) {
+    #define dynamic_cube_tex_1_samplerstate global_linear_clamp_sampler
+    #define dynamic_cube_tex_2_samplerstate global_linear_clamp_sampler
   }
   USE_POSTFX_VERTEX_POSITIONS()
 
@@ -114,10 +122,17 @@ shader blend_light_probe_face
   no_ablend;
 
   (ps) {
-    dynamic_cube_tex_1@smpCube = dynamic_cube_tex_1;
+    dynamic_cube_tex_1@texCube = dynamic_cube_tex_1;
     tex@smp2d = tex;
     probetm@f44 = probetm;
     blend_face_no@f1 = (blend_face_no);
+  }
+  if (!maybe(global_frame_has_linear_clamp_sampler))
+  {
+    INIT_GLOBAL_LINEAR_CLAMP_SAMPLER(ps)
+  }
+  hlsl(ps) {
+    #define dynamic_cube_tex_1_samplerstate global_linear_clamp_sampler
   }
 
   POSTFX_VS_TEXCOORD(1, texcoord)

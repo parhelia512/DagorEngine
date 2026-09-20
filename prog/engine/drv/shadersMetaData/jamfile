@@ -1,0 +1,15 @@
+Root    ?= ../../../.. ;
+Location = prog/engine/drv/shadersMetaData ;
+
+include $(Root)/prog/_jBuild/defaults.jam ;
+
+TargetType  = lib ;
+Target      = engine/drv/shadersMetaData.lib ;
+
+# Must stay linkable from tools next to drv3d_null: no drv3d_commonCode
+# dependency, no d3d:: symbols, no driver globals.
+Sources =
+  shaderSource.cpp
+;
+
+include $(Root)/prog/_jBuild/build.jam ;

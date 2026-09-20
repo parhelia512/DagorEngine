@@ -465,7 +465,7 @@ static Tab<String> get_resolutions_from_output(IDXGIOutput *dxgiOutput)
 
 static bool is_swapchain_window_occluded()
 {
-  if (!drv3d_dx11::window_occlusion_check_enabled)
+  if (!drv3d_dx11::window_occlusion_check_enabled || !swap_chain)
     return false;
 
   TIME_PROFILE_NAME(checkOcclusion, "check window occlusion");
@@ -475,6 +475,25 @@ static bool is_swapchain_window_occluded()
 }
 
 static bool occluded_window = false;
+
+void drv3d_dx11::log_present_state(const char *tag)
+{
+  DXGI_FRAME_STATISTICS stats = {};
+  HRESULT statsHr = E_FAIL;
+  UINT lastPresent = 0;
+  if (swap_chain)
+  {
+    statsHr = swap_chain->GetFrameStatistics(&stats);
+    swap_chain->GetLastPresentCount(&lastPresent);
+  }
+  HRESULT removed = dx_device ? dx_device->GetDeviceRemovedReason() : E_FAIL;
+  debug("DX11 present state [%s]: app_active=%d occluded=%d/%d fg=%d iconic=%d visible=%d waitable=%d swapchain=%d "
+        "lastPresent=%u presentCount=%u syncRefresh=%u statsHr=0x%X removedReason=0x%X",
+    tag, (int)::dgs_app_active, (int)occluded_window, (int)is_swapchain_window_occluded(),
+    (int)(main_window_hwnd && GetForegroundWindow() == main_window_hwnd), (int)(main_window_hwnd && IsIconic(main_window_hwnd)),
+    (int)(main_window_hwnd && IsWindowVisible(main_window_hwnd)), (int)(waitableObject.get() != nullptr), (int)(swap_chain != nullptr),
+    lastPresent, stats.PresentCount, stats.SyncRefreshCount, statsHr, removed);
+}
 
 // Templates the RenderDoc capture output to <CWD>\GpuCaptures\<name>, matching drv3d_DX12.
 static void set_capture_path(RENDERDOC_API_1_5_0 *api, const wchar_t *name)
@@ -502,6 +521,7 @@ int d3d::driver_command(Drv3dCommand command, void *par1, void *par2, [[maybe_un
 
   switch (command)
   {
+    case Drv3dCommand::GET_PRESENTED_FRAME_COUNT: return 1;
     case Drv3dCommand::PROCESS_APP_INACTIVE_UPDATE:
     {
       if (occluded_window && !is_swapchain_window_occluded())
@@ -832,6 +852,18 @@ int d3d::driver_command(Drv3dCommand command, void *par1, void *par2, [[maybe_un
     case Drv3dCommand::GPU_BARRIER_WAIT_ALL_COMMANDS: // TODO: Implement GPU_BARRIER_WAIT_ALL_COMMANDS separately
     {
       TIME_D3D_PROFILE(Drv3dCommand::D3D_FLUSH);
+      if (DAGOR_UNLIKELY(!::dgs_app_active))
+      {
+        // A blocking flush while the window is inactive is where the shutdown and reset hangs sit.
+        static int lastLogMs = -100000;
+        int nowMs = get_time_msec();
+        if (nowMs - lastLogMs > 5000)
+        {
+          lastLogMs = nowMs;
+          log_present_state(
+            command == Drv3dCommand::D3D_FLUSH ? "D3D_FLUSH while app inactive" : "GPU_BARRIER_WAIT_ALL_COMMANDS while app inactive");
+        }
+      }
       if (fence_progress)
       {
         ContextAutoLock lock;
@@ -859,24 +891,6 @@ int d3d::driver_command(Drv3dCommand command, void *par1, void *par2, [[maybe_un
           break;
       }
       release_event_query(query);
-      return 1;
-    }
-
-    case Drv3dCommand::SET_VS_DEBUG_INFO:
-    {
-      set_vertex_shader_debug_info(*(VPROG *)par1, (const char *)par2);
-      return 1;
-    }
-
-    case Drv3dCommand::SET_PS_DEBUG_INFO:
-    {
-      set_pixel_shader_debug_info(*(FSHADER *)par1, (const char *)par2);
-      return 1;
-    }
-
-    case Drv3dCommand::SET_CS_DEBUG_INFO:
-    {
-      set_compute_shader_debug_info(*(PROGRAM *)par1, (const char *)par2);
       return 1;
     }
 
@@ -1225,6 +1239,8 @@ bool d3d::update_screen(uint32_t frame_id, bool app_active)
       bool reset = !wait_on_swapchain(waitableObject.get(), SWAPCHAIN_WAIT_TIMEOUT);
       if (DAGOR_UNLIKELY(reset)) // Swapchain waitable object is not signaled.
       {                          // We reset device to avoid possible present freeze.
+        log_present_state("swapchain wait timeout");
+        set_pending_reset_reason("swapchain waitable object timeout");
         dagor_d3d_force_driver_reset = true;
         return true;
       }
@@ -1236,7 +1252,11 @@ bool d3d::update_screen(uint32_t frame_id, bool app_active)
     }
   }
 
-  occluded_window = (presentHr == DXGI_STATUS_OCCLUDED);
+  if (DAGOR_UNLIKELY(occluded_window != (presentHr == DXGI_STATUS_OCCLUDED)))
+  {
+    occluded_window = (presentHr == DXGI_STATUS_OCCLUDED);
+    log_present_state(occluded_window ? "window occluded" : "window visible again");
+  }
 
   if (device_should_reset(presentHr, "Present"))
     return true;

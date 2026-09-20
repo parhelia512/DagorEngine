@@ -20,6 +20,8 @@ if $(Platform) in windows { ExportOptimus ?= yes ; } # force using discrete GPU 
 AotCompilerBaseName = $(Root)/samples/dngSceneViewer/tools/dngSceneViewer-aot ;
 AotJamfile = $(Root)/samples/dngSceneViewer/prog/_aot/jamfile ;
 DAS_AOT_COMPILER_OPT = -- --config $(Root)/$(Location)/_aot/aot_config.blk -sConfig $(Config) ;
+StreamlineFeatures = dlss reflex ;
+
 include $(Root)/prog/daNetGame/setup.jam ; # Note - $(Platform) is not defined before this line unless passed in command line
 
 if $(Platform) in windows { VRDeviceSupport ?= yes ; }
@@ -76,6 +78,7 @@ if $(Platform) in windows {
   Manifest = $(Root)/$(Location)/platform/$(Platform)/$(Game).exe.manifest ;
   Sources += platform/$(Platform)/$(Game).rc ;
   include $(Root)/prog/engine/drv/drv3d_DX12/copy_bundles.jam ;
+  include $(Root)/prog/engine/drv/drv3d_commonCode/copy_bundles.jam ;
   if $(FmodStudio) != src && $(HaveSound) != no {
     AddLibs += $(FmodStaticLibs) ;
     for dll in $(FmodStudioSharedLibs) { BundleCopy += @$(dll) $(dll:D=) ; }

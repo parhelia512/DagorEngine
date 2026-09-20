@@ -36,7 +36,7 @@ struct FindRequestAnnotation : das::ManagedStructureAnnotation<pathfinder::FindR
     addField<DAS_BIND_MANAGED_FIELD(startPoly)>("startPoly");
     addField<DAS_BIND_MANAGED_FIELD(endPoly)>("endPoly");
     addField<DAS_BIND_MANAGED_FIELD(numPolys)>("numPolys");
-    addField<DAS_BIND_MANAGED_FIELD(areasCost)>("areasCost");
+    // areasCost is a framemem container das has no type for, scripts fill it with find_request_add_area_cost
   }
 };
 
@@ -54,7 +54,7 @@ struct CorridorInputAnnotation : das::ManagedStructureAnnotation<pathfinder::Cor
     addField<DAS_BIND_MANAGED_FIELD(targetPoly)>("targetPoly");
     addField<DAS_BIND_MANAGED_FIELD(extents)>("extents");
     addField<DAS_BIND_MANAGED_FIELD(maxJumpUpHeight)>("maxJumpUpHeight");
-    addField<DAS_BIND_MANAGED_FIELD(areasCost)>("areasCost");
+    // areasCost is a framemem container das has no type for, scripts fill it with corridor_input_add_area_cost
   }
 };
 

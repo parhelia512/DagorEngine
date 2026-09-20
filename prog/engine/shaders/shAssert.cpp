@@ -51,6 +51,7 @@ void AssertionContext::init(ScriptedShadersBinDumpOwner const &dump_owner)
 
   failedByClass.clear();
   stacksOnFrames.fill({});
+  debugNamesOnFrames.fill({});
   currentFrame = 0;
 
   {
@@ -199,11 +200,16 @@ void AssertionContext::readback(ScriptedShadersBinDumpOwner const &dump_owner)
 
         output += '\n';
         if (it->stack_id < stacksOnFrames[frame].size())
+        {
           output += stackhlp_get_call_stack_str(stacksOnFrames[frame][it->stack_id].data(), MAX_STACK_SIZE);
+          if (!debugNamesOnFrames[frame][it->stack_id].empty())
+            output = debugNamesOnFrames[frame][it->stack_id].c_str() + (": " + output);
+        }
         logerr("%s", output.c_str());
       }
     }
     stacksOnFrames[frame].clear();
+    debugNamesOnFrames[frame].clear();
   }
 
   Sbuffer *newTarget = (Sbuffer *)assertionRingBuffer.getNewTarget(frame);
@@ -214,7 +220,8 @@ void AssertionContext::readback(ScriptedShadersBinDumpOwner const &dump_owner)
   currentFrame = (frame + 1) % RING_BUFFER_SIZE;
 }
 
-void AssertionContext::bind(int shader_class_id, ScriptedShadersBinDumpOwner const &dump_owner)
+void AssertionContext::bind(int shader_class_id, ScriptedShadersBinDumpOwner const &dump_owner,
+  debug_name_lazy_getter_t &&get_debug_variant_name)
 {
   if (!assertionBuffer)
     return;
@@ -246,6 +253,12 @@ void AssertionContext::bind(int shader_class_id, ScriptedShadersBinDumpOwner con
   {
     stacksOnFrames[currentFrame].emplace_back();
     stackhlp_fill_stack(stacksOnFrames[currentFrame].back().data(), MAX_STACK_SIZE, 6);
+
+    auto debugName = get_debug_variant_name();
+    if (debugName.empty())
+      debugNamesOnFrames[currentFrame].emplace_back(dump_owner.getDump()->classes[shader_class_id].name.data());
+    else
+      debugNamesOnFrames[currentFrame].emplace_back(debugName);
   }
 }
 

@@ -253,7 +253,9 @@ def plot_build_csv(w : PlotWindow&) : string
       let axis_idx = clamp(e.comp_idx, 0, 3)
       let axis_char = slice("xyzw", axis_idx, axis_idx + 1)
       let row_suffix = e.rows > 1 ? "[{e.row_idx}]" : ""
-      if e.dim == 1
+      if e.slot_mode
+        sb |> write(",slot {int(e.slot)}")
+      elif e.dim == 1
         sb |> write(",{e.eid}/{e.name}{row_suffix}")
       else
         sb |> write(",{e.eid}/{e.name}{row_suffix}/{axis_char}")
@@ -614,6 +616,7 @@ def plot_toolbar(var w : PlotWindow&; daeditor_eid : EntityId)
     if w.toolbar_slot_mode
       last.slot_mode = true
       last.slot = w.toolbar_slot
+      w.toolbar_slot++
     else
       last.eid = w.toolbar_eid
     last.scale_min = -1.0f

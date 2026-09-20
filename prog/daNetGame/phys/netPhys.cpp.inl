@@ -62,6 +62,8 @@ extern ConVarB sv_debug_phys_desyncs;
 
 #define DESTROY_ENTITY_FLOOR_Y          -(QuantizedWorldPosYScale() - 100.f)
 #define PHYS_SNAP_TELEPORT_THRESHOLD_SQ (400.f)
+// Squared tolerance for a dequantized HIDDEN_QWPOS_XYZ (quantization error is ~1.95mm, see quantization.h)
+#define HIDDEN_QWPOS_TOLERANCE_SQ       (1.f)
 
 // World box includes non-quantized physics (i.e. airplanes)
 static const BBox3 PHYS_ENTITY_WORLD_BBOX(Point3(-1e5f, DESTROY_ENTITY_FLOOR_Y, -1e5f), Point3(1e5f, 3e4f, 1e5f));
@@ -190,22 +192,34 @@ void PHYS_ACTOR::doEnqueueCT(double at_time)
   afterEnqueueCT();
 }
 
+static inline bool is_phys_actor_tm_finite(const TMatrix &tm)
+{
+  vec4f result = v_or(v_is_not_finite(v_ldu(tm.array)), v_is_not_finite(v_ldu(tm.array + 4)));
+  result = v_or(result, v_is_not_finite(v_ldu(tm.array + 8)));
+  return v_check_xyzw_all_false(result);
+}
+
 template <typename T>
-static void destroy_fallthrough_phys_actor(const T &actor, const TMatrix &tm)
+static void destroy_fallthrough_phys_actor(const T &actor, const TMatrix &tm, bool tm_is_finite)
 {
   const Point3 &pos = tm.getcol(3);
-  if (DAGOR_UNLIKELY(!(PHYS_ENTITY_WORLD_BBOX & pos)))
+  if (DAGOR_LIKELY(tm_is_finite && (PHYS_ENTITY_WORLD_BBOX & pos)))
+    return;
+  if (!tm_is_finite)
+    logerr("Destroying entity %d<%s> because its phys transform is not finite: %@", ecs::entity_id_t(actor.getEid()),
+      g_entity_mgr->getEntityTemplateName(actor.getEid()), tm);
+  else
   {
     int logLev = (pos.y < DESTROY_ENTITY_FLOOR_Y) ? LOGLEVEL_WARN : LOGLEVEL_ERR;
     logmessage(logLev, "Destroying entity %d<%s> because it's pos %@ exceeds 'world bbox' (%@, %@)", ecs::entity_id_t(actor.getEid()),
       g_entity_mgr->getEntityTemplateName(actor.getEid()), pos, PHYS_ENTITY_WORLD_BBOX.lim[0], PHYS_ENTITY_WORLD_BBOX.lim[1]);
-    // Force remove it from coll grid (for the duration of this frame) since objects in NaNs or "in space" might cause UB or asserts in
-    // code that isn't expecting it
-    if (auto grid_obj = g_entity_mgr->getNullableRW<GridObjComponent>(actor.getEid(), ECS_HASH("grid_obj")))
-      grid_obj->removeFromGrid();
-    g_entity_mgr->setOptional(actor.getEid(), ECS_HASH("beh_tree__enabled"), false); // ditto
-    g_entity_mgr->destroyEntity(actor.getEid());
   }
+  // Force remove it from coll grid (for the duration of this frame) since objects in NaNs or "in space" might cause UB or asserts in
+  // code that isn't expecting it
+  if (auto grid_obj = g_entity_mgr->getNullableRW<GridObjComponent>(actor.getEid(), ECS_HASH("grid_obj")))
+    grid_obj->removeFromGrid();
+  g_entity_mgr->setOptional(actor.getEid(), ECS_HASH("beh_tree__enabled"), false); // ditto
+  g_entity_mgr->destroyEntity(actor.getEid());
 }
 
 ECS_DECLARE_GET_FAST_BASE(int, net__upToCtrlTick, "net__upToCtrlTick");
@@ -343,9 +357,16 @@ void PHYS_ACTOR::update(double at_time, double remote_time, float dt, const Base
     else
       send_authority_state(this, phys, PHYS_SEND_AUTH_STATE_PERIOD_SEC, &phys_send_auth_state, &phys_send_part_auth_state);
   }
-  *uctx.transform = phys.visualLocation.makeTM();
+  const TMatrix tm = phys.visualLocation.makeTM();
+  const bool tmIsFinite = is_phys_actor_tm_finite(tm);
+  // destroyEntity() is deferred. Better leave the last valid value in the tm, rather than assigning NaNs
+  if (DAGOR_LIKELY(tmIsFinite))
+    *uctx.transform = tm;
   if (thisRole & IPhysActor::URF_AUTHORITY)
-    destroy_fallthrough_phys_actor(*this, *uctx.transform);
+    destroy_fallthrough_phys_actor(*this, tm, tmIsFinite);
+  else if (DAGOR_UNLIKELY(!tmIsFinite))
+    LOGERR_ONCE("Non-authority phys actor %d<%s> visual transform is not finite: %@", ecs::entity_id_t(getEid()),
+      g_entity_mgr->getEntityTemplateName(getEid()), tm);
 }
 
 TEMPLATE_PHYS_ACTOR
@@ -793,15 +814,23 @@ EA_RESTORE_VC_WARNING()
 
 static inline TMatrix &validate_phys_actor_tm(TMatrix &tm, ecs::EntityId eid, ecs::EntityManager &mgr)
 {
-  if (float det = tm.det(); DAGOR_UNLIKELY(det < 1e-12f))
+  const float det = tm.det();
+  if (DAGOR_UNLIKELY(det < 1e-12f))
   {
     logerr("Creating phys actor %d<%s> with non-orthonormalized (det=%f) matrix: %@", (ecs::entity_id_t)eid,
       mgr.getEntityTemplateName(eid), det, tm);
     tm.orthonormalize();
   }
+  // (det, col[3][0], col[3][1], col[3][2]) are loaded into the vector register
+  if (DAGOR_UNLIKELY(!v_check_xyzw_all_false(v_is_not_finite(v_perm_ayzw(v_ldu(tm.array + 8), v_set_x(det))))))
+  {
+    logerr("Creating phys actor %d<%s> with a non-finite matrix: %@", (ecs::entity_id_t)eid, mgr.getEntityTemplateName(eid), tm);
+    return tm;
+  }
   if (vec3f vpos = v_ldu_p3(&tm.getcol(3).x);
       DAGOR_UNLIKELY(v_extract_y(vpos) < DESTROY_ENTITY_FLOOR_Y || v_extract_x(v_length3_sq_x(vpos)) >= 9e8f))
-    if (!(PHYS_ENTITY_WORLD_BBOX & tm.getcol(3)))
+    // pos may legitimately be the HIDDEN_QWPOS_XYZ sentinel sent while we're PhysSnapSerializeType::HIDDEN
+    if (!(PHYS_ENTITY_WORLD_BBOX & tm.getcol(3)) && lengthSq(tm.getcol(3) - Point3(HIDDEN_QWPOS_XYZ)) > HIDDEN_QWPOS_TOLERANCE_SQ)
       logerr("Attempt to create phys actor %d<%s> with pos %@ out of `world bbox`: (%@, %@)", (ecs::entity_id_t)eid,
         mgr.getEntityTemplateName(eid), tm.getcol(3), PHYS_ENTITY_WORLD_BBOX.lim[0], PHYS_ENTITY_WORLD_BBOX.lim[1]);
   return tm;

@@ -14,13 +14,13 @@
     ret.p = p;
     ret.wdir = dir;
     ret.pt = int3(floor(p / leafSize));
-    ret.stepCell = dir >= 0.0f ? 1 : -1;
+    ret.stepCell = select(dir >= 0.0f, int3(1,1,1), int3(-1,-1,-1));
     int3 nextPt = ret.pt + max(0, ret.stepCell);
     float3 absDir = abs(dir);
-    ret.tDelta = absDir > 1e-9f ? leafSize / absDir : 0;
+    ret.tDelta = select(absDir > 1e-9f, leafSize / absDir, float3(0,0,0));
 
     // this calculations should be made in doubles for precision
-    ret.tMax = absDir > 1e-9 ? (nextPt * leafSize - p) / dir : 1e15;
+    ret.tMax = select(absDir > 1e-9, (nextPt * leafSize - p) / dir, float3(1e15,1e15,1e15));
     return ret;
   }
 
@@ -51,11 +51,11 @@
 
   float3 ray_box_intersect_normal(float3 wpos, float3 wdir, float3 bmin, float3 bmax)
   {
-    float3 cb = (wdir >= 0.0f) ? bmin : bmax;
+    float3 cb = select(wdir >= 0.0f, bmin, bmax);
 
     float3 rzr = 1.0 / wdir;
     bool3 nonzero = (abs(wdir) > 1e-6);
-    float3 startOfs = nonzero ? max(0, (cb - wpos) * rzr) : 0;
+    float3 startOfs = select(nonzero, max(0, (cb - wpos) * rzr), float3(0,0,0));
     float maxStart = max3(startOfs.x, startOfs.y, startOfs.z);
     return -(maxStart == startOfs.x ? float3(sign(wdir.x),0,0) : maxStart == startOfs.y ? float3(0, sign(wdir.y),0) : float3(0, 0, sign(wdir.z)));
   }

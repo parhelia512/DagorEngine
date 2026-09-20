@@ -218,7 +218,12 @@ void BitstreamSerializer::write(const void *from, size_t sz_in_bits, ecs::compon
   else if (user_type == ecs::ComponentTypeInfo<ecs::EntityId>::type)
   {
     DAECS_EXT_ASSERT(sz_in_bits == sizeof(ecs::entity_id_t) * CHAR_BIT);
-    write_server_eid(*(const ecs::entity_id_t *)from, bs);
+    write_server_eid(*(const ecs::entity_id_t *)from, bs, [this] {
+      return curEid ? eastl::string(eastl::string::CtorSprintf{}, "component <%s> of entity %d<%s>",
+                        mgr.getDataComponents().getComponentNameById(curCidx), (ecs::entity_id_t)curEid,
+                        mgr.getEntityTemplateName(curEid))
+                    : eastl::string(); // event payloads have no entity behind them
+    });
   }
   else if (user_type == ecs::ComponentTypeInfo<bool>::type) // bool optimization
   {
@@ -299,6 +304,8 @@ bool Connection::serializeComponentReplication(ecs::EntityId eid, const ecs::Ent
   }
   write_component_index(comp.getComponentId(), bs);
   BitstreamSerializer serializer(mgr, bs);
+  serializer.curEid = eid;
+  serializer.curCidx = comp.getComponentId();
   ecs::serialize_entity_component_ref_typeless(comp, serializer, mgr);
   return true;
 }
@@ -674,6 +681,8 @@ void Connection::serializeConstruction(ecs::EntityId eid, danet::BitStream &bs, 
       }
       else
         ser.bs.WriteCompressed(ofs);
+      ser.curEid = eid;
+      ser.curCidx = comp.getComponentId();
       ecs::serialize_entity_component_ref_typeless(comp, ser, mgr);
       state.prevComponent = state.componentsInTemplate;
     }

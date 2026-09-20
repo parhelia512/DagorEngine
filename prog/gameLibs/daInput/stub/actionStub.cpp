@@ -7,6 +7,7 @@
 dainput::action_handle_t dainput::get_action_handle(const char *, uint16_t) { return BAD_ACTION_HANDLE; }
 bool dainput::is_action_active(dainput::action_handle_t) { return false; }
 bool dainput::reset_digital_action_sticky_toggle(dainput::action_handle_t) { return false; }
+void dainput::action_binding_changed(action_handle_t, int) {}
 const dainput::DigitalAction &dainput::get_digital_action_state(dainput::action_handle_t)
 {
   static DigitalAction stub = {false, false};
@@ -49,6 +50,8 @@ void dainput::term_user_config() {}
 
 int dainput::get_actions_count() { return 0; }
 int dainput::get_action_sets_count() { return 0; }
+int dainput::get_action_set_priority(dainput::action_set_handle_t) { return 0; }
+bool dainput::are_action_sets_exclusive(dainput::action_set_handle_t, dainput::action_set_handle_t) { return false; }
 uint16_t dainput::get_action_type(dainput::action_handle_t) { return 0xFFFF; }
 dainput::action_set_handle_t dainput::set_breaking_action_set(dainput::action_set_handle_t) { return BAD_ACTION_SET_HANDLE; }
 dainput::action_set_handle_t dainput::setup_action_set(const char *, dag::ConstSpan<dainput::action_handle_t>)

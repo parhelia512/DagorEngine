@@ -727,7 +727,6 @@ void init(const DataBlock &blk, const ProhibitedBankDescs &prohibited_bank_descs
 
   g_report_bank_loading_time = blk.getBool("reportBankLoadingTime", false);
 
-  FrameStr name, path;
   const DataBlock &presetsBlk = *banksBlk.getBlockByNameEx("presets");
   all_presets.reserve(presetsBlk.blockCount());
   for (int j = 0; j < presetsBlk.blockCount(); ++j)

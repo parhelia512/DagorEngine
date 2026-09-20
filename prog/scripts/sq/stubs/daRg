@@ -120,8 +120,15 @@ class EditableText {
   }
 }
 
+class StatefulCompDesc {
+  name = "StatefulCompDesc"
+}
+
 class StatefulCompType {
   name = "StatefulCompType"
+  function _call(_callsite_this, ...) {
+    return StatefulCompDesc()
+  }
 }
 
 let darg = {

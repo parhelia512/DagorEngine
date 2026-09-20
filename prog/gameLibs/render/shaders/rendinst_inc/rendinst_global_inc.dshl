@@ -24,6 +24,14 @@ float4 impostor_shadow_x = (0,0,0,0);
 float4 impostor_shadow_y = (0,0,0,0);
 float4 impostor_shadow_z = (0,0,0,0);
 texture impostor_shadow;
+sampler impostor_shadow_samplerstate
+{
+  comparison_func = less;
+  mipmap_mode = point;
+  address_u = clamp;
+  address_v = clamp;
+  address_w = clamp;
+};
 
 float tree_wind_branch_amp = 0.5;
 float tree_wind_detail_amp = 0.5;
@@ -33,6 +41,7 @@ float tess_quality = 75;
 
 float lods_shift_dist_mul = 1.0;
 float ri_dist_mul_rcp = 1.0;
+float ri_fade_y_scale = 1.0;
 
 ////// macro
 

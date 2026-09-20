@@ -10,6 +10,8 @@ void AcesEffect::setVelocity(const Point3 &) {}
 void AcesEffect::setVelocityScaleMinMax(const Point2 &) {}
 void AcesEffect::setSpawnRate(float) {}
 void AcesEffect::setLightRadiusMultiplier(float) {}
+void AcesEffect::setLightFlags(uint32_t) {}
+void AcesEffect::setLightSourceRadius(float) {}
 void AcesEffect::setColorMult(const Color4 &) {}
 void AcesEffect::setVisibility(uint32_t) {}
 void AcesEffect::hide(bool) {}

@@ -66,8 +66,8 @@ public:
   static DynamicRenderableSceneResource *loadResource(IGenLoad & crd, int srl_flags);
 
   static DynamicRenderableSceneResource *loadResourceInternal(IGenLoad & crd, DynSceneResNameMapResource * nm, int srl_flags,
-    ShaderMatVdata &smvd, int res_sz = -1);
-  void loadSkins(IGenLoad & crd, int flags, ShaderMatVdata &skin_smvd);
+    int static_flags, ShaderMatVdata &smvd, int res_sz = -1);
+  void loadSkins(IGenLoad & crd, int srl_flags, ShaderMatVdata &skin_smvd);
 
   void render(DynamicRenderableSceneInstance &, real opacity);
   void renderTrans(DynamicRenderableSceneInstance &, real opacity);
@@ -192,7 +192,7 @@ protected:
   ~DynamicRenderableSceneResource() { clearData(); }
 
   // patches data after resource dump loading
-  void patchAndLoadData(IGenLoad & crd, int flags, int res_sz, ShaderMatVdata &smvd);
+  void patchAndLoadData(IGenLoad & crd, int srl_flags, int res_sz, ShaderMatVdata &smvd);
 
   // explicit destructor
   void clearData();
@@ -445,9 +445,9 @@ protected:
   void addToCloneList(const DynamicRenderableSceneLodsResource &from);
 
   // patches data after resource dump loading
-  int patchAndLoadData(IGenLoad & crd, int flags, int res_sz);
+  int patchAndLoadData(IGenLoad & crd, int srl_flags, int res_sz);
 
-  void loadSkins(IGenLoad & crd, int flags, const DataBlock *desc = nullptr);
+  void loadSkins(IGenLoad & crd, int srl_flags, const DataBlock *desc = nullptr);
 
   uint32_t getResSize() const { return (interlocked_relaxed_load(packedFields) >> RES_SIZE_SHIFT) & RES_SIZE_MASK; }
 
@@ -489,6 +489,16 @@ public:
       G_ASSERT_RETURN(bone_id < 256, );
       data[bone_id / 32] |= 1u << (bone_id % 32);
     }
+
+    bool isBoneMarked(uint32_t bone_id) const { return bone_id < 256 && (data[bone_id / 32] & (1u << (bone_id % 32))) != 0; }
+
+    bool isEmpty() const
+    {
+      for (uint32_t w : data)
+        if (w)
+          return false;
+      return true;
+    }
   };
 
   static float lodDistanceScale;
@@ -528,7 +538,11 @@ public:
 
   void showSkinnedNodesConnectedToBone(int bone_id, bool need_show);
 
-  void clearNodeCollapser() { nodeCollapserBits.clear(); }
+  void clearNodeCollapser()
+  {
+    nodeCollapserBits.clear();
+    nodeCollapserTargetNode = -1;
+  }
 
   void markNodeCollapserNode(uint32_t node_index)
   {
@@ -537,6 +551,12 @@ public:
       return;
     nodeCollapserBits.markBone(boneId);
   }
+
+  // WT only, collapse on the CPU. DNG does this in the skinning shader.
+  // Collapsed nodes all collapse to the position of this node.
+  // Limitation: All collapsed nodes will move to this one position, per-node positions are not supported.
+  void setNodeCollapserTarget(int node_index) { nodeCollapserTargetNode = node_index; }
+  int getNodeCollapserTarget() const { return nodeCollapserTargetNode; }
 
   const NodeCollapserBits &getNodeCollapserBits() const { return nodeCollapserBits; }
   NodeCollapserBits &getRWNodeCollapserBits() { return nodeCollapserBits; }
@@ -736,6 +756,7 @@ protected:
   uint32_t uniqueId;
 
   NodeCollapserBits nodeCollapserBits;
+  int nodeCollapserTargetNode = -1;
 
   enum Offsets
   {

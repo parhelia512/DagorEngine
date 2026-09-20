@@ -134,6 +134,8 @@ void make_cache_fname(String &cache_fname, const char *cache_base, const char *p
 
 int make_exp_types_mask(Tab<bool> &exp_types_mask, DagorAssetMgr &mgr, const DataBlock &expblk, ILogWriter &log);
 
+// gameres_patch_desc() drops the whole layer unless base_md5 matches the base file, and resDiff sets it only where it had a diff
+void dabuild_set_desc_base_md5(DataBlock &desc_blk, const char *base_desc_fname);
 void dabuild_prepare_out_blk(DataBlock &dest, DagorAssetMgr &mgr, const DataBlock &build_blk);
 void dabuild_finish_out_blk(DataBlock &dest, DagorAssetMgr &mgr, const DataBlock &build_blk, const DataBlock &export_blk,
   const char *app_dir, unsigned tc, const char *profile);

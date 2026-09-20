@@ -177,6 +177,7 @@ void HmapLandObjectEditor::exportAsComposit()
 
   PtrTab<LandscapeEntityObject> ent_objs;
   PtrTab<SplineObject> spl_objs;
+  int bakedFillets = 0;
   DataBlock splitSplinesBlk;
   unsigned comp_count = 0;
   for (int i = 0; i < selection.size(); ++i)
@@ -269,16 +270,23 @@ void HmapLandObjectEditor::exportAsComposit()
       center = s->points[0]->getPt();
       centerSetted = true;
     }
-    int pt_cnt = s->points.size() - (s->isClosed() ? 1 : 0);
-    orig_pts.resize(pt_cnt);
-    for (int j = 0; j < pt_cnt; j++)
+    // snapshot source points: setPos rebuilds the curve, and reconciliation reshuffles the array between offset and restore
+    PtrTab<SplinePointObject> pts(tmpmem);
+    s->gatherSourcePoints(pts);
+    orig_pts.resize(pts.size());
+    for (int j = 0; j < pts.size(); j++)
     {
-      orig_pts[j] = s->points[j]->getPt();
-      s->points[j]->setPos(s->points[j]->getPt() - center);
+      orig_pts[j] = pts[j]->getPt();
+      pts[j]->setPos(orig_pts[j] - center);
     }
-    s->save(*blk.addNewBlock("node"));
-    for (int j = 0; j < pt_cnt; j++)
-      s->points[j]->setPos(orig_pts[j]);
+    for (auto &p : pts)
+      if (p->hasActiveFillet())
+        bakedFillets++;
+    // the composite has no reconcile of its own, so its spline carries baked knots. The export leaves the source spline
+    // untouched, so a fillet-less composite is a matter of clearing filletR and exporting again
+    s->save(*blk.addNewBlock("node"), SplineObject::FILLET_BAKE);
+    for (int j = 0; j < pts.size(); j++)
+      pts[j]->setPos(orig_pts[j]);
   }
   for (int i = 0; i < splitSplinesBlk.blockCount(); i++)
   {
@@ -311,7 +319,12 @@ void HmapLandObjectEditor::exportAsComposit()
     if (!compositBlk.saveToTextFile(path))
       con.addMessage(ILogWriter::ERROR, "error while saving file '%s'", path.str());
     else
+    {
       con.addMessage(ILogWriter::NOTE, "created composit with %d entities", exportedCnt);
+      if (bakedFillets)
+        con.addMessage(ILogWriter::NOTE,
+          "baked %d filleted corner(s) into the composit spline(s), a placed composit has no reconciler", bakedFillets);
+    }
   }
 
   con.endLog();

@@ -9,16 +9,17 @@
 #include <3d/dag_resPtr.h>
 #include <shaders/dag_overrideStateId.h>
 #include <EASTL/unique_ptr.h>
+#include <generic/dag_functionRef.h>
 
 class PostFxRenderer;
 
 class HeatHazeRenderer
 {
 public:
-  using RenderHazeParticlesCallback = eastl::function<void()>;
-  using RenderCustomHazeCallback = eastl::function<void()>;
-  using BeforeApplyHazeCallback = eastl::function<void()>;
-  using AfterApplyHazeCallback = eastl::function<void()>;
+  using RenderHazeParticlesCallback = dag::FunctionRef<void() const>;
+  using RenderCustomHazeCallback = dag::FunctionRef<void() const>;
+  using BeforeApplyHazeCallback = dag::FunctionRef<void() const>;
+  using AfterApplyHazeCallback = dag::FunctionRef<void() const>;
 
   struct RenderTargets
   {
@@ -44,7 +45,7 @@ public:
 
   void render(double total_time, const RenderTargets &targets, const IPoint2 &back_buffer_resolution, int depth_tex_lod,
     RenderHazeParticlesCallback render_haze_particles, RenderCustomHazeCallback render_ri_haze,
-    BeforeApplyHazeCallback before_apply_haze = nullptr, AfterApplyHazeCallback after_apply_haze = nullptr);
+    BeforeApplyHazeCallback before_apply_haze = {}, AfterApplyHazeCallback after_apply_haze = {});
 
   void clearTargets(Texture *haze_color, Texture *haze_offset, Texture *haze_depth);
   int getHazeResolutionDivisor() const { return hazeResolutionDivisor; }

@@ -237,7 +237,7 @@ void BloodPuddles::initGroupAttributes(const ecs::Object &group_attributes)
     perGroupPackedParams.data(), VBLOCK_DISCARD);
 }
 
-static void reset_blood_es(const AfterDeviceReset &)
+static void reset_blood_es(const EventAfterDeviceReset &)
 {
   if (get_blood_puddles_mgr())
     get_blood_puddles_mgr()->reset();

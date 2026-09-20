@@ -27,8 +27,6 @@ endmacro
 
 macro INIT_HDR_STCODE()
 endmacro
-macro INIT_SUN_STCODE()
-endmacro
 macro USE_SUN()
 endmacro
 
@@ -106,7 +104,6 @@ block(frame) water3d_block
   }
 
   INIT_HDR_STCODE()
-  INIT_SUN_STCODE()
   INIT_CLOUDS_SHADOW(to_sun_direction.y)
   INIT_VSM()
   INIT_ZNZFAR()

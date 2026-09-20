@@ -383,6 +383,8 @@ bool GenericBuffer::copyTo(Sbuffer *dest)
   GenericBuffer *destvb = (GenericBuffer *)dest;
   if (!destvb->buffer)
     return false;
+  D3D_CONTRACT_ASSERTF_RETURN(dest->getSize() >= getSize(), false,
+    "DX11: copyTo destination (%u bytes) is smaller than source (%u bytes)", dest->getSize(), getSize());
   copyInternal(destvb->buffer, buffer);
   destvb->internalState = UPDATED_BY_COPYTO;
   return true;
@@ -412,7 +414,10 @@ bool GenericBuffer::updateData(uint32_t ofs_bytes, uint32_t size_bytes, const vo
   // https://msdn.microsoft.com/en-us/library/windows/desktop/ff476486(v=vs.85).aspx
   // also seems like CPU writable is not updateable well too, despite no notes in docs
   // so use CPU writable condition for locking path
-  if (isCPUWritable() || (lockFlags & (VBLOCK_NOOVERWRITE | VBLOCK_DISCARD)) || (isCb && ofs_bytes > 0))
+  // constant buffers can not be partially updated with UpdateSubresource (the box must
+  // be NULL and the full ByteWidth is always read from src), route ANY partial CB
+  // update to the lock path, not just those at nonzero offset
+  if (isCPUWritable() || (lockFlags & (VBLOCK_NOOVERWRITE | VBLOCK_DISCARD)) || (isCb && (ofs_bytes > 0 || size_bytes < bufSize)))
     return updateDataWithLock(ofs_bytes, size_bytes, src, lockFlags);
 
   {

@@ -1469,7 +1469,7 @@ void ResourseVisualizer::updateVisualization()
   }
 
   // Process barriers
-  for (const auto [res_id, res_frame, exec_time, exec_frame, barrier] : resourceBarrierEntries)
+  for (const auto &[res_id, res_frame, exec_time, exec_frame, barrier] : resourceBarrierEntries)
   {
     if (res_frame >= RES_RECORD_WINDOW)
       continue;

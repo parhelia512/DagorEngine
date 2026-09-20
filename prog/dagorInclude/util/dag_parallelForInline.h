@@ -22,7 +22,7 @@ namespace threadpool
     cb(i, min(end-i, quant), thread_id);
 
   parallel_for(uint32_t begin, uint32_t end, uint32_t quant,
-               eastl::function<void(uint32_t tbegin, uint32_t tend, uint32_t thread_id)> cb,
+               dag::FunctionRef<void(uint32_t tbegin, uint32_t tend, uint32_t thread_id)> cb,
                uint32_t add_jobs_count = 0, JobPriority prio = PRIO_HIGH, bool wake = true);
 
   cb:
@@ -74,7 +74,7 @@ inline void parallel_for_inline_impl(uint32_t begin, uint32_t end, uint32_t quan
     ParallelForJob(dag::AtomicInteger<uint32_t> &counter, Cb &cb_, uint32_t e, uint32_t q, uint32_t worker_id, uint32_t token) :
       current(counter), cb(cb_), end(e), quant(q), workerId(worker_id), dapToken(token)
     {}
-    virtual const char *getJobName(bool &) const override { return "ParallelForJob"; }
+    virtual const char *getJobName(bool &) const override { return DAPROFILER_STRING("ParallelForJob"); }
     virtual void doJob() override
     {
       // would be nice to put marker here...

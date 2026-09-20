@@ -11,9 +11,9 @@ void CollisionResource::drawDebug(const TMatrix &instance_tm, const GeomNodeTree
 {
 #if DAGOR_DBGLEVEL > 0
   if (debug_data.drawBits & CRDD_NODES)
-    for (uint16_t mi = meshNodesHead; mi != CollisionNode::INVALID_IDX; mi = allNodesList[mi].nextNode)
+    for (uint16_t mi : meshNodes())
     {
-      const CollisionNode *meshNode = &allNodesList[mi];
+      const CollisionNode *meshNode = &data->allNodesList()[mi];
       if (!meshNode->geomNodeId && !(debug_data.drawBits & CRDD_NON_GEOM_TREE_NODES))
         continue;
 
@@ -29,10 +29,9 @@ void CollisionResource::drawDebug(const TMatrix &instance_tm, const GeomNodeTree
         add_debug_text_mark(tm.getcol(3), getNodeName(meshNode->nodeIndex), -1, 0.f);
 
       set_cached_debug_lines_wtm(tm);
-      // Consume faces through the node iterator instead of indexing raw vertex/index arrays directly,
-      // so this keeps working for nodes whose slices were dropped (BLAS-resident) or never existed as
-      // raw arrays (owning resources hold no raw verts). The iterator decodes the same per-node chunk
-      // / grid vert21 data the traces use, so behavior is consistent.
+      // Consume faces through the node iterator instead of indexing raw vertex/index arrays
+      // directly: the resource holds no raw arrays; the iterator decodes the same chunk vert21
+      // data the traces use, so behavior is consistent.
       iterateNodeFacesVerts(meshNode->nodeIndex, [&](int, vec4f v0, vec4f v1, vec4f v2) {
         Point3_vec4 p0, p1, p2;
         v_st(&p0.x, v0);
@@ -44,8 +43,8 @@ void CollisionResource::drawDebug(const TMatrix &instance_tm, const GeomNodeTree
       });
 
       // draw_cached_debug_sphere(
-      //   tm * meshNode->boundingSphere.c,
-      //   meshNode->boundingSphere.r * scale,
+      //   tm * meshNode->bsphereCenter(),
+      //   meshNode->radiusAroundBoxCenter * scale,
       //   0xFF00FF00);
 
       // draw_cached_debug_box(instance_tm * meshNode->modelBBox,
@@ -81,25 +80,25 @@ void CollisionResource::drawDebug(const TMatrix &instance_tm, const GeomNodeTree
       v_mat_43cu_from_mat44(tm.array, defaultInstance.getNodeGeometryTm(node_index));
       return instance_tm * tm;
     };
-    for (uint16_t bi = boxNodesHead; bi != CollisionNode::INVALID_IDX; bi = allNodesList[bi].nextNode)
+    for (uint16_t bi : boxNodes())
     {
-      set_cached_debug_lines_wtm(primDrawTm(allNodesList[bi].nodeIndex));
-      draw_cached_debug_box(allNodesList[bi].modelBBox, debug_data.color);
+      set_cached_debug_lines_wtm(primDrawTm(data->allNodesList()[bi].nodeIndex));
+      draw_cached_debug_box(data->allNodesList()[bi].modelBBox, debug_data.color);
     }
 
-    for (uint16_t si = sphereNodesHead; si != CollisionNode::INVALID_IDX; si = allNodesList[si].nextNode)
+    for (uint16_t si : sphereNodes())
     {
-      const CollisionNode &sphereNode = allNodesList[si];
+      const CollisionNode &sphereNode = data->allNodesList()[si];
       set_cached_debug_lines_wtm(primDrawTm(sphereNode.nodeIndex));
-      draw_cached_debug_sphere(sphereNode.boundingSphere.c, sphereNode.boundingSphere.r, debug_data.color);
+      draw_cached_debug_sphere(sphereNode.bsphereCenter(), sphereNode.radiusAroundBoxCenter, debug_data.color);
     }
 
-    for (uint16_t ci = capsuleNodesHead; ci != CollisionNode::INVALID_IDX; ci = allNodesList[ci].nextNode)
+    for (uint16_t ci : capsuleNodes())
     {
       // draw the node-local capsule under the full composed wtm: Capsule::transform collapses a
       // non-uniform pose into one radius, while the wtm keeps the true anisotropic shape
-      set_cached_debug_lines_wtm(instance_tm * getNodeTm(allNodesList[ci].nodeIndex));
-      draw_cached_debug_capsule(capsules[allNodesList[ci].capsuleIndex], debug_data.color, TMatrix::IDENT);
+      set_cached_debug_lines_wtm(instance_tm * getNodeTm(data->allNodesList()[ci].nodeIndex));
+      draw_cached_debug_capsule(data->capsules()[data->allNodesList()[ci].capsuleIndex], debug_data.color, TMatrix::IDENT);
     }
   }
 #else
@@ -129,9 +128,9 @@ void CollisionResource::drawDebug(const TMatrix &instance_tm, const CollisionRes
   };
 
   if (debug_data.drawBits & CRDD_NODES)
-    for (uint16_t mi = meshNodesHead; mi != CollisionNode::INVALID_IDX; mi = allNodesList[mi].nextNode)
+    for (uint16_t mi : meshNodes())
     {
-      const CollisionNode *meshNode = &allNodesList[mi];
+      const CollisionNode *meshNode = &data->allNodesList()[mi];
       if (!inst->isNodeEnabled(meshNode->nodeIndex))
         continue;
       if (debug_data.drawMask && meshNode->nodeIndex < debug_data.drawMask->size() && !(*debug_data.drawMask)[meshNode->nodeIndex])
@@ -184,35 +183,35 @@ void CollisionResource::drawDebug(const TMatrix &instance_tm, const CollisionRes
 
   if (debug_data.drawBits & CRDD_NODES)
   {
-    for (uint16_t bi = boxNodesHead; bi != CollisionNode::INVALID_IDX; bi = allNodesList[bi].nextNode)
+    for (uint16_t bi : boxNodes())
     {
-      const CollisionNode &boxNode = allNodesList[bi];
+      const CollisionNode &boxNode = data->allNodesList()[bi];
       if (!inst->isNodeEnabled(boxNode.nodeIndex))
         continue;
       set_cached_debug_lines_wtm(nodeGeometryDrawTm(boxNode));
       draw_cached_debug_box(boxNode.modelBBox, debug_data.color);
     }
 
-    for (uint16_t si = sphereNodesHead; si != CollisionNode::INVALID_IDX; si = allNodesList[si].nextNode)
+    for (uint16_t si : sphereNodes())
     {
-      const CollisionNode &sphereNode = allNodesList[si];
+      const CollisionNode &sphereNode = data->allNodesList()[si];
       if (!inst->isNodeEnabled(sphereNode.nodeIndex))
         continue;
       set_cached_debug_lines_wtm(nodeGeometryDrawTm(sphereNode));
-      draw_cached_debug_sphere(sphereNode.boundingSphere.c, sphereNode.boundingSphere.r, debug_data.color);
+      draw_cached_debug_sphere(sphereNode.bsphereCenter(), sphereNode.radiusAroundBoxCenter, debug_data.color);
     }
 
-    for (uint16_t ci = capsuleNodesHead; ci != CollisionNode::INVALID_IDX; ci = allNodesList[ci].nextNode)
+    for (uint16_t ci : capsuleNodes())
     {
-      const CollisionNode &capsuleNode = allNodesList[ci];
+      const CollisionNode &capsuleNode = data->allNodesList()[ci];
       if (!inst->isNodeEnabled(capsuleNode.nodeIndex))
         continue;
       TMatrix capTm = TMatrix::IDENT;
-      getCollisionNodeTm(&capsuleNode, TMatrix::IDENT, *inst, capTm); // capsules[] is node-local: T places it
+      getCollisionNodeTm(&capsuleNode, TMatrix::IDENT, *inst, capTm); // data->capsules() is node-local: T places it
       // draw the node-local capsule under the full composed wtm: Capsule::transform collapses a
       // non-uniform pose into one radius, while the wtm keeps the true anisotropic shape
       set_cached_debug_lines_wtm(instance_tm * capTm);
-      draw_cached_debug_capsule(capsules[capsuleNode.capsuleIndex], debug_data.color, TMatrix::IDENT);
+      draw_cached_debug_capsule(data->capsules()[capsuleNode.capsuleIndex], debug_data.color, TMatrix::IDENT);
     }
   }
 #else

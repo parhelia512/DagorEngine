@@ -59,7 +59,7 @@ private:
     IObjEntity *entityForSelection, const Point3 &rayOrigin, const Point3 &rayDirection,
     dag::Vector<IPixelPerfectSelectionService::Hit> &hits);
 
-  dag::Vector<IObjEntity *> subEntitySelectionLookup;
+  mutable dag::Vector<IObjEntity *> subEntitySelectionLookup;
 
   // relevant sub-entity data for transparent object rendering
   struct SubEntityNode

@@ -467,7 +467,7 @@ shader ssao
 {
   INIT_AND_USE_ON_TOP_CAMERA_IN_CAMERA(ps)
 
-  supports global_const_block;
+  GLOBAL_CONSTS(ps)
   color_write = rgb;
 
   assume_if_not_assumed use_contact_shadows = use_shadows;

@@ -264,6 +264,9 @@ parameters, and build configurations.
     - `preferZSTD`: Enables a preference for ZSTD compression algorithm.
     - `writePrecookedFmt`: Enables writing the collision data in a pre-cooked
       format.
+    - `precookedFmtVersion`: Selects the pre-cooked format version: `2` (the
+      default, the stream of built chunks) or `1` (the raw format, a rollback
+      switch). Any other value logs an error and writes version 2.
   - `skeleton{}`: Defines settings for skeleton data compression.
     - `preferZSTD`: Enables a preference for ZSTD compression algorithm.
   - `a2d{}`: Defines settings for 2D assets data compression.

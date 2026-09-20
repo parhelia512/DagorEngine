@@ -3,6 +3,7 @@
 
 #include <daInput/input_api.h>
 #include <generic/dag_tab.h>
+#include <generic/dag_carray.h>
 #include <generic/dag_smallTab.h>
 #include <util/dag_fastStrMap.h>
 #include <util/dag_oaHashNameMap.h>
@@ -86,12 +87,16 @@ struct ActionGlobData
   int longPressDur = 300;
   int dblClickDur = 220;
 
+  // 'useBinding' index map, one per type group and indexed as ad/aa/as
+  carray<Tab<uint16_t>, 3> useBindingOf;
+
   int get_binding_idx(action_handle_t a, int column) { return (a & ~TYPEGRP__MASK) * bindingsColumnCount + column; }
 };
 
 struct ActionSet
 {
   SmallTab<action_handle_t, MidmemAlloc> actions;
+  SmallTab<action_set_handle_t, MidmemAlloc> exclusiveWith;
   int ordPriority = 0;
   int pendingCnt = 0;
 };
@@ -103,11 +108,14 @@ extern FastStrMap actionNameIdx;
 extern Tab<const char *> actionNameBackMap[3];
 extern FastNameMapEx actionSetNameIdx;
 extern FastNameMap tagNames;
+extern int exclusiveSetLinks; // exclusive_with links of the config, so a build with none pays nothing per tick
 extern DataBlock customPropsScheme;
 extern unsigned colActiveMask;
 extern unsigned devReportMask;
 
 extern Tab<action_set_handle_t> actionSetStack;
+void reset_exclusive_sets_reports();  // a new config starts with nothing reported
+void check_exclusive_sets_on_stack(); // the dev build judges the stack at the tick
 extern action_set_handle_t breaking_set_handle;
 
 extern HumanInput::IGenKeyboard *dev1_kbd;
@@ -160,6 +168,24 @@ inline uint16_t get_action_excl_tag(action_handle_t h)
   }
   return 0;
 }
+// the index within the type group of <h> of the action whose binding it copies, or BAD_ACTION_HANDLE when it declares none
+inline uint16_t get_use_binding_idx(action_handle_t h)
+{
+  if (!is_action_handle_valid(h)) // a handle of no type group, BAD_ACTION_HANDLE among them, would index past the tables
+    return BAD_ACTION_HANDLE;
+  const Tab<uint16_t> &at = agData.useBindingOf[h >> 14];
+  unsigned idx = h & ~TYPEGRP__MASK;
+  return idx < at.size() ? at[idx] : uint16_t(BAD_ACTION_HANDLE);
+}
+inline bool is_use_binding_action(action_handle_t h) { return get_use_binding_idx(h) != BAD_ACTION_HANDLE; }
+// the action whose binding <h> copies: another action when <h> declares 'useBinding', else itself
+inline action_handle_t get_use_binding_action(action_handle_t h)
+{
+  uint16_t idx = get_use_binding_idx(h);
+  return idx != BAD_ACTION_HANDLE ? action_handle_t((h & TYPEGRP__MASK) | idx) : h;
+}
+// true when both fire with one binding: the same action twice, one declaring 'useBinding' of the other, or both of a third one
+inline bool uses_same_binding(action_handle_t a, action_handle_t b) { return get_use_binding_action(a) == get_use_binding_action(b); }
 inline bool is_action_binding_empty(action_handle_t h, int c)
 {
   int b_idx = agData.get_binding_idx(h, c);

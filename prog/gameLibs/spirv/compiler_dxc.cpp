@@ -17,6 +17,7 @@
 #include <spirv-tools/libspirv.hpp>
 #include <string>
 #include <osApiWrappers/dag_dynLib.h>
+#include <generic/dag_align.h>
 #include <EASTL/array.h>
 #include <util/dag_globDef.h>
 
@@ -456,58 +457,161 @@ void spirv::shutdownDXC(spirv::DXCContext *ctx)
     delete ctx;
 }
 
-bool validateGlobalConstsOffsetOrder(ModuleBuilder &builder, ErrorHandler &e_handler, CompileToSpirVResult &compRes)
+static uint32_t spv_cbuf_type_byte_size(NodePointer<NodeId> type);
+
+static uint32_t spv_cbuf_type_byte_size(NodePointer<NodeOpTypeFloat> type) { return type->width.value / 8; }
+
+static uint32_t spv_cbuf_type_byte_size(NodePointer<NodeOpTypeInt> type) { return type->width.value / 8; }
+
+static uint32_t spv_cbuf_type_byte_size(NodePointer<NodeOpTypeBool> type) { return 4; }
+
+static uint32_t spv_cbuf_type_byte_size(NodePointer<NodeOpTypeVector> type)
 {
-  bool isValid = true;
-  builder.enumerateAllNodes([&](auto node) {
-    if (!is<NodeOpTypeStruct>(node))
-      return;
-    auto globStructNode = as<NodeOpTypeStruct>(node);
-    int prevOffset = 0;
-    bool globStruct = false;
-    for (const auto &prop : globStructNode->properties)
+  return spv_cbuf_type_byte_size(type->componentType) * type->componentCount.value;
+}
+
+static uint32_t spv_cbuf_type_byte_size(NodePointer<NodeOpTypeArray> type)
+{
+  uint32_t stride = spv_cbuf_type_byte_size(type->elementType);
+  for (const auto &prop : type->properties)
+  {
+    if (!is<PropertyArrayStride>(prop))
+      continue;
+    stride = uint32_t(as<PropertyArrayStride>(prop)->arrayStride.value);
+    break;
+  }
+  G_ASSERT(is<NodeOpConstant>(type->length));
+  return stride * uint32_t(as<NodeOpConstant>(type->length)->value.value);
+}
+
+static uint32_t spv_cbuf_type_byte_size(NodePointer<NodeOpTypeMatrix> type)
+{
+  uint32_t columnStride = spv_cbuf_type_byte_size(type->columnType);
+  for (const auto &prop : type->properties)
+  {
+    if (!is<PropertyMatrixStride>(prop))
+      continue;
+    columnStride = uint32_t(as<PropertyMatrixStride>(prop)->matrixStride.value);
+    break;
+  }
+  return columnStride * type->columnCount.value;
+}
+
+static uint32_t spv_cbuf_type_byte_size(NodePointer<NodeOpTypeStruct> type)
+{
+  int maxOffset = -1;
+  eastl::optional<Id> lastMember{};
+  for (const auto &prop : type->properties)
+  {
+    if (is<PropertyOffset>(prop))
     {
-      if (is<PropertyName>(prop))
+      auto offsetProp = as<PropertyOffset>(prop);
+      if (offsetProp->memberIndex.has_value())
       {
-        auto nameProp = as<PropertyName>(prop);
-        if (!nameProp->memberIndex.has_value())
+        int propOffset = offsetProp->byteOffset.value;
+        if (propOffset > maxOffset)
         {
-          if (nameProp->name == "type.$Globals")
-          {
-            globStruct = true;
-          }
-          break;
+          maxOffset = propOffset;
+          lastMember = offsetProp->memberIndex;
         }
       }
     }
-    if (!globStruct)
+  }
+  if (!lastMember)
+    return 0;
+  return maxOffset + spv_cbuf_type_byte_size(type->param1[lastMember.value()]);
+}
+
+static uint32_t spv_cbuf_type_byte_size(const NodePointer<NodeId> type)
+{
+  if (is<NodeOpTypeFloat>(type))
+    return spv_cbuf_type_byte_size(as<NodeOpTypeFloat>(type));
+  else if (is<NodeOpTypeInt>(type))
+    return spv_cbuf_type_byte_size(as<NodeOpTypeInt>(type));
+  else if (is<NodeOpTypeBool>(type))
+    return spv_cbuf_type_byte_size(as<NodeOpTypeBool>(type));
+  else if (is<NodeOpTypeVector>(type))
+    return spv_cbuf_type_byte_size(as<NodeOpTypeVector>(type));
+  else if (is<NodeOpTypeArray>(type))
+    return spv_cbuf_type_byte_size(as<NodeOpTypeArray>(type));
+  else if (is<NodeOpTypeMatrix>(type))
+    return spv_cbuf_type_byte_size(as<NodeOpTypeMatrix>(type));
+  else if (is<NodeOpTypeStruct>(type))
+    return spv_cbuf_type_byte_size(as<NodeOpTypeStruct>(type));
+  else
+    return 0;
+}
+
+struct ConstsAnalysisResult
+{
+  uint32_t implicitCbufRegSize = 0;
+  bool offsetOrderIsValid = true;
+  String offsetOrderWarnings;
+};
+
+static constexpr int GLOBALS_CBUF_BINDING = 0;
+static constexpr int GLOBALS_CBUF_DESCRIPTOR_SET = 9;
+
+static bool is_implicit_cbuf_variable(NodePointer<NodeOpVariable> var)
+{
+  if (var->storageClass != StorageClass::Uniform || get_buffer_kind(var) != BufferKind::Uniform)
+    return false;
+  PropertyDescriptorSet *set = find_property<PropertyDescriptorSet>(var);
+  PropertyBinding *binding = find_property<PropertyBinding>(var);
+  if (!set || !binding)
+    return false;
+  const bool isGlobals =
+    set->descriptorSet.value == GLOBALS_CBUF_DESCRIPTOR_SET && binding->bindingPoint.value == GLOBALS_CBUF_BINDING;
+  const bool isB0 = set->descriptorSet.value == 0 && binding->bindingPoint.value == 0;
+  return isGlobals || isB0;
+}
+
+static NodePointer<NodeOpTypeStruct> find_implicit_cbuf_struct(ModuleBuilder &builder)
+{
+  NodePointer<NodeOpTypeStruct> node = {};
+  builder.enumerateAllGlobalVariables([&](auto var) {
+    if (!is_implicit_cbuf_variable(var))
       return;
-    for (const auto &prop : globStructNode->properties)
-    {
-      if (is<PropertyOffset>(prop))
-      {
-        auto offsetProp = as<PropertyOffset>(prop);
-        if (offsetProp->memberIndex.has_value())
-        {
-          int propOffset = offsetProp->byteOffset.value;
-          if (prevOffset > propOffset)
-          {
-            String msgStr(128, "Non-increasing global const offset order: %d (reg %d), previous: %d (reg %d)", propOffset,
-              propOffset / 16, prevOffset, prevOffset / 16);
-            // Using warning because it is more efficient to gather all issues from all shaders at once
-            e_handler.onWarning(msgStr.c_str());
-            isValid = false;
-          }
-          prevOffset = propOffset;
-        }
-      }
-    }
+    auto ptrNode = as<NodeOpTypePointer>(var->resultType);
+    if (!is<NodeOpTypeStruct>(ptrNode->type))
+      return;
+    node = as<NodeOpTypeStruct>(ptrNode->type);
   });
-  return isValid;
+  return node;
+}
+
+ConstsAnalysisResult analyzeCbuf0(NodePointer<NodeOpTypeStruct> node)
+{
+  if (!node)
+    return {};
+  ConstsAnalysisResult result = {};
+  int prevOffset = 0;
+  for (const auto &prop : node->properties)
+  {
+    if (is<PropertyOffset>(prop))
+    {
+      auto offsetProp = as<PropertyOffset>(prop);
+      if (offsetProp->memberIndex.has_value())
+      {
+        int propOffset = offsetProp->byteOffset.value;
+        if (prevOffset > propOffset)
+        {
+          result.offsetOrderWarnings.aprintf(128, "Non-increasing global const offset order: %d (reg %d), previous: %d (reg %d)",
+            propOffset, propOffset / 16, prevOffset, prevOffset / 16);
+          result.offsetOrderIsValid = false;
+        }
+        prevOffset = propOffset;
+      }
+    }
+  }
+  const uint32_t regSize = dag::divide_align_up(spv_cbuf_type_byte_size(node), 16);
+  if (regSize > result.implicitCbufRegSize)
+    result.implicitCbufRegSize = regSize;
+  return result;
 }
 
 CompileToSpirVResult spirv::compileHLSL_DXC(const spirv::DXCContext *dxc_ctx, dag::ConstSpan<char> source, const char *entry,
-  const char *profile, CompileFlags flags, const eastl::vector<eastl::string_view> &disabledOptimizaions)
+  const char *profile, int implicit_cbuf_size, CompileFlags flags, const eastl::vector<eastl::string_view> &disabledOptimizaions)
 {
   CompileToSpirVResult result = {};
   DXCErrorHandler errorHandler{result};
@@ -546,14 +650,20 @@ CompileToSpirVResult spirv::compileHLSL_DXC(const spirv::DXCContext *dxc_ctx, da
   wchar_t spacingS[_MAX_ITOSTR_BASE10_COUNT];
   wchar_t spacingT[_MAX_ITOSTR_BASE10_COUNT];
   wchar_t spacingU[_MAX_ITOSTR_BASE10_COUNT];
+  wchar_t globalsBinding[_MAX_ITOSTR_BASE10_COUNT];
+  wchar_t globalsSet[_MAX_ITOSTR_BASE10_COUNT];
 #if _TARGET_PC_WIN
   _itow_s(REGISTER_ENTRIES * 1, spacingS, 10);
   _itow_s(REGISTER_ENTRIES * 2, spacingT, 10);
   _itow_s(REGISTER_ENTRIES * 3, spacingU, 10);
+  _itow_s(GLOBALS_CBUF_BINDING, globalsBinding, 10);
+  _itow_s(GLOBALS_CBUF_DESCRIPTOR_SET, globalsSet, 10);
 #else
   std::swprintf(spacingS, _MAX_ITOSTR_BASE10_COUNT, L"%d", REGISTER_ENTRIES * 1);
   std::swprintf(spacingT, _MAX_ITOSTR_BASE10_COUNT, L"%d", REGISTER_ENTRIES * 2);
   std::swprintf(spacingU, _MAX_ITOSTR_BASE10_COUNT, L"%d", REGISTER_ENTRIES * 3);
+  std::swprintf(globalsBinding, _MAX_ITOSTR_BASE10_COUNT, L"%d", GLOBALS_CBUF_BINDING);
+  std::swprintf(globalsSet, _MAX_ITOSTR_BASE10_COUNT, L"%d", GLOBALS_CBUF_DESCRIPTOR_SET);
 #endif
 
   std::wstring optConfig = getSpirvOptimizationConfigString(disabledOptimizaions);
@@ -582,9 +692,9 @@ CompileToSpirVResult spirv::compileHLSL_DXC(const spirv::DXCContext *dxc_ctx, da
       L"-fspv-extension=SPV_KHR_fragment_shader_barycentric",
       L"-fvk-use-dx-position-w", // ...
       // NOTE: currently needed to avoid stomping on each others toes
-      L"-fvk-s-shift", spacingS, L"0", L"-fvk-t-shift", spacingT, L"0", L"-fvk-u-shift", spacingU, L"0",
-      // use slot 0 in a never used descriptor set 9 to ensure no collisions
-      L"-fvk-bind-globals", L"0", L"9", optConfig.c_str(),
+      L"-fvk-b-shift", L"0", L"0", L"-fvk-s-shift", spacingS, L"0", L"-fvk-t-shift", spacingT, L"0", L"-fvk-u-shift", spacingU, L"0",
+      // $Globals goes to a never used descriptor set to ensure no collisions
+      L"-fvk-bind-globals", globalsBinding, globalsSet, optConfig.c_str(),
       // L"-Vd"
       spirvVersion, L"-fspv-extension=SPV_KHR_ray_tracing", L"-fspv-extension=SPV_KHR_ray_query", L"-fspv-flatten-resource-arrays",
       (flags & CompileFlags::ENABLE_HALFS) == CompileFlags::ENABLE_HALFS ? L"-fspv-extension=SPV_KHR_16bit_storage" : L"",
@@ -707,6 +817,23 @@ CompileToSpirVResult spirv::compileHLSL_DXC(const spirv::DXCContext *dxc_ctx, da
         // reIndex(module);
 
         result.computeShaderInfo = resolveComputeShaderInfo(module);
+
+        // must run before compileReflection/compileHeader, they rewrite descriptor sets and bindings
+        // but analysis must be run after fixDXCBugs, because it may remove a field from the global cbuf
+        auto implicitCbufNode = find_implicit_cbuf_struct(module);
+
+        auto validateImplicitCbufSize = [&](const auto &global_consts_info) {
+          if (implicit_cbuf_size < global_consts_info.implicitCbufRegSize)
+          {
+            result.infoLog.emplace_back(eastl::string::CtorSprintf{},
+              "Implicit constbuffer size %d regs in reflection exceeds dshl-allocated size of %d regs. If you use hlsl-hardcoded "
+              "register arrays, specify sentinel registers.",
+              global_consts_info.implicitCbufRegSize, implicit_cbuf_size);
+            return false;
+          }
+          return true;
+        };
+
         if ((flags & CompileFlags::OUTPUT_REFLECTION) == CompileFlags::OUTPUT_REFLECTION)
         {
           bool atomic_textures = false;
@@ -726,6 +853,9 @@ CompileToSpirVResult spirv::compileHLSL_DXC(const spirv::DXCContext *dxc_ctx, da
             result.infoLog.emplace_back("Shader uses array length ops for buffers. They don't work properly on some devices");
             return result;
           }
+
+          if (!validateImplicitCbufSize(analyzeCbuf0(implicitCbufNode)))
+            return result;
         }
         else
         {
@@ -734,13 +864,17 @@ CompileToSpirVResult spirv::compileHLSL_DXC(const spirv::DXCContext *dxc_ctx, da
           result.header = compileHeader(module, flags, errorHandler);
 
           fixDXCBugs(module, errorHandler);
-          if ((flags & CompileFlags::VALIDATE_GLOBAL_CONSTS_OFFSET_ORDER) == CompileFlags::VALIDATE_GLOBAL_CONSTS_OFFSET_ORDER)
+
+          auto globalConstsInfo = analyzeCbuf0(implicitCbufNode);
+          if (!validateImplicitCbufSize(globalConstsInfo))
+            return result;
+          if (bool(flags & CompileFlags::VALIDATE_GLOBAL_CONSTS_OFFSET_ORDER) && !globalConstsInfo.offsetOrderIsValid)
           {
-            if (!validateGlobalConstsOffsetOrder(module, errorHandler, result))
-            {
-              needSPIRVDump = true;
-            }
+            // Using warning because it is more efficient to gather all issues from all shaders at once
+            errorHandler.onWarning(globalConstsInfo.offsetOrderWarnings);
+            needSPIRVDump = true;
           }
+
           cleanupReflectionLeftouts(module, errorHandler);
           module.disableExtension(Extension::GOOGLE_hlsl_functionality1);
           module.disableExtension(Extension::GOOGLE_user_type);

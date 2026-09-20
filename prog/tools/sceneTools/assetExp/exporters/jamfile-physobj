@@ -10,7 +10,7 @@ Sources = phObjExp.cpp phSysObj.cpp ;
 
 AddIncludes = $(Root)/prog/tools/sharedInclude ;
 
-UseProgLibs =
+UseProgLibs +=
   engine/startup
   engine/math
 
@@ -19,7 +19,6 @@ UseProgLibs =
 
   tools/libTools/assetMgr
   tools/libTools/dagFileRW
-  tools/libTools/util
 ;
 
 include $(Root)/prog/_jBuild/build.jam ;

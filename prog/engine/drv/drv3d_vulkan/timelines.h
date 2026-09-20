@@ -15,7 +15,7 @@ class TimelineManager
 
   struct CpuReplaySync : public TimelineSyncPartLockFree,
                          public TimelineSyncPartSingleWriterSingleReader,
-                         public TimelineSyncPartEventWaitable
+                         public TimelineSyncPartAddressWaitable
   {};
 
   struct GpuExecuteSync : public TimelineSyncPartLockFree, public TimelineSyncPartNonConcurrent, public TimelineSyncPartNonWaitable

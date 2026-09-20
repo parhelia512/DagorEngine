@@ -20,14 +20,9 @@ def parse_blk_line(line, current_block, unprocessed_line):
 #parameter
     param_value_split = line.find('=')
     if param_value_split > -1:
-        param, value = line.split("=")
-        #value = value.replace(' ', '')
-        if value.find('"') > -1:
-            try:  # trying to remove quotes
-                value = value[value.find('"')+1:]
-                value = value[:value.find('"')]
-            except:
-                pass
+        param = line[:param_value_split]
+        value = line[param_value_split+1:]
+        value = value.strip(' "')
         try:
             name, type = param.split(':')
         except:

@@ -21,6 +21,7 @@
 #include <shaders/dag_shaderBlock.h>
 #include <shaders/dag_dynSceneRes.h>
 #include <shaders/dag_postFxRenderer.h>
+#include <shaders/dag_shAssert.h>
 #include <gameRes/dag_gameResSystem.h>
 #include <gameRes/dag_stdGameRes.h>
 #include <3d/dag_texPackMgr2.h>
@@ -71,7 +72,7 @@
 #include <math/dag_adjpow2.h>
 #include <render/deferredRenderer.h>
 #include <render/downsampleDepth.h>
-#include <render/screenSpaceReflections.h>
+#include <screenSpaceReflections_api.h>
 #include <daSkies2/daSkies.h>
 #include <daSkies2/daSkiesToBlk.h>
 #include "de3_gui_dialogs.h"
@@ -790,6 +791,9 @@ public:
     d3d::set_render_target();
 
     de3_imgui_render();
+
+    shader_assert::readback_all();
+
     if (screenshotRequested)
     {
       screenshotRequested = false;
@@ -1100,7 +1104,7 @@ public:
       TIME_D3D_PROFILE(water_simulate);
       // water_time = 0;
       fft_water::simulate(fftWater.get(), water_time);
-      fft_water::before_render(fftWater.get());
+      fft_water::before_render(fftWater.get(), gametime_elapsed_sec);
       if (debug_physics.get())
       {
         TIME_D3D_PROFILE(water_height);
@@ -1395,6 +1399,8 @@ public:
     result.deferredShading = dafg::register_node("deferred_shading", DAFG_PP_NODE_SRC, [this](dafg::Registry registry) {
       auto camHndl = bind_camera(registry, "main_camera").handle();
 
+      auto mainSkiesDataHndl = registry.read("main_cam_skies_data").blob<SkiesData *>().handle();
+
       auto depthHandle = registry.readTexture(depth_tex_name).atStage(dafg::Stage::PS_OR_CS).bindToShaderVar("depth_gbuf").handle();
 
       for (int i = 0; i < gbuf_rt; ++i)
@@ -1413,10 +1419,9 @@ public:
       registry.read("ssao_tex").texture().atStage(dafg::Stage::PS).bindToShaderVar();
       registry.read("ssao_sampler").blob<d3d::SamplerHandle>().bindToShaderVar("ssao_tex_samplerstate");
       registry.read("csm").texture().atStage(dafg::Stage::PS).bindToShaderVar("shadow_cascade_depth_tex");
-      registry.read("csm_sampler").blob<d3d::SamplerHandle>().bindToShaderVar("shadow_cascade_depth_tex_samplerstate");
 
       auto resShading = eastl::make_unique<ShadingResolver>("deferred_shading");
-      return [this, depthHandle, resolvedHandle, mainViewRes, camHndl, resolveShading = eastl::move(resShading)]() {
+      return [this, depthHandle, resolvedHandle, mainViewRes, camHndl, mainSkiesDataHndl, resolveShading = eastl::move(resShading)]() {
         auto res = mainViewRes.get();
         shvars::screen_pos_to_texcoord.set_float4(1.f / res.x, 1.f / res.y, 0, 0);
         shvars::screen_size.set_float4(res.x, res.y, 1.0 / res.x, 1.0 / res.y);
@@ -1425,6 +1430,8 @@ public:
         set_inv_globtm_to_shader(cam.viewTm, cam.projTm, true);
 
         csm->setCascadesToShader();
+
+        daSkies.useFog(cam.worldPos, mainSkiesDataHndl.ref(), cam.viewTm, cam.projTm, UpdateSky::Off);
 
         resolveShading->resolve(resolvedHandle.get(), cam.viewTm, cam.projTm);
       };
@@ -1651,13 +1658,6 @@ public:
                        .atStage(dafg::Stage::POST_RASTER)
                        .useAs(dafg::Usage::DEPTH_ATTACHMENT)
                        .handle();
-      {
-        d3d::SamplerInfo smpInfo;
-        smpInfo.address_mode_u = smpInfo.address_mode_v = smpInfo.address_mode_w = d3d::AddressMode::Clamp;
-        smpInfo.filter_mode = d3d::FilterMode::Compare;
-        smpInfo.mip_map_mode = d3d::MipMapMode::Point;
-        registry.create("csm_sampler").blob<d3d::SamplerHandle>(d3d::request_sampler(smpInfo));
-      }
       return [this, csmHndl]() {
         auto csmTex = csmHndl.get();
         csm->renderShadowsCascadesCb(
@@ -2020,6 +2020,8 @@ public:
     result.render = dafg::register_node("render_water", DAFG_PP_NODE_SRC, [this](dafg::Registry registry) {
       auto camHndl = bind_camera(registry, "main_camera").handle();
 
+      auto mainSkiesDataHndl = registry.read("main_cam_skies_data").blob<SkiesData *>().handle();
+
       registry.readTexture("far_downsampled_depth").atStage(dafg::Stage::PS_OR_CS).bindToShaderVar("depth_tex");
       {
         d3d::SamplerInfo smpInfo;
@@ -2044,7 +2046,7 @@ public:
         .blob(d3d::request_sampler({}))
         .bindToShaderVar("water_refraction_tex_samplerstate");
 
-      return [camHndl, this]() {
+      return [camHndl, mainSkiesDataHndl, this]() {
         if (!(fftWater && water_panel.enabled))
           return;
 
@@ -2066,6 +2068,8 @@ public:
 
         shvars::details_weight.set_float4(Color4::xyzw(
           lerp(detailsWeightMin, detailsWeightMax, cvt(originAlt, detailsWeightDist.x, detailsWeightDist.y, 0.0f, 1.0f))));
+
+        daSkies.useFog(cam.worldPos, mainSkiesDataHndl.ref(), cam.viewTm, cam.projTm, UpdateSky::Off);
 
         fft_water::render(fftWater.get(), cam.worldPos, BAD_TEXTUREID, cam.globTm, nullptr, cam.persp, fft_water::GEOM_LOD_NORMAL);
       };
@@ -2239,9 +2243,7 @@ public:
       }
     }
     static ShaderVariableInfo envi_probe_specular("envi_probe_specular", true);
-    static ShaderVariableInfo envi_probe_specular_samplerstate("envi_probe_specular_samplerstate", true);
     envi_probe_specular.set_texture(light_probe::getManagedTex(enviProbe.get())->getTexId());
-    envi_probe_specular_samplerstate.set_sampler(d3d::request_sampler({}));
   }
 
   IGameCamera *curCamera; // for console made publuc
@@ -2800,7 +2802,7 @@ wind_dep0(S[0].windDependency), wind_dep1(S[1].windDependency), wind_dep2(S[2].w
       const char *name;
       DemoGameScene &s;
       LoadJob(DemoGameScene &_scene, const char *_name) : s(_scene), name(_name) {}
-      const char *getJobName(bool &) const override { return "LoadJob_scheduleHeightmapLoad"; }
+      const char *getJobName(bool &) const override { return DAPROFILER_STRING("LoadJob_scheduleHeightmapLoad"); }
       void doJob() override
       {
         float cell_sz = 1.0f, scale = 100.0f, h0 = 0.0f;
@@ -2860,7 +2862,7 @@ wind_dep0(S[0].windDependency), wind_dep1(S[1].windDependency), wind_dep2(S[2].w
       LoadJob(eastl::unique_ptr<DynamicRenderableSceneInstance> &_dm, const char *_name, const char *_skel_name, const Point3 &_pos) :
         dm(_dm), name(_name), skelName(_skel_name), pos(_pos)
       {}
-      const char *getJobName(bool &) const override { return "LoadJob_scheduleDynModelLoad"; }
+      const char *getJobName(bool &) const override { return DAPROFILER_STRING("LoadJob_scheduleDynModelLoad"); }
       void doJob() override
       {
         DynamicRenderableSceneInstance *val = nullptr;

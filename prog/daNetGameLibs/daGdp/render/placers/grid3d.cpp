@@ -15,6 +15,7 @@
 #include "../../shaders/dagdp_common.hlsli"
 #include "../../shaders/dagdp_common_placer.hlsli"
 #include "../block.h"
+#include "../globalManager.h"
 #include "grid3d.h"
 
 using TmpName = eastl::fixed_string<char, 256>;
@@ -104,6 +105,52 @@ struct Grid3dGatheredInfo
   dag::RelocatableFixedVector<PerViewport, DAGDP_MAX_VIEWPORTS> perViewport;
   bool isValid = false;
 };
+
+struct ViewportEnd
+{
+  uint32_t volumes;
+  uint32_t tiles;
+  uint32_t placers;
+};
+using ViewportEnds = dag::RelocatableFixedVector<ViewportEnd, DAGDP_MAX_VIEWPORTS>;
+
+static void truncate_gathered_info(Grid3dGatheredInfo &gathered_info,
+  Grid3dVolumes &volumes,
+  Grid3dTiles &tiles,
+  const ViewportEnds &viewport_ends,
+  const Grid3dConstants &constants)
+{
+  const uint32_t requiredTiles = tiles.size();
+  const uint32_t requiredVolumes = volumes.size();
+  if (requiredTiles <= constants.maxTiles && requiredVolumes <= constants.maxVolumes)
+    return;
+
+  uint32_t fittingViewportsEnd = 0;
+  for (const auto &end : viewport_ends)
+  {
+    if (end.tiles > constants.maxTiles || end.volumes > constants.maxVolumes)
+      break;
+    ++fittingViewportsEnd;
+  }
+
+  const bool any = fittingViewportsEnd > 0;
+  const uint32_t volumeEnd = any ? viewport_ends[fittingViewportsEnd - 1].volumes : 0;
+  const uint32_t tileEnd = any ? viewport_ends[fittingViewportsEnd - 1].tiles : 0;
+  const uint32_t placerEnd = any ? viewport_ends[fittingViewportsEnd - 1].placers : 0;
+
+  volumes.resize(volumeEnd);
+  tiles.resize(tileEnd);
+  gathered_info.perPlacer.resize(placerEnd);
+
+  // make the rest of the viewports that don't fit no-op
+  for (uint32_t i = fittingViewportsEnd; i < gathered_info.perViewport.size(); ++i)
+    gathered_info.perViewport[i] = Grid3dGatheredInfo::PerViewport{placerEnd, placerEnd};
+
+  RequiredLimits required;
+  required.max3dTiles = requiredTiles;
+  required.maxVolumes = requiredVolumes;
+  GlobalManager::updateRequiredLimits(required);
+}
 
 static dafg::NodeHandle create_place_node(
   const dafg::NameSpace &ns, const eastl::shared_ptr<Grid3dPersistentData> &persistentData, bool is_optimistic)
@@ -307,6 +354,8 @@ void create_grid3d_nodes(const ViewInfo &view_info,
       Grid3dBoxes boxes;
       Grid3dTiles tiles;
 
+      ViewportEnds viewportEnds;
+
       for (uint32_t viewportIndex = 0; viewportIndex < view.viewports.size(); ++viewportIndex)
       {
         const uint32_t volumeStartIndex = volumes.size();
@@ -371,7 +420,10 @@ void create_grid3d_nodes(const ViewInfo &view_info,
         }
 
         gatheredInfo.perViewport.emplace_back(Grid3dGatheredInfo::PerViewport{placerStartIndex, gatheredInfo.perPlacer.size()});
+        viewportEnds.emplace_back(ViewportEnd{volumes.size(), tiles.size(), gatheredInfo.perPlacer.size()});
       }
+
+      truncate_gathered_info(gatheredInfo, volumes, tiles, viewportEnds, constants);
 
       if (!update_frame_mem(make_span_const(tiles), persistentData->tileBuffer.getBuf(), constants.maxTiles, "3d tiles"))
         return;

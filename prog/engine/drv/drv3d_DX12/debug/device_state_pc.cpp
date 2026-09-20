@@ -2,6 +2,7 @@
 
 #include "device_state_pc.h"
 #include "global_state.h"
+#include "names.h"
 
 #include <validationLayer.h>
 
@@ -64,7 +65,7 @@ void __stdcall rt_validation(void *self, NVAPI_D3D12_RAYTRACING_VALIDATION_MESSA
 
 namespace drv3d_dx12::debug::pc
 {
-bool DeviceState::setup(GlobalState &global, D3DDevice *device, const Direct3D12Enviroment &d3d_env)
+void DeviceState::setup(GlobalState &global, D3DDevice *device, const Direct3D12Enviroment &d3d_env)
 {
   globalState = &global;
   globalState->postmortemTrace().setupDevice(device, global.configuration(), d3d_env);
@@ -91,7 +92,7 @@ bool DeviceState::setup(GlobalState &global, D3DDevice *device, const Direct3D12
     {
       debugQueue1->RegisterMessageCallback(&::process_debug_log, D3D12_MESSAGE_CALLBACK_FLAG_NONE, nullptr, &callbackCookie);
     }
-    inUse = true;
+    isValidationActive = true;
   }
   else
   {
@@ -104,10 +105,8 @@ bool DeviceState::setup(GlobalState &global, D3DDevice *device, const Direct3D12
 
   if (global.configuration().enableNVRTValidation)
   {
-    inUse |= nvRtValidationLayer.setup(device);
+    isValidationActive |= nvRtValidationLayer.setup(device);
   }
-
-  return inUse;
 }
 
 void DeviceState::teardown()
@@ -234,7 +233,7 @@ void DeviceState::nameResource(ID3D12Resource *resource, eastl::string_view name
 {
   globalState->captureTool().nameResource(resource, name);
   globalState->postmortemTrace().nameResource(resource, name);
-  if (globalState->configuration().anyValidation())
+  if (isValidationActive)
     set_object_name(resource, name);
 }
 
@@ -242,7 +241,7 @@ void DeviceState::nameResource(ID3D12Resource *resource, eastl::wstring_view nam
 {
   globalState->captureTool().nameResource(resource, name);
   globalState->postmortemTrace().nameResource(resource, name);
-  if (globalState->configuration().anyValidation())
+  if (isValidationActive)
     set_object_name(resource, name);
 }
 
@@ -250,7 +249,7 @@ void DeviceState::nameObject(ID3D12Object *object, eastl::string_view name)
 {
   globalState->captureTool().nameObject(object, name);
   // globalState->postmortemTrace().nameObject(object, name);
-  if (globalState->configuration().anyValidation())
+  if (isValidationActive)
     set_object_name(object, name);
 }
 
@@ -258,9 +257,11 @@ void DeviceState::nameObject(ID3D12Object *object, eastl::wstring_view name)
 {
   globalState->captureTool().nameObject(object, name);
   // globalState->postmortemTrace().nameObject(object, name);
-  if (globalState->configuration().anyValidation())
+  if (isValidationActive)
     set_object_name(object, name);
 }
+
+bool DeviceState::isObjectNamingActive() const { return isValidationActive || globalState->captureTool().isAnyActive(); }
 
 TraceCheckpoint DeviceState::getTraceCheckpoint() { return globalState->postmortemTrace().getTraceCheckpoint(); }
 

@@ -85,7 +85,12 @@ macro DAGI_MEDIA_SCENE_CLIPMAP_MATH(code)
         int4 lt = sample_dagi_media_scene_clipmap_lt_coord(i);
         float3 coordF = worldPos.xzy/asfloat(lt.w);
         int3 coord = floor(coordF);
-        if (all(uint3(coord - lt.xyz) < uint3(dagi_media_scene_get_clip_size().xxy - rayDist/asfloat(lt.w))))
+        //the ray margin holds on BOTH sides: the unsigned compare alone checks the min faces
+        //at zero margin, and a ray near the window bottom then marches out through its face.
+        //the half voxel keeps the ray end out of the inset band of the marchable box; the
+        //max(,0) guards the underflow of a ray longer than a fine clip (uint wrap = pass)
+        int m = int(ceil(rayDist/asfloat(lt.w) + 0.5));
+        if (all(uint3(coord - lt.xyz - m) < uint3(max(int3(dagi_media_scene_get_clip_size().xxy) - 2*m, int3(0, 0, 0)))))
           return i;
         ++i;// moving that to while () causes invalid sahder compilation on dx11
       } while (i < dagi_media_scene_get_clip_count());
@@ -170,7 +175,7 @@ macro DAGI_MEDIA_SCENE_SAMPLE_ON_NO_SRV(code)
     {
       float3 boxExt = 0.5*voxelSize*dagi_media_scene_get_clip_size().xyx;
       float3 boxO = lt.xzy*voxelSize + boxExt;
-      return rayBoxIntersect(boxExt, wpos - boxO, wdir);
+      return rayBoxIntersect(boxExt - 0.5*voxelSize, wpos - boxO, wdir);
     }
 
     half4 dagi_trace_media_scene(float3 worldPos, float3 rayDir, float maxT)
@@ -185,10 +190,14 @@ macro DAGI_MEDIA_SCENE_SAMPLE_ON_NO_SRV(code)
         int4 lt = sample_dagi_media_scene_clipmap_lt_coord(cascade);
         float voxelSize = asfloat(lt.w);
         float2 startEnd = dagi_trace_media_scene_cascade_box(lt.xyz, voxelSize, worldPos, rayDir);
-        if (startEnd.y <= startEnd.x || startEnd.x > 0)
+        //a start in the inset band is inside the cascade but outside its box: an outward ray
+        //has the box behind it, an inward one enters it at the face
+        float from = max(startEnd.x, 0);
+        if (startEnd.y <= from)
           continue;
         float till = min(startEnd.y, maxT);
-        dagi_trace_media_scene_cascade_unsafe(cascade, asfloat(lt.w), worldPos, rayDir, till, light_transmittance);
+        if (till > from)
+          dagi_trace_media_scene_cascade_unsafe(cascade, voxelSize, worldPos + rayDir*from, rayDir, till - from, light_transmittance);
         maxT -= till;
         if (maxT <= 0 || light_transmittance.w < 1e-6)
           break;
@@ -197,13 +206,62 @@ macro DAGI_MEDIA_SCENE_SAMPLE_ON_NO_SRV(code)
       return light_transmittance;
     }
 
+    //sun visibility through the media, 1 = clear. The trace starts one voxel out, so a point
+    //inside a crown does not shadow itself: the media is calibrated for rays starting outside it.
+    //cost: one fetch per voxel crossed - max_dist is the caller's cost bound, keep it short
+    half dagi_media_scene_shadow(float3 worldPos, float3 dir_to_sun, float max_dist)
+    {
+      //bounds this function's own clipmap_lt_coord reads; the getters it calls loop to the raw count
+      uint clipCount = min(dagi_media_scene_get_clip_count(), (uint)DAGI_MAX_MEDIA_SCENE_CLIPS);
+      if (clipCount == 0)
+        return 1;
+      uint clip = dagi_media_scene_get_best_enclosing_clip(worldPos);
+      if (clip >= clipCount)
+      {
+        //outside the volume the media still shadows what its ray can reach: clamp the start
+        //to the coarsest clip entry, or the term would hard cut at the volume face
+        clip = clipCount - 1;
+        int4 lt = sample_dagi_media_scene_clipmap_lt_coord(clip);
+        float2 se = dagi_trace_media_scene_cascade_box(lt.xyz, asfloat(lt.w), worldPos, dir_to_sun);
+        if (se.x <= 0 || se.x >= min(se.y, max_dist))
+          return 1;
+        worldPos += dir_to_sun*se.x;
+        max_dist -= se.x;
+      }
+      float bias = dagi_media_scene_voxel_size(clip);
+      //near the clip's sun side face the biased start crosses into the coarser cascade, whose
+      //voxel holding the point would shadow it by itself: bias by the cascade the trace starts
+      //in. one re-check is enough, the clips are concentric so the coarse face is far away
+      uint startClip = dagi_media_scene_get_best_enclosing_clip(worldPos + dir_to_sun*bias);
+      if (startClip > clip && startClip < clipCount)
+        bias = dagi_media_scene_voxel_size(startClip);
+      return dagi_trace_media_scene(worldPos + dir_to_sun*bias, dir_to_sun, max(max_dist - bias, 0)).w;
+    }
+
+    //single cascade on purpose: the media past its box belongs to the coarser cascades of the
+    //radiance pipeline. shadows and long traces (HWRT) use dagi_trace_media_scene.
     void dagi_trace_media_scene_short_apply(float3 worldPos, float3 rayDir, float maxT, inout half3 radiance)
     {
-      if (dagi_media_scene_get_clip_count() == 0)
+      uint clipCount = dagi_media_scene_get_clip_count();
+      if (clipCount == 0)
         return;
-      uint cascade = dagi_media_scene_ray_get_best_enclosing_clip(worldPos, maxT);//in any direction, to ensure no divergence between threads
-      if (cascade >= dagi_media_scene_get_clip_count())
-        return;
+      //the finest cascade holding the ray in any direction, so all rays of a probe agree on it
+      uint cascade = dagi_media_scene_ray_get_best_enclosing_clip(worldPos, maxT);
+      if (cascade >= clipCount)
+      {
+        //no cascade holds a long ray (a sure miss traces to the 128m of USE_TRACE_TO_INF):
+        //march the finest one around the start up to its box
+        cascade = dagi_media_scene_get_best_enclosing_clip(worldPos);
+        if (cascade >= clipCount)
+          return;
+        int4 lt = sample_dagi_media_scene_clipmap_lt_coord(cascade);
+        float2 startEnd = dagi_trace_media_scene_cascade_box(lt.xyz, asfloat(lt.w), worldPos, rayDir);
+        float from = max(startEnd.x, 0);
+        maxT = min(maxT, startEnd.y) - from;
+        if (maxT <= 0)
+          return;
+        worldPos += rayDir*from;
+      }
       half4 light_transmittance = half4(0,0,0,1);
       dagi_trace_media_scene_cascade_unsafe(cascade, dagi_media_scene_voxel_size(cascade), worldPos, rayDir, maxT, light_transmittance);
       radiance = radiance.xyz*light_transmittance.w + light_transmittance.xyz;
@@ -220,6 +278,7 @@ macro DAGI_MEDIA_SCENE_SAMPLE_OFF(code)//if we know that project doesn't have me
   hlsl(code) {
     half4 dagi_get_media_scene(float3 worldPos) { return 0; }
     half4 dagi_trace_media_scene(float3 worldPos, float3 rayDir, float maxT) { return half4(0,0,0,1); }
+    half dagi_media_scene_shadow(float3 worldPos, float3 dir_to_sun, float max_dist) { return 1; }
     void dagi_trace_media_scene_short_apply(float3 worldPos, float3 rayDir, float maxT, inout half3) {}
   }
 endmacro

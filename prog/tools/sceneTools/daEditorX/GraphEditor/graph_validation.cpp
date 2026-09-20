@@ -101,6 +101,22 @@ bool remove_non_equal_types(const PinTypeList &const_types, PinTypeList &inout_t
   return changed;
 }
 
+// True if any type on the `from` side reaches any type on the `to` side.
+bool any_convertible(const PinTypeList &from, const PinTypeList &to)
+{
+  for (PinType f : from)
+  {
+    for (PinType t : to)
+    {
+      if (is_convertible(f, t))
+      {
+        return true;
+      }
+    }
+  }
+  return false;
+}
+
 bool is_role_pair_compatible(const GraphData::Pin &p1, const GraphData::Pin &p2)
 {
   // Mirrors graphEditor.js:1855: at least one is "any", or roles differ.
@@ -527,4 +543,178 @@ bool validate_new_edge(const GraphData &gd, int elem_a, int pin_a, int elem_b, i
     return false;
   }
   return true;
+}
+
+bool can_pins_ever_connect(const GraphData::Pin &source, const GraphData::Pin &candidate)
+{
+  // The gates validate_new_edge opens with, minus everything that needs the graph.
+  if (source.hidden || candidate.hidden || source.separator || candidate.separator)
+  {
+    return false;
+  }
+  if (!is_role_pair_compatible(source, candidate))
+  {
+    return false;
+  }
+
+  // The whole-graph pass skips undeclared pins rather than failing them; stay permissive too.
+  if (source.types.empty() || candidate.types.empty())
+  {
+    return true;
+  }
+
+  // check_type_correct's phase 1 narrows both ways, each guarded by its own role test, and an Any
+  // source is the `from` side against an In candidate. Picking one direction off source.role alone
+  // refuses exactly those pairs, so mirror the two tests rather than the shape.
+  const bool sourceToCandidate = source.role == PinRole::Out || candidate.role == PinRole::In;
+  const bool candidateToSource = source.role == PinRole::In || candidate.role == PinRole::Out;
+  if (sourceToCandidate && !any_convertible(source.types, candidate.types))
+  {
+    return false;
+  }
+  if (candidateToSource && !any_convertible(candidate.types, source.types))
+  {
+    return false;
+  }
+  // Neither side constrains the other (Any against Any), which the whole-graph pass also leaves be.
+  return true;
+}
+
+namespace
+{
+// The far end of a wire the splice at (anchor_node, anchor_pin) could take over, or false: this edge
+// is not on that pin, anchor_edge_id narrows it out, or its far end is one the renderer never
+// submitted -- there is no pin there to wire, nor to draw a preview wire to. Kept beside its two
+// callers because it is the rule that decides whether the gesture is offered at all.
+bool splice_wire_far_end(const GraphData &gd, const GraphData::Edge &edge, int anchor_node, int anchor_pin, int anchor_edge_id,
+  SplicePin &out)
+{
+  if (anchor_edge_id >= 0 && edge.id != anchor_edge_id)
+  {
+    return false;
+  }
+
+  int oppositeNode = -1;
+  int oppositePin = -1;
+  if (!edge_opposite_end(edge, anchor_node, anchor_pin, oppositeNode, oppositePin) || !is_pin_reachable(gd, oppositeNode, oppositePin))
+  {
+    return false;
+  }
+
+  out = SplicePin{oppositeNode, oppositePin, edge.id, edge.muted};
+  return true;
+}
+} // namespace
+
+void splice_ends(const GraphData &gd, int anchor_node, int anchor_pin, int anchor_edge_id, SpliceEnds &out)
+{
+  out.feed = SplicePin{anchor_node, anchor_pin};
+  out.sinks.clear();
+
+  const GraphData::Pin *const anchor = find_pin(gd, anchor_node, anchor_pin);
+  if (!anchor)
+  {
+    return;
+  }
+  const bool anchorIsOut = anchor->role == PinRole::Out;
+
+  for (const GraphData::Edge &edge : gd.edges)
+  {
+    SplicePin farEnd;
+    if (!splice_wire_far_end(gd, edge, anchor_node, anchor_pin, anchor_edge_id, farEnd))
+    {
+      continue;
+    }
+    if (anchorIsOut)
+    {
+      out.sinks.push_back(farEnd);
+      continue;
+    }
+    // An In anchor names one wire: its driver feeds, and the anchor itself is the consumer.
+    out.feed = SplicePin{farEnd.node, farEnd.pin};
+    out.sinks.push_back(SplicePin{anchor_node, anchor_pin, farEnd.edgeId, farEnd.muted});
+    return;
+  }
+}
+
+bool has_splice_target(const GraphData &gd, int anchor_node, int anchor_pin, int anchor_edge_id)
+{
+  // The rule splice_ends builds its ends from, asked one edge at a time and stopped at the first
+  // hit: the hint bar and the menu rows want the bool alone, every frame. The anchor's role does not
+  // enter it -- either way a sink exists exactly when one of its wires has a far end to reach.
+  if (!find_pin(gd, anchor_node, anchor_pin))
+  {
+    return false;
+  }
+
+  for (const GraphData::Edge &edge : gd.edges)
+  {
+    SplicePin farEnd;
+    if (splice_wire_far_end(gd, edge, anchor_node, anchor_pin, anchor_edge_id, farEnd))
+    {
+      return true;
+    }
+  }
+  return false;
+}
+
+bool can_node_splice(const GraphData &gd, const SpliceEnds &ends, const GraphData::Node &candidate)
+{
+  const GraphData::Pin *const feed = find_pin(gd, ends.feed.node, ends.feed.pin);
+  if (!feed)
+  {
+    return false;
+  }
+
+  // Resolved above the loop: find_pin scans gd.nodes, and the picker runs this once per descriptor
+  // in the library.
+  eastl::fixed_vector<const GraphData::Pin *, 8, true> sinkPins;
+  for (const SplicePin &sink : ends.sinks)
+  {
+    if (const GraphData::Pin *const sinkDesc = find_pin(gd, sink.node, sink.pin))
+    {
+      sinkPins.push_back(sinkDesc);
+    }
+  }
+
+  bool takesFeed = false;
+  bool passesOn = sinkPins.empty();
+  for (const GraphData::Pin &pin : candidate.pins)
+  {
+    takesFeed = takesFeed || can_pins_ever_connect(*feed, pin);
+    // Role tested as the commit does, so nothing is admitted that its consumer loop would skip.
+    if (pin.role == PinRole::Out)
+    {
+      for (const GraphData::Pin *const sinkDesc : sinkPins)
+      {
+        passesOn = passesOn || can_pins_ever_connect(*sinkDesc, pin);
+      }
+    }
+    if (takesFeed && passesOn)
+    {
+      return true;
+    }
+  }
+  return false;
+}
+
+int find_connectable_pin(const GraphData &gd, int source_node_id, int source_pin, int candidate_node_id)
+{
+  const GraphData::Node *const candidate = find_node_by_id(gd, candidate_node_id);
+  if (!candidate)
+  {
+    return -1;
+  }
+
+  // No can_pins_ever_connect pre-gate: it only repeats what the validator decides next, over the
+  // handful of pins one node has, and two copies of the rule are two things to keep in step.
+  for (int i = 0; i < static_cast<int>(candidate->pins.size()); ++i)
+  {
+    // The validator normalizes either orientation itself.
+    if (validate_new_edge(gd, source_node_id, source_pin, candidate_node_id, i))
+    {
+      return i;
+    }
+  }
+  return -1;
 }

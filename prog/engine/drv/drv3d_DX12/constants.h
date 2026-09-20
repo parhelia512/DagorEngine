@@ -54,6 +54,8 @@ inline constexpr uint32_t MIN_COMPUTE_CONST_REGISTERS = DEF_CS_CONSTS;
 inline constexpr uint32_t VERTEX_SHADER_MAX_REGISTERS = 4096;
 inline constexpr uint32_t VERTEX_SHADER_MIN_REGISTERS = DEF_VS_CONSTS;
 inline constexpr uint32_t PIXEL_SHADER_REGISTERS = MAX_PS_CONSTS;
+
+inline constexpr uint32_t UNKNOWN_CONST_REGISTER_COUNT_REQUIREMENT = UINT32_MAX;
 } // namespace drv3d_dx12
 
 namespace gpu

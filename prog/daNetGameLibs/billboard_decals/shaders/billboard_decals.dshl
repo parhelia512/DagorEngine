@@ -234,12 +234,20 @@ shader billboard_decals
   USE_LOAD_DEPTH_GBUFFER()
 
   (ps) {
-    billboard_decals_diff_tex@smpArray = billboard_decals_diff_tex;
-    billboard_decals_bump_tex@smpArray = billboard_decals_bump_tex;
+    billboard_decals_diff_tex@texArray = billboard_decals_diff_tex;
+    billboard_decals_bump_tex@texArray = billboard_decals_bump_tex;
     billboard_decals_depth_mask__size@f4 = billboard_decals_depth_mask;
     billboard_decals_hole_alpha_mult@f1=billboard_decals_hole_alpha_mult;
     billboard_decals_hole_alpha_offset@f1=billboard_decals_hole_alpha_offset;
     billboard_decals_parallax_str@f1 = billboard_decals_parallax_str;
+  }
+  if (!maybe(global_frame_has_linear_clamp_sampler))
+  {
+    INIT_GLOBAL_LINEAR_CLAMP_SAMPLER(ps)
+  }
+  hlsl(ps) {
+    #define billboard_decals_diff_tex_samplerstate global_linear_clamp_sampler
+    #define billboard_decals_bump_tex_samplerstate global_linear_clamp_sampler
   }
 
   hlsl(ps) {

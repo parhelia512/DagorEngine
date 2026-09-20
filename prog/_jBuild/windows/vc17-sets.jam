@@ -25,7 +25,6 @@ if $(BuildDagorEngineIndependentCode) != yes {
   _DEF_C_CMDLINE +=
     -D_TARGET_PC=1 -D_TARGET_PC_WIN=1 -D_TARGET_SIMD_SSE=$(sse$(SSEVersion))
     -DWIN32_LEAN_AND_MEAN= -D_USE_MATH_DEFINES -DNOMINMAX -D_ALLOW_KEYWORD_MACROS=
-    -D_USING_V110_SDK71_
     -DDELAYIMP_INSECURE_WRITABLE_HOOKS
     /Zc:forScope /J
     /Zc:inline /bigobj /Zc:wchar_t
@@ -36,7 +35,7 @@ if $(BuildDagorEngineIndependentCode) != yes {
     case arm64 :  _DEF_C_CMDLINE =  -D_TARGET_64BIT -D_TARGET_ARCH_ARM64 [ StripStrings $(_DEF_C_CMDLINE) : -D_TARGET_SIMD_SSE=$(sse$(SSEVersion)) ] -D_TARGET_SIMD_NEON /wd4746 ;
   }
 }
-if $(Analyze) = yes { _DEF_C_CMDLINE = [ StripStrings $(_DEF_C_CMDLINE) : -D_USING_V110_SDK71_ ] -analyze -WX ; }
+if $(Analyze) = yes { _DEF_C_CMDLINE += -analyze -WX ; }
 
 if $(Sanitize) = address { _DEF_C_CMDLINE += /fsanitize=address ; UseLLDLink = no ; }
 

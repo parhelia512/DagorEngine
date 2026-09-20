@@ -25,6 +25,9 @@ inline constexpr char ERROR_DATA_CONTEXT[] = "contextName";
 // Client-side error code for passing data inside of SepClient
 inline constexpr char ERROR_DATA_REASON_ERROR_CODE[] = "reasonErrorCode";
 
+// Gaijin Char-backend-specific notification: the server sends it before it terminates the connection
+inline constexpr char SERVER_SHUTDOWN_NOTIFICATION_METHOD[] = "sep.NotifyClient.ServerIsGoingToShutdown";
+
 
 namespace binary_message
 {

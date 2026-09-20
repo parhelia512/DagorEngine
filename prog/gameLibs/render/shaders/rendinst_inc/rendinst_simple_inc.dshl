@@ -214,7 +214,7 @@ macro USE_COMMON_RENDINST_DISPLACEMENT_FOR_TESSELLATION()
         #endif
 
         half3 initialHeight = half3(diffuseColor.a, diffuseColor1.a, diffuseColor2.a);
-        half3 invertedHeight = get_invert_heights().xyz ? 1 - initialHeight : initialHeight;
+        half3 invertedHeight = select(get_invert_heights().xyz != 0, 1 - initialHeight, initialHeight);
         weights = get_blending_weights_for_height(weights, invertedHeight);
 
         half3 heightInMeters = rendinst_displacement_mul * initialHeight + rendinst_displacement_offset;

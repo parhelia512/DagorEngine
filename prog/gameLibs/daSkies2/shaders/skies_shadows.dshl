@@ -20,10 +20,13 @@ macro SKY_CLOUDS_SHADOWS(code, use_origin, sun_dir_x, sun_dir_y, sun_dir_z)
   //rescales optical depth, not transmittance. The max() only guards a zero var.
   //Geometric lerp of the exponent: transmittance responds exponentially to it,
   //so this keeps the physicality knob perceptually uniform over 0..1
-  (code) {clouds_bsm_phys_exp@f1 = pow(1./max(clouds_bsm_ms_attn_sq, 0.0001), clouds_bsm_scattering_physicality);}
-  INIT_CLOUDS_SHADOWS_VOLUME(code)
-  USE_CLOUDS_SHADOWS_VOLUME(code)
-  CLOUDS_VOL_TRANSMITTANCE(code)
+  if (clouds_use_bsm == yes)
+  {
+    (code) {clouds_bsm_phys_exp@f1 = pow(1./max(clouds_bsm_ms_attn_sq, 0.0001), clouds_bsm_scattering_physicality);}
+    INIT_CLOUDS_SHADOWS_VOLUME(code)
+    USE_CLOUDS_SHADOWS_VOLUME(code)
+    CLOUDS_VOL_TRANSMITTANCE(code)
+  }
   GET_STATISTICAL_SHADOW_FUNC(code)
   PROJECT_SKIES_SHADOWS(code)
   hlsl(code) {
@@ -34,6 +37,11 @@ macro SKY_CLOUDS_SHADOWS(code, use_origin, sun_dir_x, sun_dir_y, sun_dir_z)
     float getShadow(float3 worldPos, float d, float r, float mu)
     {
       float shadow = get_project_skies_shadows(worldPos, d, r, mu);
+      ##if clouds_use_bsm == no
+      if (d > 100)
+        return shadow * getCloudsStatisticalShadow(r, mu);
+      return shadow * base_clouds_transmittance_vol(worldPos);
+      ##else
       //fully statistical by 100km (gap-AVERAGED coverage estimate, the right regime
       //for long-range scattering; per-gap structure is below the sun-disk penumbra
       //there anyway) - also skips the map fetch for the far samples
@@ -73,6 +81,7 @@ macro SKY_CLOUDS_SHADOWS(code, use_origin, sun_dir_x, sun_dir_y, sun_dir_z)
       if (statW > 0)
         bsmShadow = lerp(bsmShadow, getCloudsStatisticalShadow(r, mu), statW);
       return shadow * bsmShadow;
+      ##endif
     }
   }
 endmacro

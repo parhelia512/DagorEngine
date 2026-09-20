@@ -14,14 +14,16 @@ public:
     das::ModuleLibrary lib(this);
     addBuiltinDependency(lib, require("ecs"));
 
-    das::addExtern<DAS_BIND_FUN(signal_hosted_server_ready)>(*this, lib, "signal_hosted_server_ready",
-      das::SideEffects::modifyExternal, "bind_dascript::signal_hosted_server_ready");
-    das::addExtern<DAS_BIND_FUN(disable_auto_hosted_server_ready)>(*this, lib, "disable_auto_hosted_server_ready",
-      das::SideEffects::modifyExternal, "bind_dascript::disable_auto_hosted_server_ready");
     das::addExtern<DAS_BIND_FUN(is_hosted_internal_server_active)>(*this, lib, "is_hosted_internal_server_active",
       das::SideEffects::accessExternal, "bind_dascript::is_hosted_internal_server_active");
-    das::addExtern<DAS_BIND_FUN(should_server_invoke_ready_manually)>(*this, lib, "should_server_invoke_ready_manually",
-      das::SideEffects::accessExternal, "bind_dascript::should_server_invoke_ready_manually");
+    das::addExtern<DAS_BIND_FUN(get_hosted_internal_server_uid)>(*this, lib, "get_hosted_internal_server_uid",
+      das::SideEffects::accessExternal, "bind_dascript::get_hosted_internal_server_uid");
+    das::addExtern<DAS_BIND_FUN(allocate_hosted_server_uid)>(*this, lib, "allocate_hosted_server_uid",
+      das::SideEffects::modifyExternal, "bind_dascript::allocate_hosted_server_uid");
+    das::addExtern<DAS_BIND_FUN(set_hosted_server_start_uid)>(*this, lib, "set_hosted_server_start_uid",
+      das::SideEffects::modifyExternal, "bind_dascript::set_hosted_server_start_uid");
+    das::addExtern<DAS_BIND_FUN(is_main_thread_network)>(*this, lib, "is_main_thread_network", das::SideEffects::accessExternal,
+      "bind_dascript::is_main_thread_network");
     das::addExtern<DAS_BIND_FUN(request_start_hosted_server)>(*this, lib, "request_start_hosted_server",
       das::SideEffects::modifyExternal, "bind_dascript::request_start_hosted_server");
     das::addExtern<DAS_BIND_FUN(request_stop_hosted_server)>(*this, lib, "request_stop_hosted_server",

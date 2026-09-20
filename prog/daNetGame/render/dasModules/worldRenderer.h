@@ -7,7 +7,7 @@
 #include <dasModules/dasModulesCommon.h>
 #include <drv/3d/dag_tex3d.h>
 #include <render/resolution.h>
-#include <render/world/cameraParams.h>
+#include <render/cameraParams.h>
 #include <render/world/cameraViewVisibilityManager.h>
 
 

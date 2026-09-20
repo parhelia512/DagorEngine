@@ -7,14 +7,14 @@ from "async" import Future
 // Acknowledge after the fault.
 let f = Future()
 f.reject("boom")
-print("f: " + f.getState() + " / " + f.getValue() + "\n")
+println($"f: {f.getState()} / {f.getValue()}")
 f.markHandled()
-print("f after ack: " + f.getState() + " / " + f.getValue() + "\n")
+println($"f after ack: {f.getState()} / {f.getValue()}")
 
 // Pre-acknowledge before the fault.
 let g = Future()
 g.markHandled()
 g.reject("later")
-print("g: " + g.getState() + " / " + g.getValue() + "\n")
+println($"g: {g.getState()} / {g.getValue()}")
 
 print("script done\n")

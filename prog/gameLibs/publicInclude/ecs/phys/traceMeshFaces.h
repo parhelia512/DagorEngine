@@ -5,6 +5,6 @@
 #pragma once
 
 #include <daECS/core/componentType.h>
-#include <gameMath/traceUtils.h>
+#include <rendInst/traceUtils.h>
 
 ECS_DECLARE_RELOCATABLE_TYPE(TraceMeshFaces);

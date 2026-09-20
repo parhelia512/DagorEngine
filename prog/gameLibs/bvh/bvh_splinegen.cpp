@@ -39,8 +39,7 @@ static void add_splinegen_instance_to_list(ContextId context_id, uint64_t bvh_ob
   auto &data = context_id->uniqueSplinegenBuffers[bvh_object_id];
 
   SplineGenInfo splinegenInfo;
-  splinegenInfo.transformedBuffer = &data.buffer;
-  splinegenInfo.transformedBlas = &data.blas;
+  splinegenInfo.transformedData = &data;
   splinegenInfo.getSplineDataFn = [vertex_buffer, splinegen_instance_id, instance_vertex_count](uint32_t &start_vertex) {
     start_vertex = splinegen_instance_id * instance_vertex_count;
     return vertex_buffer;

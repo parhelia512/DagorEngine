@@ -27,6 +27,7 @@ namespace darg
   KEY(borderRadius)              \
   KEY(borderWidth)               \
   KEY(boundPropsData)            \
+  KEY(breakLongWords)            \
   KEY(brightness)                \
   KEY(btnId)                     \
   KEY(btnName)                   \
@@ -290,6 +291,12 @@ namespace darg
   KEY(updateCounterElem)         \
   KEY(validateStaticText)        \
   KEY(valign)                    \
+  KEY(virtualInitialCount)       \
+  KEY(virtualItemHeight)         \
+  KEY(virtualItemHeights)        \
+  KEY(virtualItems)              \
+  KEY(virtualOverscan)           \
+  KEY(virtualTail)               \
   KEY(viscosity)                 \
   KEY(vplace)                    \
   KEY(w)                         \

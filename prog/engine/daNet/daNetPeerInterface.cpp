@@ -210,7 +210,7 @@ static ENetPeer *get_peer_by_addr(const ENetHost *host, const SystemAddress &a)
   return NULL;
 }
 
-DaNetPeerInterface::DaNetPeerInterface(_ENetHost *ehost, bool is_threaded) :
+DaNetPeerInterface::DaNetPeerInterface(_ENetHost *ehost, bool is_manual) :
   host(ehost),
   // Note: overcommit thread stack because unknown third-party software (e.g. "smart" net drivers) might hook socket functions
   DaThread("danet_thread", 128 << 10),
@@ -221,7 +221,7 @@ DaNetPeerInterface::DaNetPeerInterface(_ENetHost *ehost, bool is_threaded) :
   maximumIncomingConnections(0),
   responsivenessUpdateStamp(0U),
   echoManager(get_ping_timeout()),
-  is_threaded(is_threaded)
+  is_manual(is_manual)
 {
   receivedPackets.reserve(64);
   packetsToSend.reserve(64);
@@ -327,7 +327,7 @@ bool DaNetPeerInterface::Startup(uint16_t maxCon, int st, const SocketDescriptor
 
   echoManager.setHost(host); // doing this strictly before the network thread is started for concurrency reasons
 
-  if (sd && !is_threaded)
+  if (sd && !is_manual)
     DaThread::start();
 
   return true;
@@ -345,7 +345,7 @@ void DaNetPeerInterface::Stop(DaNetTime block_duration, DisconnectionCause cause
 {
   if (host)
   {
-    if (!is_threaded)
+    if (!is_manual)
       DaThread::terminate(true, -1, &packetsEvent);
 
     enet_host_flush(host);
@@ -802,7 +802,7 @@ DaNetPeerExecutionContext::DaNetPeerExecutionContext()
 
 void DaNetPeerInterface::execute() // thread func
 {
-  G_ASSERT(!is_threaded);
+  G_ASSERT(!is_manual);
   if (IS_CLIENT_MODE)
     DaThread::applyThisThreadAffinity(WORKER_THREADS_AFFINITY_USE);
   G_ASSERT(host);
@@ -978,7 +978,7 @@ bool DaNetPeerInterface::Connect(const char *hosta, uint16_t port, uint32_t conn
     host->totalReceivedPackets = host->totalReceivedData = 0;
     if (is_relay_connection)
       relayPeerIdx = PEER2IDX(hostpeer);
-    if (!is_threaded)
+    if (!is_manual)
       DaThread::start();
     return true;
   }

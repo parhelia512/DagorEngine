@@ -1,0 +1,13 @@
+Root    ?= ../../../../.. ;
+Location = prog/engine/drv/shadersMetaData/dx11 ;
+
+include $(Root)/prog/_jBuild/defaults.jam ;
+
+TargetType  = lib ;
+Target      = engine/drv/shadersMetaData/dx11.lib ;
+
+Sources =
+  unpack.cpp
+;
+
+include $(Root)/prog/_jBuild/build.jam ;

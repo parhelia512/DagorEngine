@@ -82,6 +82,8 @@ void on_before_unload_scene(ContextId) {}
 
 void on_before_settings_changed(ContextId) {}
 
+void release_game_texture_holds(ContextId) {}
+
 void on_unload_scene(ContextId) {}
 
 void on_load_scene(ContextId) {}
@@ -114,10 +116,15 @@ void set_on_parallel_jobs_finished_cb(on_parallel_jobs_finished_callback) {}
 
 void render_rt_mem_overlay(ContextId) {}
 
+void log_rt_memory_overhead(ContextId) {}
+void try_log_rt_memory_overhead(ContextId) {}
+
 void connect_dagdp(ContextId, dagdp_connect_callback callback) { callback(nullptr); }
 
 void gpu_grass_make_meta(ContextId, const GPUGrassBase &) {}
 void generate_gpu_grass_instances(ContextId, bool) {}
+
+void tell_active_dynamic_resources(ContextId, const eastl::vector_set<const DynamicRenderableSceneLodsResource *> &) {}
 
 void gather_splinegen_instances(ContextId, Sbuffer *, eastl::vector<eastl::pair<uint32_t, MeshInfo>> &, uint32_t, uint32_t &) {}
 void remove_spline_gen_instances(ContextId) {}
@@ -134,13 +141,18 @@ bool connect_lru_collision(ContextId, LRURendinstCollision *, lru_collision_gath
   return false;
 }
 
-void remove_lru_collision(ContextId) {}
-
 void invalidate_lru_collision(ContextId) {}
 
 void set_lru_collision_range(ContextId, float, float) {}
 
 LruCollisionStats get_lru_collision_stats(ContextId) { return {}; }
+
+void set_voxel_activity(ContextId, const VoxelActivitySettings &)
+{
+  logerr("[BVH] set_voxel_activity: bvh is compiled out (BVHSupport = no)");
+}
+
+void remove_voxel_activity(ContextId) {}
 
 } // namespace bvh
 

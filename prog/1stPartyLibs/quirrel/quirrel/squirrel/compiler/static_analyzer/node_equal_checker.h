@@ -418,6 +418,7 @@ public:
     case TO_CLONE:
     case TO_PAREN:
     case TO_DELETE:
+    case TO_SPREAD:
       return cmpUnary((const UnExpr *)lhs, (const UnExpr *)rhs);
     case TO_LITERAL:
       return cmpLiterals((const LiteralExpr *)lhs, (const LiteralExpr *)rhs);

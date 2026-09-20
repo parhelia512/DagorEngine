@@ -35,7 +35,7 @@
 #define HAVE_FUTEX_CONSTEXPR constexpr
 #endif
 
-#if _TARGET_XBOX || _TARGET_C2
+#if _TARGET_XBOX || _TARGET_C2 || _TARGET_PC_LINUX || _TARGET_ANDROID
 #define HAVE_NATIVE_FUTEX           true
 #define HAVE_NATIVE_FUTEX_CONSTEXPR constexpr
 #elif _TARGET_PC_WIN
@@ -632,7 +632,7 @@ void wake_up_all_delayed(JobPriority prio, bool wake)
 {
   static struct WakeUpAllJob final : public cpujobs::IJob
   {
-    const char *getJobName(bool &) const override { return "WakeUpAllJob"; }
+    const char *getJobName(bool &) const override { return DAPROFILER_STRING("WakeUpAllJob"); }
     void doJob() override { wake_up_all(); }
   } wake_up_all_job;
   add(&wake_up_all_job, prio, wake);

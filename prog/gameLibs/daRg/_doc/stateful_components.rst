@@ -9,7 +9,8 @@ A normal builder can run again whenever its parent rebuilds.
 State created in that builder is created again too.
 A stateful component has a constructor that daRg runs once when
 the component is mounted to the scene.
-The constructor creates the per-instance state and returns the usual component builder.
+The constructor receives a ``scope``, creates the per-instance state through
+it, and returns the usual component builder.
 
 Creating a stateful component
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -24,8 +25,8 @@ Put that descriptor in ``children``.
    let selectedSquadId = Watched(null)
 
    let SquadCard = StatefulComp(
-     function(squad) {
-       let isSelected = Computed(@() selectedSquadId.get() == squad.get().id)
+     function(scope, squad) {
+       let isSelected = scope.Computed(@() selectedSquadId.get() == squad.get().id)
 
        return @() {
          watch = [squad, isSelected]
@@ -47,6 +48,29 @@ Put that descriptor in ``children``.
 
 ``StatefulComp(...)`` returns a component type. Its identity is part of a
 component's identity, so do not create that type inside a builder.
+
+The constructor's first parameter must be named ``scope``, or ``_scope`` /
+``_`` when the constructor does not use it. The scope is the owner of the
+per-instance FRP state:
+
+- ``scope.Watched(value)`` and ``scope.Computed(fn)`` create observables that
+  daRg releases when the instance is deleted.
+- ``scope.subscribe(obs, callback)`` subscribes to any observable; daRg removes
+  the callback when the element is detached. ``obs`` itself is kept.
+- ``scope.onDetach(callback)`` runs ``callback`` once when the element is
+  detached, to release a resource that FRP does not own (a timer, a native
+  listener). Register several; they run in registration order. The scope is
+  tearing down inside the callback, so it must not create state or subscribe.
+- ``scope.WatchedImmediate(value)`` and ``scope.ComputedImmediate(fn)`` create
+  observables whose subscribers run synchronously inside ``set()`` instead of
+  at the next frame. Values are always fresh on read either way, so treat
+  these as a last resort. ``ComputedImmediate`` also makes all of the
+  computed's upstream observables propagate synchronously, shared ones
+  included.
+
+A plain ``Watched`` or ``Computed`` made in the constructor is not owned by the
+instance; it lives as long as something references it. Use the plain form for
+state that is deliberately shared or module-scope.
 
 ``SquadCard(squad)`` returns a lightweight descriptor.
 It holds the type, the arguments, and the key.
@@ -76,12 +100,12 @@ reordered.
 The key function receives ordinary values. If an argument is an observable,
 the key function receives its current value. It may use any subset of the
 constructor arguments, in any order, but its parameter names must match the
-constructor parameter names:
+constructor parameter names. It never receives ``scope``:
 
 .. code-block:: quirrel
 
    let SeatCard = StatefulComp(
-     function(soldier, seat) {
+     function(scope, soldier, seat) {
        return @() {
          watch = [soldier, seat]
          rendObj = ROBJ_TEXT
@@ -92,8 +116,13 @@ constructor parameter names:
 
 Both the constructor and the key function must have fixed parameters;
 default parameters and varargs are rejected.
-A key must be ``null``, a boolean, a number, or a string.
 Returning ``null`` leaves the component unkeyed.
+
+Keys are compared with ``==``: a number, a string or a boolean matches by
+value, and a table, an array or an instance matches only when it is the same
+object. Therefore, do not build the key. ``@(item) {id = item.id}`` returns a
+new table on each rebuild, so it never matches and the instance loses its
+state. Use the object itself when the data keeps it stable: ``@(item) item``.
 
 Keys should be unique among stateful siblings of the same type.
 Unkeyed siblings, and siblings with duplicate keys, are matched in their current order.
@@ -120,14 +149,14 @@ Read it with ``.get()`` and include it, or a value derived from it, in ``watch``
 .. code-block:: quirrel
 
    // This keeps the first name forever.
-   let Card = StatefulComp(function(item) {
+   let Card = StatefulComp(function(scope, item) {
      let name = item.get().name
      return @() { rendObj = ROBJ_TEXT, text = name }
    })
 
    // This follows later values passed for item.
-   let Card = StatefulComp(function(item) {
-     let name = Computed(@() item.get().name)
+   let Card = StatefulComp(function(scope, item) {
+     let name = scope.Computed(@() item.get().name)
      return @() {
        watch = name
        rendObj = ROBJ_TEXT
@@ -141,12 +170,21 @@ Do not use a one-time read for data the component renders.
 In developer builds, daRg reports a changed value argument that has no reactive consumer.
 This catches a common stale-data mistake, but it does not replace a complete ``watch`` list.
 
+When an argument is a mount-time constant on purpose - a stable config bag the
+constructor reads once, that a parent rebuild still re-supplies as a fresh table -
+name it with a ``mount`` prefix (``mountConfig`` or ``mount_config``) to opt out
+of that report. The cell still updates on every rebuild, so a later ``.get()``
+reads the newest value; only the report is muted. The prefix must sit at a word
+boundary - end, ``_``, or an upper-case letter - so ``mount_config``,
+``mountConfig`` and ``mount`` opt out but ``mountainInfo`` does not.
+
 You can also pass an observable as an argument.
 The constructor receives that same observable instead of a private one.
 For as long as the instance is kept, later descriptors must pass the same observable again.
 Changing between a value and an observable, or replacing the observable, is an error.
 
-A call must provide exactly the constructor's number of arguments.
+A call must provide exactly the constructor's number of arguments, not
+counting ``scope``; daRg supplies the scope itself.
 
 Where descriptors are allowed
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -164,25 +202,50 @@ Wrap it in a component description when one of those places needs it:
 Lifetime and cleanup
 ~~~~~~~~~~~~~~~~~~~~
 
-FRP state created in the constructor belongs to the mounted instance.
-daRg disposes constructor-created ``Watched`` and ``Computed`` values, along with
-FRP subscriptions created there, when the element is finally deleted.
-The state remains available while a removed element is finishing a fade-out.
+FRP state created through ``scope`` belongs to the mounted instance.
+``scope.subscribe`` callbacks are removed as soon as the element is detached,
+so they do not fire during a fade-out. ``scope``-created ``Watched`` and
+``Computed`` values are disposed later, when the element is finally deleted,
+so they stay readable while a removed element is finishing a fade-out.
 
-This includes a subscription to an observable from outside the component, such
-as a module-scope ``Watched``. daRg removes the callback and keeps the
-observable, so you do not need ``unsubscribe``. Only the constructor works this
-way: a ``subscribe`` call from ``onAttach`` or from an event handler stays on
+``scope.subscribe`` works on any observable, including one from outside the
+component, such as a module-scope ``Watched``. daRg removes the callback and
+keeps the observable, so you do not need ``unsubscribe``. A plain
+``obs.subscribe(callback)`` is not owned by the instance: the callback stays on
 the observable after the element is gone.
 
+An observable holds one subscription per function. ``scope.subscribe`` with a
+function that is already subscribed to that observable outside the scope is an
+error, because the scope could not remove it at detach. Pass a distinct
+function instead.
+
 Timers and other resources outside FRP are not owned by the instance.
-Clear them in the normal lifecycle hooks, such as ``onDetach``.
+Release them from ``scope.onDetach``, which runs when the element is detached,
+the same moment ``scope.subscribe`` callbacks are removed.
+``scope``-created observables are still readable inside the
+callback; they are disposed later, after any fade-out. The callback must not
+create state or subscribe, because the scope is tearing down.
+
+.. code-block:: quirrel
+
+   let Ticker = StatefulComp(function(scope) {
+     let value = scope.Watched(0)
+     let handle = gui_scene.setInterval(1.0, @() value.modify(@(v) v + 1))
+     scope.onDetach(@() gui_scene.clearTimer(handle))
+     return @() { watch = value, rendObj = ROBJ_TEXT, text = value.get().tostring() }
+   })
 
 Keep setup out of the builder
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-The constructor is the only place in a stateful component where you can
-create observables or subscribe.
-Creating a ``Watched`` or ``Computed``, or calling ``subscribe``,
-from its returned builder is an error.
+A builder must not create state.
+Creating a ``Watched`` or ``Computed``, calling ``subscribe``, or registering
+``scope.onDetach``, whether through ``scope`` or not, from the returned builder
+is an error.
 The builder should only read existing state and return a component description.
+
+The constructor is the place for instance state, but it is not the only one:
+a kept ``scope`` also works after the mount. An event handler can create
+state through it or call ``scope.subscribe``, and that state still dies with
+the instance. ``scope.subscribe`` from an event handler is the leak-free
+form of the plain ``subscribe`` that would stay on the observable forever.

@@ -62,7 +62,8 @@ uint32_t BarrierScheduler::execution_rank(const Event &event)
 void BarrierScheduler::scheduleEvents(EventsCollection &node_events, const intermediate::Graph &graph,
   const ResourceLifetimes &lifetimes, const PassColoring &pass_coloring,
   const IdIndexedFlags<intermediate::NodeIndex, framemem_allocator> &nodes_changed,
-  const IdIndexedFlags<intermediate::ResourceIndex, framemem_allocator> &resources_changed,
+  const IdIndexedFlags<intermediate::ResourceIndex, framemem_allocator> &values_changed,
+  const IdIndexedFlags<intermediate::ResourceIndex, framemem_allocator> &requests_changed,
   const IdIndexedFlags<intermediate::ResourceIndex, framemem_allocator> &lifetimes_changed)
 {
   TIME_PROFILE(scheduleEvents);
@@ -70,7 +71,7 @@ void BarrierScheduler::scheduleEvents(EventsCollection &node_events, const inter
   FRAMEMEM_VALIDATE;
 
   const auto gracePoints = compute_grace_points(graph, pass_coloring);
-  auto dirtyResources = computeDirtyResources(graph, nodes_changed, resources_changed, lifetimes_changed, gracePoints);
+  auto dirtyResources = computeDirtyResources(graph, nodes_changed, values_changed, requests_changed, lifetimes_changed, gracePoints);
 
   const bool hasDirtyResources = dirtyResources.trueKeys().begin() != dirtyResources.trueKeys().end() || cachedResourceEvents.empty();
 
@@ -242,12 +243,15 @@ void BarrierScheduler::setAliasSyncStages(EventsCollection &node_events, interme
 
 BarrierScheduler::DirtyResources BarrierScheduler::computeDirtyResources(const intermediate::Graph &graph,
   const IdIndexedFlags<intermediate::NodeIndex, framemem_allocator> &nodes_changed,
-  const IdIndexedFlags<intermediate::ResourceIndex, framemem_allocator> &resources_changed,
+  const IdIndexedFlags<intermediate::ResourceIndex, framemem_allocator> &values_changed,
+  const IdIndexedFlags<intermediate::ResourceIndex, framemem_allocator> &requests_changed,
   const IdIndexedFlags<intermediate::ResourceIndex, framemem_allocator> &lifetimes_changed, const GracePoints &gracePoints)
 {
   TIME_PROFILE(computeDirtyResources);
 
-  DirtyResources dirtyResources(resources_changed);
+  DirtyResources dirtyResources(requests_changed);
+  for (auto resIdx : values_changed.trueKeys())
+    dirtyResources.set(resIdx, true);
   dirtyResources.resize(graph.resources.totalKeys(), false);
 
   for (auto nodeIdx : nodes_changed.trueKeys())

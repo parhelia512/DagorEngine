@@ -8,6 +8,7 @@
 
 #include <debug/dag_assert.h>
 #include <debug/dag_log.h>
+#include <perfMon/dag_statDrv.h>
 
 #include <EASTL/atomic.h>
 
@@ -568,6 +569,8 @@ void SepClient::processIncomingData(AuthenticationFailurePtr &&original_data) co
 
 void SepClient::poll()
 {
+  TIME_PROFILE(sep_poll);
+
   if (isDebugLog())
   {
     // logdbg("%spoll() called", logPrefix.c_str());

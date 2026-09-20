@@ -30,16 +30,47 @@
 #include <osApiWrappers/dag_messageBox.h>
 #include <osApiWrappers/dag_miscApi.h>
 #include <util/dag_localization.h>
+#include <util/dag_parseResolution.h>
 #include <util/dag_watchdog.h>
 
 #include <atomic>
 
-#if _TARGET_PC_WIN
+#if _TARGET_PC_WIN | _TARGET_XBOX
 #include <workCycle/threadedWindow.h>
+#endif
+#if _TARGET_PC_WIN
 #include <startup/dag_winSplashScreen.inc.cpp>
+#endif
+#if _TARGET_ANDROID
+extern void dagor_android_set_window_cmd_processing_on_main_thread(bool on_main_thread);
+extern void android_d3d_reinit(void *w);
 #endif
 
 using workcycle_internal::game_scene;
+
+// The window resolution to use instead of the whole screen when the user rejects an overlarge one.
+static void get_overlarge_fallback_resolution(int &out_wdt, int &out_hgt, int base_scr_wdt, int base_scr_hgt)
+{
+  const char *resStr = ::dgs_get_settings()->getBlockByNameEx("video")->getStr("overlargeFallbackResolution", nullptr);
+  if (!resStr)
+    return;
+
+  int wdt = 0, hgt = 0;
+  if (!get_resolution_from_str(resStr, wdt, hgt) || wdt <= 0 || hgt <= 0)
+  {
+    logwarn("video/overlargeFallbackResolution '%s' is not a valid resolution", resStr);
+    return;
+  }
+
+  if (wdt > base_scr_wdt || hgt > base_scr_hgt)
+  {
+    logwarn("video/overlargeFallbackResolution %dx%d does not fit in %dx%d", wdt, hgt, base_scr_wdt, base_scr_hgt);
+    return;
+  }
+
+  out_wdt = wdt;
+  out_hgt = hgt;
+}
 
 class MyD3dInitCB : public Driver3dInitCallback
 {
@@ -63,8 +94,12 @@ public:
 
     if (allowResolutionOverlarge == 1)
     {
-      ref_scr_wdt = base_scr_wdt;
-      ref_scr_hgt = base_scr_hgt;
+      int fallbackWdt = base_scr_wdt, fallbackHgt = base_scr_hgt;
+      get_overlarge_fallback_resolution(fallbackWdt, fallbackHgt, base_scr_wdt, base_scr_hgt);
+      debug("resolution %dx%d is overlarge for %dx%d, use %dx%d", ref_scr_wdt, ref_scr_hgt, base_scr_wdt, base_scr_hgt, fallbackWdt,
+        fallbackHgt);
+      ref_scr_wdt = fallbackWdt;
+      ref_scr_hgt = fallbackHgt;
     }
   }
 
@@ -169,6 +204,11 @@ public:
 
     ::dgs_limit_fps = pblk_gr->getBool("limitfps", false);
 
+#if _TARGET_ANDROID
+    dagor_android_set_window_cmd_processing_on_main_thread(true);
+    android_d3d_reinit(win32_get_main_wnd());
+#endif
+
     if (!d3d::init_driver())
       RETURN_FATAL("Error initializing 3D driver:\n%s", d3d::get_last_error());
 
@@ -176,12 +216,16 @@ public:
     d3d::update_window_mode();
 #endif
 
+#if _TARGET_XBOX
+    workcycle_internal::is_window_in_thread = true;
+#else
     bool allowThreadedWindow = !d3d::is_stub_driver();
     // allow disabling threaded window per driver and per driver for exclusive fullscreen mode
     if (dgs_get_window_mode() == WindowMode::FULLSCREEN_EXCLUSIVE)
       allowThreadedWindow &= !strstr(pblk_video->getStr("noThreadedWindowInFullscreenWithAPI", ""), d3d::get_driver_name());
     allowThreadedWindow &= !strstr(pblk_video->getStr("noThreadedWindowWithAPI", ""), d3d::get_driver_name());
     workcycle_internal::is_window_in_thread = pblk_video->getBool("threadedWindow", allowThreadedWindow);
+#endif
     debug("Threaded window: %s", workcycle_internal::is_window_in_thread ? "yes" : "no");
 
     d3d::driver_command(Drv3dCommand::SET_APP_INFO, (void *)gameName, (void *)&gameVersion);
@@ -198,7 +242,7 @@ public:
 
     main_wnd_f *wndProc = workcycle_internal::main_window_proc;
     void *hwnd = nullptr;
-#if _TARGET_PC_WIN
+#if _TARGET_PC_WIN | _TARGET_XBOX
     if (workcycle_internal::is_window_in_thread)
     {
       wndProc = nullptr;
@@ -327,8 +371,11 @@ public:
   {
     TIME_PROFILER_SHUTDOWN();
     d3d::release_driver();
-#if _TARGET_PC_WIN
+#if _TARGET_PC_WIN | _TARGET_XBOX
     windows::shutdown_threaded_window();
+#endif
+#if _TARGET_ANDROID
+    dagor_android_set_window_cmd_processing_on_main_thread(false);
 #endif
   }
 

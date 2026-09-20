@@ -8,6 +8,7 @@ void PhysObjState::reset() { G_ASSERT(0); }
 void PhysObjState::serialize(danet::BitStream &) const { G_ASSERT(0); }
 bool PhysObjState::deserialize(const danet::BitStream &, IPhysBase &) { G_ASSERT_RETURN(false, false); }
 void PhysObjState::applyPartialState(const CommonPhysPartialState &) { G_ASSERT(0); }
+void PhysObjState::applyResyncedState(const PhysObjState &) { G_ASSERT(0); }
 void PhysObjState::applyDesyncedState(const PhysObjState &) { G_ASSERT(0); }
 void PhysObjControlState::reset() { G_ASSERT(0); }
 void PhysObjControlState::serialize(danet::BitStream &) const { G_ASSERT(0); }

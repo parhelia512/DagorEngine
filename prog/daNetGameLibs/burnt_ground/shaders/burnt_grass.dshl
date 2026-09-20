@@ -43,7 +43,7 @@ macro USE_BURNT_GRASS_INSTANCE_BASE(stage)
       const int2 minTileOffset = int2(-BURNT_GRASS_INDEX_MAP_RESOLUTION/2, -BURNT_GRASS_INDEX_MAP_RESOLUTION/2);
       const int2 maxTileOffset = minTileOffset + int2(BURNT_GRASS_INDEX_MAP_RESOLUTION-1, BURNT_GRASS_INDEX_MAP_RESOLUTION-1);
       BRANCH
-      if (any(tileOffset < minTileOffset || tileOffset > maxTileOffset))
+      if (any(or(tileOffset < minTileOffset, tileOffset > maxTileOffset)))
         return BURNT_GRASS_INVALID_GPU_TILE_INDEX;
 
       int2 tileCoord = (tileOffset + BURNT_GRASS_INDEX_MAP_RESOLUTION + burnt_grass_tile_toroidal_params.zw) % BURNT_GRASS_INDEX_MAP_RESOLUTION;

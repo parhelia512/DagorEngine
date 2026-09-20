@@ -186,7 +186,7 @@ void backed_vromfs_prefetch_all_files(VirtualRomFsPack *fs)
   if (!bd)
     return;
 
-  String mnt(get_vromfs_mount_path(fs)), out_fn;
+  String mnt(get_vromfs_mount_path(fs));
   for (int i = 0; i < fs->files.map.size(); i++)
   {
     if (fs->data[i].data() || !fs->data[i].size())
@@ -293,7 +293,7 @@ void backed_vromfs_prefetch_file(const char *fn, bool fn_is_prefix)
   {
     if (fs->data[i].data() || !fs->data[i].size())
       return;
-    String mnt(get_vromfs_mount_path(fs)), out_fn;
+    String mnt(get_vromfs_mount_path(fs));
     resolve_backed_entry(fs, i, false, false, mnt);
   }
 }
@@ -304,7 +304,6 @@ bool backed_vromfs_is_file_prefetched(const char *fn, bool fn_is_prefix)
   {
     if (fs->data[i].data() || !fs->data[i].size())
       return true;
-    String out_fn;
     return resolve_backed_entry(fs, i, false, true, get_vromfs_mount_path(fs)) != NULL;
   }
   return false;

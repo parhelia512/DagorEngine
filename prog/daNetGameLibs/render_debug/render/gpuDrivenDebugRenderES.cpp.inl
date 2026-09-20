@@ -74,11 +74,15 @@ public:
     if (freezeFrame)
       return;
 
-    d3d::resource_barrier(ResourceBarrierDesc{flatSpheresCount.getBuf(), RB_STAGE_COMPUTE | RB_RW_UAV});
-    d3d::resource_barrier(ResourceBarrierDesc{linesCount.getBuf(), RB_STAGE_COMPUTE | RB_RW_UAV});
     ShaderGlobal::set_buffer(gpu_debug_render_flat_spheres_count_buf, flatSpheresCount);
     ShaderGlobal::set_buffer(gpu_debug_render_lines_count_buf, linesCount);
-    gpu_debug_renderer_clear_cs->dispatch(1, 1, 1);
+
+    if (!accumulate)
+    {
+      d3d::resource_barrier(ResourceBarrierDesc{flatSpheresCount.getBuf(), RB_STAGE_COMPUTE | RB_RW_UAV});
+      d3d::resource_barrier(ResourceBarrierDesc{linesCount.getBuf(), RB_STAGE_COMPUTE | RB_RW_UAV});
+      gpu_debug_renderer_clear_cs->dispatch(1, 1, 1);
+    }
 
     // for global access in shaders during the FG execution
     ShaderGlobal::set_float(gpu_debug_render_buffering_active, 1.0f);
@@ -123,6 +127,7 @@ public:
   }
 
   void toggleFreezeFrame() { freezeFrame = !freezeFrame; }
+  void toggleAccumulate() { accumulate = !accumulate; }
 
 private:
   eastl::unique_ptr<ComputeShaderElement> gpu_debug_renderer_create_draw_indirect_cs, gpu_debug_renderer_clear_cs;
@@ -130,6 +135,7 @@ private:
 
   UniqueBufWithShaderVar flatSpheres, flatSpheresCount, lines, linesCount;
   bool freezeFrame = false;
+  bool accumulate = false;
 };
 
 ECS_DECLARE_RELOCATABLE_TYPE(GpuDrivenDebugRender);
@@ -240,6 +246,11 @@ bool gpu_driven_debug_renderer_console_handler(const char *argv[], int argc)
   {
     query_gpu_debug_render_ecs_query(*g_entity_mgr,
       [](GpuDrivenDebugRender &gpu_driven_debug_render) { gpu_driven_debug_render.toggleFreezeFrame(); });
+  }
+  CONSOLE_CHECK_NAME("gpu_dbg_render", "accumulate", 1, 1)
+  {
+    query_gpu_debug_render_ecs_query(*g_entity_mgr,
+      [](GpuDrivenDebugRender &gpu_driven_debug_render) { gpu_driven_debug_render.toggleAccumulate(); });
   }
   return found;
 }

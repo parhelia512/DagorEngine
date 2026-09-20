@@ -176,7 +176,6 @@ static void set_paint_detail_texture()
   static int paintDetailsVarId = get_shader_variable_id("paint_details_tex", true);
   TEXTUREID localPaintColorsTexId, globalPaintColorsTexId;
   IHmapService *hmlService = EDITORCORE->queryEditorInterface<IHmapService>();
-  SimpleString globalTexPalette;
 
   globalPaintColorsTexId = get_managed_texture_id("assets_color_global_tex_palette*");
   if (hmlService)
@@ -767,4 +766,23 @@ bool on_asset_changed(const DagorAsset &asset)
 
 void clear() { ShaderGlobal::reset_from_vars_and_release_managed_tex_verified(combinedPaintTexId, combinedPaintTex); }
 
-}; // namespace environment
+void before_render_objects()
+{
+  // WorldRenderer can rebind paint_details_tex to its own texture as soon as its source textures finish loading (for
+  // example after a device reset).
+  if (DAGORED2->getWorkspace().isUsingDngBasedSceneRender() && combinedPaintTexId != BAD_TEXTUREID)
+  {
+    static int paintDetailsVarId = get_shader_variable_id("paint_details_tex", true);
+    if (ShaderGlobal::get_tex(paintDetailsVarId) != combinedPaintTexId)
+      ShaderGlobal::set_texture(paintDetailsVarId, combinedPaintTexId);
+  }
+}
+
+void after_d3d_reset(bool full_reset)
+{
+  // combinedPaintTex is a runtime-stitched texture, so we have to rebuild it.
+  if (full_reset)
+    set_paint_detail_texture();
+}
+
+} // namespace environment

@@ -9,29 +9,31 @@
 #include <daECS/core/entitySystem.h>
 #include <daECS/core/componentTypes.h>
 
-#define LENS_FLARE_VARS_LIST                                \
-  VAR(lens_flare_texture)                                   \
-  VAR(lens_flare_prepare_num_manual_flares)                 \
-  VAR(lens_flare_prepare_camera_pos)                        \
-  VAR(lens_flare_prepare_camera_dir)                        \
-  VAR(lens_flare_rounding_type)                             \
-  VAR(lens_flare_prepare_has_fom_shadows)                   \
-  VAR(lens_flare_resolution)                                \
-  VAR(lens_flare_prepare_flare_type)                        \
-  VAR(lens_flare_prepare_max_num_instance)                  \
-  VAR(lens_flare_prepare_dynamic_lights_fadeout_distance)   \
-  VAR(lens_flare_prepare_dynamic_lights_use_occlusion)      \
-  VAR(lens_flare_prepare_dynamic_lights_depth_bias)         \
-  VAR(lens_flare_prepare_dynamic_lights_exposure_pow_param) \
-  VAR(lens_flare_prepare_spot_lights_cone_angle_cos)        \
-  VAR(lens_flare_prepare_indirect_draw_buf)                 \
-  VAR(lens_flare_prepare_indirect_dispatch_buf)             \
-  VAR(lens_flare_prepare_pre_culled_instance_indices_buf)   \
-  VAR(lens_flare_visibility_history_buf_size)               \
-  VAR(lens_flare_visibility_history_frame_id)               \
-  VAR(lens_flare_max_visibility_history_size)               \
-  VAR(lens_flare_prepare_instance_offsets_buf)              \
-  VAR(lens_flare_prepare_far_depth_mip)                     \
+#define LENS_FLARE_VARS_LIST                                     \
+  VAR(lens_flare_texture)                                        \
+  VAR(lens_flare_prepare_num_manual_flares)                      \
+  VAR(lens_flare_prepare_camera_pos)                             \
+  VAR(lens_flare_prepare_camera_dir)                             \
+  VAR(lens_flare_rounding_type)                                  \
+  VAR(lens_flare_prepare_has_fom_shadows)                        \
+  VAR(lens_flare_resolution)                                     \
+  VAR(lens_flare_prepare_flare_type)                             \
+  VAR(lens_flare_prepare_max_num_instance)                       \
+  VAR(lens_flare_prepare_dynamic_lights_fadeout_distance)        \
+  VAR(lens_flare_prepare_dynamic_lights_use_occlusion)           \
+  VAR(lens_flare_prepare_dynamic_lights_depth_bias)              \
+  VAR(lens_flare_prepare_dynamic_lights_exposure_pow_param)      \
+  VAR(lens_flare_prepare_spot_lights_cone_angle_cos)             \
+  VAR(lens_flare_prepare_dynamic_lights_max_component_intensity) \
+  VAR(lens_flare_min_visible_intensity)                          \
+  VAR(lens_flare_prepare_indirect_draw_buf)                      \
+  VAR(lens_flare_prepare_indirect_dispatch_buf)                  \
+  VAR(lens_flare_prepare_pre_culled_instance_indices_buf)        \
+  VAR(lens_flare_visibility_history_buf_size)                    \
+  VAR(lens_flare_visibility_history_frame_id)                    \
+  VAR(lens_flare_max_visibility_history_size)                    \
+  VAR(lens_flare_prepare_instance_offsets_buf)                   \
+  VAR(lens_flare_prepare_far_depth_mip)                          \
   VAR(lens_flare_global_scale)
 
 #define VAR(a) extern ShaderVariableInfo a##VarId;
@@ -124,7 +126,8 @@ public:
   void collectAndPrepareECSFlares_DynamicLights();
   bool endPreparingLights(const Point3 &camera_pos, const Point3 &camera_dir, bool hasClusteredLights, int shadow_frames_count);
   void render(const Point2 &resolution, float zoom = 1.0f) const;
-  void setDownsampledFarDepthMipCount(int mipcount) { downSampledDepthMipCount = mipcount; }
+  void setDownsampledFarDepthMipCount(int mipcount);
+  void setMinVisibleIntensity(float v) { minVisibleIntensity = v; }
 
   [[nodiscard]] bool isCachedFlareIdValid(const CachedFlareId &id) const;
   CachedFlareId cacheFlareId(const char *flare_config_name) const;
@@ -179,6 +182,7 @@ private:
       float depthBias;
       float exposurePowParam;
       float spotlightConeAngleCos;
+      float maxComponentIntensity;
     };
 
     explicit LensFlareData(eastl::string config_name, const Params &params);
@@ -276,6 +280,7 @@ private:
   Point3 lastCameraPos = Point3(0, -10000, 0);
   int nextHistoryFrameId = 0;
   int downSampledDepthMipCount = 0;
+  float minVisibleIntensity = 0;
 
   // Working memory and counters. These are reserved at initialization, reset and filled every frame.
   int numPreparedManualInstances = 0;
@@ -294,6 +299,7 @@ private:
   eastl::vector<eastl::vector<ManualLightFlareData>> manualPreparedLightsPerFlareId;
   eastl::vector<int> multiDrawCountPerRenderConfig;
 
+  void updateFarDepthMipShaderVar();
   void prepareConfigBuffers(const eastl::vector<LensFlareConfig> &configs);
   void updateConfigsFromECS();
   [[nodiscard]] bool prepareUseLensFlareConfig(const CachedFlareId &id);

@@ -172,7 +172,7 @@ Reverse Kahn's algorithm topological sort of `intermediate::Graph` nodes (schedu
 2. Pass contiguity -- prefer same pass color as last scheduled node
 3. Pass cross-edge in-degree -- used to keep passes contiguous
 4. Priority (`setPriority()`) -- higher priority executes later (PRIO_AS_LATE_AS_POSSIBLE = max)
-5. Node index -- stability tiebreaker
+5. Previous position (the sorted index the same frontend node had after the previous compilation), then node index -- stability tiebreaker; a node that was not in the previous compilation executes last among ties, lower index last
 
 Note: resource dependencies and explicit ordering (`orderMeBefore`/`orderMeAfter`) are already encoded as `predecessors` edges in the IR graph by `IrGraphBuilder`.
 

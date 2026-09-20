@@ -116,6 +116,22 @@ unicastAfterCreateEntity
   "unicastAfterCreateEntity:tag" {}
 }
 
+// entities.blk loads without a TemplateDBInfo; validate_sets.blk relies on that
+noInfoDeclares {
+  noinfo_declared_comp:i=0
+}
+
+// the child marks a component of the parent as tracked/replicated
+trackedInheritedBase {
+  inherited_track_val:i = 0
+}
+
+trackedInheritedChild {
+  _use:t="trackedInheritedBase"
+  _replicated:t="inherited_track_val"
+  _tracked:t="inherited_track_val"
+}
+
 entityWith_tracked_int_var1 {
   tracked_int_var1:i = 0
  _tracked:t="tracked_int_var1"

@@ -65,6 +65,7 @@ bitfield RenderState
   SCISSOR_ENABLED
   ALPHA_TO_COVERAGE
   Z_WRITE_ENABLE
+  Z_TEST_ENABLE
 
 
 [no_default_initializer]

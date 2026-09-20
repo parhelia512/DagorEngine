@@ -78,6 +78,8 @@ public:
 
   void setDefaultValue(Variant var) override { defaultValue = var.convert<int>(); }
 
+  const char *getImguiTypeName() const override { return "EditInt"; }
+
   void updateImgui() override
   {
     ScopedImguiBeginDisabled scopedDisabled(!controlEnabled);
@@ -120,7 +122,7 @@ public:
     if (valueHighlightColorSet)
       ImGui::PushStyleColor(ImGuiCol_FrameBg, getOverriddenColor(valueHighlightColor));
 
-    spinEdit.updateImgui(*this, &controlTooltip, this);
+    spinEdit.updateImgui(*this, &controlTooltip, this, this);
 
     if (valueHighlightColorSet)
       ImGui::PopStyleColor();

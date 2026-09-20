@@ -9,6 +9,7 @@ include "postfx_inc.dshl"
 include "wetness_inc.dshl"
 include "tonemapHelpers/use_full_tonemap_lut_inc.dshl"
 include "bvh_common_includes.dshl"
+include "rt_half_rate.dshl"
 
 float4x4 inv_proj_tm;
 
@@ -28,19 +29,24 @@ float ptgi_history_weight = 1;
 
 int ptgi_max_bounces = 3;
 
+// later gi bounces wander far from anything visible, their hits must not keep content alive
+int ptgi_mark_voxel_activity_bounces = 1;
+
 int blue_noise_frame_index;
 
 float ptgi_boost = 0;
 float ptgi_boost_range = 0;
 float4 ptgi_uv_scale;
 
-int ptgi_use_csm_shadows = 1;
 int ptgi_use_prev_frame_sample = 1;
 
 int ptgi_pipeline_mode = 0;
 interval ptgi_pipeline_mode : inline < 1, raygen < 2, ser;
-
 assume_if_not_assumed ptgi_pipeline_mode = inline;
+
+int ptgi_use_fx = 0;
+interval ptgi_use_fx: no < 1, yes;
+assume_if_not_assumed ptgi_use_fx = no;
 
 shader rt_gi
 {
@@ -49,7 +55,10 @@ shader rt_gi
     dont_render;
   }
 
-  supports global_const_block;
+  (cs) {
+    from_sun_direction@f3 = from_sun_direction;
+    sun_color_0@f3 = sun_color_0;
+  }
 
   USE_EMISSION_DECODE_COLOR_MAP_STUB(cs)
 
@@ -66,6 +75,7 @@ shader rt_gi
     nr_texture@tex2d = rt_nr;
     history_weight@f1 = ptgi_history_weight;
     max_bounces@u1 = ptgi_max_bounces;
+    mark_voxel_activity_bounces@u1 = ptgi_mark_voxel_activity_bounces;
     hit_dist_params@f3 = ptgi_hit_dist_params;
     frame_index@i1 = blue_noise_frame_index;
     ptgi_use_prev_frame_sample@i1 = ptgi_use_prev_frame_sample;
@@ -81,9 +91,17 @@ shader rt_gi
     #define depth_gbuf_load depth_gbuf_read
 
     #define TRACING_LOD 6
+    #define PTGI_SKY_MIP 3
   }
 
-  INIT_MAIN_BVH(cs, 0, false)
+  if (ptgi_use_fx == yes)
+  {
+    INIT_BVH(cs, 0, false)
+  }
+  else
+  {
+    INIT_MAIN_BVH(cs, 0, false)
+  }
 
   if (ptgi_pipeline_mode == inline)
   {
@@ -123,18 +141,27 @@ shader rt_gi
 
   USE_LOAD_DEPTH_GBUFFER_BASE(cs)
   USE_CALC_GEOMETRY_NORMAL(cs)
+  USE_CALC_GEOMETRY_NORMAL_HALF(cs)
   USE_ADAPTIVE_RAY_OFFSET(cs)
 
-  INIT_RT_LIGHTING(cs, false, true, false, false, ptgi_use_csm_shadows, false)
+  INIT_AND_USE_RT_HALF_RATE(cs)
+
+  INIT_RT_LIGHTING(cs, false, true, false, true, false)
   USE_RT_LIGHTING(cs, 0, true)
 
   if (ptgi_pipeline_mode == inline)
   {
-    RT_PREV_FRAME_SAMPLE(cs, PTGIScreenSample)
+    RT_PREV_FRAME_SAMPLE(cs, PTGIScreenSample, ptgi_use_prev_frame_sample)
   }
 
   INIT_BVH_WATER_FADE_BASE(cs)
   USE_BVH_WATER_FADE_BASE(cs)
+
+  if (ptgi_use_fx == yes)
+  {
+    USE_PARTICLE_BVH(cs)
+    USE_BVH_FX_RENDER(cs, true)
+  }
 
   hlsl(cs)
   {
@@ -192,7 +219,7 @@ shader rt_gi
 
       if (ptgi_use_rr)
       {
-        texture2DAt(output, output_index) = float4(color, 1);
+        texture2DAt(output, output_index) = float4(color * rt_ray_energy_scale(), 1);
       }
       else
       {
@@ -205,6 +232,10 @@ shader rt_gi
     {
       uint2 rayIndex    = dtid;
       uint2 outputIndex = rayIndex;
+
+      bool halfRate = ptgi_use_rr && rt_half_rate;
+      if (halfRate)
+        rayIndex.x *= 2;
 
       if (ptgi_checkerboard)
       {
@@ -219,6 +250,19 @@ shader rt_gi
 
       if (any(rayIndex >= resolution))
         return;
+
+      if (halfRate)
+      {
+        uint2 blackIndex = uint2(rayIndex.x + 1, rayIndex.y);
+        if (blackIndex.x < resolution.x)
+        {
+          uint offset = rt_half_rate_offset(dtid, uint(frame_index));
+          rayIndex.x += offset;
+          blackIndex.x -= offset;
+          texture2DAt(output, blackIndex) = float4(0, 0, 0, 1);
+        }
+        outputIndex = rayIndex;
+      }
 
       float rawDepth;
       if (ptgi_res_mul == 1)
@@ -283,6 +327,16 @@ shader rt_gi
         return;
       }
 
+      half3 geometryNormal = normal;
+      if (!processedGbuffer.isGrass)
+      {
+        BRANCH
+        if (ptgi_res_mul == 1)
+          geometryNormal = calc_geometry_normal(rayIndex, inv_aligned_resolution, resolution);
+        else
+          geometryNormal = calc_geometry_normal_half(rayIndex, inv_aligned_resolution, resolution);
+      }
+
       const float giDistance = hit_dist_params.x;
       const float throughputTreshold = 0.001;
 
@@ -290,6 +344,14 @@ shader rt_gi
       float3 giColor = 0;
       float rayLength = w;
       float firstDistance = NRD_FP16_MAX;
+
+      ##if ptgi_use_fx == yes
+        // Only tracing FX in the first bounce for performance.
+        float3 firstRayOrigin = relPos;
+        float3 firstRayDir = 0;
+        float firstRayMax = giDistance;
+        float3 firstThroughput = throughput;
+      ##endif
 
       SurfaceParams surface = (SurfaceParams)0;
       surface.position        = relPos;
@@ -325,7 +387,7 @@ shader rt_gi
 
         float rnd = ml::Rng::Hash::GetFloat();
 
-        bool isDiffuse = rnd <= diffuseProbability;
+        bool isDiffuse = rnd < diffuseProbability;
 
         throughput /= abs(float(!isDiffuse) - diffuseProbability);
 
@@ -354,7 +416,16 @@ shader rt_gi
           throughput *= (1 + boost * localBoost);
         }
 
-        surface.position = applyAdaptiveRayOffset(surface.position, surface.normal);
+        surface.position = applyAdaptiveRayOffset(surface.position, bounce == 0 ? geometryNormal : surface.normal);
+
+      ##if ptgi_use_fx == yes
+        if (bounce == 0)
+        {
+          firstRayOrigin = surface.position;
+          firstRayDir = sampleDir;
+          firstThroughput = throughput;
+        }
+      ##endif
 
         uint traceFlags = 0;
         // From the second bounce, don't bother with alpha testing, as it only has a meaningless contribution for a higher performance cost.
@@ -369,10 +440,12 @@ shader rt_gi
         ##if ptgi_pipeline_mode == inline
           HitInfo hitInfo;
           bool isHit = trace_ray_with_screen_sample<PTGIScreenSample>(bvhMain, surface.position, sampleDir, minT, giDistance, rayLength, groupMask, hitInfo, traceFlags);
+          if (isHit && bounce < mark_voxel_activity_bounces)
+            bvh_voxel_activity_mark(hitInfo.position);
           if (isHit)
           {
             hitDistance = hitInfo.t;
-            if (!hitInfo.isScreenHit || !ptgi_use_prev_frame_sample)
+            if (!hitInfo.isScreenHit)
               hitSurface = calc_surface_params(hitInfo, -sampleDir, -TRACING_LOD); // Use fix texture LOD
           }
         ##else
@@ -391,6 +464,8 @@ shader rt_gi
 
           bool isHit = pl_get_distance(payload) < giDistance;
           hitDistance = pl_get_distance(payload);
+          if (isHit && bounce < mark_voxel_activity_bounces)
+            bvh_voxel_activity_mark(ray.Origin + ray.Direction * hitDistance);
           if (isHit)
           {
             hitSurface.position = ray.Origin + ray.Direction * hitDistance;
@@ -416,9 +491,12 @@ shader rt_gi
         {
           rayLength += hitDistance;
           firstDistance = bounce == 0 ? hitDistance : firstDistance;
+          ##if ptgi_use_fx == yes
+            firstRayMax = bounce == 0 ? hitDistance : firstRayMax;
+          ##endif
 
           ##if ptgi_pipeline_mode == inline
-            if (hitInfo.isScreenHit && ptgi_use_prev_frame_sample)
+            if (hitInfo.isScreenHit)
             {
               // The previous frame is already lit with GI, we can stop here
               giColor += hitInfo.screenRadiance * throughput;
@@ -434,7 +512,7 @@ shader rt_gi
         }
         else
         {
-          giColor += GetSkySHDiffuse(sampleDir).rgb * throughput;
+          giColor += sample_envi_probe(half4(sampleDir, PTGI_SKY_MIP)).rgb * throughput;
           firstDistance = bounce == 0 ? NRD_FP16_MAX : firstDistance;
           bounce = max_bounces;
         }
@@ -442,6 +520,17 @@ shader rt_gi
         // After the first bounce, we don't care about camo nets.
         groupMask &= ~bvhGroupCamoNet;
       }
+
+      ##if ptgi_use_fx == yes
+        float fxt = -1;
+        // Need to undo throughput, so that FX blending can be done properly, and then apply it to both at once again.
+        float3 unmodulatedColor = giColor / max(firstThroughput, 0.00001);
+        trace_ray_fx_translucent(firstRayOrigin, firstRayDir, 0, firstRayMax, w, unmodulatedColor, fxt, 0);
+        giColor = unmodulatedColor * firstThroughput;
+
+        if (firstDistance == NRD_FP16_MAX && fxt > 0)
+          firstDistance = fxt;
+      ##endif
 
       giColor = lerp(dagiColor, giColor, underwaterFade);
 

@@ -209,7 +209,7 @@ macro GET_MEDIA_HARDCODED(code)
     {
       float4 result = get_media_no_modifiers(world_pos, screen_tc, wind_time);
       apply_volfog_modifiers(result, screen_tc, world_pos);
-      return (result < 1.0e10 && result >= 0.0f) ? result : 0;
+      return select(and(result < 1.0e10, result >= 0.0f), result, float4(0, 0, 0, 0));
     }
   }
 endmacro

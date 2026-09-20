@@ -260,6 +260,25 @@ public:
     G_ASSERT(uint32_t(cell.x) < hmapWidth.x && uint32_t(cell.y) < hmapWidth.y);
     return compressed.decodePixelUnsafe(cell.x, cell.y);
   }
+  // upper bound on the per axis terrain slope (meters up per meter across),
+  // 1e9 = no data, the no cull default. Measured by every load and repack
+  // (repack assumes no live visual overlay edits); edits are deferred like
+  // the heightmap modification itself: they only extend maxGradientDirty,
+  // and the publish point re-measures the dirty pairs
+  float maxGradient = 1e9f;
+  IBBox2 maxGradientDirty;
+  void measureMaxGradient();
+  UpdateHtResult dirtyOnChange(const IPoint2 &cell, UpdateHtResult ret)
+  {
+    if (ret == UpdateHtResult::UNCHANGED)
+      return ret;
+    // a block range move re-encodes the whole block: every pair in it moves
+    const int bs = ret == UpdateHtResult::BLOCK_CHANGED ? 1 << compressed.block_width_shift : 1;
+    const IPoint2 lt(cell.x & ~(bs - 1), cell.y & ~(bs - 1));
+    maxGradientDirty += lt;
+    maxGradientDirty += IPoint2(lt.x + bs - 1, lt.y + bs - 1);
+    return ret;
+  }
   UpdateHtResult setHeightmapHeightUnsafe(const IPoint2 &cell, uint16_t ht)
   {
     G_ASSERTF(isDataOwned(), "need own data for deformations, use checkOrAllocateOwnData");
@@ -279,17 +298,17 @@ public:
       G_ASSERT(ht >= block.getMin() && ht <= block.getMax());
     }
     if (block.delta == 0)
-      return ret;
+      return dirtyOnChange(cell, ret);
     const uint32_t encoded = uint32_t(uint32_t(ht - block.mn) * 255 + (block.delta >> 1)) / block.delta;
     const uint32_t blockIndex = (blockId << compressed.block_size_shift) + bi + (bj << block_shift);
     if (compressed.blockVariance[blockIndex] == encoded)
-      return ret;
+      return dirtyOnChange(cell, ret);
     auto &dest = compressed.blockVariance[blockIndex];
     if (ret == UpdateHtResult::UNCHANGED)
       ret = UpdateHtResult::SAMPLE_CHANGED;
     dest = encoded;
     compressed.updateHierHeightRangeBlocksForPoint(cell.x, cell.y, ht);
-    return ret;
+    return dirtyOnChange(cell, ret);
   }
   uint16_t packHeightmapHeight(float height) const { return (height - hMin) / hScaleRaw; }
   float unpackHeightmapHeight(uint16_t ht) const { return ht * hScaleRaw + hMin; }
@@ -334,3 +353,12 @@ protected:
   CompressedHeightmap compressed;
   void *hmap_data = nullptr;
 };
+
+// upper bound on the max height delta between 4 neighbor texels, never
+// below it (in-block bounds round up by one raw unit), in raw 16 bit units;
+// the per axis slope is delta * hScaleRaw / cellSize. Blocks whose range
+// bound cannot beat the best found decode nothing; the full scan also prunes
+// with the height range hierarchy and needs it current with the variance
+// data (true after load or repack), partial ranges scan without it. The
+// block range is clamped: callers can split the scan and max the results
+uint32_t calc_hmap_max_neighbor_delta(const CompressedHeightmap &hmap, uint32_t first_block = 0u, uint32_t block_count = ~0u);

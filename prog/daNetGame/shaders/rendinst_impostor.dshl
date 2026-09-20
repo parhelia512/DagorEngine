@@ -71,7 +71,6 @@ shader rendinst_baked_impostor
   //---------------------------------------------------
   // PS stuff.
   //---------------------------------------------------
-  supports global_const_block;
   if (rendinst_render_pass == rendinst_render_pass_to_shadow)
   {
     (vs) {
@@ -145,7 +144,7 @@ shader rendinst_baked_impostor
       struct VsOutput
       {
         VS_OUT_POSITION(pos)
-        nointerpolation float4 colorMul_extras         : TEXCOORD0;
+        nointerpolation uint colorMul_paletteId         : TEXCOORD0;
         ##if (compatibility_mode == compatibility_mode_on)
           float3 pointToEye                 : TEXCOORD4;
         ##endif
@@ -180,9 +179,9 @@ shader rendinst_baked_impostor
           SET_DRAW_CALL_ID(GET_MATERIAL_OFFSET(input));
         #endif
         bool2 sliceClipped =
-          bool2(need_clip_impostor(input.slice_data1.zw) || any(input.slice_data1.xy < 0 || input.slice_data1.xy > 1), true);
+          bool2(need_clip_impostor(input.slice_data1.zw) || any(or(input.slice_data1.xy < 0, input.slice_data1.xy > 1)), true);
         #if USE_MULTISLICED
-          sliceClipped.y = need_clip_impostor(input.slice_data2.zw) || any(input.slice_data2.xy < 0 || input.slice_data2.xy > 1);
+          sliceClipped.y = need_clip_impostor(input.slice_data2.zw) || any(or(input.slice_data2.xy < 0, input.slice_data2.xy > 1));
         #endif
 
         BRANCH
@@ -208,7 +207,7 @@ shader rendinst_baked_impostor
         albedo_alpha1.a = min(albedo_alpha1.a-0.5, input.bottomGradient.x - noise) >= 0.0;
 
 #if USE_MULTISLICED
-          float2 sliceMask = sliceClipped ? float2(0, 0) : float2(1, 1);
+          float2 sliceMask = select(sliceClipped, float2(0, 0), float2(1, 1));
           float4 albedo_alpha2 = impostor_tex_slice(get_impostor_albedo_alpha(), input.slice_data2.xy);
           albedo_alpha2.a = min(albedo_alpha2.a-0.5, input.bottomGradient.y - noise) >= 0.0;
 
@@ -216,7 +215,7 @@ shader rendinst_baked_impostor
           bool2 invalidValueMask = clippedAlphas < 0.5;
           float2 alphaValues = clippedAlphas * ds_for_alpha(ds, noise);
           if (any(invalidValueMask))
-            ds = invalidValueMask ? float2(0, 0) : float2(1, 1);
+            ds = select(invalidValueMask, float2(0, 0), float2(1, 1));
 
           float alpha = alphaValues.x + alphaValues.y;
           float3 albedo = ds.x*albedo_alpha1.rgb + ds.y*albedo_alpha2.rgb;
@@ -226,7 +225,7 @@ shader rendinst_baked_impostor
           float3 albedo = albedo_alpha1.rgb;
 #endif
         clip(min(alpha-0.5, dissolveVal));
-        ImpostorProperties properties = read_impostor_properties(input.slice_data1.xy, input.slice_data2.xy, ds, input.colorMul_extras.w);
+        ImpostorProperties properties = read_impostor_properties(input.slice_data1.xy, input.slice_data2.xy, ds, input.colorMul_paletteId);
         // Combine.
         half translucency_coloring = properties.normal_translucency.w;
         half translucency = saturate(translucency_coloring*2 - 1);
@@ -237,7 +236,7 @@ shader rendinst_baked_impostor
         normalUnormalized = paletteToWorld(normalUnormalized, paletteRotationCos, paletteRotationSin);
 
         half3 normal = normalize(normalUnormalized.xyz);
-        albedo = translucency < COLORING_THRESHOLD ? albedo : input.colorMul_extras.rgb*albedo;
+        albedo = translucency < COLORING_THRESHOLD ? albedo : properties.colorMul*albedo;
         init_albedo(gbuffer, albedo);
         init_translucency(gbuffer, translucency);
         init_smoothness(gbuffer, 1-properties.invsmoothness);
@@ -505,9 +504,8 @@ shader rendinst_baked_impostor
       // Special render.
 ##if rendinst_render_pass != rendinst_render_pass_to_shadow
       // Normal render.
-      output.colorMul_extras.rgb = color.rgb;
       bool hasPreshadow = has_impostor_preshadow(IMPOSTOR_DATA_OFFSET);
-      output.colorMul_extras.w = encode_impostor_vertex_output(paletteId, hasPreshadow);
+      output.colorMul_paletteId = encode_impostor_vertex_output(color.rgb, paletteId, hasPreshadow);
       ##if (compatibility_mode == compatibility_mode_on)
         output.pointToEye = pointToEye;
       ##endif

@@ -280,6 +280,7 @@ static void bindResolvePassResources(dafg::Registry registry)
   registry.readTexture("ssao_tex").atStage(dafg::Stage::PS_OR_CS).bindToShaderVar("ssao_tex").optional();
   registry.bindBlob("ssao_sampler", "ssao_tex_samplerstate").optional();
   registry.readBlob("rtr_token").optional();
+  registry.readTexture("half_selected_depth_rtr").atStage(dafg::Stage::PS_OR_CS).bindToShaderVar("half_selected_depth_rtr").optional();
   registry.readBlob("rtao_token").optional();
   registry.readBlob("ptgi_token").optional();
   // for SSAO&SSR
@@ -343,8 +344,7 @@ static dafg::NodeHandle makeSinglePassResolveGbufferNode(const char *resolve_psh
     registry.requestState().setFrameBlock("global_frame");
 
     static constexpr const char *shaderVars[] = {"precomputed_dynamic_lights", "precomputed_dynamic_lights_mask",
-      "precomputed_indoor_probes", "precomputed_indoor_probes_mask", "envi_cover_intensity_map", "droplets_8bit_tex",
-      "distant_fog_result_inscatter"};
+      "envi_cover_intensity_map", "droplets_8bit_tex", "distant_fog_result_inscatter"};
     for (auto shaderVar : shaderVars)
       registry.readTexture("single_pass_shading_stub_black_tex").atStage(dafg::Stage::PS).bindToShaderVar(shaderVar);
 
@@ -395,7 +395,7 @@ static dafg::NodeHandle makeFullResolveGbufferNode(const char *resolve_pshader_n
       if (thermalVisionHndl.get())
         return;
 
-      camera_in_camera::ApplyPostfxState camcam{multiplexing_index, cameraHndl.ref()};
+      camera_in_camera::ApplyPostfxState camcam{multiplexing_index, cameraHndl.ref(), camera_in_camera::USE_STENCIL};
 
       ShadowsManager &shadowsManager = WRDispatcher::getShadowsManager();
       const CameraParams &camera = cameraHndl.ref();
@@ -543,13 +543,20 @@ static dafg::NodeHandle makeRenderOtherLightsNode()
     // Thermal special resolve overwrites opaque_resolved; skip these lights so they cannot land on it.
     auto thermalVisionHndl = registry.readBlob<OrderingToken>("thermal_vision_active").optional().handle();
 
+    registry.multiplex(dafg::multiplexing::Mode::FullMultiplex);
+    auto camera = use_camera_in_camera(registry);
+    auto cameraHndl = CameraViewShvars{camera}.bindViewVecs().toHandle();
+
     shaders::OverrideState state{};
     state.set(shaders::OverrideState::Z_BOUNDS_ENABLED);
 
-    return [enabledDepthBoundsId = shaders::overrides::create(state), thermalVisionHndl]() {
+    return [enabledDepthBoundsId = shaders::overrides::create(state), thermalVisionHndl, cameraHndl](
+             const dafg::multiplexing::Index &multiplexing_index) {
       ClusteredLights &lights = WRDispatcher::getClusteredLights();
       if (thermalVisionHndl.get() || !dynamic_lights.get() || !lights.hasDeferredLights())
         return;
+
+      camera_in_camera::ApplyPostfxState camcam{multiplexing_index, cameraHndl.ref(), camera_in_camera::USE_STENCIL};
 
       const bool useDepthBounds = ::depth_bounds_enabled();
       if (useDepthBounds)
@@ -608,7 +615,7 @@ static void create_gbuffer_nodes_es(const OnCameraNodeConstruction &evt)
     evt.nodes->push_back(makeReactiveMaskFillNode(process_reactive_gbuffer_data));
 
   {
-    const bool hasStencilTest = renderer_has_feature(FeatureRenderFlags::CAMERA_IN_CAMERA);
+    const bool hasStencilTest = renderer_has_feature(FeatureRenderFlags::CAMERA_IN_CAMERA) || WRDispatcher::isStencilGbufRequired();
     const uint32_t gbufDepthFormat = get_gbuffer_depth_format(hasStencilTest);
     evt.nodes->push_back(makePrepareGbufferDepthNode(gbufDepthFormat));
   }

@@ -9,7 +9,7 @@ struct BVHMeta
   uint initialized: 1;
   uint materialType: 31;
   uint alphaTextureIndex : 16;
-  uint padding1 : 16;
+  uint secondaryMaskTextureIndex : 16;
   uint ahsVertexBufferIndex : 20;
   uint forceNonMetal: 1;
   uint hasColorMod: 1;

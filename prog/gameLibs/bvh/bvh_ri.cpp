@@ -271,9 +271,10 @@ void init(ContextId context_id)
 
 void wait_ri_extra_instances_update(ContextId context_id);
 void wait_ri_gen_instances_update(ContextId context_id);
-void wait_tidy_up_trees();
+void wait_tidy_up_rendinsts();
 void tidy_up_rigen_trees(ContextId context_id);
 void tidy_up_riex_trees(ContextId context_id);
+void tidy_up_riex_flags(ContextId context_id);
 
 void on_scene_loaded_ri_ex(ContextId context_id);
 void on_unload_scene_ri_ex(ContextId context_id);
@@ -286,9 +287,10 @@ void on_unload_scene(ContextId context_id)
     return;
   wait_ri_extra_instances_update(context_id);
   wait_ri_gen_instances_update(context_id);
-  wait_tidy_up_trees();
+  wait_tidy_up_rendinsts();
   tidy_up_rigen_trees(context_id);
   tidy_up_riex_trees(context_id);
+  tidy_up_riex_flags(context_id);
 
   {
     OSSpinlockScopedLock lock(context_id->treeAnimIndexCountLock);
@@ -303,16 +305,19 @@ void on_unload_scene(ContextId context_id)
     for (auto &trees : lod)
       for (auto &tree : trees.second.elems)
         context_id->freeMetaRegion(tree.second.metaAllocId);
-  for (auto &trees : context_id->uniqueRiExtraFlagBuffers)
-    for (auto &tree : trees.second)
-      context_id->freeMetaRegion(tree.second.metaAllocId);
+  for (auto &lod : context_id->uniqueRiExtraFlagBuffers)
+    for (auto &flags : lod)
+      for (auto &flag : flags.second.elems)
+        context_id->freeMetaRegion(flag.second.metaAllocId);
   for (auto &lod : context_id->uniqueTreeBuffers)
     lod.clear();
   context_id->freeUniqueTreeBLASes.clear();
   context_id->freeUniqueRiExtraTreeBLASes.clear();
+  context_id->freeUniqueRiExtraFlagBLASes.clear();
   for (auto &lod : context_id->uniqueRiExtraTreeBuffers)
     lod.clear();
-  context_id->uniqueRiExtraFlagBuffers.clear();
+  for (auto &lod : context_id->uniqueRiExtraFlagBuffers)
+    lod.clear();
 
   for (auto &tree : context_id->stationaryTreeBuffers)
     if (tree.second.metaAllocId != MeshMetaAllocator::INVALID_ALLOC_ID)

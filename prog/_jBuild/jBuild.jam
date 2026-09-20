@@ -311,7 +311,7 @@ rule BuildJam
 actions quietly build_jam
 {
 #async
-  call $(JAM_EXE) -sRoot=$(Root) -f$(2)
+  call $(JAM_EXE) -sRoot=$(Root) $(CompilerWrapperOpt) -f$(2)
 }
 
 # process opt and pre_opt on sources
@@ -1263,6 +1263,9 @@ rule CompileJamVarCpp
 # rule how to compile list of .das to .cpp
 #   params: ( das_sources : target : tmp_output_dir )
 #   returns: ( target_filenames )
+DAS_AOT_LLVM_OBJ ?= no ;
+DAS_AOT_DRIVER ?= prog/1stPartyLibs/daScript/utils/aot/main.das ;
+
 rule AotCompileDAS
 {
   if $(DumpBuildCmds) = yes { return ; }
@@ -1278,20 +1281,30 @@ rule AotCompileDAS
   local cmd = ;
   local dest_all = ;
   local src_all = ;
+  local dll_path_opt = ;
+  if $(DAS_AOT_LLVM_OBJ) = yes {
+    cmd += --gen1 --gen2-make ;
+    dll_path_opt = -dll-path $(DAS_AOT_COMPILER:D) ;
+  }
   for src in $(1) {
-    local dest_cpp = $(3)/$(src:S=_das_AOT.cpp) ;
-    dest_all += $(dest_cpp) ;
+    local dest ;
+    if $(DAS_AOT_LLVM_OBJ) = yes {
+      local nm = [ DasAotLLVMObjName $(src) : $(2) ] ;
+      dest = $(3)/$(nm) ;
+      cmd += --aot-in $(Root)/$(location)/$(src) --aot-out $(dest:S=) ;
+    } else {
+      dest = $(3)/$(src:S=_das_AOT.cpp) ;
+      cmd += -aot $(Root)/$(location)/$(src) $(dest) ;
+    }
+    dest_all += $(dest) ;
     src_all += $(Root)/$(location)/$(src) ;
-    Depends $(dest_cpp) : $(Root)/$(location)/$(src) $(DAS_AOT_COMPILER) ;
-    cmd += -aot $(Root)/$(location)/$(src) $(dest_cpp) ;
+    Depends $(dest) : $(Root)/$(location)/$(src) $(DAS_AOT_COMPILER) ;
   }
   # `dest_all` should depend on directory, `dest_cpp` is not enough
-  for src in $(1) {
-    local dest_cpp = $(3)/$(src:S=_das_AOT.cpp) ;
-    MakeDirectory $(dest_all) : $(dest_cpp:D) ;
-  }
+  for dest in $(dest_all) { MakeDirectory $(dest_all) : $(dest:D) ; }
   if $(ForceDasAotRebuild) = yes { ALWAYS $(dest_all) ; }
   input_files on $(dest_all) = $(cmd) ;
+  dll_path_opt on $(dest_all) = $(dll_path_opt) ;
   aot_compile_das $(dest_all) : $(src_all) ;
   return $(dest_all) ;
 }
@@ -1336,9 +1349,47 @@ actions quietly exec_scripted_command
 # without it `jam` fails to deduce dependencies.
 #
 #   params: ( das_files : target : tmp_output_dir : batch_size )
+# Each AOT object defines an aot_<name>_pull anchor; this aggregates them under the name the game
+# force-links. A lib keeps only the members something references, so its objects need that chain to
+# survive archive elimination; an exe is handed every object, so it needs the name defined and
+# nothing more.
+rule MakeDasAotPullObj # ( obj_list : target )
+{
+  local jamvar = [ Make_DAS_pull_AOT $(2) ] ;
+  local obj_path = $(jamvar)$(_OBJ_SUFFIX) ;
+  if $($(2)__TargetType) = lib {
+    local list = ;
+    for o in $(1) { list += [ StrToCIdent $(o:D=:S=) ] ; }
+    $(jamvar) = extern size_t aot_$(list)_pull, $(jamvar); size_t $(jamvar) \= 0 +aot_$(list)_pull \; ;
+  } else {
+    $(jamvar) = size_t $(jamvar) \= 0 \; ;
+  }
+  CompileJamVarCpp $($(2)__TmpDir)/$(obj_path) : $(jamvar) : $(2) ;
+  return $(obj_path) ;
+}
+
+rule DasAotLLVMObjName # ( das_src : target )
+{
+  local t = [ StrToCIdent $(2) ] ;
+  local i = [ StrToCIdent $(1:S=) ] ;
+  return _das_llvm/$(t)_$(i)_das_AOT$(_OBJ_SUFFIX) ;
+}
+
+
 rule AotCompileBatchedGeneratedDAS
 {
   if $(DumpBuildCmds) = yes { return ; }
+  if $(DAS_AOT_LLVM_OBJ) = yes {
+    local obj_list = ;
+    local rest = $(1) ;
+    while $(rest) {
+      for o in [ AotCompileDAS $(rest[1-$(4)]) : $(2) : $(3) ] { obj_list += _das_llvm/$(o:D=) ; }
+      rest = $(rest[$(4)-]) ;
+      rest = $(rest[2-]) ;
+    }
+    if $(obj_list) { obj_list += [ MakeDasAotPullObj $(obj_list) : $(2) ] ; }
+    return $(obj_list) ;
+  }
   local base32_alphabet = a b c d e f g h i j k l m n o p q r s t u v w x y z 2 3 4 5 6 7 ;
   # 'list' is list of paths to *_AOT.cpp from jam directory
   # 'list_of_includes' is list of relative paths from directory of .cpp batch to *_AOT.cpp, they actually locates in neighbours folders
@@ -1422,15 +1473,7 @@ rule AotCompileBatchedGeneratedDAS
     }
   }
   if $(obj_list) {
-    local jamvar = [ Make_DAS_pull_AOT $(target) ] ;
-    local obj_path = $(jamvar)$(_OBJ_SUFFIX) ;
-
-    list = ;
-    for o in $(obj_list) { list += [ StrToCIdent $(o:D=:S=) ] ; }
-    $(jamvar) = extern size_t aot_$(list)_pull, $(jamvar); size_t $(jamvar) \= 0 +aot_$(list)_pull \; ;
-
-    CompileJamVarCpp $($(target)__TmpDir)/$(obj_path) : $(jamvar) : $(target) ;
-    obj_list += $(obj_path) ;
+    obj_list += [ MakeDasAotPullObj $(obj_list) : $(target) ] ;
   }
   return $(obj_list) ;
 }
@@ -1440,7 +1483,7 @@ actions quietly aot_compile_das
 #async
   echo AOT  $(2:D=)
   # `force-overwrite` is needed to help jam track dependencies.
-  call $(DAS_AOT_COMPILER) $(Root)/prog/1stPartyLibs/daScript/utils/aot/main.das $(DAS_AOT_COMPILER_OPT) -force-overwrite -gen1 true -gen2-make true $(input_files)
+  call $(DAS_AOT_COMPILER) $(Root)/$(DAS_AOT_DRIVER) $(dll_path_opt) $(DAS_AOT_COMPILER_OPT) -force-overwrite -gen1 true -gen2-make true $(input_files)
   if errorlevel 1 goto failed
   if not exist $(1) goto failed
   goto end
@@ -1541,18 +1584,22 @@ rule ProcessLicense  # lic_dir : dest_list_var : dest_err_var
 # common actions
 #
 
+# CI compiler cache: forwarded into every recursive jam so all sub-builds go through the cache too. Empty by default
+CompilerWrapperOpt = ;
+if $(CompilerWrapper) { CompilerWrapperOpt = -sCompilerWrapper=$(CompilerWrapper) ; }
+
 # execute jam
 actions together quietly execute_jam
 {
   echo ===== building $(1:G=)...
-  call $(JAM_EXE) $(root) $(platform) $(config) $(platform_spec) $(platform_spec_xx) $(nopdb) $(checkonly) $(jam_opt) -f$(1:G=) $(JAMTARGETS)
+  call $(JAM_EXE) $(root) $(platform) $(config) $(platform_spec) $(platform_spec_xx) $(nopdb) $(checkonly) $(jam_opt) $(CompilerWrapperOpt) -f$(1:G=) $(JAMTARGETS)
   if not errorlevel 1 echo ===== successfuly built $(1:G=)
 }
 
 actions together quietly make_artifact
 {
   echo ========= making artifact: $(1:G=)
-  call $(JAM_EXE) $(root) $(platform) $(config) $(platform_spec) $(platform_spec_xx) $(jam_opt) -f$(2:G=) $(JAMTARGETS)
+  call $(JAM_EXE) $(root) $(platform) $(config) $(platform_spec) $(platform_spec_xx) $(jam_opt) $(CompilerWrapperOpt) -f$(2:G=) $(JAMTARGETS)
   if not errorlevel 1 echo ===== successfuly built artifact: $(1:D=)
 }
 

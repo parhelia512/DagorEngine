@@ -32,6 +32,7 @@
 extern void register_da_editor4_objed_ptr(ObjectEditor **oe_ptr);
 extern void update_gizmo_basis_type_on_toolbar();
 extern void update_gizmo_center_type_on_toolbar();
+extern void update_free_camera_state_on_toolbar();
 
 namespace
 {
@@ -39,6 +40,7 @@ namespace
 static IGenGuiCursor *gui_cursor = nullptr;
 
 static bool de4_active = false, de4_freecam_active = false;
+static bool de4_saved_touch_screen = false, de4_saved_emu_touch_screen_with_mouse = false;
 dainput::action_set_handle_t de4_cameraActionSet;
 dainput::action_set_handle_t de4_globalsActionSet;
 static void reset_gui_cursor()
@@ -148,6 +150,7 @@ struct De4ActivationHandler : public ecs::IGenHidEventHandler
     if (de4_active && de4_freecam_active && (btn_idx == HumanInput::DKEY_SPACE || btn_idx == HumanInput::DKEY_ESCAPE))
     {
       de4_freecam_active = false;
+      update_free_camera_state_on_toolbar();
       dainput::activate_action_set(de4_cameraActionSet, false);
       global_cls_drv_pnt->getDevice(0)->setRelativeMovementMode(false);
       activeChanged();
@@ -164,6 +167,11 @@ struct De4ActivationHandler : public ecs::IGenHidEventHandler
     de4_active = !de4_active;
     if (de4_active)
     {
+      de4_saved_touch_screen = HumanInput::stg_pnt.touchScreen;
+      de4_saved_emu_touch_screen_with_mouse = HumanInput::stg_pnt.emuTouchScreenWithMouse;
+      HumanInput::stg_pnt.touchScreen = false;
+      HumanInput::stg_pnt.emuTouchScreenWithMouse = false;
+
       de4_cameraActionSet = dainput::get_action_set_handle("Camera");
       de4_globalsActionSet = dainput::get_action_set_handle("Globals"); // screenshot/voicechat/etc.
       savedActionSets.reserve(dainput::get_action_set_stack_depth());
@@ -179,6 +187,11 @@ struct De4ActivationHandler : public ecs::IGenHidEventHandler
     }
     else
     {
+      if (!HumanInput::stg_pnt.touchScreen)
+        HumanInput::stg_pnt.touchScreen = de4_saved_touch_screen;
+      if (!HumanInput::stg_pnt.emuTouchScreenWithMouse)
+        HumanInput::stg_pnt.emuTouchScreenWithMouse = de4_saved_emu_touch_screen_with_mouse;
+
       dainput::reset_action_set_stack();
       dainput::activate_action_set(de4_globalsActionSet, true);
       for (int i = savedActionSets.size() - 1; i >= 0; i--)
@@ -187,6 +200,7 @@ struct De4ActivationHandler : public ecs::IGenHidEventHandler
     }
 
     global_cls_drv_pnt->getDevice(0)->setRelativeMovementMode(!de4_active);
+    update_free_camera_state_on_toolbar();
     activeChanged();
     return true;
   }
@@ -349,6 +363,7 @@ struct De4InpHandler : public ecs::IGenHidEventHandler
     if (de4_active && !de4_freecam_active && btn_idx == HumanInput::DKEY_SPACE)
     {
       de4_freecam_active = true;
+      update_free_camera_state_on_toolbar();
       dainput::activate_action_set(de4_cameraActionSet, true);
       global_cls_drv_pnt->getDevice(0)->setRelativeMovementMode(true);
 
@@ -792,12 +807,12 @@ public:
       return;
     objEd->beforeRender();
   }
-  virtual void render3d(const Frustum &frustum, const Point3 &camera_pos)
+  virtual void render3d(const Frustum &frustum, const Point3 &camera_pos, bool render_on_top)
   {
     if (!de4_active || !objEd)
       return;
     TIME_D3D_PROFILE(daEditorE)
-    ::begin_draw_cached_debug_lines();
+    ::begin_draw_cached_debug_lines(!render_on_top, !render_on_top);
     objEd->render(frustum, camera_pos);
     ::end_draw_cached_debug_lines();
   }

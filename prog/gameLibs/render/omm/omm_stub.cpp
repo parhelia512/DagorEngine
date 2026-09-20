@@ -63,6 +63,25 @@ void clear_result(BakeResult &result)
   result.indexBufferSizeInBytes = 0;
 }
 
+void recycle_result(Context &, BakeResult &result, bool keep_index_buffer)
+{
+  assert_stub_call("recycle_result");
+  debug_unregister_bake_result(result);
+  result.arrayData.close();
+  result.descArray.close();
+  result.arrayDataSizeInBytes = 0;
+  result.descArraySizeInBytes = 0;
+  if (keep_index_buffer)
+    return;
+
+  result.indexBuffer.close();
+  result.arrayBuildDescs.clear();
+  result.blasLinkageDescs.clear();
+  result.indexFormat = IndexFormat::UINT32;
+  result.indexCount = 0;
+  result.indexBufferSizeInBytes = 0;
+}
+
 DebugBakeSource make_debug_bake_source(const BakeInput &, TEXTUREID) { return {}; }
 
 void debug_register_bake_result(const BakeResult &, const DebugBakeResultInfo &) {}
@@ -72,6 +91,17 @@ void debug_adopt_bake_result(BakeResult &&, const DebugBakeResultInfo &) {}
 void debug_unregister_bake_result(const BakeResult &) {}
 
 void debug_shutdown() {}
+
+bool init_cpu(CpuContext &) { return false; }
+
+void shutdown_cpu(CpuContext &) {}
+
+bool cpu_bake_alpha_stats(CpuContext &, const char *, uint32_t, uint32_t, const uint8_t *, const float *, const uint32_t *, uint32_t,
+  CpuBakeStats &stats)
+{
+  stats = {};
+  return false;
+}
 
 raytrace::OpacityMicroMapTriangleArrayBuildInfo make_array_build_info(const BakeResult &, Sbuffer *, uint32_t, uint32_t,
   RaytraceBuildFlags)

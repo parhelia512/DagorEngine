@@ -88,7 +88,7 @@ macro DAFXEX_USE_SCENE_BLOCK()
   else
   {
     supports dynamic_scene_trans;
-    supports global_const_block;
+    GLOBAL_CONSTS(vs)
   }
 
 endmacro

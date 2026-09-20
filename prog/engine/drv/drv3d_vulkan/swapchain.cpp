@@ -43,7 +43,7 @@ const VkPresentModeKHR bestPresentModeMatch[4][3] = //
     // row for VK_PRESENT_MODE_FIFO_KHR
     {VK_PRESENT_MODE_FIFO_RELAXED_KHR, VK_PRESENT_MODE_MAILBOX_KHR, VK_PRESENT_MODE_IMMEDIATE_KHR},
     // row for VK_PRESENT_MODE_FIFO_RELAXED_KHR
-    {VK_PRESENT_MODE_FIFO_KHR, VK_PRESENT_MODE_MAILBOX_KHR, VK_PRESENT_MODE_IMMEDIATE_KHR}
+    {VK_PRESENT_MODE_MAILBOX_KHR, VK_PRESENT_MODE_IMMEDIATE_KHR, VK_PRESENT_MODE_FIFO_KHR}
     //
 };
 
@@ -90,10 +90,13 @@ void SwapchainQueryCache::init()
     // leaves some mutex acquired in gralloc stack, causing application to freeze
     // use format with 100% coverage instead of making a query for them
 
-    // enable by default on all android 13 if not disabled by config
-    // just in case if there is more such devices on market
-    int minSdk = Globals::cfg.getPerDriverPropertyBlock("androidDeadlockAtQueryPresentFormats")->getInt("androidMinSdkVer", 33);
-    usePredefinedPresentFormat = minSdk <= sdkVerI;
+    // enable by default on android 13 and 14 if not disabled by config, just in case there is more
+    // such devices on market. Bounded from above because the predefined format hides the hdr capable
+    // ones and hdr needs sdk 35 anyway, so raise androidMaxSdkVer per vendor if it shows up again.
+    const DataBlock *deadlockProps = Globals::cfg.getPerDriverPropertyBlock("androidDeadlockAtQueryPresentFormats");
+    int minSdk = deadlockProps->getInt("androidMinSdkVer", 33);
+    int maxSdk = deadlockProps->getInt("androidMaxSdkVer", 34);
+    usePredefinedPresentFormat = minSdk <= sdkVerI && sdkVerI <= maxSdk;
     if (usePredefinedPresentFormat)
       debug("vulkan: android: using predefined swapchain format for QueryPresentFormats deadlock workaround");
   }
@@ -977,6 +980,8 @@ bool Swapchain::setMode(const SwapchainMode &new_mode)
   {
     debug("vulkan: swapchain: no object recreation mode change");
     currentMode.mismatchedExtents = false;
+    // we render to offscreen at display extents, so backbuffer follows them
+    currentMode.backbufferExtent = currentMode.displayExtent;
     destroyOffscreenBuffer();
   }
   else
@@ -1079,7 +1084,7 @@ void Swapchain::rotateFromOffscreen()
   SwapchainImage &acquiredImage = images[acquiredImageIdx];
   wrappedRotatedTex->image = acquiredImage.img;
   d3d::set_render_target({}, DepthAccess::RW, {{wrappedRotatedTex, 0, 0}});
-  d3d::clearview(CLEAR_DISCARD_TARGET, 0, 0, 0);
+  d3d::clearview(DISCARD_TARGET, 0, 0, 0);
   d3d::set_tex(STAGE_PS, 0, wrappedTex);
   d3d::set_sampler(STAGE_PS, 0, d3d::request_sampler({}));
   d3d::set_program(Globals::shaderProgramDatabase.getRotateProgram(query.caps.currentTransform).get());

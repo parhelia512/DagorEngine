@@ -26,6 +26,7 @@
 #include <shaders/dag_dynSceneRes.h>
 #include <3d/dag_texMgr.h>
 #include <3d/dag_texIdSet.h>
+#include <memory/dag_framemem.h>
 
 template <typename Callable>
 inline void get_animchar_draw_info_ecs_query(ecs::EntityManager &manager, ecs::EntityId eid, Callable c);
@@ -298,7 +299,7 @@ ECS_AFTER(filter_hero_cockpit_es)
 static void mark_hero_cockpit_textures_important_es(
   const UpdateStageInfoBeforeRender &, ecs::EntityManager &manager, const ecs::EidList &hero_cockpit_entities)
 {
-  TextureIdSet cockpitTextures;
+  TextureIdSet cockpitTextures(framemem_ptr());
   for (ecs::EntityId animchar_eid : hero_cockpit_entities)
   {
     fill_hero_cockpit_textures_ecs_query(manager, animchar_eid, [&cockpitTextures](AnimV20::AnimcharRendComponent &animchar_render) {

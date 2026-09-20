@@ -1,0 +1,19 @@
+Root    ?= ../../.. ;
+Location = prog/gameLibs/iblCube ;
+
+TargetType  = lib ;
+Target      = gameLibs/iblCube.lib ;
+include $(Root)/prog/_jBuild/defaults.jam ;
+
+AddIncludes =
+  $(Root)/prog/dagorInclude
+  $(Root)/prog/gameLibs/publicInclude
+;
+
+SourceES =
+  render/iblCubeES.cpp.inl
+;
+
+for s in $(SourceES) { GenESSourceFile $(s) ; }
+
+include $(Root)/prog/_jBuild/build.jam ;

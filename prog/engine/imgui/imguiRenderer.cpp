@@ -13,6 +13,7 @@
 #include <drv/3d/dag_renderTarget.h>
 #include <drv/3d/dag_resUpdateBuffer.h>
 #include <3d/dag_render.h>
+#include <3d/dag_preRotation.h>
 #include <shaders/dag_overrideStates.h>
 #include <shaders/dag_shaderVar.h>
 #include <image/dag_texPixel.h>
@@ -31,6 +32,35 @@ constexpr size_t INDEX_BUF_ADDITIONAL_SIZE = 10000;
 static int imgui_mvp_VarIds[4];
 static int imgui_texVarId = -1;
 static int imgui_texture_name_unique_id = 0;
+
+static void set_mvp_and_view(const ImDrawData *draw_data, int prerotate_angle)
+{
+  const float L = draw_data->DisplayPos.x;
+  const float R = draw_data->DisplayPos.x + draw_data->DisplaySize.x;
+  const float T = draw_data->DisplayPos.y;
+  const float B = draw_data->DisplayPos.y + draw_data->DisplaySize.y;
+  float mvp[4][4] = {
+    {2.0f / (R - L), 0.0f, 0.0f, 0.0f},
+    {0.0f, 2.0f / (T - B), 0.0f, 0.0f},
+    {0.0f, 0.0f, 0.5f, 0.0f},
+    {(R + L) / (L - R), (T + B) / (B - T), 0.5f, 1.0f},
+  };
+
+  const Color4 rot = prerotation::ndc_rotation(prerotate_angle);
+  for (int i = 0; i < 4; i++)
+  {
+    const float x = mvp[i][0], y = mvp[i][1];
+    mvp[i][0] = x * rot[0] + y * rot[2];
+    mvp[i][1] = x * rot[1] + y * rot[3];
+  }
+
+  for (int i = 0; i < 4; i++)
+    ShaderGlobal::set_float4(imgui_mvp_VarIds[i], mvp[i][0], mvp[i][1], mvp[i][2], mvp[i][3]);
+
+  const bool swapExtents = prerotate_angle == 90 || prerotate_angle == 270;
+  d3d::setview(0, 0, swapExtents ? draw_data->DisplaySize.y : draw_data->DisplaySize.x,
+    swapExtents ? draw_data->DisplaySize.x : draw_data->DisplaySize.y, 0.0f, 1.0f);
+}
 
 DagImGuiRenderer::DagImGuiRenderer()
 {
@@ -153,26 +183,24 @@ void DagImGuiRenderer::render(ImGuiPlatformIO &platform_io)
 #endif
     }
 
-    const float L = draw_data->DisplayPos.x;
-    const float R = draw_data->DisplayPos.x + draw_data->DisplaySize.x;
-    const float T = draw_data->DisplayPos.y;
-    const float B = draw_data->DisplayPos.y + draw_data->DisplaySize.y;
-    const float mvp[4][4] = {
-      {2.0f / (R - L), 0.0f, 0.0f, 0.0f},
-      {0.0f, 2.0f / (T - B), 0.0f, 0.0f},
-      {0.0f, 0.0f, 0.5f, 0.0f},
-      {(R + L) / (L - R), (T + B) / (B - T), 0.5f, 1.0f},
-    };
-    for (int i = 0; i < 4; i++)
-      ShaderGlobal::set_float4(imgui_mvp_VarIds[i], mvp[i][0], mvp[i][1], mvp[i][2], mvp[i][3]);
-
-    d3d::setview(0, 0, draw_data->DisplaySize.x, draw_data->DisplaySize.y, 0.0f, 1.0f);
+    int prerotateAngle = 0;
+    if (prerotation::frame_angle())
+    {
+      Driver3dRenderTarget rt;
+      d3d::get_render_target(rt);
+      if (rt.isColorUsed(0))
+      {
+        BaseTexture *tex = rt.getColor(0).tex;
+        prerotateAngle = prerotation::angle_for_target(tex ? tex : d3d::get_backbuffer_tex());
+      }
+    }
+    set_mvp_and_view(draw_data, prerotateAngle);
     if (viewport != mainViewport)
     {
       d3d::clearview(CLEAR_TARGET, E3DCOLOR(120, 120, 120, 255), 0, 0);
     }
 
-    processDrawDataToRT(draw_data, globalIdxOffset, globalVtxOffset);
+    processDrawDataToRT(draw_data, globalIdxOffset, globalVtxOffset, prerotateAngle);
 
     if (viewport != mainViewport)
     {
@@ -231,23 +259,11 @@ void DagImGuiRenderer::renderDrawDataToTexture(const ImDrawData *draw_data, Base
   int globalIdxOffset = 0;
   int globalVtxOffset = 0;
 
-  const float L = draw_data->DisplayPos.x;
-  const float R = draw_data->DisplayPos.x + draw_data->DisplaySize.x;
-  const float T = draw_data->DisplayPos.y;
-  const float B = draw_data->DisplayPos.y + draw_data->DisplaySize.y;
-  const float mvp[4][4] = {
-    {2.0f / (R - L), 0.0f, 0.0f, 0.0f},
-    {0.0f, 2.0f / (T - B), 0.0f, 0.0f},
-    {0.0f, 0.0f, 0.5f, 0.0f},
-    {(R + L) / (L - R), (T + B) / (B - T), 0.5f, 1.0f},
-  };
-  for (int i = 0; i < 4; i++)
-    ShaderGlobal::set_float4(imgui_mvp_VarIds[i], mvp[i][0], mvp[i][1], mvp[i][2], mvp[i][3]);
-
-  d3d::setview(0, 0, draw_data->DisplaySize.x, draw_data->DisplaySize.y, 0.0f, 1.0f);
+  const int prerotateAngle = prerotation::angle_for_target(rt);
+  set_mvp_and_view(draw_data, prerotateAngle);
   d3d::clearview(CLEAR_TARGET, E3DCOLOR(120, 120, 120, 255), 0, 0);
 
-  processDrawDataToRT(draw_data, globalIdxOffset, globalVtxOffset);
+  processDrawDataToRT(draw_data, globalIdxOffset, globalVtxOffset, prerotateAngle);
 
   shaders::overrides::reset();
 }
@@ -301,8 +317,12 @@ bool DagImGuiRenderer::copyDrawData(const ImDrawData *draw_data, ImDrawVert *&vb
   return res;
 }
 
-void DagImGuiRenderer::processDrawDataToRT(const ImDrawData *draw_data, int &global_idx_offset, int &global_vtx_offset)
+void DagImGuiRenderer::processDrawDataToRT(const ImDrawData *draw_data, int &global_idx_offset, int &global_vtx_offset,
+  int prerotate_angle)
 {
+  const bool swapExtents = prerotate_angle == 90 || prerotate_angle == 270;
+  const int targetW = swapExtents ? (int)draw_data->DisplaySize.y : (int)draw_data->DisplaySize.x;
+  const int targetH = swapExtents ? (int)draw_data->DisplaySize.x : (int)draw_data->DisplaySize.y;
   ImVec2 clipOff = draw_data->DisplayPos;
   for (int n = 0; n < draw_data->CmdListsCount; n++)
   {
@@ -330,11 +350,13 @@ void DagImGuiRenderer::processDrawDataToRT(const ImDrawData *draw_data, int &glo
         scissorRect.right = min(scissorRect.right, (int)(draw_data->DisplaySize.x));
         scissorRect.bottom = min(scissorRect.bottom, (int)(draw_data->DisplaySize.y));
 
-        const int w = scissorRect.right - scissorRect.left;
-        const int h = scissorRect.bottom - scissorRect.top;
+        int w = scissorRect.right - scissorRect.left;
+        int h = scissorRect.bottom - scissorRect.top;
         if (w > 0 && h > 0)
         {
-          d3d::setscissor(scissorRect.left, scissorRect.top, w, h);
+          int l = scissorRect.left, t = scissorRect.top;
+          prerotation::rotate_rect(prerotate_angle, targetW, targetH, l, t, w, h);
+          d3d::setscissor(l, t, w, h);
 
           BaseTexture *tPtr = reinterpret_cast<BaseTexture *>(pcmd->GetTexID());
 

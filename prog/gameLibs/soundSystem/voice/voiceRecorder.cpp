@@ -333,10 +333,15 @@ bool VoiceRecorder::startRecord(FMOD::System *fmod_sys, const SoundSettings &sou
   {
     fmodRes = fmod_sys->recordStart(sound_settings.recordDeviceId, recordSound.get(), true);
     CHECK_FMOD_RETURN_VAL(fmodRes, "Failed to start record", false);
-    fmodRes = fmod_sys->getRecordPosition(sound_settings.recordDeviceId, &recordPos);
-    CHECK_FMOD_RETURN_VAL(fmodRes, "getRecordPosition", false);
-    feedback->enable();
     isRecording = true;
+    fmodRes = fmod_sys->getRecordPosition(sound_settings.recordDeviceId, &recordPos);
+    if (fmodRes != FMOD_OK)
+    {
+      LOGWARN_CTX("[VC] %s: %s: %s", __FUNCTION__, "getRecordPosition", FMOD_ErrorString(fmodRes));
+      stopRecord(fmod_sys, sound_settings);
+      return false;
+    }
+    feedback->enable();
   }
   webrtcAP->Initialize();
   return true;
@@ -344,8 +349,11 @@ bool VoiceRecorder::startRecord(FMOD::System *fmod_sys, const SoundSettings &sou
 
 void VoiceRecorder::stopRecord(FMOD::System *fmod_sys, const SoundSettings &sound_settings)
 {
-  debug("[VC] Stop record");
-  fmod_sys->recordStop(sound_settings.recordDeviceId);
+  debug("[VC] Stop record, owned: %d", isRecording);
+  // the record driver is shared between voice managers and holds one capture at a time,
+  // so only its current owner may stop it: isRecording is set on a successful recordStart
+  if (isRecording)
+    fmod_sys->recordStop(sound_settings.recordDeviceId);
   isRecording = false;
   feedback->disable();
   outputBuf.clear();

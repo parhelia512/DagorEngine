@@ -98,15 +98,6 @@ eastl::array<dafg::NodeHandle, 4> makeDownsampleDepthNodes(const DownsampleNodeP
                                                                 .handle())
                                        : eastl::nullopt;
 
-    auto downsampledFarNormalsOptHndl = params.needNormals
-                                          ? eastl::make_optional(registry.create("downsampled_far_normals")
-                                                                   .texture({TEXCF_RTARGET | esramFlags, halfMainViewResolution})
-                                                                   .withHistory(dafg::History::DiscardOnFirstFrame)
-                                                                   .atStage(dafg::Stage::PS_OR_CS)
-                                                                   .useAs(dafg::Usage::COLOR_ATTACHMENT)
-                                                                   .handle())
-                                          : eastl::nullopt;
-
     auto ns = isNormalsPacked ? registry.root() / "opaque" / "mixing" : registry.root();
     auto normalGbuf1OptHandl =
       params.needNormals && isNormalsPacked
@@ -159,13 +150,12 @@ eastl::array<dafg::NodeHandle, 4> makeDownsampleDepthNodes(const DownsampleNodeP
     struct Handles
     {
       decltype(checkerboardDepthOptHndl) checkerboardDepthOptHandle;
-      decltype(downsampledFarNormalsOptHndl) downsampledFarNormalsOptHandle;
       decltype(mainViewResolution) mainViewRes;
     };
-    auto hndls = eastl::unique_ptr<Handles>(new Handles{checkerboardDepthOptHndl, downsampledFarNormalsOptHndl, mainViewResolution});
 
     return [gbufDepthHndl, closeDepthHndl, farDownsampledDepthHndl, downsampledNormalsOptHndl, normalGbuf1OptHandl,
-             downsampledMotionVectorsOptHndl, hndls = eastl::move(hndls)] {
+             downsampledMotionVectorsOptHndl,
+             hndls = eastl::unique_ptr<Handles>(new Handles{checkerboardDepthOptHndl, mainViewResolution})] {
       BaseTexture *checkerboardDepth =
         hndls->checkerboardDepthOptHandle.has_value() ? hndls->checkerboardDepthOptHandle.value().get() : nullptr;
       BaseTexture *closeDepth = closeDepthHndl.get();
@@ -174,17 +164,13 @@ eastl::array<dafg::NodeHandle, 4> makeDownsampleDepthNodes(const DownsampleNodeP
 
       BaseTexture *downsampledNormals = downsampledNormalsOptHndl.has_value() ? downsampledNormalsOptHndl.value().get() : nullptr;
 
-      BaseTexture *downsampledFarNormals =
-        hndls->downsampledFarNormalsOptHandle.has_value() ? hndls->downsampledFarNormalsOptHandle.value().get() : nullptr;
-
       BaseTexture *normalGbuf1 = normalGbuf1OptHandl.has_value() ? normalGbuf1OptHandl.value().get() : nullptr;
 
       auto [renderingWidth, renderingHeight] = hndls->mainViewRes.get();
 
       downsample_depth::downsample(gbufDepthHndl.get(), renderingWidth, renderingHeight, farDownsampledDepth, closeDepth,
         downsampledNormals, normalGbuf1,
-        downsampledMotionVectorsOptHndl.has_value() ? downsampledMotionVectorsOptHndl.value().get() : nullptr, checkerboardDepth,
-        false /*external_barriers*/, downsampledFarNormals);
+        downsampledMotionVectorsOptHndl.has_value() ? downsampledMotionVectorsOptHndl.value().get() : nullptr, checkerboardDepth);
     };
   });
 
@@ -218,7 +204,7 @@ eastl::array<dafg::NodeHandle, 4> makeDownsampleDepthNodes(const DownsampleNodeP
         TextureInfo texinfo;
         BaseTexture *downsampledDepth = downsampledDepthHndl.get();
         downsampledDepth->getinfo(texinfo, 0);
-        downsampledDepth->updateSubRegion(farDownsampledDepthHndl.get(), 0, 0, 0, 0, texinfo.w, texinfo.h, 1, 0, 0, 0, 0);
+        d3d::update_sub_region(farDownsampledDepthHndl.get(), 0, 0, 0, 0, texinfo.w, texinfo.h, 1, downsampledDepth, 0, 0, 0, 0);
         d3d::resummarize_htile(downsampledDepth);
       };
     });

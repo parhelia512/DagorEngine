@@ -15,11 +15,11 @@ local AllSrcFolder_DAS = ;
 if $(HaveRenderer) = yes && $(Config) != rel {
   AllSrcFolder_DAS +=
     imgui
+    imgui/animgraph
   ;
 
   if $(HaveEditor) = yes {
     AllSrcFolder_DAS +=
-      imgui/animgraph
       imgui/daEditor
       imgui/daEditor/rendInst
       daEditor

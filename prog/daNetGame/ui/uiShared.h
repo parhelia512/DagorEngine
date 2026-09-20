@@ -17,6 +17,7 @@ namespace uishared
 {
 void init_early();
 bool is_ui_available_in_build();
+void set_visuallog_logerrs(int count);
 
 void init();
 void term();

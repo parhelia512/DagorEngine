@@ -51,15 +51,15 @@ TSPEC void BEContext::execCmd(const CmdClearView &cmd)
 
   // when async pipelines enabled and we trying to discard target, use clear instead
   // this avoids leaking some garbadge when pipelines are not ready
-  if (Globals::pipelines.asyncCompileEnabledGR() && (what & CLEAR_DISCARD) != 0)
+  if (Globals::pipelines.asyncCompileEnabledGR() && (what & DISCARD_ALL) != 0)
   {
-    if (what & CLEAR_DISCARD_TARGET)
+    if (what & DISCARD_TARGET)
       what |= CLEAR_TARGET;
-    if (what & CLEAR_DISCARD_ZBUFFER)
+    if (what & DISCARD_ZBUFFER)
       what |= CLEAR_ZBUFFER;
-    if (what & CLEAR_DISCARD_STENCIL)
+    if (what & DISCARD_STENCIL)
       what |= CLEAR_STENCIL;
-    what &= ~CLEAR_DISCARD;
+    what &= ~DISCARD_ALL;
   }
 
   getFramebufferState().clearMode |= what;

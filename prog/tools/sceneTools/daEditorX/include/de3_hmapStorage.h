@@ -353,6 +353,7 @@ public:
     hmInitial->resetStored(map_size_x, map_size_y, ofs_x, ofs_y, sw, sh, def_value);
     if (hasDistinctInitialAndFinalMap())
       hmFinal->resetStored(map_size_x, map_size_y, ofs_x, ofs_y, sw, sh, def_value);
+    changed = true;
   }
   // Mirror initial's stored rect into hmFinal so paired lookups at matching
   // (x,y) hit the same bbox. Was reset(w,h,defv) before bbox -- that form
@@ -404,6 +405,13 @@ public:
     hmInitial->eraseFile();
     if (hasDistinctInitialAndFinalMap())
       hmFinal->eraseFile();
+  }
+
+  void eraseStorage()
+  {
+    clear();
+    resetFinal();
+    closeFile(true);
   }
 
   bool flushData()

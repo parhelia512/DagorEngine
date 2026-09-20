@@ -9,6 +9,7 @@
 #include <EASTL/functional.h>
 #include <EASTL/string.h>
 #include <EASTL/vector.h>
+#include <EASTL/vector_set.h>
 #include <generic/dag_smallTab.h>
 #include <generic/dag_staticTab.h>
 #include <generic/dag_tab.h>
@@ -30,6 +31,7 @@
 
 class DynamicRenderableSceneInstance;
 class DynamicRenderableSceneResource;
+class DynamicRenderableSceneLodsResource;
 class BaseTexture;
 class GeomNodeTree;
 class ShaderElement;
@@ -180,16 +182,6 @@ struct PackedDrawCallsRange
 
 inline const PathFilterView PathFilterView::NULL_FILTER = PathFilterView(dag::ConstSpan<uint8_t>());
 
-struct DipChunkVariantState
-{
-  int curVar;
-  uint32_t prog;
-  ShaderStateBlockId state;
-  shaders::RenderStateId rstate;
-  shaders::ConstStateIdx cstate;
-  shaders::TexStateIdx tstate;
-};
-
 
 void init();
 void close();
@@ -228,15 +220,34 @@ void prepare_render(ContextId context_id, const TMatrix4 &view, const TMatrix4 &
   const Point3 &offset_to_origin = Point3(0.f, 0.f, 0.f), TexStreamingContext texCtx = TexStreamingContext(0),
   dynrend::InstanceContextData *instanceContextData = NULL);
 
+void collect_used_resources(ContextId context_id, eastl::vector_set<const DynamicRenderableSceneLodsResource *> &resources);
+
 void render(ContextId context_id, ShaderMesh::Stage shader_mesh_stage);
 void clear(ContextId context_id);
 
 void clear_all_contexts();
+void reset_ring_buffers();
 
 void after_device_reset();
 
+// Call once per frame before any rendering.
+void begin_frame();
+
 void set_reduced_render(ContextId context_id, float min_elem_radius, bool render_skinned);
 void set_instance_data_only(ContextId context_id, bool enable);
+void set_node_collapser_enabled(ContextId context_id, bool enable);
+
+void set_prev_matrices(ContextId context_id, bool enable);
+void set_pass_expects_prev_matrices(bool enable);
+
+int get_skin_bones_start_in_vecs(ContextId context_id); // for reading render data from cpu
+int get_skin_bone_rows(ContextId context_id);
+
+// Globals snapshot for resolving multidraw variants while the context is filled
+// Set it on the filling thread before prepare_render
+// Keep it alive until clear(). Null or empty = live globals, valid on the main thread only
+void set_context_global_vars_state(ContextId context_id, const GlobalVariableStates *gvars_state);
+
 void set_prev_view_proj(const TMatrix4_vec4 &prev_view, const TMatrix4_vec4 &prev_proj);
 void get_prev_view_proj(TMatrix4_vec4 &prev_view, TMatrix4_vec4 &prev_proj);
 void set_local_offset_hint(const Point3 &hint);
@@ -287,9 +298,18 @@ void update_reprojection_data(ContextId contextId);
 
 bool set_instance_data_buffer(unsigned stage, ContextId contextId, int node_offset_render_data, int instance_offset_render_data);
 
+// Returns the values set_instance_data_buffer would set, without touching any state.
+// Valid after prepare_render and until the next prepare_render on the context.
+// Safe to call from worker threads within that window.
+bool get_instance_data_offsets(ContextId contextId, int node_offset_render_data, int instance_offset_render_data,
+  uint32_t out_dwords[2], D3DRESID &out_buffer_id);
+
 const Point4 *get_per_instance_render_data(ContextId contextId, int indexToPerInstanceRenderData);
 
 void verify_is_empty(ContextId context_id);
+bool has_elems_in_stage(const DynamicRenderableSceneLodsResource *lods_res, ShaderMesh::Stage stage);
+uint32_t render_flags_for_stage(ShaderMesh::Stage shader_mesh_stage);
+void render_immediate(ShaderMesh::Stage shader_mesh_stage, const TMatrix4 &vtm, const TMatrix4 &ptm, TexStreamingContext texCtx);
 void render_one_instance(const DynamicRenderableSceneInstance *instance, ShaderMesh::Stage shader_mesh_stage,
   TexStreamingContext texCtx, const InitialNodes *optional_initial_nodes = NULL,
   const dynrend::PerInstanceRenderData *optional_render_data = NULL, bool relative_to_camera = false);
@@ -312,8 +332,9 @@ void iterate_instances(dynrend::ContextId context_id, InstanceIterator iter, voi
 
 // Animchar batch processing: produces DipChunks into the context, supports both
 // standard and packed/multidraw draw paths based on material type.
-// output_offsets, if non-null, receives one renderDataBuffer offset per visible mesh
-// (rigids then skins, same order as DynamicRenderableSceneResource::getMeshes).
+// output_offsets, if non-null, receives one renderDataBuffer offset per mesh
+// (rigids then skins, same order as DynamicRenderableSceneResource::getMeshes), -1 where the
+// mesh was not rendered.
 // These offsets are relative to the context's renderDataBuffer and must be added to
 // get_context_buffer_pos() after prepare_render to get the absolute GPU buffer offset.
 void add_animchar(ContextId context_id, uint32_t start_stage,
@@ -343,7 +364,7 @@ int get_context_buffer_pos(ContextId context_id);
 // and then merged before prepare_render/render.  Clears src after merge.
 void merge_context(ContextId dst, ContextId src);
 
-using DipsIterator = eastl::function<void(const DipChunkVariantState &, GlobalVertexData *data, ShaderElement *shader,
+using DipsIterator = eastl::function<void(const shaders::CombinedDynVariantState &, GlobalVertexData *data, ShaderElement *shader,
   uint32_t base_vertex, uint32_t offset_and_size, uint32_t offset_to_chunk)>;
 void iterate_dips(dynrend::ContextId context_id, DipsIterator iter);
 

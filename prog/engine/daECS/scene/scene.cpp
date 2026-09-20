@@ -17,6 +17,8 @@ ECS_REGISTER_EVENT(EventOnLocalSceneEntitiesCreated);
 ECS_REGISTER_EVENT(EventOnSceneCreated);
 ECS_REGISTER_EVENT(EventOnSceneDestroyed);
 ECS_REGISTER_EVENT(EventOnEntitySceneDataChanged);
+ECS_REGISTER_EVENT(EventOnSceneOrderChanged);
+ECS_REGISTER_EVENT(EventOnSceneParentChanged);
 
 InitOnDemand<SceneManager> g_scenes;
 
@@ -360,6 +362,7 @@ void SceneManager::setNewParent(Scene::SceneId id, Scene::SceneId new_parent_id)
 
   getActiveScene().setNewChangesApplied(new_parent_id);
   getActiveScene().setNewChangesApplied(id);
+  g_entity_mgr->broadcastEvent(EventOnSceneParentChanged{id});
 }
 
 uint32_t SceneManager::getSceneOrder(Scene::SceneId scene_id) const
@@ -434,6 +437,7 @@ void SceneManager::setSceneOrder(Scene::SceneId id, uint32_t order)
   eastl::erase_if(parent->orderedEntries, [](auto &&val) { return val.sid == Scene::C_INVALID_SCENE_ID && !val.isEntity; });
 
   getActiveScene().setNewChangesApplied(parent->id);
+  g_entity_mgr->broadcastEvent(EventOnSceneOrderChanged{id});
 }
 
 uint32_t SceneManager::getEntityOrder(EntityId eid)

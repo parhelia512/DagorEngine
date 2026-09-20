@@ -11,11 +11,13 @@ AddIncludes =
   $(Root)/prog/tools/sceneTools/daEditorX/include
   $(Root)/prog/tools/sharedInclude
   $(Root)/prog/gameLibs/publicInclude
+  $(Root)/prog/gameLibs/render/screenSpaceReflection
 ;
 
 Sources =
   dynRender.cpp
   renderHelperSrv.cpp
+  thermalVision.cpp
 ;
 
 SourceES =
@@ -24,6 +26,7 @@ SourceES =
 
 UseProgLibs =
   gameLibs/render/upscale
+  gameLibs/render/specialVision
   gameLibs/render/genericLUT
   gameLibs/vr
 ;

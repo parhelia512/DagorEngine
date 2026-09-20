@@ -50,16 +50,13 @@ inline constexpr D3D12_RESOURCE_STATES D3D12_RESOURCE_STATE_INITIAL_BUFFER_STATE
 #define DX12_CONFIGUREABLE_BARRIER_MODE 0
 #endif
 
+#define DX12_NAME_OBJECTS         (DAGOR_DBGLEVEL > 0)
+#define DX12_HAVE_GET_OBJECT_NAME DAGOR_DBGLEVEL > 0
+
 #define DX12_REPORT_BUFFER_PADDING 0
 
 #define DX12_PRINT_USER_BUFFER_BARRIERS  0
 #define DX12_PRINT_USER_TEXTURE_BARRIERS 0
-
-#if DAGOR_DBGLEVEL > 0 || _TARGET_PC_WIN
-#define DX12_DOES_SET_DEBUG_NAMES 1
-#else
-#define DX12_DOES_SET_DEBUG_NAMES 0
-#endif
 
 #if !DX12_AUTOMATIC_BARRIERS && !DX12_PROCESS_USER_BARRIERS
 #error "DX12 Driver configured to _not_ generate required barriers and to _ignore_ user barriers, this will crash on execution"

@@ -13,6 +13,7 @@
 #include <image/dag_texPixel.h>
 #include <drv/3d/dag_renderPass.h>
 #include <drv/3d/dag_renderTarget.h>
+#include <drv/shadersMetaData/renderPassLowering.h>
 
 #include <vecmath/dag_vecMath.h>
 #include <math/dag_vecMathCompatibility.h>
@@ -23,8 +24,19 @@
 #include "textureloader.h"
 #include "drv_log_defs.h"
 #include "drv_assert_defs.h"
+#include "renderPassValidation.h"
+#include <validateUpdateSubRegion.h>
 
 using namespace drv3d_metal;
+
+// The backbuffer is a stable proxy texture, so it is stored in color0 like any other target and
+// tested by pointer. Do not bring back a null color0 as a second spelling for it: two spellings for
+// one target compare as different render targets and break the render encoder on a bind that
+// changes nothing.
+static bool is_backbuffer_color(const Driver3dRenderTarget &rt)
+{
+  return (rt.used & Driver3dRenderTarget::COLOR0) && rt.color[0].tex == d3d::get_backbuffer_tex();
+}
 
 struct TrackDriver3dRenderTarget : public Driver3dRenderTarget
 {
@@ -54,11 +66,6 @@ struct TrackDriver3dRenderTarget : public Driver3dRenderTarget
       return true;
     }
 
-    if (isBackBufferColor() != a.isBackBufferColor())
-    {
-      return false;
-    }
-
     for (uint32_t ri = 0; used_left; used_left >>= 1, ri++)
     {
       if (used_left & 1)
@@ -80,7 +87,7 @@ struct TrackDriver3dRenderTarget : public Driver3dRenderTarget
       return false;
     }
 
-    if (isBackBufferColor() && a.srgb_bb != srgb_bb)
+    if (is_backbuffer_color(*this) && a.srgb_bb != srgb_bb)
     {
       return false;
     }
@@ -157,8 +164,8 @@ static inline bool is_depth_format(unsigned int f)
 
 bool setRtState(TrackDriver3dRenderTarget &oldrt, TrackDriver3dRenderTarget &rt)
 {
-  bool isBackBufferColor = rt.isBackBufferColor();
-  if (isBackBufferColor && (!oldrt.isBackBufferColor() ||
+  bool isBackBufferColor = is_backbuffer_color(rt);
+  if (isBackBufferColor && (!is_backbuffer_color(oldrt) ||
     (rt.used&Driver3dRenderTarget::COLOR_MASK) != (oldrt.used&Driver3dRenderTarget::COLOR_MASK)))
     render.restoreRT();
 
@@ -225,11 +232,6 @@ bool setRtState(TrackDriver3dRenderTarget &oldrt, TrackDriver3dRenderTarget &rt)
 
     }
     render.setDepth(attach, attach);
-
-    if (!rt.isColorUsed())
-    {
-      //NULL RT
-    }
   }
 
   return true;
@@ -331,7 +333,9 @@ bool d3d::clearview(int what, E3DCOLOR c, float z, uint32_t stencil)
 
 bool d3d::set_render_target()
 {
-  nextRtState.setBackbufColor();
+  for (int i = 0; i < Driver3dRenderTarget::MAX_SIMRT; ++i)
+    nextRtState.removeColor(i);
+  nextRtState.setColor(0, d3d::get_backbuffer_tex(), 0, 0);
   nextRtState.removeDepth();
   nextRtState.changed = true;
 
@@ -374,6 +378,9 @@ void d3d::set_render_target(RenderTarget depth, DepthAccess depth_access, dag::C
   nextRtState.changed = true;
   vp.used = false;
 
+  D3D_CONTRACT_ASSERTF(colors.size() <= Driver3dRenderTarget::MAX_SIMRT, "Metal: too many color render targets: %d, max %d",
+    colors.size(), Driver3dRenderTarget::MAX_SIMRT);
+
   int i = 0;
   for (; i < colors.size() && i < Driver3dRenderTarget::MAX_SIMRT; ++i)
   {
@@ -400,7 +407,7 @@ bool d3d::get_target_size(int &w, int &h)
     rt = &nextRtState;
   }
 
-  if (rt->isBackBufferColor())
+  if (is_backbuffer_color(*rt))
   {
     d3d::get_screen_size(w, h);
     return true;
@@ -502,7 +509,7 @@ bool d3d::getview(int &x, int &y, int &w, int &h, float &minz, float &maxz)
     rs = &nextRtState;
   }
 
-  if (rs->isBackBufferColor())
+  if (is_backbuffer_color(*rs))
   {
     w = render.scr_wd;
     h = render.scr_ht;
@@ -547,6 +554,25 @@ float d3d::get_screen_aspect_ratio()
   return (float)render.scr_wd / (float)render.scr_ht;
 }
 
+int d3d::update_sub_region(::BaseTexture *src, int src_subres_idx, int src_x, int src_y, int src_z, int src_w, int src_h, int src_d, ::BaseTexture *dst, int dst_subres_idx, int dst_x, int dst_y, int dst_z)
+{
+  drv3d_metal::Texture *dtex = (drv3d_metal::Texture *)dst;
+  D3D_CONTRACT_ASSERT(!dtex->isStub());
+
+  if (!validate_update_sub_region_params(src, src_subres_idx, src_x, src_y, src_z, src_w, src_h, src_d, dst, dst_subres_idx, dst_x,
+        dst_y, dst_z))
+    return 0;
+
+  render.copyTexRegion((drv3d_metal::Texture *)src, src_subres_idx, src_x, src_y, src_z, src_w, src_h, src_d, dtex, dst_subres_idx,
+    dst_x, dst_y, dst_z);
+  return 1;
+}
+
+int d3d::update_sub_region_no_order(::BaseTexture *src, int src_subres_idx, int src_x, int src_y, int src_z, int src_w, int src_h, int src_d, ::BaseTexture *dst, int dst_subres_idx, int dst_x, int dst_y, int dst_z)
+{
+  return d3d::update_sub_region(src, src_subres_idx, src_x, src_y, src_z, src_w, src_h, src_d, dst, dst_subres_idx, dst_x, dst_y, dst_z);
+}
+
 bool d3d::stretch_rect(BaseTexture *src, BaseTexture *dst, const RectInt *rsrc, const RectInt *rdst)
 {
   if (!src)
@@ -569,7 +595,7 @@ bool d3d::copy_from_current_render_target(BaseTexture* to_tex)
 {
   TrackDriver3dRenderTarget* rs = nextRtState.changed ? &nextRtState : &currentRtState;
 
-  drv3d_metal::Texture* src = rs->isBackBufferColor() ? render.backbuffer : (drv3d_metal::Texture*)rs->color[0].tex;
+  drv3d_metal::Texture* src = (drv3d_metal::Texture*)rs->color[0].tex;
   D3D_CONTRACT_ASSERT(src);
   render.copyTex(src, (drv3d_metal::Texture*)to_tex);
 
@@ -715,12 +741,14 @@ static MTLStoreAction decodeStoreAction(RenderPass::Subpass &pass, uint32_t stor
 
 RenderPass *create_render_pass(const RenderPassDesc &rp_desc)
 {
+  if (!validate_render_pass_desc(rp_desc))
+    return nullptr;
+
   RenderPass* rp = new RenderPass;
 
   int subpass_count = -1;
   for (uint32_t i = 0; i < rp_desc.bindCount; ++i)
     subpass_count = std::max(subpass_count, rp_desc.binds[i].subpass);
-  D3D_CONTRACT_ASSERTF(subpass_count >= 0, "Render pass %s doesn't have any passes", rp_desc.debugName ? rp_desc.debugName : "(unknown)");
 
   rp->name = rp_desc.debugName ? rp_desc.debugName : "unknown rp";
   rp->textures.resize(rp_desc.targetCount);
@@ -757,14 +785,17 @@ RenderPass *create_render_pass(const RenderPassDesc &rp_desc)
 
       if (subpass_action == RP_TA_SUBPASS_READ)
       {
-        RenderPass::Subpass::PassInput input;
-        input.dst_slot = bind.slot + rp_desc.subpassBindingOffset;
-        input.src_slot = bind.target;
-
         if (bind.slot == RenderPassExtraIndexes::RP_SLOT_DEPTH_STENCIL)
           pass.depth_stencil = attach;
         else
+        {
+          G_ASSERTF_CONTINUE(subpass_read_fits_window(MAX_SHADER_TEXTURES, bind.slot),
+            "subpass read slot %d is out of the T register window in bind %u of render pass '%s'", bind.slot, i, rp->name.c_str());
+          RenderPass::Subpass::PassInput input;
+          input.dst_slot = subpass_read_register(MAX_SHADER_TEXTURES, bind.slot);
+          input.src_slot = bind.target;
           pass.inputs.push_back(input);
+        }
       }
       else if (subpass_action == RP_TA_SUBPASS_RESOLVE)
       {
@@ -838,7 +869,10 @@ void next_subpass()
   D3D_CONTRACT_ASSERT(RenderPass::active_subpass + 1 < RenderPass::active->subpasses.size());
   RenderPass::active_subpass++;
   if (render.has_image_blocks == false)
+  {
     RenderPass::bind();
+    render.updateEncoder();
+  }
   else
   {
     render.setViewport(RenderPass::active->area.left, RenderPass::active->area.top, RenderPass::active->area.width, RenderPass::active->area.height, RenderPass::active->area.minZ, RenderPass::active->area.maxZ);

@@ -55,6 +55,7 @@ if $(Headless) = yes {
 
 if $(Platform) in windows {
   UseProgLibs +=
+    engine/gameRes
     tools/libTools/shaderResBuilder
     tools/libTools/dagFileRW
     tools/libTools/util

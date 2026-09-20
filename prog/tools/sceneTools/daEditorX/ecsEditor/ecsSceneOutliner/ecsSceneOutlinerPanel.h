@@ -62,6 +62,8 @@ public:
   void onEntityRemoved(const ecs::EntityId eid);
   void onSceneRemoved(const ecs::Scene::SceneId sid);
   void onEntitySceneDataChanged(const ecs::EntityId eid);
+  void onSceneOrderChanged(const ecs::Scene::SceneId sid);
+  void onSceneParentChanged(const ecs::Scene::SceneId sid);
 
 protected:
   long onKeyDown(int pcb_id, PropPanel::ContainerPropertyControl *panel, unsigned v_key) override;

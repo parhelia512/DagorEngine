@@ -205,7 +205,7 @@ void RenderableInstanceResource::renderTrans(const TMatrix &tm, IRenderWrapperCo
 
 
 //--- RenderableInstanceLodsResource ------------------------------------//
-RenderableInstanceLodsResource *RenderableInstanceLodsResource::loadResource(IGenLoad &crd, int flags, const char *name,
+RenderableInstanceLodsResource *RenderableInstanceLodsResource::loadResource(IGenLoad &crd, int srl_flags, const char *name,
   const DataBlock *desc)
 {
   int res_sz_w = crd.readInt();
@@ -247,12 +247,12 @@ RenderableInstanceLodsResource *RenderableInstanceLodsResource::loadResource(IGe
   else
   {
     res->smvd = ShaderMatVdata::create(tmp[0], tmp[1], tmp[2], tmp[3], VDATA_MT_RENDINST);
-    res->smvd->loadTexStr(crd, flags & SRLOAD_SYMTEX);
+    res->smvd->loadTexStr(crd, srl_flags & SRLOAD_SYMTEX);
   }
   unsigned vdataFlags = 0;
-  if (flags & SRLOAD_TO_SYSMEM)
+  if (srl_flags & SRLOAD_TO_SYSMEM)
     vdataFlags |= VDATA_NO_IBVB;
-  if (flags & SRLOAD_SRC_ONLY)
+  if (srl_flags & SRLOAD_SRC_ONLY)
     vdataFlags |= VDATA_SRC_ONLY;
 #if DAGOR_DBGLEVEL > 0 || _TARGET_PC_WIN
   char vname[64];
@@ -264,7 +264,7 @@ RenderableInstanceLodsResource *RenderableInstanceLodsResource::loadResource(IGe
   res->smvd->loadMatVdata(vname, crd, vdataFlags);
 
   crd.read(res->dumpStartPtr(), res_sz);
-  res->patchAndLoadData(res_sz_w, crd, flags, name);
+  res->patchAndLoadData(res_sz_w, crd, srl_flags, name);
   if (res->hasImpostor())
     res->loadImpostorData(name);
   if (desc)
@@ -323,7 +323,11 @@ RenderableInstanceLodsResource *RenderableInstanceLodsResource::makeStubRes(cons
     }
   };
   size_t sz = sizeof(StubRendInst) + ((b && b->getBool("hasImpostor", false)) ? sizeof(ImpostorRtData) : 0);
-  return new (memalloc(sz, midmem), _NEW_INPLACE) StubRendInst(b);
+  StubRendInst *res = new (memalloc(sz, midmem), _NEW_INPLACE) StubRendInst(b);
+  // as loadResource() does: riDesc carries no impostor params, so without this a stub never reports isBakedImpostor()
+  if (b)
+    res->loadImpostorData(b->getBlockName());
+  return res;
 }
 
 bool RenderableInstanceLodsResource::isBakedImpostor() const { return getImpostorParams().hasBakedTexture(); }
@@ -478,14 +482,14 @@ void RenderableInstanceLodsResource::loadImpostorData(const char *name)
              " Try rebaking impostors and then rebuilding assets using dabuild: <%s>",
         name);
   }
-  else if (!runtimeImpostor)
+  else if (!runtimeImpostor && !mats.empty()) // no materials on a renderless dedicated, so runtime vs baked is unknowable there
     logerr("An asset is supposed to have baked impostor, but it has runtime impostor shader."
            " Try rebaking impostors and then rebuilding assets using dabuild: <%s>",
       name);
   release_game_resource_ex(impostorData, ImpostorDataGameResClassId);
 }
 
-void RenderableInstanceLodsResource::patchAndLoadData(int res_sz, IGenLoad &crd, int flags, const char *name)
+void RenderableInstanceLodsResource::patchAndLoadData(int res_sz, IGenLoad &crd, int srl_flags, const char *name)
 {
   packedFields = res_sz & 0x0FFFFFFF; // We call it on a resource creation so it could be non thread safe.
   bool hasImpostorMat = (res_sz & (1 << HAS_IMPOSTOR_MAT_SHIFT)) != 0;
@@ -501,7 +505,7 @@ void RenderableInstanceLodsResource::patchAndLoadData(int res_sz, IGenLoad &crd,
 
   for (int i = 0; i < lods.size(); i++)
   {
-    lods[i].scene = RenderableInstanceResource::loadResourceInternal(crd, flags, *smvd);
+    lods[i].scene = RenderableInstanceResource::loadResourceInternal(crd, srl_flags, *smvd);
     lods[i].scene->addRef();
   }
 
@@ -562,7 +566,7 @@ void RenderableInstanceLodsResource::patchAndLoadData(int res_sz, IGenLoad &crd,
   }
 
   uint32_t qlBestLod = 0;
-  if (RenderableInstanceLodsResource::get_skip_first_lods_count && !(flags & SRLOAD_TO_SYSMEM))
+  if (RenderableInstanceLodsResource::get_skip_first_lods_count && !(srl_flags & SRLOAD_TO_SYSMEM))
     qlMinAllowedLod = qlBestLod =
       clamp<int>(RenderableInstanceLodsResource::get_skip_first_lods_count(name, hasImpostorMat, lods.size()), 0, lods.size());
   if (qlBestLod)
@@ -570,7 +574,7 @@ void RenderableInstanceLodsResource::patchAndLoadData(int res_sz, IGenLoad &crd,
     debug("%s: skipping %d neares LODs (impostor=%d totalLODs=%d)", name, qlBestLod, hasImpostorMat, lods.size());
     G_ASSERT(qlBestLod <= lods.size());
   }
-  if (RenderableInstanceLodsResource::on_higher_lod_required && !hasImpostorData() && !(flags & SRLOAD_TO_SYSMEM))
+  if (RenderableInstanceLodsResource::on_higher_lod_required && !hasImpostorData() && !(srl_flags & SRLOAD_TO_SYSMEM))
   {
     bool discardable = true;
     for (const ShaderMatVdata *smvd : getSmvd())

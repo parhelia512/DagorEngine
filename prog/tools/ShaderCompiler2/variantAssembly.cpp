@@ -90,7 +90,6 @@ eastl::pair<const char *, const char *> build_hlsl_type(semantic::VariableType v
       varTypeStr = "Texture3D";
       samplerTypeStr = "Texture3DSampler";
       break;
-    case VariableType::smpCube:
     case VariableType::texCube:
     case VariableType::staticSmpCube:
     case VariableType::staticTexCube:
@@ -111,23 +110,18 @@ eastl::pair<const char *, const char *> build_hlsl_type(semantic::VariableType v
       break;
 #if (_CROSS_TARGET_C1 | _CROSS_TARGET_C2)
 
-
-
 #else
-    case VariableType::shdArray:
     case VariableType::smpArray: varTypeStr = "Texture2DArray"; break;
-    case VariableType::smpCubeArray: varTypeStr = "TextureCubeArray"; break;
 #endif
     case VariableType::sampler: varTypeStr = "SamplerState"; break;
     case VariableType::cmpSampler: varTypeStr = "SamplerComparisonState"; break;
-    case VariableType::shd: varTypeStr = "Texture2D"; break;
     case VariableType::tlas: varTypeStr = "RaytracingAccelerationStructure"; break;
   }
   return {varTypeStr, samplerTypeStr};
 }
 
-eastl::string build_placement_specifier(int dest_reg, bool is_array, int elem_count, HlslRegisterSpace rspace,
-  ShaderBlockLevel block_level, bool is_dynamic)
+eastl::string build_placement_specifier(int dest_reg, bool is_array, int elem_count, HlslRegisterSpace rspace, bool is_inside_cbuffer,
+  bool is_dynamic)
 {
   eastl::string res{};
   G_ASSERT(elem_count > 0);
@@ -138,12 +132,12 @@ eastl::string build_placement_specifier(int dest_reg, bool is_array, int elem_co
   // register allocation matches the struct layout
   if (!is_dynamic && rspace == HLSL_RSPACE_C)
   {
-    G_ASSERT(block_level == ShaderBlockLevel::SHADER);
+    G_ASSERT(!is_inside_cbuffer);
     return res;
   }
 
-  // For global cbuf we use packoffset to specify position in cbuffer
-  if (rspace == HLSL_RSPACE_C && block_level == ShaderBlockLevel::GLOBAL_CONST)
+  // For in-cbuf we use packoffset to specify position in cbuffer
+  if (rspace == HLSL_RSPACE_C && is_inside_cbuffer)
   {
     G_ASSERT(is_dynamic);
     res.append_sprintf(":packoffset(c%d)", dest_reg);
@@ -225,8 +219,7 @@ void validate_hlsl_block_for_invalid_symbols(eastl::string_view hlsl_block, east
 
 
 eastl::optional<NamedConstDeclarationHlsl> build_hlsl_decl_for_named_const(const semantic::NamedConstDefInfo &def,
-  shc::VariantContext &ctx, int dest_register, const ShaderParser::VariablesMerger::MergedVarsMapsPerStage &var_merger_per_stage_maps,
-  const ShaderParser::VariablesMerger::MergedVarsMap &var_merger_global_blk_map)
+  shc::VariantContext &ctx, int dest_register, const ShaderParser::VariablesMerger::MergedVarsMapsPerStage &var_merger_per_stage_maps)
 {
   using semantic::VariableType;
   static const char *profiles[STAGE_MAX] = {"cs", "ps", "vs"};
@@ -242,13 +235,11 @@ eastl::optional<NamedConstDeclarationHlsl> build_hlsl_decl_for_named_const(const
   const char *baseVarName = def.varTerm->text;
   const char *nameSpaceName = def.nameSpaceTerm->text;
 
-  const bool isGlobalConstBlock = ctx.shCtx().blockLevel() == ShaderBlockLevel::GLOBAL_CONST;
-
   auto [varTypeStr, samplerTypeStr] = build_hlsl_type(def.type);
 
   {
     const eastl::string regSpecification =
-      build_placement_specifier(dest_register, def.isArray, def.arrayElemCount, def.regSpace, ctx.shCtx().blockLevel(), def.isDynamic);
+      build_placement_specifier(dest_register, def.isArray, def.arrayElemCount, def.regSpace, false, def.isDynamic);
 
     if (!hlsl.definition.empty())
       hlsl.definition.replaceAll(def.nameSpaceTerm->text, regSpecification.c_str());
@@ -386,7 +377,7 @@ eastl::optional<NamedConstDeclarationHlsl> build_hlsl_decl_for_named_const(const
   {
     if ((def.type == VariableType::f44 && def.registerSize == 4) || def.initializer.size() == 1)
       hlsl.postfix.aprintf(0, "%s get_%s() { return %s; }", varTypeStr, baseVarName, baseVarName);
-    const auto &varMergerMap = (isGlobalConstBlock ? var_merger_global_blk_map : var_merger_per_stage_maps[def.stage]);
+    const auto &varMergerMap = var_merger_per_stage_maps[def.stage];
     if (const auto varsIt = varMergerMap.find(baseVarName); varsIt != varMergerMap.end())
     {
       for (const auto &info : varsIt->second)
@@ -434,12 +425,6 @@ bool build_stcode_for_named_const(const semantic::NamedConstDefInfo &def, int de
     {
       G_ASSERT(out_cppstcode->cppStcode.constMask);
       out_cppstcode->cppStcode.constMask->add(reg, float_count, def.stage);
-
-      if (def.stage != STAGE_CS && def.regSpace == HLSL_RSPACE_C && ctx.shCtx().blockLevel() == ShaderBlockLevel::GLOBAL_CONST)
-      {
-        ShaderStage otherStage = def.stage == STAGE_VS ? STAGE_PS : STAGE_VS;
-        out_cppstcode->cppStcode.constMask->add(reg, float_count, otherStage);
-      }
     }
   };
 
@@ -921,12 +906,9 @@ bool build_stcode_for_named_const(const semantic::NamedConstDefInfo &def, int de
   return true;
 }
 
-String build_hlsl_for_pair_sampler(const char *const_name, bool is_shadow, int dest_register)
+String build_hlsl_for_pair_sampler(const char *const_name, int dest_register)
 {
   String res{};
-  if (is_shadow)
-    res.aprintf(0, "SamplerComparisonState %s_cmpSampler: register(s%d);\n", const_name, dest_register);
-
   res.aprintf(0, "SamplerState %s_samplerstate: register(s%d);\n", const_name, dest_register);
   return res;
 }

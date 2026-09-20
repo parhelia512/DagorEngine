@@ -29,6 +29,9 @@ extern bool (*on_validate_game_res_id)(int res_id, int &out_res_id);
 //! called when resource class id is needed;
 extern bool (*on_get_game_res_class_id)(int res_id, unsigned &out_class_id);
 
+//! not really hook, but a query: are resources of this class stubbed, so loading them reads no data at all?
+extern bool (*is_res_class_stubbed)(unsigned class_id);
+
 //! called from preload_all_required_res() to pre-process/validate RRL, return true when updated RRL still not empty;
 extern bool (*on_preload_all_required_res)(gameres_rrl_ptr_t rrl);
 

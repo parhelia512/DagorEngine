@@ -30,7 +30,9 @@ enum class History : uint8_t
    * artifacts and trash value propagation for cumulative type algorithms.
    * NOTE: for CPU-resources, this simply default-constructs them
    */
-  DiscardOnFirstFrame
+  DiscardOnFirstFrame,
+
+  MAX_VAL = DiscardOnFirstFrame,
 };
 
 const char *to_string(History history);

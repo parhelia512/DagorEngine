@@ -50,8 +50,8 @@ namespace drv3d_metal
     1, 16384, //int minvolsize,maxvolsize;
     0,    //int maxtexaspect; ///< 1 means texture should be square, 0 means no limit
     65536,  //int maxtexcoord;
-    16,     //int maxsimtex;
-    16,    //int maxlights;
+    metal::MAX_T_REGISTERS, //int maxsimtex;
+    metal::MAX_S_REGISTERS, //int maxlights;
     0,    //int maxclipplanes;
     64,     //int maxstreams;
     64,     //int maxstreamstr;
@@ -250,6 +250,8 @@ const DriverDesc &d3d::get_driver_desc()
     }
 
     g_device_desc.caps.hasUAVOnlyForcedSampleCount = true;
+    g_device_desc.issues.hasBrokenUAVOnlyPasses =
+      metalBlk->getBool("brokenUAVOnlyPasses", ![render.device supportsFamily:MTLGPUFamilyMac2]);
 
     g_device_desc.shaderModel = 5.0_sm;
 #else //_TARGET_IOS | _TARGET_TVOS
@@ -309,6 +311,11 @@ const DriverDesc &d3d::get_driver_desc()
     // can only have heaps when manual hazard tracking is enabled
     g_device_desc.caps.hasResourceHeaps = metalBlk->getBool("allowResourceHeaps", true);
     g_device_desc.caps.hasResourceHeaps &= render.manual_hazard_tracking;
+#if _TARGET_PC_MACOSX
+    // placement heaps, the only kind we create, abort the process on a device without support
+    g_device_desc.caps.hasResourceHeaps &= [render.device supportsFamily:MTLGPUFamilyMac2];
+#endif
+    debug("[METAL] resource heaps: %s", g_device_desc.caps.hasResourceHeaps ? "enabled" : "disabled");
 
     desc_prepared = true;
   }
@@ -320,6 +327,7 @@ int d3d::driver_command(Drv3dCommand command, void *par1, void *par2, void *par3
 {
   switch (command)
   {
+    case Drv3dCommand::GET_PRESENTED_FRAME_COUNT: return 1;
     case Drv3dCommand::D3D_FLUSH:
     case Drv3dCommand::GPU_BARRIER_WAIT_ALL_COMMANDS: // TODO: Implement GPU_BARRIER_WAIT_ALL_COMMANDS separately
       @autoreleasepool
@@ -633,6 +641,8 @@ int d3d::driver_command(Drv3dCommand command, void *par1, void *par2, void *par3
       *reinterpret_cast<float *>(par1) = [render.mainview getRelativeHeadroom];
       break;
     }
+    case Drv3dCommand::APPLY_HDR_MODE:
+      return render.applyHdrModeChange() ? 1 : 0;
     case Drv3dCommand::GET_METALFX_UPSCALE_STATE:
     {
 #if USE_METALFX_UPSCALE
@@ -726,12 +736,22 @@ PROGRAM d3d::get_debug_program()
 {
   if (d3d_debug_prog == BAD_PROGRAM)
   {
-    ShaderSource vs_src{.compressedData = make_span_const((const uint8_t *)debug_vs_metal, (uint32_t)strlen(debug_vs_metal) + 1),
-      .uncompressedSize = (uint32_t)strlen(debug_vs_metal) + 1,
-      .dictionary = nullptr};
-    ShaderSource ps_src{.compressedData = make_span_const((const uint8_t *)debug_ps_metal, (uint32_t)strlen(debug_ps_metal) + 1),
-      .uncompressedSize = (uint32_t)strlen(debug_ps_metal) + 1,
-      .dictionary = nullptr};
+    ShaderSourceExt vs_src{
+      {
+        .compressedData = make_span_const((const uint8_t *)debug_vs_metal, (uint32_t)strlen(debug_vs_metal) + 1),
+        .uncompressedSize = (uint32_t)strlen(debug_vs_metal) + 1,
+        .dictionary = nullptr
+      },
+      c_countof("debug_vs_metal") - 1,
+      "debug_vs_metal"};
+    ShaderSourceExt ps_src{
+      {
+        .compressedData = make_span_const((const uint8_t *)debug_ps_metal, (uint32_t)strlen(debug_ps_metal) + 1),
+        .uncompressedSize = (uint32_t)strlen(debug_ps_metal) + 1,
+        .dictionary = nullptr
+      },
+      c_countof("debug_ps_metal") - 1,
+      "debug_ps_metal"};
     d3d_debug_vdecl = render.createVDdecl(debug_vdecl);
     VPROG vs = create_vertex_shader(vs_src);
     FSHADER ps = create_pixel_shader(ps_src);
@@ -1028,6 +1048,11 @@ Sbuffer *place_buffer_in_resource_heap(ResourceHeap *heap, const ResourceDescrip
   G_ASSERT(alloc_info.sizeInBytes + offset <= heap->size);
   G_ASSERT(heap->heap);
 
+  D3D_CONTRACT_ASSERTF(!(desc.asBufferRes.cFlags & SBCF_MISC_DRAWINDIRECT) || desc.asBufferRes.elementSizeInBytes == 4,
+    "Metal: SBCF_MISC_DRAWINDIRECT requires 4 byte elements, got %u", desc.asBufferRes.elementSizeInBytes);
+  D3D_CONTRACT_ASSERTF(!(desc.asBufferRes.cFlags & SBCF_MISC_ALLOW_RAW) || desc.asBufferRes.elementSizeInBytes == 4,
+    "Metal: SBCF_MISC_ALLOW_RAW requires 4 byte elements, got %u", desc.asBufferRes.elementSizeInBytes);
+
   id<MTLBuffer> buf = [heap->heap newBufferWithLength : desc.asBufferRes.elementSizeInBytes * desc.asBufferRes.elementCount
                                                  options : MTLResourceStorageModePrivate
                                                   offset : offset];
@@ -1061,9 +1086,9 @@ BaseTexture *place_texture_in_resource_heap(ResourceHeap *heap, const ResourceDe
     return nullptr;
 
   drv3d_metal::Texture *texture = new drv3d_metal::Texture(tex, tex_desc, desc.asBasicRes.cFlags, name);
-  texture->heap_offset = uint32_t(offset);
-  texture->heap_size = alloc_info.sizeInBytes;
-  texture->heap = heap;
+  texture->apiTex->heap_offset = uint32_t(offset);
+  texture->apiTex->heap_size = alloc_info.sizeInBytes;
+  texture->apiTex->heap = heap;
   return texture;
 }
 
@@ -1083,13 +1108,13 @@ ResourceHeapGroupProperties get_resource_heap_group_properties(ResourceHeapGroup
 }
 }
 
-void ResourceHeap::track_resource_read(drv3d_metal::HazardTracker &resource)
+void ResourceHeap::track_resource_read(drv3d_metal::HazardTracker &resource, bool is_from_vs)
 {
   resources.erase(eastl::remove_if(resources.begin(), resources.end(), [this](const Resource &a) { return a.enc.submit <= render.submits_completed; }), resources.end());
 
   for (auto &res : resources)
     if (res.offset < resource.heap_offset + resource.heap_size && res.offset + res.size > resource.heap_offset && res.type != Resource::Access::Read)
-      render.track_resource_read_impl(res.enc);
+      render.track_resource_read_impl(res.enc, is_from_vs);
 
   drv3d_metal::HazardEncoder enc = {render.submits_scheduled, render.current_encoder->index};
   if (resources.size())
@@ -1101,7 +1126,7 @@ void ResourceHeap::track_resource_read(drv3d_metal::HazardTracker &resource)
   resources.emplace_back(enc, resource.heap_offset, resource.heap_size, Resource::Access::Read);
 }
 
-void ResourceHeap::track_resource_write(drv3d_metal::HazardTracker &resource)
+void ResourceHeap::track_resource_write(drv3d_metal::HazardTracker &resource, bool is_from_vs)
 {
   resources.erase(eastl::remove_if(resources.begin(), resources.end(), [this](const Resource &a) { return a.enc.submit <= render.submits_completed; }), resources.end());
 
@@ -1109,7 +1134,7 @@ void ResourceHeap::track_resource_write(drv3d_metal::HazardTracker &resource)
   {
     const auto& res = *it;
     if (res.offset < resource.heap_offset + resource.heap_size && res.offset + res.size > resource.heap_offset)
-      render.track_resource_read_impl(res.enc);
+      render.track_resource_read_impl(res.enc, is_from_vs);
     // when tracking writes we basically wait for everything that was before so replacing all accesses with current write would be enough
     if (res.offset == resource.heap_offset && res.size == resource.heap_size)
       it = resources.erase(it);

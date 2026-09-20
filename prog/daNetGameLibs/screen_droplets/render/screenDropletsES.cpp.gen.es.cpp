@@ -163,7 +163,7 @@ static ecs::EntitySystemDesc disable_screen_droplets_es_es_desc
   empty_span(),
   empty_span(),
   empty_span(),
-  ecs::EventSetBuilder<UnloadLevel>::build(),
+  ecs::EventSetBuilder<EventRenderSceneUnload>::build(),
   0
 ,"render");
 //static constexpr ecs::ComponentDesc reset_screen_droplets_for_new_level_es_comps[] ={};
@@ -182,7 +182,7 @@ static ecs::EntitySystemDesc reset_screen_droplets_for_new_level_es_es_desc
   empty_span(),
   empty_span(),
   empty_span(),
-  ecs::EventSetBuilder<OnLevelLoaded>::build(),
+  ecs::EventSetBuilder<EventRenderSceneLoaded>::build(),
   0
 ,"render");
 static constexpr ecs::ComponentDesc destroy_screen_droplets_es_comps[] =

@@ -184,12 +184,15 @@ BaseTexture *d3d::alloc_ddsx_tex(const ddsx::Header &hdr, int flg, int quality_i
   else if (hdr.flags & ddsx::Header::FLG_ARRTEX)
     type = D3DResourceType::ARRTEX;
 
-  drv3d_metal::Texture* tex = new drv3d_metal::Texture(hdr.w, hdr.h, hdr.levels, hdr.depth, type, fmt, fmt & TEXFMT_MASK, name, false, false);
+  if (levels <= 0)
+    levels = hdr.levels;
 
   int skip_levels = hdr.getSkipLevels(hdr.getSkipLevelsFromQ(quality_id), levels);
   int w = max(hdr.w>>skip_levels, 1), h = max(hdr.h>>skip_levels, 1), d = max(hdr.depth>>skip_levels, 1);
   if (!(hdr.flags & hdr.FLG_VOLTEX))
     d = (hdr.flags & hdr.FLG_ARRTEX) ? hdr.depth : 1;
+
+  drv3d_metal::Texture* tex = new drv3d_metal::Texture(w, h, levels, d, type, fmt, fmt & TEXFMT_MASK, name, false, false);
 
   tex->stubTexIdx = stub_tex_idx;
   if (stub_tex_idx >= 0)
@@ -290,9 +293,7 @@ bool d3d::clear_rt(const RenderTarget &rt, const ResourceClearValue &clear_val)
   auto texture = (drv3d_metal::Texture*)rt.tex;
   if (is_depth_format_flg(texture->cflg))
   {
-    SCOPE_RENDER_TARGET;
-    set_depth(texture, DepthAccess::RW);
-    clearview(CLEAR_ZBUFFER|CLEAR_STENCIL, 0x00000000, clear_val.asDepth, clear_val.asStencil);
+    render.clearDepthStencil(texture, clear_val.asDepth, clear_val.asStencil, rt.mip_level, rt.layer);
   }
   else
   {

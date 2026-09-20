@@ -611,10 +611,22 @@ void RendInstGenData::setClipmapShadowsRendered(int cascadeNo)
       crt_ptr->cellStateFlags |= flag;
 }
 
-void RendInstGenData::renderRendinstShadowsToClipmap(const BBox2 &region, int newForCascadeNo)
+struct ClipmapShadowDrawUnit
 {
+  RendInstGenData::CellRtData *crt;
+  int cellI;
+  unsigned riIdx;
+  int rangesOfs;
+  int rangesCount;
+};
+
+bool RendInstGenData::tryRenderRendinstShadowsToClipmap(const BBox2 &region, int newForCascadeNo, int max_draws, int &draw_count)
+{
+  TIME_PROFILE(clipmap_shadow_try_render);
+
+  draw_count = 0;
   if (!rendinst::render::is_clipmap_shadows_renderable())
-    return;
+    return true;
 
   bbox3f regionBBox;
   regionBBox.bmin =
@@ -633,17 +645,12 @@ void RendInstGenData::renderRendinstShadowsToClipmap(const BBox2 &region, int ne
   int cellXStride = cellNumW - (regions[2] - regions[0] + 1);
   float grid2worldcellSz = grid2world * cellSz;
 
-  d3d::setind(rendinstShadowsToClipmapIb);
-  d3d::setvsrc_ex(0, rendinstShadowsToClipmapVb, 0, sizeof(Point3));
-  rendinst::render::startRenderInstancing();
-  d3d::set_immediate_const(STAGE_VS, ZERO_PTR<uint32_t>(), 1);
-
   ScopedLockRead lock(rtData->riRwCs);
   uint32_t flag = newForCascadeNo >= 0 ? (RendInstGenData::CellRtData::CLIPMAP_SHADOW_RENDERED << newForCascadeNo) : 0;
 
-  rendinst::render::RiShaderConstBuffers cb;
-  d3d::set_buffer(STAGE_VS, rendinst::render::instancingTexRegNo, rtData->cellsVb.getHeap().getBuf());
-  auto currentHeapGen = rtData->cellsVb.getManager().getHeapGeneration();
+  static Tab<ClipmapShadowDrawUnit> units;
+  static Tab<IPoint2> rangesPool;
+  const bool mayRender = max_draws > 0;
 
   for (int z = regions[1], cellI = regions[1] * cellNumW + regions[0]; z <= regions[3]; z++, cellI += cellXStride)
     for (int x = regions[0]; x <= regions[2]; x++, cellI++)
@@ -684,8 +691,6 @@ void RendInstGenData::renderRendinstShadowsToClipmap(const BBox2 &region, int ne
           }
         }
 
-      cell_set_encoded_bbox(cb, crt.cellOrigin, grid2worldcellSz, crt.cellHeight);
-
       for (unsigned int ri_idx = 0; ri_idx < rtData->riRes.size(); ri_idx++)
       {
         if (rendinst::isResHidden(rtData->riResHideMask[ri_idx]))
@@ -694,27 +699,8 @@ void RendInstGenData::renderRendinstShadowsToClipmap(const BBox2 &region, int ne
           continue;
         if (!rtData->riRes[ri_idx] || !rtData->rtPoolData[ri_idx] || rendinst::isResHidden(rtData->riResHideMask[ri_idx]))
           continue;
-        bool posInst = rtData->riPosInst[ri_idx] ? 1 : 0;
-        rendinst::render::RtPoolData &pool = *rtData->rtPoolData[ri_idx];
-
-        if (!pool.rendinstClipmapShadowTex)
+        if (!rtData->rtPoolData[ri_idx]->rendinstClipmapShadowTex)
           continue;
-
-        rendinst::render::setCoordType(posInst ? rendinst::render::COORD_TYPE_POS : rendinst::render::COORD_TYPE_TM);
-
-        unsigned int stride = RIGEN_STRIDE_B(posInst, rtData->riZeroInstSeeds[ri_idx], perInstDataDwords);
-        unsigned int flags = RI_CBUFFER_FLAGS__PER_DRAW_DATA_FROM_CONST_BUFFER |
-                             ((rtData->riZeroInstSeeds[ri_idx] == 0) && (perInstDataDwords != 0) ? RI_CBUFFER_FLAGS__HASH_VAL : 0);
-
-        ShaderGlobal::set_texture_fast(rendinst::render::rendinstShadowTexVarId, pool.rendinstClipmapShadowTexId);
-        // ShaderGlobal::set_float4(rendinst::render::boundingSphereVarId, 0.f, 0.f, 0.f, pool.sphereRadius *
-        // rendinstShadowScale);
-        ShaderGlobal::set_float4(rendinst::render::clipmapShadowScaleVarId, pool.clipShadowWk, pool.clipShadowHk, pool.clipShadowOrigX,
-          pool.clipShadowOrigY);
-
-        const uint32_t vectorsCnt = posInst ? 1 : 3;
-        ShaderGlobal::set_int_fast(removeRotationVarId, posInst ? 0 : 1);
-        rendinstShadowsToClipmapShaderElem->setStates(0, true);
 
         IPoint2 resultRanges[RendInstGenData::SUBCELL_DIV * RendInstGenData::SUBCELL_DIV];
         int resultRangesCount = 0;
@@ -734,29 +720,98 @@ void RendInstGenData::renderRendinstShadowsToClipmap(const BBox2 &region, int ne
           else
             resultRanges[resultRangesCount - 1][1] = scse.ofs + scse.sz;
         }
-        for (int rangeI = 0; rangeI < resultRangesCount; ++rangeI)
+        if (!resultRangesCount)
+          continue;
+
+        if (mayRender)
         {
-          G_ASSERT(crt.cellVbId);
-          const uint32_t ofs = resultRanges[rangeI][0];
-          if (crt.heapGen != currentHeapGen) // driver is incapable of copy in thread
-          {
-            updateVb(crt, cellI);
-            // updateVb reallocates cellsVb buffer
-            d3d::set_buffer(STAGE_VS, rendinst::render::instancingTexRegNo, rtData->cellsVb.getHeap().getBuf());
-          }
-          auto vbInfo = rtData->cellsVb.get(crt.cellVbId);
-          int count = (resultRanges[rangeI][1] - resultRanges[rangeI][0]) / stride;
-          uint32_t impostorOffset = pool.hasImpostor() ? rendinst::gen::get_rotation_palette_manager()->getImpostorDataBufferOffset(
-                                                           {rtData->layerIdx, int(ri_idx)}, pool.impostorDataOffsetCache)
-                                                       : 0;
-          cb.setInstancing(vbInfo.offset / RENDER_ELEM_SIZE + (ofs * vectorsCnt) / stride, vectorsCnt, flags, impostorOffset);
-          cb.flushPerDraw();
-          d3d_err(d3d::drawind_instanced(PRIM_TRILIST, 0, 2, 0, count));
+          ClipmapShadowDrawUnit unit;
+          unit.crt = &crt;
+          unit.cellI = cellI;
+          unit.riIdx = ri_idx;
+          unit.rangesOfs = rangesPool.size();
+          unit.rangesCount = resultRangesCount;
+          append_items(units, 1, &unit);
+          append_items(rangesPool, resultRangesCount, resultRanges);
         }
+
+        draw_count += resultRangesCount;
       }
     }
 
+  if (draw_count > max_draws)
+  {
+    units.clear();
+    rangesPool.clear();
+    return false;
+  }
+
+  if (units.empty())
+    return true;
+
+  d3d::setind(rendinstShadowsToClipmapIb);
+  d3d::setvsrc_ex(0, rendinstShadowsToClipmapVb, 0, sizeof(Point3));
+  rendinst::render::startRenderInstancing();
+  d3d::set_immediate_const(STAGE_VS, ZERO_PTR<uint32_t>(), 1);
+
+  rendinst::render::RiShaderConstBuffers cb;
+  d3d::set_buffer(STAGE_VS, rendinst::render::instancingTexRegNo, rtData->cellsVb.getHeap().getBuf());
+  auto currentHeapGen = rtData->cellsVb.getManager().getHeapGeneration();
+
+  int lastCellI = -1;
+  for (const ClipmapShadowDrawUnit &unit : units)
+  {
+    RendInstGenData::CellRtData &crt = *unit.crt;
+    if (unit.cellI != lastCellI)
+    {
+      cell_set_encoded_bbox(cb, crt.cellOrigin, grid2worldcellSz, crt.cellHeight);
+      lastCellI = unit.cellI;
+    }
+
+    unsigned ri_idx = unit.riIdx;
+    bool posInst = rtData->riPosInst[ri_idx] ? 1 : 0;
+    rendinst::render::RtPoolData &pool = *rtData->rtPoolData[ri_idx];
+
+    rendinst::render::setCoordType(posInst ? rendinst::render::COORD_TYPE_POS : rendinst::render::COORD_TYPE_TM);
+
+    unsigned int stride = RIGEN_STRIDE_B(posInst, rtData->riZeroInstSeeds[ri_idx], perInstDataDwords);
+    unsigned int flags = RI_CBUFFER_FLAGS__PER_DRAW_DATA_FROM_CONST_BUFFER |
+                         ((rtData->riZeroInstSeeds[ri_idx] == 0) && (perInstDataDwords != 0) ? RI_CBUFFER_FLAGS__HASH_VAL : 0);
+
+    ShaderGlobal::set_texture_fast(rendinst::render::rendinstShadowTexVarId, pool.rendinstClipmapShadowTexId);
+    ShaderGlobal::set_float4(rendinst::render::clipmapShadowScaleVarId, pool.clipShadowWk, pool.clipShadowHk, pool.clipShadowOrigX,
+      pool.clipShadowOrigY);
+
+    const uint32_t vectorsCnt = posInst ? 1 : 3;
+    ShaderGlobal::set_int_fast(removeRotationVarId, posInst ? 0 : 1);
+    rendinstShadowsToClipmapShaderElem->setStates(0, true);
+
+    for (int rangeI = 0; rangeI < unit.rangesCount; ++rangeI)
+    {
+      const IPoint2 &r = rangesPool[unit.rangesOfs + rangeI];
+      G_ASSERT(crt.cellVbId);
+      const uint32_t ofs = r.x;
+      if (crt.heapGen != currentHeapGen)
+      {
+        updateVb(crt, unit.cellI);
+        d3d::set_buffer(STAGE_VS, rendinst::render::instancingTexRegNo, rtData->cellsVb.getHeap().getBuf());
+      }
+      auto vbInfo = rtData->cellsVb.get(crt.cellVbId);
+      int count = (r.y - r.x) / stride;
+      uint32_t impostorOffset = pool.hasImpostor() ? rendinst::gen::get_rotation_palette_manager()->getImpostorDataBufferOffset(
+                                                       {rtData->layerIdx, int(ri_idx)}, pool.impostorDataOffsetCache)
+                                                   : 0;
+      cb.setInstancing(vbInfo.offset / RENDER_ELEM_SIZE + (ofs * vectorsCnt) / stride, vectorsCnt, flags, impostorOffset);
+      cb.flushPerDraw();
+      d3d_err(d3d::drawind_instanced(PRIM_TRILIST, 0, 2, 0, count));
+    }
+  }
+
   rendinst::render::endRenderInstancing();
+
+  units.clear();
+  rangesPool.clear();
+  return true;
 }
 
 void rendinst::startUpdateRIGenClipmapShadows()
@@ -825,12 +880,22 @@ void rendinst::render::setClipmapShadowsRendered(int cascadeNo)
     rgl->setClipmapShadowsRendered(cascadeNo);
 }
 
-void rendinst::render::renderRIGenShadowsToClipmap(const BBox2 &region, int newForCascadeNo)
+int rendinst::render::tryRenderRIGenShadowsToClipmap(const BBox2 &region, int newForCascadeNo, int max_draws, int &required_draw_count)
 {
+  required_draw_count = 0;
   if (!rendinstClipmapShadows || !rendinst::render::is_clipmap_shadows_renderable())
-    return;
+    return 0;
+
+  int actualDrawCount = 0;
   FOR_EACH_RG_LAYER_RENDER (rgl, rgRenderMaskCMS)
-    rgl->renderRendinstShadowsToClipmap(region, newForCascadeNo);
+  {
+    int layerRequiredDraws = 0;
+    bool layerFits = rgl->tryRenderRendinstShadowsToClipmap(region, newForCascadeNo, max_draws - actualDrawCount, layerRequiredDraws);
+    if (layerFits)
+      actualDrawCount += layerRequiredDraws;
+    required_draw_count += layerRequiredDraws;
+  }
+  return actualDrawCount;
 }
 
 float rendinst::getMaxFarplaneRIGen(bool sec_layer)

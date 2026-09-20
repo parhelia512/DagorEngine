@@ -1,11 +1,11 @@
 // Copyright (C) Gaijin Games KFT.  All rights reserved.
 
 #include <stdio.h>
-#include <stdarg.h>
 #include <windows.h>
 #include <shlobj.h>
 #include <maxversion.h>
 #include <string>
+#include <format>
 #include <fstream>
 #include <filesystem>
 #include "debug.h"
@@ -16,33 +16,45 @@ namespace fs = std::filesystem;
 static std::ofstream debugfile;
 static bool debug_file_available = true;
 
-void debug(const char *s, ...)
+void debug_formatted(std::string_view fmt, std::format_args args)
 {
-  va_list ap;
-  va_start(ap, s);
-  CStr res;
-  res.vprintf(s, ap);
-  va_end(ap);
-
-  debug(L"%s", strToWide(res.data()).c_str());
+  try
+  {
+    debug_out(std::vformat(fmt, args));
+  }
+  catch (const std::format_error &)
+  {
+    debug_out(fmt);
+  }
 }
-void debug(const wchar_t *s, ...)
-{
-  va_list ap;
-  va_start(ap, s);
-  TSTR res;
-  res.vprintf(s, ap);
-  va_end(ap);
-  res += L"\n";
 
-  OutputDebugStringW(res.data());
+void debug_formatted(std::wstring_view fmt, std::wformat_args args)
+{
+  try
+  {
+    debug_out(std::vformat(fmt, args));
+  }
+  catch (const std::format_error &)
+  {
+    debug_out(fmt);
+  }
+}
+
+void debug_out(std::string_view text) { debug_out(strToWide(text)); }
+
+void debug_out(std::wstring_view text)
+{
+  std::wstring line(text);
+  line += L'\n';
+
+  OutputDebugStringW(line.c_str());
   if (!debug_file_available)
     return;
 
   if (!debugfile.is_open())
   {
     fs::path debugfile_name =
-      format_str(L"dagor2_plugin_max%d.%d.%d.log", MAX_PRODUCT_VERSION_MAJOR, MAX_PRODUCT_VERSION_MINOR, MAX_PRODUCT_VERSION_POINT);
+      std::format(L"dagor2_plugin_max{}.{}.{}.log", MAX_PRODUCT_VERSION_MAJOR, MAX_PRODUCT_VERSION_MINOR, MAX_PRODUCT_VERSION_POINT);
 
     TCHAR folder[MAX_PATH];
     fs::path debugfile_path;
@@ -55,12 +67,12 @@ void debug(const wchar_t *s, ...)
     if (!debugfile)
     {
       debug_file_available = false;
-      OutputDebugStringW(format_str(L"failed to create debug file: %s\n", debugfile_path.c_str()).c_str());
+      OutputDebugStringW(std::format(L"failed to create debug file: {}\n", debugfile_path.c_str()).c_str());
       return;
     }
   }
 
-  debugfile << wideToStr(res.data());
+  debugfile << wideToStr(line);
 
   debugfile.flush();
 }

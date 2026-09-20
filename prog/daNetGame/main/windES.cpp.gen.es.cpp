@@ -98,7 +98,7 @@ static ecs::EntitySystemDesc wind_after_device_reset_es_event_handler_es_desc
   empty_span(),
   empty_span(),
   empty_span(),
-  ecs::EventSetBuilder<AfterDeviceReset>::build(),
+  ecs::EventSetBuilder<EventAfterDeviceReset>::build(),
   0
 ,"render");
 static constexpr ecs::ComponentDesc destroy_wind_managed_resources_es_event_handler_comps[] =

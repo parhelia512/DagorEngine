@@ -381,6 +381,9 @@ public:
 
   void updateImgui(ImGuiID canvas_id, const Point2 &size, float item_spacing, bool vr_mode = false);
 
+  // The ImGui ID of the viewport's canvas item. 0 until the first updateImgui() call.
+  ImGuiID getImguiCanvasId() const { return imguiCanvasId; }
+
   void setScreenshotMode(Point2 size) override { screenshotSize = size; }
   void resetScreenshotMode() override;
 
@@ -532,6 +535,7 @@ protected:
   };
 
   bool active = false;
+  ImGuiID imguiCanvasId = 0;
 
   TextureIDHolder viewportTexture;
   IPoint2 viewportTextureSize = IPoint2(0, 0);

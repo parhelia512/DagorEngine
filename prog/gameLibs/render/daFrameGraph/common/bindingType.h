@@ -13,6 +13,8 @@ enum class BindingType : uint8_t
   ViewMatrix,
   ProjMatrix,
   Invalid,
+
+  MAX_VAL = Invalid,
 };
 
 }

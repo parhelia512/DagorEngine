@@ -183,12 +183,6 @@ struct UpdateBlurredUI : public ecs::Event
     ECS_EVENT_CONSTRUCTOR(UpdateBlurredUI), begin(begin), end(end), max_mip(max_mip), uiTex(ui_tex)
   {}
 };
-struct OnLevelLoaded : public ecs::Event
-{
-  const DataBlock &level_blk;
-  ECS_BROADCAST_EVENT_DECL(OnLevelLoaded)
-  OnLevelLoaded(const DataBlock &lev_blk) : ECS_EVENT_CONSTRUCTOR(OnLevelLoaded), level_blk(lev_blk) {}
-};
 struct BeforeDraw : public ecs::Event
 {
   Driver3dPerspective persp;
@@ -564,7 +558,6 @@ struct RenderDecalsOnDynamic : public ecs::Event
 
 #define DEF_RENDER_EVENTS                                                                              \
   DEF_RENDER_EVENT(OnWorldRendererCreated)                                                             \
-  DEF_RENDER_EVENT(UnloadLevel)                                                                        \
   DEF_RENDER_EVENT(OnRenderDecals, TMatrix /*viewTm*/, TMatrix /*viewItm*/, Point3 /*cameraWorldPos*/, \
     TexStreamingContext /*texCtx*/, const RiGenVisibility * /*rendinstMainVisibility*/)                \
   DEF_RENDER_EVENT(RenderDecalsOnGlass)                                                                \

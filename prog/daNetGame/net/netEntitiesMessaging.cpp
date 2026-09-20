@@ -76,7 +76,7 @@ namespace net
 // Defined in this TU so ctor/advance/deref inline into the send loops below.
 ConnectionsIterator::ConnectionsIterator()
 {
-  // GET_NET_CTX asserts the access contract once here; the hot loop trusts the cached view after that.
+  // GET_NET_CTX once here; the hot loop trusts the cached view after that.
   NetContext *nctx = GET_NET_CTX();
   CNetwork *net = nctx ? &nctx->getNet() : nullptr;
   cachedIsServer = net && net->isServer();
@@ -98,10 +98,10 @@ void ConnectionsIterator::advance()
   if (cachedIsServer)
   {
     for (; i < clientConnCount; ++i)
-      if (clientConns[i] && !(clientConns[i]->getConnFlags() & net::CF_PENDING))
+      if (clientConns[i] && clientConns[i]->isActive())
         return;
   }
-  else if (i == 0 && serverConn)
+  else if (i == 0 && serverConn && serverConn->isActive())
     return;
   i = -1;
 }
@@ -126,7 +126,6 @@ int send_net_msg(ecs::EntityManager &mgr, ecs::EntityId to_eid, net::IMessage &&
     // SP fallback: mgr is used to dispatch the event in this EM's world; verify the binding
     // matches so we don't deliver into the wrong EM. mgr.sendEventImmediate is MT-safe via its
     // own ScopedMTMutex.
-    ASSERT_NET_EM_IS(mgr);
     G_ASSERT(is_server());
     if (msgDesc.routing == net::ROUTING_CLIENT_TO_SERVER || msgDesc.routing == net::ROUTING_CLIENT_CONTROLLED_ENTITY_TO_SERVER)
     {
@@ -139,8 +138,7 @@ int send_net_msg(ecs::EntityManager &mgr, ecs::EntityId to_eid, net::IMessage &&
     return 0;
   }
 
-  // MP path: mgr is not used. Pin NetContext lifetime only.
-  net::TopologyLock::ReadScope topoPin;
+  // MP path: mgr is not used.
   auto *ctx = GET_NET_CTX();
   if (!ctx)
     return 0;
@@ -190,6 +188,8 @@ int send_net_msg(ecs::EntityId to_eid, net::IMessage &&msg, const net::MessageNe
 
 void flush_new_connection(net::IConnection &conn)
 {
+  if (!conn.isBlackHole() && !conn.isActive())
+    return;
   propsreg::flush_net_registry(conn);
   riexsync::send_initial_snapshot_to(conn);
   ridestr::send_initial_ridestr(conn);

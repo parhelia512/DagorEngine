@@ -2,6 +2,7 @@
 #pragma once
 
 #include "driver.h"
+#include "debug/names.h"
 #include "versioned_com_ptr.h"
 #include "d3d12_error_handling.h"
 
@@ -26,8 +27,14 @@ struct CommandStreamSet
   ComPtr<ID3D12CommandAllocator> pool;
   dag::Vector<CommandListStoreType> lists;
   uint32_t listsInUse = 0;
+  debug::ObjectName name;
 
-  void init(ID3D12Device *device) { DX12_CHECK_RESULT(device->CreateCommandAllocator(CommandListTypeName, COM_ARGS(&pool))); }
+  void init(ID3D12Device *device, debug::ObjectName set_name)
+  {
+    name = set_name;
+    DX12_CHECK_RESULT(device->CreateCommandAllocator(CommandListTypeName, COM_ARGS(&pool)));
+    debug::name_object(pool.Get(), debug::format_object_name("%s.Allocator", name.c_str()));
+  }
   CommandListResultType allocateList(ID3D12Device *device)
   {
     CommandListResultType result = {};
@@ -46,6 +53,7 @@ struct CommandStreamSet
       if (newList.autoQuery([DX12_CAPTURE_DEF_EQ](auto uuid, auto ptr) //
             { return DX12_DEBUG_OK(device->CreateCommandList(0, CommandListTypeName, pool.Get(), nullptr, uuid, ptr)); }))
       {
+        debug::name_object(newList.get(), debug::format_object_name("%s.List#%u", name.c_str(), static_cast<uint32_t>(lists.size())));
         lists.push_back(eastl::move(newList));
         result = lists[listsInUse++];
       }

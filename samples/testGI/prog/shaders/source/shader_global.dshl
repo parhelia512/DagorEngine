@@ -157,6 +157,7 @@ hlsl {
 
 float pow2(float a) {return a*a;}
 float pow4(float a) {return pow2(a*a);}
+float pow6(float a) {return pow2(a*a*a);}
 float pow8(float a) {return pow4(a*a);}
 float pow16(float a){return pow8(a*a);}
 float2 pow2_vec2(float2 a) {return a*a;}

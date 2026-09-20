@@ -1,6 +1,6 @@
 // Copyright (C) Gaijin Games KFT.  All rights reserved.
 
-#if _TARGET_PC_WIN
+#if _TARGET_PC_WIN | _TARGET_XBOX
 #include <windows.h>
 #endif
 
@@ -25,9 +25,6 @@
 #include <util/dag_string.h>
 #include <util/dag_watchdog.h>
 
-#include <ioSys/dag_memIo.h>
-#include <ioSys/dag_zstdIo.h>
-#include <memory/dag_framemem.h>
 #include <EASTL/algorithm.h>
 
 
@@ -621,6 +618,58 @@ DAGOR_NOINLINE void paint_window(HWND hWnd, UINT message, WPARAM wParam, LPARAM 
 }
 #endif
 
+#if _TARGET_XBOX
+// Xbox window is only an input sink; present is HWND-independent (PresentX), so its size is
+// irrelevant and the swapchain resolution is chosen by the driver, not by these settings.
+void get_render_window_settings(RenderWindowSettings &p, Driver3dInitCallback *)
+{
+  p.resolutionX = 1920;
+  p.resolutionY = 1080;
+  p.clientWidth = p.resolutionX;
+  p.clientHeight = p.resolutionY;
+  p.aspect = float(p.resolutionX) / float(p.resolutionY);
+  p.winRectLeft = p.winRectTop = 0;
+  p.winRectRight = p.resolutionX;
+  p.winRectBottom = p.resolutionY;
+  p.winStyle = WS_OVERLAPPEDWINDOW;
+}
+
+bool set_render_window_params(RenderWindowParams &p, const RenderWindowSettings &s)
+{
+  if (p.hwnd)
+    return true;
+
+  const char *className = p.wcname ? p.wcname : "DagorWindow";
+  WNDCLASSEXA wcex = {};
+  wcex.cbSize = sizeof(WNDCLASSEXA);
+  wcex.style = CS_HREDRAW | CS_VREDRAW;
+  wcex.lpfnWndProc = (WNDPROC)p.mainProc;
+  wcex.hInstance = (HINSTANCE)p.hinst;
+  wcex.lpszClassName = className;
+  wcex.hbrBackground = (HBRUSH)(COLOR_WINDOW + 1);
+  if (!RegisterClassExA(&wcex))
+  {
+    int err = GetLastError();
+    if (err && err != ERROR_ALREADY_EXISTS && err != ERROR_CLASS_ALREADY_EXISTS)
+    {
+      D3D_ERROR("Can't register window class (%08X)", err);
+      return false;
+    }
+  }
+
+  p.hwnd = CreateWindowExA(0, className, p.title ? p.title : "Game", s.winStyle, CW_USEDEFAULT, CW_USEDEFAULT, s.resolutionX,
+    s.resolutionY, nullptr, nullptr, (HINSTANCE)p.hinst, nullptr);
+  if (!p.hwnd)
+  {
+    D3D_ERROR("Can't create window (%08X)", GetLastError());
+    return false;
+  }
+
+  ShowWindow((HWND)p.hwnd, p.ncmdshow);
+  return true;
+}
+#endif
+
 static bool isHDRBlackListed(const DataBlock &videoBlk, const char *name)
 {
   if (!name || name[0] == 0)
@@ -698,27 +747,6 @@ d3d::GpuAutoLock::GpuAutoLock()
   AFTER_SUCCESSFUL_LOCK();
 }
 d3d::GpuAutoLock::~GpuAutoLock() { driver_command(Drv3dCommand::RELEASE_OWNERSHIP); }
-
-const uint32_t *ShaderSource::uncompress(Tab<uint8_t> &tmpbuf) const
-{
-  D3D_CONTRACT_ASSERT(!compressedData.empty());
-  D3D_CONTRACT_ASSERT(dictionary || compressedData.size() <= uncompressedSize);
-
-  tmpbuf.resize(uncompressedSize);
-
-  if (dictionary == nullptr)
-    eastl::copy(compressedData.begin(), compressedData.end(), tmpbuf.begin());
-  else
-  {
-    ZSTD_DCtx_s *dctx = zstd_create_dctx(true); // tmp for framemem
-    uint32_t decompressed_size = zstd_decompress_with_dict(dctx, tmpbuf.data(), tmpbuf.size(), compressedData.data(),
-      compressedData.size(), (const ZSTD_DDict_s *)dictionary);
-    zstd_destroy_dctx(dctx);
-    G_ASSERT(decompressed_size <= tmpbuf.size());
-  }
-
-  return (const uint32_t *)tmpbuf.data();
-}
 
 int get_presentation_interval_from_settings()
 {

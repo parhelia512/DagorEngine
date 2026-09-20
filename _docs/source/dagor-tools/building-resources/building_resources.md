@@ -168,6 +168,54 @@ you've collected error data, fix the assets and run the build without this flag
 to ensure that daBuild completes successfully without issues.
 ```
 
+### Validating Alpha-Tested Assets
+
+Ray tracing needs an opacity micromap (OMM) to resolve an alpha-tested
+material. daBuild can bake the OMM offline and check the result, the same
+way the game does at runtime.
+
+Add `-validate_alpha_test` to the command line to check every rendInst and
+dynModel asset in the build:
+
+```text
+..\..\tools\dagor3_cdk\bin64\dabuild-dev.exe -target:PC ..\application.blk -rebuild:rendInst -rebuild:dynModel -only_res -validate_alpha_test -keep_building_after_error
+```
+
+When the OMM bake of a mesh produces nothing usable, its alpha-tested
+triangles fall into one of three groups:
+
+- **Mixed** – some triangles are opaque and some are transparent (or
+  unresolved). The engine has no way to guess which the artist meant, so
+  it always drops the asset from the BVH. This is the only case
+  `-validate_alpha_test` reports by default, since it is the one that always
+  breaks something.
+- **All opaque** – the alpha test does not cut anything out of this mesh.
+- **All transparent** – the mesh is fully invisible through this material.
+
+The last two cases are not reported by default, because the game already
+works around them at runtime – unless `bvhStrictAssetChecks:b=yes` is set
+in the game's settings. Add `:strict` to also report these two cases and
+match that setting:
+
+```text
+..\..\tools\dagor3_cdk\bin64\dabuild-dev.exe -target:PC ..\application.blk -rebuild:rendInst -rebuild:dynModel -only_res -validate_alpha_test:strict -keep_building_after_error
+```
+
+The same check can run inside Asset Viewer, or without passing anything on
+the command line, by adding this to `application.blk` under
+`assets{ build{ ... } }`:
+
+```blk
+validateAlphaTest{
+  validate:b=yes  // enables validation
+  strict:b=no     // enables strict mode
+  warnOnly:b=yes  // yes by default, no turns warnings into errors
+}
+```
+
+Keep this change local – do not commit `application.blk`, since it can slow
+down asset building.
+
 ### Local Pack Build
 
 ```{important}

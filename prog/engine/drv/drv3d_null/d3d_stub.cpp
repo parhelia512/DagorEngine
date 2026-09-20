@@ -71,7 +71,10 @@ unsigned d3d::get_dedicated_gpu_memory_system_internal_overhead_kb() { return 0;
 /// returns driver description (pointer to static object)
 const DriverDesc &d3d::get_driver_desc() { return stub_desc; }
 
-int d3d::driver_command(Drv3dCommand command, void *par1, void *par2, void *par3) { return 0; }
+int d3d::driver_command(Drv3dCommand command, void *par1, void *par2, void *par3)
+{
+  return command == Drv3dCommand::GET_PRESENTED_FRAME_COUNT ? 1 : 0;
+}
 bool d3d::device_lost(bool *can_reset_now) { return false; }
 bool d3d::reset_device() { return false; }
 bool d3d::is_in_device_reset_now() { return false; }
@@ -105,6 +108,12 @@ void d3d::enhanced_barrier_batch(dag::ConstSpan<d3d::TextureBarrierBatchItem>, d
 bool d3d::stretch_rect(BaseTexture *src, BaseTexture *dst, const RectInt *rsrc, const RectInt *rdst) { return false; }
 bool d3d::copy_from_current_render_target(BaseTexture * /*to_tex*/) { return false; }
 
+int d3d::update_sub_region(BaseTexture *, int, int, int, int, int, int, int, BaseTexture *, int, int, int, int) { return 0; }
+int d3d::update_sub_region_no_order(BaseTexture *, int, int, int, int, int, int, int, BaseTexture *, int, int, int, int) { return 0; }
+
+BaseTexture *d3d::down_size_tex(BaseTexture *, int, int, int, int, unsigned, unsigned) { return nullptr; }
+BaseTexture *d3d::up_size_tex(BaseTexture *, int, int, int, int, unsigned, unsigned) { return nullptr; }
+
 d3d::ResUpdateBuffer *d3d::allocate_update_buffer_for_tex_region(BaseTexture *, unsigned, unsigned, unsigned, unsigned, unsigned,
   unsigned, unsigned, unsigned)
 {
@@ -123,15 +132,13 @@ bool d3d::update_texture_and_release_update_buffer(d3d::ResUpdateBuffer *&rub)
 }
 
 // Texture states setup
-VPROG d3d::create_vertex_shader(const ShaderSource &data) { return BAD_VPROG; }
+VPROG d3d::create_vertex_shader(const ShaderSourceExt &data) { return BAD_VPROG; }
 void d3d::delete_vertex_shader(VPROG vs) {}
 
 bool d3d::set_const(unsigned, unsigned reg_base, const void *data, unsigned num_regs) { return false; }
 bool d3d::set_immediate_const(unsigned stage, const uint32_t *data, unsigned num_words) { return false; }
 
-int d3d::set_cs_constbuffer_register_count(int) { return 0; }
-int d3d::set_vs_constbuffer_register_count(int /*required_size*/) { return 256; }
-FSHADER d3d::create_pixel_shader(const ShaderSource &data) { return BAD_FSHADER; }
+FSHADER d3d::create_pixel_shader(const ShaderSourceExt &data) { return BAD_FSHADER; }
 void d3d::delete_pixel_shader(FSHADER ps) {}
 
 /*
@@ -148,7 +155,7 @@ FSHADER d3d::create_pixel_shader_hlsl(const char *hlsl_text, unsigned len,
 
 PROGRAM d3d::create_program(VPROG vprog, FSHADER fsh, VDECL vdecl, unsigned *strides, unsigned streams) { return BAD_PROGRAM; }
 
-PROGRAM d3d::create_program_cs(const ShaderSource &data, CSPreloaded) { return BAD_PROGRAM; }
+PROGRAM d3d::create_program_cs(const ShaderSourceExt &data, CSPreloaded) { return BAD_PROGRAM; }
 
 bool d3d::set_program(PROGRAM) { return false; }
 void d3d::delete_program(PROGRAM) {}

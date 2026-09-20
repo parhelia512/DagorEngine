@@ -43,7 +43,6 @@ float4 hero_cockpit_vec = (0, 0, 0, 0);
 float4 hero_cockpit_camera_to_point = (0, 0, 0, 0);
 
 macro INIT_COMBINE_SHADOWS()
-  supports global_const_block;
   (ps) {
     csm_distance@f1 = csm_distance;
     shadow_frame@f1 = temporal_shadow_frame.x; //shadow_frame;
@@ -201,6 +200,14 @@ macro USE_COMBINE_SHADOWS()
           half3 rtShadow = getRTSM(tc * rt_shadow_resolutionI);
           half vsm = half(def_vsm_shadow(float4(worldPos,1)));
           shadow = rtShadow.r * cloudsShadow * vsm;
+          #ifndef CSM_DYNAMIC_ONLY_CASCADE // Corresponds to dynamic objects missing from BVH
+            BRANCH
+            if ( w < csm_distance.x && shadow > 0.5/255)
+            {
+              csmShadow = get_csm_shadow_dithered(-cameraToCSMPos, dither, shadows.csmCascadeId, csmTc, csmDitherRadius*shadowRadiusScale);
+              shadow = shadow*csmShadow.x;
+            }
+          #endif
           shadows.vsm = vsm;
           ##if ssss_quality == transmittance_and_reflectance_blur
             staticShadow = getStaticShadow(worldPos, 0, shadows.staticCascadeId, shadowRadiusScale);
@@ -240,7 +247,7 @@ macro USE_COMBINE_SHADOWS()
         if (cloudsAndStaticShadow > 0.01 && w < csm_distance.x)
         {
           BRANCH
-          if (gbuffer.material == SHADING_SUBSURFACE && isSubSurfaceProfileValid(gbuffer.sss_profile) && gbuffer.translucency > 0)
+          if (gbuffer.isSkinMaterial)
           {
             float3 ssssWorldPos = ssss_calculate_world_pos(worldPos, gbuffer.normal);
             float3 ssssPointToEye = world_view_pos.xyz - ssssWorldPos;

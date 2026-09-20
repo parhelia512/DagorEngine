@@ -7,6 +7,7 @@
 #include <drv/3d/dag_buffers.h>
 #include <drv/3d/dag_texture.h>
 #include <drv/3d/dag_driver.h>
+#include <drv/3d/dag_driverDesc.h>
 #include <3d/dag_quadIndexBuffer.h>
 #include <shaders/dag_computeShaders.h>
 #include <math/dag_hlsl_floatx.h>
@@ -122,13 +123,12 @@ void ComputeMultiBuffer::process()
     int elemCount = cmds.size() / elemSize;
 
     const int commandSizeInConsts = (elemSize + 15) / 16;
-    constexpr int reqSize = 1024;
-    const int cbufferSize = d3d::set_cs_constbuffer_register_count(reqSize);
+    const int maxBatchSize = min<int>(MAX_EMITTER_GEN_COMMANDS, (d3d::get_driver_desc().maxvpconsts - 1) / commandSizeInConsts);
     uint32_t v[4] = {0};
 
-    for (int i = elemCount - cmd; i < elemCount; i += (cbufferSize - 1) / commandSizeInConsts)
+    for (int i = elemCount - cmd; i < elemCount; i += maxBatchSize)
     {
-      int batch_size = min(elemCount - i, (int)(cbufferSize - 1) / commandSizeInConsts);
+      int batch_size = min(elemCount - i, maxBatchSize);
       v[0] = batch_size;
       d3d::set_cs_const(0, (float *)v, 1);
 
@@ -139,7 +139,6 @@ void ComputeMultiBuffer::process()
     cmd = 0;
     erase_items(cmds, 0, elemSize * elemCount);
 
-    d3d::set_cs_constbuffer_register_count(0);
     d3d::set_rwbuffer(STAGE_CS, 0, 0);
     d3d::resource_barrier({buf.get(), RB_RO_SRV | RB_STAGE_COMPUTE});
   }
@@ -494,9 +493,7 @@ void ParticleSystem::emit(float dt)
 
   if (!emitterDynData.empty())
   {
-    const int reqSize = EMITTER_DYN_BUFFER_REGISTER + MAX_EMITTER_GEN_COMMANDS * regPerEmitter;
-    const int cbufferSize = d3d::set_cs_constbuffer_register_count(reqSize);
-    const int batchSize = (cbufferSize - EMITTER_DYN_BUFFER_REGISTER) / regPerEmitter;
+    const int batchSize = MAX_EMITTER_GEN_COMMANDS;
 
     d3d::set_buffer(STAGE_CS, EMITTER_BUFFER_REGISTER, emitterBuffer.getSbuffer());
     d3d::set_rwbuffer(STAGE_CS, PARTICLE_BUFFER_REGISTER, particleBuffer.get());
@@ -515,8 +512,6 @@ void ParticleSystem::emit(float dt)
     d3d::set_buffer(STAGE_CS, EMITTER_BUFFER_REGISTER, NULL);
     d3d::set_rwbuffer(STAGE_CS, PARTICLE_BUFFER_REGISTER, NULL);
     d3d::resource_barrier({particleBuffer.get(), RB_FLUSH_UAV | RB_STAGE_COMPUTE | RB_SOURCE_STAGE_COMPUTE});
-
-    d3d::set_cs_constbuffer_register_count(0);
   }
 }
 

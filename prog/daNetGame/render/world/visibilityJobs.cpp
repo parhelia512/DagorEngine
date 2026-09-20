@@ -336,6 +336,7 @@ void LightsCullingJob::start(Occlusion *occlusion_, const CameraParams &cur_fram
   viewPos = v_ldu(cur_frame_camera.viewItm.m[3]);
   zn = cur_frame_camera.noJitterPersp.zn;
   zf = cur_frame_camera.noJitterPersp.zf;
+  hk = cur_frame_camera.noJitterPersp.hk;
   threadpool::add(this, prio, /*wake*/ false);
 }
 
@@ -343,7 +344,7 @@ void LightsCullingJob::doJob()
 {
   // int64_t reft = ref_time_ticks();
   if (get_world_renderer())
-    ((WorldRenderer *)get_world_renderer())->cullFrustumLights(occlusion, viewPos, globtm, view, proj, zn, zf);
+    ((WorldRenderer *)get_world_renderer())->cullFrustumLights(occlusion, viewPos, globtm, view, proj, zn, zf, hk);
   // debug("lights done %dus", get_time_usec(reft));
 }
 

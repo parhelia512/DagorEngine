@@ -15,7 +15,7 @@ enum
   CM_CHECK_ASSET_BASE,
   CM_RELOAD_SHADERS,
 
-  CM_EXPORT,
+  CM_BUILD_MENU,
   CM_PLATFORM_SUBMENU,
   CM_BUILD_RESOURCES = CM_PLATFORM_SUBMENU + CM_PLATFORM_COUNT,
   CM_BUILD_TEXTURES = CM_BUILD_RESOURCES + CM_PLATFORM_COUNT,
@@ -58,6 +58,10 @@ enum
   CM_BUILD_FROM_QUEUE_CUR_PACK,
   CM_BUILD_FROM_QUEUE_GROUP_PACK = CM_BUILD_FROM_QUEUE_CUR_PACK + CM_PLATFORM_COUNT,
   CM_BUILD_FROM_QUEUE_ALL_PLATFORM = CM_BUILD_FROM_QUEUE_GROUP_PACK + CM_PLATFORM_COUNT,
+
+  CM_REMOVE_FROM_QUEUE_CUR_PACK,
+  CM_REMOVE_FROM_QUEUE_GROUP_PACK = CM_REMOVE_FROM_QUEUE_CUR_PACK + CM_PLATFORM_COUNT,
+  CM_REMOVE_FROM_QUEUE_ALL_PLATFORM = CM_REMOVE_FROM_QUEUE_GROUP_PACK + CM_PLATFORM_COUNT,
 
   CM_EXPAND_CHILDREN,
   CM_COLLAPSE_CHILDREN,
@@ -165,6 +169,11 @@ enum
   CM_FX_EDITOR_RESET_EFFECTS,
 
   CM_EXPORT_AS_COMPOSITE_ENTITY,
+
+  CM_GO_TO_ASSET,
+  CM_REMOVE_ASSET_FROM_FAVORITES,
+
+  CM_ALL_PLATFORMS_SUBMENU,
 };
 
 enum
@@ -285,14 +294,14 @@ static constexpr const char *EXPORT_IMPOSTORS_CURRENT_PACK = "Main.Generate.Impo
 static constexpr const char *EXPORT_ALL_IMPOSTORS = "Main.Generate.AllImpostors";
 static constexpr const char *CLEAR_UNUSED_IMPOSTORS = "Main.ClearUnusedImpostors";
 static constexpr const char *EXPORT_CURRENT_POINT_CLOUD = "Main.Generate.CurrentPointCloud";
-static constexpr const char *BUILD_RESOURCES = "Main.Export.GameRes.PC";
-static constexpr const char *BUILD_TEXTURES = "Main.Export.TexPack.PC";
-static constexpr const char *BUILD_ALL = "Main.Export.All.PC";
+static constexpr const char *BUILD_RESOURCES = "Main.Build.GameRes.PC";
+static constexpr const char *BUILD_TEXTURES = "Main.Build.TexPack.PC";
+static constexpr const char *BUILD_ALL = "Main.Build.All.PC";
 static constexpr const char *BUILD_CLEAR_CACHE = "Main.ClearCache.PC";
 
-static constexpr const char *BUILD_ALL_PLATFORM_RES = "Main.Export.GameResForAllPlatforms";
-static constexpr const char *BUILD_ALL_PLATFORM_TEX = "Main.Export.TexPackForAllPlatforms";
-static constexpr const char *BUILD_ALL_PLATFORM = "Main.Export.AllForAllPlatforms";
+static constexpr const char *BUILD_ALL_PLATFORM_RES = "Main.Build.GameResForAllPlatforms";
+static constexpr const char *BUILD_ALL_PLATFORM_TEX = "Main.Build.TexPackForAllPlatforms";
+static constexpr const char *BUILD_ALL_PLATFORM = "Main.Build.AllForAllPlatforms";
 static constexpr const char *BUILD_CLEAR_CACHE_ALL = "Main.ClearCacheForAllPlatforms";
 
 static constexpr const char *OPTIONS_SET_ACT_RATE = "Main.Settings.WorkCycleActRate";

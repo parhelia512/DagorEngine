@@ -520,6 +520,7 @@ protected:
     void redo() override { objEd->renameObject(object, redoName, false); }
 
     size_t size() override { return sizeof(*this) + data_size(undoName) + data_size(redoName); }
+    UNDO_MERGE_SNAPSHOT_BY_TARGET(0xA265CAD2u, object.get()) // UndoObjectEditorRename
     void accepted() override {}
     void get_description(String &s) override { s = "UndoObjectEditorRename"; }
   };
@@ -557,6 +558,7 @@ public:
 
   // ControlEventHandler
   void onChange(int pcb_id, PropPanel::ContainerPropertyControl *panel) override;
+  void onChangeFinished(int pcb_id, PropPanel::ContainerPropertyControl *panel) override;
   void onClick(int pcb_id, PropPanel::ContainerPropertyControl *panel) override;
   void onPostEvent(int pcb_id, PropPanel::ContainerPropertyControl *panel) override;
 
@@ -583,7 +585,18 @@ protected:
 
   PropPanel::PanelWindowPropertyControl *propPanel;
 
+  // Control being edited while its undo operation is open. The flag is separate because every int is a
+  // valid control id, so none of them can stand for "no gesture".
+  bool editGestureOpen = false;
+  int editGesturePid = -1;
+  int editGestureDepth = 0;
+
   void getObjects();
+
+  // Both are safe to call when no gesture is open. endEditGesture() returns false when it left the
+  // gesture open because an operation opened inside it is not closed yet.
+  void beginEditGesture(int pcb_id);
+  bool endEditGesture();
 
   void onTransformChange(int pcb_id, PropPanel::ContainerPropertyControl *panel, int mode);
 

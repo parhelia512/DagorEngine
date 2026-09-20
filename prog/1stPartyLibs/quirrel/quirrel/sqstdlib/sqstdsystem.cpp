@@ -6,7 +6,7 @@
 #include <sqstdsystem.h>
 
 
-#if _TARGET_PC
+#if !SQ_SYSTEM_STUBS
 static SQInteger _system_getenv(HSQUIRRELVM v)
 {
     const char *s;
@@ -32,7 +32,7 @@ static SQInteger _system_setenv(HSQUIRRELVM v)
     const char *envname,*envval;
     sq_getstring(v,2,&envname);
     sq_getstring(v,3,&envval);
-    #if _TARGET_PC_WIN
+    #if defined(_MSC_VER)
     int res = _putenv_s(envname,envval);
     #else
     int res = setenv(envname,envval,1);
@@ -82,17 +82,17 @@ static SQInteger _system_rename(HSQUIRRELVM v)
 
 
 static const SQRegFunctionFromStr systemlib_funcs[] = {
-#if _TARGET_PC
-    { _system_getenv, "getenv(name: string): string|null",            "Returns the value of the environment variable or null" },
-    { _system_setenv, "setenv(name: string, value: string)",          "Sets the environment variable to the given value" },
-    { _system_system, "system(cmd: string): int",                     "Executes a shell command and returns its exit code" },
+#if !SQ_SYSTEM_STUBS
+    { _system_getenv, "getenv(name: string): string|null",            SQ_DOC("Returns the value of the environment variable or null") },
+    { _system_setenv, "setenv(name: string, value: string)",          SQ_DOC("Sets the environment variable to the given value") },
+    { _system_system, "system(cmd: string): int",                     SQ_DOC("Executes a shell command and returns its exit code") },
 #else
-    { _system_getenv_stub, "getenv(name: string): string|null",       "Stub: getenv() is not available on this platform" },
-    { _system_setenv_stub, "setenv(name: string, value: string)",     "Stub: setenv() is not available on this platform" },
-    { _system_system_stub, "system(cmd: string): int",                "Stub: system() is not available on this platform" },
+    { _system_getenv_stub, "getenv(name: string): string|null",       SQ_DOC("Stub: getenv() is not available on this platform") },
+    { _system_setenv_stub, "setenv(name: string, value: string)",     SQ_DOC("Stub: setenv() is not available on this platform") },
+    { _system_system_stub, "system(cmd: string): int",                SQ_DOC("Stub: system() is not available on this platform") },
 #endif
-    { _system_remove, "remove(path: string)",                         "Deletes the file at the given path, throws error in case of fail" },
-    { _system_rename, "rename(old: string, new: string)",             "Renames the file from old to new path, throws error in case of fail" },
+    { _system_remove, "remove(path: string)",                         SQ_DOC("Deletes the file at the given path, throws error in case of fail") },
+    { _system_rename, "rename(old: string, new: string)",             SQ_DOC("Renames the file from old to new path, throws error in case of fail") },
     { NULL, NULL, NULL }
 };
 

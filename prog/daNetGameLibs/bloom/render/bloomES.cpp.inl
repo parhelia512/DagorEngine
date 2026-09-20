@@ -13,6 +13,7 @@
 #include <render/renderer.h>
 
 #include <render/daFrameGraph/ecs/frameGraphNode.h>
+#include <render/daFrameGraph/singleShaders.h>
 #include <render/resourceSlot/registerAccess.h>
 #include <render/resourceSlot/ecs/nodeHandleWithSlotsAccess.h>
 #include <render/bloomCore/bloomCore.h>
@@ -75,10 +76,10 @@ static void init_bloom_es(const ecs::Event &evt,
 }
 
 ECS_TAG(render)
-ECS_ON_EVENT(OnLevelLoaded)
+ECS_ON_EVENT(EventRenderSceneLoaded)
 static void create_bloom_entity_es(const ecs::Event &, ecs::EntityManager &manager)
 {
-  if (!renderer_has_feature(FeatureRenderFlags::BLOOM))
+  if (!manager.getTemplateDB().getTemplateByName(ECS_HASHLEN("bloom")))
     return;
   manager.getOrCreateSingletonEntity(ECS_HASH("bloom"));
 }
@@ -132,6 +133,6 @@ static void init_bloom_nodes_es(const ecs::Event &, resource_slot::NodeHandleWit
 
       // @TODO: fix local tonemapping dependency on this node and disable it when bloom is not enabled
       //        now this node is the one that produces downsampled_color, which is the source for local tonemapping on low q
-      return [renderer = PostFxRenderer("frame_bloom_downsample")] { renderer.render(); };
+      dafg::postFx("frame_bloom_downsample", registry);
     });
 }

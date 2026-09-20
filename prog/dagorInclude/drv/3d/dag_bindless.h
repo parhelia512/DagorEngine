@@ -5,6 +5,7 @@
 #pragma once
 
 #include <drv/3d/dag_sampler.h>
+#include <drv/3d/dag_multi_interface.h>
 #include <generic/dag_span.h>
 #include <generic/dag_stridedSpan.h>
 
@@ -34,7 +35,7 @@ inline constexpr uint32_t MAX_RESOURCE_INDEX_COUNT = 1u << MAX_RESOURCE_INDEX_BI
 inline constexpr uint32_t RESOURCE_INDEX_MASK = MAX_RESOURCE_INDEX_COUNT - 1;
 } // namespace bindless
 
-namespace d3d
+namespace d3d _MULTI_INTERFACE
 {
 
 /**
@@ -170,7 +171,7 @@ uint32_t add_bindless_resource(D3DResourceType type, D3dResource *res);
 void add_bindless_resources(dag::StridedConstSpan<D3DResourceType> types, dag::StridedConstSpan<D3dResource *> resources,
   dag::StridedSpan<uint32_t> ids);
 
-} // namespace d3d
+} // namespace d3d _MULTI_INTERFACE
 
 #if _TARGET_D3D_MULTI
 #include <drv/3d/dag_interface_table.h>

@@ -11,6 +11,7 @@ namespace dedicated_matching
 void init();
 void update();
 void shutdown();
+void notify_network_is_up();
 
 int get_player_team(matching::UserId uid);
 int get_player_req_teams_num(matching::UserId uid);
@@ -22,6 +23,7 @@ const eastl::string &get_room_secret();
 void on_player_team_changed(matching::UserId user_id, int team);
 void player_kick_from_room(matching::UserId user_id);
 void ban_player_in_room(matching::UserId user_id);
+void leave_room();
 void on_level_loaded();
 int get_room_members_count();
 const char *get_player_custom_info(matching::UserId uid);

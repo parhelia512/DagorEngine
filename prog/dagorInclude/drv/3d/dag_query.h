@@ -4,9 +4,11 @@
 //
 #pragma once
 
+#include <drv/3d/dag_multi_interface.h>
+
 class D3dEventQuery;
 
-namespace d3d
+namespace d3d _MULTI_INTERFACE
 {
 
 /**
@@ -40,7 +42,7 @@ bool issue_event_query(EventQuery *query);
  * @return False if the query is issued but not yet signaled, true otherwise (signaled, not issued, or bad query).
  */
 bool get_event_query_status(EventQuery *query, bool force_flush);
-} // namespace d3d
+} // namespace d3d _MULTI_INTERFACE
 
 #if _TARGET_D3D_MULTI
 #include <drv/3d/dag_interface_table.h>

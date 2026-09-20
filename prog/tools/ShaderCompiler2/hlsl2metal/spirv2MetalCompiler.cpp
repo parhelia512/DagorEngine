@@ -346,11 +346,11 @@ CompileResult CompilerMSLlocal::convertToMSL(CompileResult &compile_result, east
   bool use_binary_msl)
 {
   int bufferRemap[drv3d_metal::BUFFER_POINT_COUNT];
-  int textureRemap[drv3d_metal::MAX_SHADER_TEXTURES * 2];
+  int textureRemap[drv3d_metal::MAX_STAGE_TEXTURES];
   int samplerRemap[drv3d_metal::MAX_SHADER_TEXTURES];
 
   std::fill(bufferRemap, bufferRemap + drv3d_metal::BUFFER_POINT_COUNT, drv3d_metal::EncodedBufferRemap{}.value);
-  std::fill(textureRemap, textureRemap + drv3d_metal::MAX_SHADER_TEXTURES * 2, -1);
+  std::fill(textureRemap, textureRemap + drv3d_metal::MAX_STAGE_TEXTURES, -1);
   std::fill(samplerRemap, samplerRemap + drv3d_metal::MAX_SHADER_TEXTURES, -1);
 
   bool has_raytracing = false;

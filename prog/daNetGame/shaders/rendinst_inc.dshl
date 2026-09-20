@@ -378,6 +378,7 @@ float4 cliff_color_overlay_map_left_top_right_bottom = (-2048, 2048, 2048, -2048
 
 macro RENDINST_SCENE_COMMON()
   supports global_frame;
+  GLOBAL_CONSTS(vs)
 
   if (small_sampled_buffers == no)
   {
@@ -489,10 +490,17 @@ macro ENABLE_MULTI_DRAW(use_drawid_vs_only)
       #define INIT_PS_INPUT(vsoutput) vsoutput.drawId = instance_offset_id
 ##endif
 
-      #define INIT_MULTIDRAW(vsoutput)\
-        instance_id -= instance_offset_id;\
-        g_instance_offset_id = instance_offset_id;\
-        INIT_PS_INPUT(vsoutput)
+      #if WAVE_INTRINSICS
+        #define INIT_MULTIDRAW(vsoutput)\
+          g_instance_offset_id = WaveReadFirstLane(instance_offset_id);\
+          instance_id -= g_instance_offset_id;\
+          INIT_PS_INPUT(vsoutput)
+      #else
+        #define INIT_MULTIDRAW(vsoutput)\
+          g_instance_offset_id = instance_offset_id;\
+          instance_id -= g_instance_offset_id;\
+          INIT_PS_INPUT(vsoutput)
+      #endif
 
       // the draw_id value passed through a global static variable, since ShaderCompiler's spirv backend
       // doesn't let to define a macro with brackets, but without parameters
@@ -502,7 +510,11 @@ macro ENABLE_MULTI_DRAW(use_drawid_vs_only)
 
     hlsl(ps) {
       #define INIT_MULTIDRAW(vsoutput)
-      #define GET_MATERIAL_OFFSET(psinput) (psinput.drawId & MATERIAL_OFFSET_MASK)
+      #if WAVE_INTRINSICS
+        #define GET_MATERIAL_OFFSET(psinput) (WaveReadFirstLane(psinput.drawId) & MATERIAL_OFFSET_MASK)
+      #else
+        #define GET_MATERIAL_OFFSET(psinput) (psinput.drawId & MATERIAL_OFFSET_MASK)
+      #endif
     }
   }
   else if (hardware.ps4 || hardware.ps5)

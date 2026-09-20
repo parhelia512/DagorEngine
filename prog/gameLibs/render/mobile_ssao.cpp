@@ -76,7 +76,7 @@ MobileSSAORenderer::~MobileSSAORenderer()
 void MobileSSAORenderer::renderSSAO(BaseTexture * /*depth_to_use*/)
 {
   d3d::set_render_target({}, DepthAccess::RW, {{ssaoTex[renderId].getTex2D(), 0, 0}});
-  d3d::clearview(CLEAR_DISCARD, 0xFFFFFFFF, 1.0, 0);
+  d3d::clearview(DISCARD_ALL, 0xFFFFFFFF, 1.0, 0);
   aoRenderer->render();
 }
 
@@ -89,7 +89,7 @@ void MobileSSAORenderer::applyBlur()
   ssaoBlurRenderer->getMat()->set_color4_param(ssao_texel_offsetVarId, texelOffset);
 
   d3d::set_render_target({}, DepthAccess::RW, {{ssaoTex[blurId].getTex2D(), 0, 0}});
-  d3d::clearview(CLEAR_DISCARD, 0, 0, 0);
+  d3d::clearview(DISCARD_ALL, 0, 0, 0);
 
   ShaderGlobal::set_texture(ssao_texVarId, ssaoTex[renderId]);
   ssaoBlurRenderer->render();

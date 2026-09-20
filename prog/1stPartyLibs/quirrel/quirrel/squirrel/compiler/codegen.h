@@ -79,9 +79,10 @@ private:
     void generateTableExpr(TableExpr *tableExpr);
 
     SQTable* GetScopedConstsTable();
-    void SaveDocstringToVM(void *key, const DocObject &docObject);
+    SQDocStringId AddDocString(Node *owner, const DocObject &docObject);
 
     void emitUnaryOp(SQOpcode op, UnExpr *arg);
+    void emitSpreadInto(Expr *spread, SQUnsignedInteger elementsAfterSpread);
     void emitAwait(UnExpr *arg);
     void emitDelete(UnExpr *argument);
     void emitSimpleBinaryOp(SQOpcode op, Expr *lhs, Expr *rhs, SQInteger op3 = 0);
@@ -128,7 +129,7 @@ private:
     bool visitForValueMaybeStaticMemo(Node *n);
 
     void selectConstant(SQInteger target, const SQObjectPtr &constant);
-    void addPatchDocObjectInstruction(const DocObject &docObject);
+    void addSetClassDocStringInstruction(Node *owner, const DocObject &docObject);
 
     unsigned inferExprTypeMask(Expr *expr);
     unsigned inferExprTypeMaskImpl(Expr *expr);

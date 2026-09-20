@@ -133,7 +133,7 @@ static void shuffled_morton_sort(ProcessedPointCloudLods &point_cloud_lods)
     int groupBegin = 0;
     for (auto &group : groups)
     {
-      for (const auto v : group)
+      for (const auto &v : group)
         point_cloud_lods.cloud.points[lodStart + groupBegin] = v;
 
       groupBegin += group.size();
@@ -305,7 +305,7 @@ void PointCloudGenerator::exportToDag(const char *path, dag::ConstSpan<Processed
     pointCloud.material.resize(cloudElem.cloud.points.front().material.size());
     for (size_t channel = 0; channel < pointCloud.material.size(); ++channel)
       pointCloud.material[channel].reserve(pointCount);
-    for (const auto point : cloudElem.cloud.points)
+    for (const auto &point : cloudElem.cloud.points)
     {
       pointCloud.positions.push_back(point.position);
       pointCloud.normals.push_back(-point.norm);
@@ -587,7 +587,6 @@ ProcessedPointCloud PointCloudGenerator::collectMaterial(const ShaderMesh &mesh,
 RawPointCloudLods PointCloudGenerator::generatePointCloudFromMesh(const ShaderMesh &mesh, const BBox3 &bbox, int elem_idx,
   int mesh_face_count, int total_count)
 {
-  Tab<GlobalVertexData *> vertexData;
   RawPointCloudLods cloudLods{};
   float initDensity = 0.f;
   auto samples = samplePointsOnMesh(mesh, bbox, elem_idx, mesh_face_count, total_count, initDensity);

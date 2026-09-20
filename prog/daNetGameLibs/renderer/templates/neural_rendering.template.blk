@@ -1,0 +1,19 @@
+neural_rendering{
+  _singleton:b=yes
+  _tags:t="render"
+  "neural_rendering__tonemap_node:dafg::NodeHandle"{}
+  "neural_rendering__dlss_nr_node:dafg::NodeHandle"{}
+  "neural_rendering__inverse_tonemap_node:dafg::NodeHandle"{}
+  _group{
+    _track:b=yes
+    // Pick a style first with everything else at 1, then tune tone, then structure.
+    neural_rendering__style:i=0
+    neural_rendering__preset:t="default" // "default", or "a".."g" to pin a fixed model
+    neural_rendering__intensity:r=1
+    neural_rendering__localToneStrength:r=1
+    neural_rendering__localStructureStrength:r=1
+    // Auto masking lets skinStructureStrength apply to skin regions on its own.
+    neural_rendering__autoMask:b=no
+    neural_rendering__skinStructureStrength:r=1
+  }
+}

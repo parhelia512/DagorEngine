@@ -518,8 +518,8 @@ void LandClassSlotsManager::onLandRegionChanged(int x0, int y0, int x1, int y1, 
 
           tile.beginGenerate(tile.TILED);
           objgenerator::generateTiledEntitiesInMaskedRect(*rec[c]->landClass->tiled, tiledByLandclassSubTypeId,
-            LayerHiddenMask::BIT_COUNT - 2, HmapLandPlugin::self, tile.pool[tile.TILED], bmps[c], world2grid, tx * box_sz, ty * box_sz,
-            box_sz, box_sz, world0x, world0y, rendInst_atype);
+            IObjEntity::LAYER_INDEX_LANDCLASS, HmapLandPlugin::self, tile.pool[tile.TILED], bmps[c], world2grid, tx * box_sz,
+            ty * box_sz, box_sz, box_sz, world0x, world0y, rendInst_atype);
           tile.endGenerate(tile.TILED);
         }
 
@@ -533,7 +533,7 @@ void LandClassSlotsManager::onLandRegionChanged(int x0, int y0, int x1, int y1, 
 
           tile.beginGenerate(tile.PLANTED);
           objgenerator::generatePlantedEntitiesInMaskedRect(*rec[c]->landClass->planted, tiledByLandclassSubTypeId,
-            LayerHiddenMask::BIT_COUNT - 2, HmapLandPlugin::self, tile.pool[tile.PLANTED], bmps[c], world2grid, tx * box_sz,
+            IObjEntity::LAYER_INDEX_LANDCLASS, HmapLandPlugin::self, tile.pool[tile.PLANTED], bmps[c], world2grid, tx * box_sz,
             ty * box_sz, box_sz, box_sz, world0x, world0y, 0, rendInst_atype);
           tile.endGenerate(tile.PLANTED);
         }

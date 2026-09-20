@@ -2,8 +2,10 @@ include "shader_global.dshl"
 include "dynamic_simple_inc.dshl"
 texture perlin_noise3d;
 include "soldier/cloth.dshl"
+include "init_projective_wounds.dshl"
 include "wounds_funcs.dshl"
 include_optional "trace_inline_ps5.dshl"
+include_optional "bvh_vertex_modifier.dshl"
 
 int bvh_process_skinned_vertices_is_building_prototype;
 buffer bvh_process_skinned_vertices_params_buf;
@@ -13,7 +15,15 @@ int bvh_process_skinned_vertices_output_uav_no = 0;
 int bvh_process_skinned_vertices_cloth = 0;
 interval bvh_process_skinned_vertices_cloth: no < 1, yes;
 
+int bvh_process_skinned_vertices_morph = 0;
+interval bvh_process_skinned_vertices_morph: no < 1, yes;
+
 define_macro_if_not_defined INIT_PS5_INLINE_RT(stage)
+endmacro
+define_macro_if_not_defined USE_BVH_VERTEX_MODIFIER(code)
+  hlsl(code) {
+    void apply_bvh_vertex_modifiers(ByteAddressBuffer source, int vertex_start, inout float3 pos) {}
+  }
 endmacro
 buffer bvh_instance_data_buffer;
 
@@ -34,6 +44,7 @@ shader bvh_process_skinned_vertices_batched
     #define INST_OFFSET_GETTER params.instance_offset
     #define OFFSET_TO_NODE_DATA(rigid_index) params.instance_offset
     #define OFFSET_TO_INSTANCE_DATA ((int)(params.instance_offset + loadBuffer(instance_data_buffer, params.instance_offset + 8).y))
+    #define NODE_CHUNK_SIZE_GETTER 0
   }
   (cs) {
     params_buf@buf = bvh_process_skinned_vertices_params_buf hlsl {
@@ -44,6 +55,7 @@ shader bvh_process_skinned_vertices_batched
     output@uav : register(bvh_process_skinned_vertices_output_uav_no) hlsl { RWByteAddressBuffer output@uav; };
     bvh_process_skinned_vertices_is_building_prototype@i1 = bvh_process_skinned_vertices_is_building_prototype
     wounds_time@f1 = time_phase(0, 0);
+    wound_hole_cut_radius@f1 = wound_hole_cut_radius;
 
   }
 
@@ -148,6 +160,11 @@ shader bvh_process_skinned_vertices_batched
     }
   }
 
+  if (bvh_process_skinned_vertices_morph == yes)
+  {
+    USE_BVH_VERTEX_MODIFIER(cs)
+  }
+
   USE_TORN_WOUND_LOADER(cs)
   USE_ANIMATED_HOLE_RADIUS(cs)
   USE_WOUND_VERTEX_DEFORM(cs)
@@ -195,6 +212,10 @@ shader bvh_process_skinned_vertices_batched
         input.pos = asfloat(packedPos);
       }
 
+      ##if bvh_process_skinned_vertices_morph == yes
+        apply_bvh_vertex_modifiers(source, vertexStart, input.pos);
+      ##endif
+
       // Skinning part
 
 
@@ -218,7 +239,7 @@ shader bvh_process_skinned_vertices_batched
       BRANCH
       if (!bvh_process_skinned_vertices_is_building_prototype)
       {
-        if (apply_wound_vertex_deform(wounds_time, input.normal.xyz, input.pos, input.boneWeights))
+        if (apply_wound_vertex_deform(wounds_time, wound_hole_cut_radius, input.normal.xyz, input.pos, input.boneWeights))
           input.pos.xyz = NaN;
       }
       float3 localDu = float3(1, 0, 0), localDv = float3(1, 0, 0); // Dummy

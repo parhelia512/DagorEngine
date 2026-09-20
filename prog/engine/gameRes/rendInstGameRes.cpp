@@ -175,7 +175,7 @@ public:
       dagor_set_sm_tex_load_ctx_name(name);
     textag_mark_begin(TEXTAG_RENDINST);
     int flags = SRLOAD_SRC_ONLY;
-    RPtr srcRes = RenderableInstanceLodsResource::loadResource(cb, flags, name, gameres_rendinst_desc.getBlockByName(name));
+    RPtr srcRes = RenderableInstanceLodsResource::loadResource(cb, flags, name, gameres_find_ri_desc_block(name));
     if (srcRes)
       riUnitedVdata.addRes(srcRes);
     textag_mark_end();
@@ -283,8 +283,8 @@ static void batch_reload_res(void *)
     COPY_STAT(reloadDataCount);
 #undef COPY_STAT
     String status_str(framemem_ptr());
-    riUnitedVdata.buildStatusStr(status_str, false);
-    debug("unitedVdata<%s>: reloaded %u models (%uK for %u msec) during last %u msec [total reloaded %uK of %u models]\n\n%s\n",
+    riUnitedVdata.buildStatusStrThrottled(status_str, 30 * 1000000);
+    debug("unitedVdata<%s>: reloaded %u models (%uK for %u msec) during last %u msec [total reloaded %uK of %u models]%s",
       RenderableInstanceLodsResource::getStaticClassName(), diff_mls.reloadDataCount, diff_mls.reloadDataSizeKb,
       diff_mls.reloadTimeMsec, profile_time_usec(last_reported_mls_reft) / 1000, last_reported_mls.reloadDataSizeKb,
       last_reported_mls.reloadDataCount, status_str);

@@ -7,6 +7,8 @@ hlsl(cs) {
   #define NRD_MODE   RADIANCE
   #define NRD_INTERNAL
   #define MODE_5X5 0
+
+  float4 cbuf0Sentinel: register(c54);
 }
 
 shader nrd_reblur_specular_prepass

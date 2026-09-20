@@ -42,13 +42,12 @@ eastl::optional<ShaderStage> parse_state_block_stage(const char *stage_str);
 #define PRESHADER_VARIABLE_TYPE_LIST_UINT()  TYPE(u1) TYPE(u2) TYPE(u3) TYPE(u4)
 #define PRESHADER_VARIABLE_TYPE_LIST_BUF()   TYPE(buf) TYPE(cbuf)
 #define PRESHADER_VARIABLE_TYPE_LIST_TEX()   TYPE(tex) TYPE(tex2d) TYPE(tex3d) TYPE(texArray) TYPE(texCube) TYPE(texCubeArray)
-#define PRESHADER_VARIABLE_TYPE_LIST_SMP() \
-  TYPE(smp) TYPE(smp2d) TYPE(smp3d) TYPE(smpArray) TYPE(smpCube) TYPE(smpCubeArray) TYPE(sampler) TYPE(cmpSampler)
+#define PRESHADER_VARIABLE_TYPE_LIST_SMP()   TYPE(smp2d) TYPE(smp3d) TYPE(smpArray) TYPE(sampler) TYPE(cmpSampler)
 #define PRESHADER_VARIABLE_TYPE_LIST_STATIC_SMP() \
   TYPE(staticSmp) TYPE(staticSmpCube) TYPE(staticSmpArray) TYPE(staticSmp3D) TYPE(staticSmpCubeArray)
 #define PRESHADER_VARIABLE_TYPE_LIST_STATIC_TEX() \
   TYPE(staticTex) TYPE(staticTexCube) TYPE(staticTexArray) TYPE(staticTex3D) TYPE(staticTexCubeArray)
-#define PRESHADER_VARIABLE_TYPE_LIST_OTHER() TYPE(shd) TYPE(shdArray) TYPE(uav) TYPE(tlas)
+#define PRESHADER_VARIABLE_TYPE_LIST_OTHER() TYPE(uav) TYPE(tlas)
 #define PRESHADER_VARIABLE_TYPE_LIST_BINDLESS() \
   TYPE(bindlessTex2D)                           \
   TYPE(bindlessTex3D)                           \
@@ -452,7 +451,6 @@ struct NamedConstDefInfo
 
   sampler_decl *pairSamplerTmpDecl = nullptr;
   String pairSamplerName{};
-  const char *pairSamplerBindSuffix = nullptr;
 
   Symbol *exprWithDynamicAndMaterialTerms = nullptr;
 
@@ -461,7 +459,6 @@ struct NamedConstDefInfo
   bool isDynamic : 1 = false;
   bool isArray : 1 = false;
   bool pairSamplerIsGlobal : 1 = false;
-  bool pairSamplerIsShadow : 1 = false;
   bool hasDynStcodeRelyingOnMaterialParams : 1 = false;
 
   bool isStaticBindless() const { return bindlessMode == BindlessMode::StaticImplicit; }

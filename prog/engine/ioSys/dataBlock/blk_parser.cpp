@@ -68,6 +68,7 @@ public:
   Tab<int> includeStackPrevCurLine;
   DataBlock *blkRef = nullptr;
   bool robustParsing;
+  bool forbidIncludes;
   bool wasNewlineAfterStatement = false;
   int lastStatement = -1; // -1=none, 0=param, 1=block
   struct PendingComment
@@ -78,7 +79,7 @@ public:
   Tab<PendingComment> pendCmnt;
   DataBlock::IFileNotify *fnotify;
 
-  DataBlockParser(Tab<char> &buf, const char *fn, bool robust_parsing, DataBlock::IFileNotify *fnot) :
+  DataBlockParser(Tab<char> &buf, const char *fn, bool robust_parsing, bool forbid_includes, DataBlock::IFileNotify *fnot) :
     buffer(buf),
     text(&buf[0]),
     curp(&buf[0]),
@@ -88,6 +89,7 @@ public:
     includeStack(tmpmem),
     curLineP(curp),
     robustParsing(robust_parsing),
+    forbidIncludes(forbid_includes),
     fnotify(fnot)
   {
     for (char *c = buf.data(); c < textend; ++c)
@@ -1450,6 +1452,10 @@ bool DataBlockParser::parse(DataBlock &blk, bool isTop)
     }
     else if (dd_stricmp(name, "include") == 0)
     {
+      if (forbidIncludes)
+      {
+        SYNTAX_ERROR("include is not allowed");
+      }
       // We have to cache 'filename' here because 'getValue()' might incorrectly change it
       // in case when this include is last one in file (which breaks relative pathes)
       String cachedFileName(fileName);
@@ -1561,7 +1567,8 @@ bool DataBlockParser::parse(DataBlock &blk, bool isTop)
 }
 
 
-static bool parse_from_text(DataBlock &blk, Tab<char> &text, const char *filename, bool robust_load, DataBlock::IFileNotify *fnotify)
+static bool parse_from_text(DataBlock &blk, Tab<char> &text, const char *filename, bool robust_load, bool forbid_includes,
+  DataBlock::IFileNotify *fnotify)
 {
   char *end = text.size() ? (char *)memchr(text.data(), 0, text.size()) : (char *)NULL;
   if (end)
@@ -1570,7 +1577,7 @@ static bool parse_from_text(DataBlock &blk, Tab<char> &text, const char *filenam
   if (text.size() >= 3 && memcmp(text.data(), "\xEF\xBB\xBF", 3) == 0)
     memcpy(text.data(), "   ", 3);
 
-  DataBlockParser parser(text, filename, robust_load, fnotify);
+  DataBlockParser parser(text, filename, robust_load, forbid_includes, fnotify);
   return parser.parse(blk, true);
 }
 
@@ -1608,7 +1615,7 @@ bool DataBlock::loadText(const char *text, int len, const char *filename, DataBl
 #endif
   }
 
-  bool ret = parse_from_text(*this, buf, filename, shared->blkRobustLoad(), fnotify);
+  bool ret = parse_from_text(*this, buf, filename, shared->blkRobustLoad(), shared->blkNoIncludes(), fnotify);
   shared->setBlkValid(ret);
   return ret;
 }
@@ -1839,7 +1846,7 @@ bool DataBlock::loadFromStream(IGenLoad &crd, const char *fname, DataBlock::IFil
 #endif
         }
 
-        bool ret = parse_from_text(*this, text, fname, shared->blkRobustLoad(), fnotify);
+        bool ret = parse_from_text(*this, text, fname, shared->blkRobustLoad(), shared->blkNoIncludes(), fnotify);
         shared->setBlkValid(ret);
         return ret;
       }

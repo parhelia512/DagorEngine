@@ -62,8 +62,6 @@ struct DynamicDetailsTextureManager
     a##TexId = ::add_managed_array_texture(#a, make_span((const char **)b.data(), b.size())); \
     int a##VarId = ::get_shader_variable_id(#a);                                              \
     ShaderGlobal::set_texture(a##VarId, a##TexId);                                            \
-    int a##_samplerstateVarId = ::get_shader_variable_id(#a "_samplerstate");                 \
-    ShaderGlobal::set_sampler(a##_samplerstateVarId, d3d::request_sampler({}));               \
   }
     TEXTURE_LIST
 #undef VAR
@@ -334,7 +332,7 @@ void dynamic_details_es_event_handler(const ecs::Event &,
 }
 
 
-static void dynamic_detials_after_reset_es(const AfterDeviceReset &, DynamicDetailsTextureManager &dynamic_details_mgr)
+static void dynamic_detials_after_reset_es(const EventAfterDeviceReset &, DynamicDetailsTextureManager &dynamic_details_mgr)
 {
   dynamic_details_mgr.afterReset();
 }

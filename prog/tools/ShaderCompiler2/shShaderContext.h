@@ -118,7 +118,7 @@ public:
     // compile(STAGE_VS + 2, "as");
   }
 
-  bool immediateCbSlotRequired() const { return IMMEDIATE_CB_REGISTER >= 0 && mImmediateCbSlotRequired; }
+  bool immediateCbSlotRequired() const { return IMMEDIATE_CB_REGISTER >= 0 && mImmediateCbSlotRequired; } //-V560 -1 on some targets
   void reportImmediateCbSlotRequired() { mImmediateCbSlotRequired = true; }
 
   VariantContext makeVariantContext(ShaderVariant::VariantInfo variant, ShaderSemCode &target_code,

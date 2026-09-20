@@ -14,6 +14,7 @@
 #include <ioSys/dag_dataBlock.h>
 #include <libTools/util/strUtil.h>
 #include <math/dag_e3dColor.h>
+#include <memory/dag_mem.h>
 #include <osApiWrappers/dag_direct.h>
 #include <propPanel/control/container.h>
 #include <util/dag_simpleString.h>
@@ -21,9 +22,12 @@
 #include <winGuiWrapper/wgw_dialogs.h>
 
 #include "properties_panel.h"
+#include "curve_preview_control.h"
+#include "graph_curve_value.h"
+#include "graph_document.h"
+#include "graph_gradient_value.h"
 #include "graph_panel.h"
 #include "plugin.h"
-#include "graph_undo.h"
 #include "pluginService/graph_tex_gen_service.h"
 
 namespace
@@ -46,15 +50,14 @@ enum
   PID_NODE_ID = 13101,
   PID_NODE_PLUGIN = 13102,
 
+  // A block of PIDs per property, so a type can add sub-controls without colliding with the next.
   PID_NODE_PROP_BASE = 13200,
+  PID_NODE_PROP_STRIDE = 8,
+  PROP_SLOT_AUX = 1,
 };
 
-// Fallbacks for the heightmap fields when the loaded graph has no heightmap metadata.
-// Mirrors the defaults the standalone graphEditor app reads from landSettings (app.cpp:3074-3077)
-// so the user always sees an editable value rather than FLT_MAX.
-constexpr float DEFAULT_HEIGHT_SCALE = 2000.0f;
-constexpr float DEFAULT_HEIGHT_MIN = -0.05f;
-constexpr float DEFAULT_CELL_SIZE = 4.0f;
+// The block base of the property a control belongs to. Only valid for pid >= PID_NODE_PROP_BASE.
+int prop_pid_base(int pid) { return PID_NODE_PROP_BASE + ((pid - PID_NODE_PROP_BASE) / PID_NODE_PROP_STRIDE) * PID_NODE_PROP_STRIDE; }
 
 constexpr int HEIGHT_FLOAT_PREC = 4;
 
@@ -68,8 +71,6 @@ bool parse_bool(const char *s)
 }
 
 const char *value_or(const eastl::string &s, const char *fallback) { return s.empty() ? fallback : s.c_str(); }
-
-float effective_height(float v, float fallback) { return v == FLT_MAX ? fallback : v; }
 
 // True (and out_rel set to the app-relative form) if `text` resolves to a location inside the
 // application directory. The graph .blk stores these dirs app-relative, so anything that escapes
@@ -148,20 +149,6 @@ String relativize_under(const char *base, const char *text)
   return rel.empty() ? String(text) : rel;
 }
 
-// Look up a node property value by name. Returns nullptr when the value isn't set yet
-// (caller should fall back to the descriptor default).
-const eastl::string *find_property_value(const GraphData::Node &n, const char *prop_name)
-{
-  for (const auto &pv : n.propertyValues)
-  {
-    if (pv.first == prop_name)
-    {
-      return &pv.second;
-    }
-  }
-  return nullptr;
-}
-
 // Parse "r,g,b" or "r,g,b,a" with components in [0,1] into an E3DCOLOR. Defaults to opaque
 // black on parse failure -- matches the createColorBox documented default.
 E3DCOLOR parse_color(const char *s)
@@ -181,10 +168,52 @@ E3DCOLOR parse_color(const char *s)
     (unsigned char)(clamp01(b) * 255.f + 0.5f), (unsigned char)(clamp01(a) * 255.f + 0.5f));
 }
 
-bool is_readonly_complex_type(const char *t)
+E3DCOLOR gradient_stop_color(const GradientStop &s)
 {
-  return !strcmp(t, "gradient_editor") || !strcmp(t, "monotonic_curve") || !strcmp(t, "linear_curve") || !strcmp(t, "polynom_curve") ||
-         !strcmp(t, "steps_curve") || !strcmp(t, "gradient_preview");
+  return E3DCOLOR_MAKE(gradient_color_byte(s.r), gradient_color_byte(s.g), gradient_color_byte(s.b), gradient_color_byte(s.a));
+}
+
+void gradient_stops_to_keys(const eastl::vector<GradientStop> &stops, PropPanel::Gradient &out_keys)
+{
+  clear_and_shrink(out_keys);
+  for (const GradientStop &s : stops)
+  {
+    out_keys.push_back(PropPanel::GradientKey(s.t, gradient_stop_color(s)));
+  }
+}
+
+void gradient_keys_to_stops(const PropPanel::Gradient &keys, eastl::vector<GradientStop> &out_stops)
+{
+  out_stops.clear();
+  out_stops.reserve(keys.size());
+  for (int i = 0; i < keys.size(); ++i)
+  {
+    GradientStop s;
+    s.t = keys[i].position;
+    s.r = keys[i].color.r / 255.f;
+    s.g = keys[i].color.g / 255.f;
+    s.b = keys[i].color.b / 255.f;
+    s.a = keys[i].color.a / 255.f;
+    out_stops.push_back(s);
+  }
+}
+
+// The descriptor's `style` names the stroke colour the JS editor draws the curve with.
+E3DCOLOR curve_style_color(const char *style)
+{
+  if (!strcmp(style, "red"))
+  {
+    return E3DCOLOR(255, 80, 80);
+  }
+  if (!strcmp(style, "green"))
+  {
+    return E3DCOLOR(80, 255, 80);
+  }
+  if (!strcmp(style, "blue"))
+  {
+    return E3DCOLOR(80, 160, 255);
+  }
+  return E3DCOLOR(200, 200, 200);
 }
 
 template <size_t N>
@@ -210,12 +239,17 @@ int build_combo_items(Tab<String> &out_items, const char *current, const char *c
 }
 } // namespace
 
-PropertiesPanel::PropertiesPanel(GraphEditorPlg &plg) : plugin(plg)
+PropertiesPanel::PropertiesPanel(GraphEditorPlg &plg, GraphDocument &document) : plugin(plg), doc(document)
 {
   panelWindow = IEditorCoreEngine::get()->createPropPanel(this, "Properties");
 }
 
 PropertiesPanel::~PropertiesPanel() { IEditorCoreEngine::get()->deleteCustomPanel(panelWindow); }
+
+bool PropertiesPanel::shouldWarnOnce(int node_id, const char *prop_name)
+{
+  return warnedProperties.insert(eastl::string(String(0, "%d:%s", node_id, prop_name))).second;
+}
 
 const GraphData::Node *PropertiesPanel::findNodeById(int id) const
 {
@@ -223,36 +257,7 @@ const GraphData::Node *PropertiesPanel::findNodeById(int id) const
   {
     return nullptr;
   }
-  const GraphData &gd = plugin.getGraphData();
-  for (const auto &n : gd.nodes)
-  {
-    if (n.id == id)
-    {
-      return &n;
-    }
-  }
-  return nullptr;
-}
-
-const DataBlock *PropertiesPanel::findPropertyDesc(const DataBlock *node_desc, const char *prop_name) const
-{
-  if (!node_desc || !prop_name)
-  {
-    return nullptr;
-  }
-  for (uint32_t i = 0; i < node_desc->blockCount(); ++i)
-  {
-    const DataBlock *child = node_desc->getBlock(i);
-    if (strcmp(child->getBlockName(), "property") != 0)
-    {
-      continue;
-    }
-    if (strcmp(child->getStr("name", ""), prop_name) == 0)
-    {
-      return child;
-    }
-  }
-  return nullptr;
+  return find_node_by_id(doc.getGraphData(), id);
 }
 
 void PropertiesPanel::updateImgui()
@@ -279,7 +284,7 @@ void PropertiesPanel::updateImgui()
   }
 
   // Cheap path: nothing relevant has changed -> just pump the panel and return.
-  const GraphData &gd = plugin.getGraphData();
+  const GraphData &gd = doc.getGraphData();
   const eastl::string &curSourcePath = gd.sourcePath;
   const bool sourcePathChanged = (curSourcePath != lastRenderedSourcePath);
 
@@ -304,6 +309,11 @@ void PropertiesPanel::updateImgui()
 
     panelWindow->clear();
     pidToPropertyName.clear();
+    curvePreviews.clear();
+    if (sourcePathChanged) // node ids restart per graph, so a stale key would mute a real warning
+    {
+      warnedProperties.clear();
+    }
 
     if (targetMode == Mode::Node)
     {
@@ -329,7 +339,7 @@ void PropertiesPanel::rebuildForGraph()
     return;
   }
 
-  const GraphData &gd = plugin.getGraphData();
+  const GraphData &gd = doc.getGraphData();
 
   const char *appDir = DAGORED2->getWorkspace().getAppDir();
   panelWindow->createFileEditBox(PID_GRAPH_RENDER_DIR, "Render dir", gd.renderDir.c_str());
@@ -414,7 +424,7 @@ void PropertiesPanel::rebuildForNode(int node_id)
 
   panelWindow->createSeparator();
 
-  int pid = PID_NODE_PROP_BASE;
+  int propIndex = 0;
   for (uint32_t i = 0; i < nodeDesc->blockCount(); ++i)
   {
     const DataBlock *propDesc = nodeDesc->getBlock(i);
@@ -441,6 +451,7 @@ void PropertiesPanel::rebuildForNode(int node_id)
       valStr = param_as_string(propDesc, "val");
     }
 
+    const int pid = PID_NODE_PROP_BASE + propIndex * PID_NODE_PROP_STRIDE;
     pidToPropertyName.emplace(pid, eastl::string(propName));
 
     if (!strcmp(propType, "string"))
@@ -529,7 +540,7 @@ void PropertiesPanel::rebuildForNode(int node_id)
     {
       // File picker based at the property's root (see filepath_base). Outputs (renderDir/entityDir)
       // use a save dialog, inputs/absolute an open dialog; an optional `mask` sets the file filter.
-      const String base = filepath_base(propDesc, plugin.getGraphData());
+      const String base = filepath_base(propDesc, doc.getGraphData());
       const char *root = propDesc->getStr("root", "app");
       const bool isOutput = !strcmp(root, "renderDir") || !strcmp(root, "entityDir");
       panelWindow->createFileEditBox(pid, propName, valStr.c_str());
@@ -546,12 +557,91 @@ void PropertiesPanel::rebuildForNode(int node_id)
         panelWindow->setStrings(pid, masks);
       }
     }
-    else if (is_readonly_complex_type(propType))
+    else if (!strcmp(propType, "gradient_editor"))
     {
-      // V1: read-only display. Editing happens in the legacy JS editor.
-      String label(0, "%s: %s", propName, valStr.empty() ? "<unset>" : valStr.c_str());
-      panelWindow->createStatic(pid, label);
-      panelWindow->createStatic(pid + 50000, "  (edit in JS editor)");
+      eastl::vector<GradientStop> stops;
+      bool nearest = false;
+      const int strayFloats = parse_gradient(valStr.c_str(), stops, nearest);
+      const int storedStops = static_cast<int>(stops.size());
+      if (strayFloats > 0 && shouldWarnOnce(n->id, propName))
+      {
+        DAEDITOR3.conWarning("GraphEditor: node %d property '%s' ends with %d float(s) that do not make a stop, ignored", n->id,
+          propName, strayFloats);
+      }
+      normalize_gradient_for_editing(stops);
+
+      if (can_edit_gradient(stops))
+      {
+        PropPanel::Gradient keys(tmpmem);
+        gradient_stops_to_keys(stops, keys);
+        panelWindow->createGradientBox(pid, propName);
+        // Bounds interactive adds, so the value can never grow past what fillGradientTexture takes.
+        if (PropPanel::PropertyControlBase *ctrl = panelWindow->getById(pid))
+        {
+          ctrl->setGradientMinMaxPointCount(2, GRADIENT_MAX_STOPS);
+        }
+        panelWindow->setGradient(pid, &keys);
+        panelWindow->setTooltipId(pid, "Double-click adds a key, right-click removes one, click picks its color, Ctrl+C / Ctrl+V "
+                                       "copy and paste.\nThe strip previews RGB only: alpha and 'nearest' are not drawn.");
+        panelWindow->createCheckBox(pid + PROP_SLOT_AUX, "nearest (no interpolation)", nearest);
+      }
+      else
+      {
+        // Editing would drop keys and the generator refuses the value anyway, so show it as it is.
+        panelWindow->createStatic(pid, String(0, "%s: %s", propName, valStr.c_str()));
+        panelWindow->createStatic(pid + PROP_SLOT_AUX, String(0, "  (%d stops, too many to edit here)", storedStops));
+      }
+    }
+    else if (CurveKind curveKind; curve_kind_for_prop_type(propType, curveKind))
+    {
+      eastl::vector<Point2> points;
+      CurveParse parsed = parse_curve_points(valStr.c_str(), points);
+      if (parsed == CurveParse::Empty)
+      {
+        parsed = parse_curve_points(param_as_string(propDesc, "val").c_str(), points);
+      }
+
+      if (parsed != CurveParse::Ok)
+      {
+        // The points are what this editor edits: guessing them would overwrite the curve on the
+        // first click.
+        if (shouldWarnOnce(n->id, propName))
+        {
+          DAEDITOR3.conWarning("GraphEditor: node %d property '%s' has no usable /*...*/ point list, shown read-only", n->id,
+            propName);
+        }
+        panelWindow->createStatic(pid, String(0, "%s: %s", propName, valStr.c_str()));
+        panelWindow->createStatic(pid + PROP_SLOT_AUX, "  (no control points to edit)");
+      }
+      else
+      {
+        Tab<Point2> controlPoints(tmpmem);
+        for (const Point2 &pt : points)
+        {
+          controlPoints.push_back(pt);
+        }
+
+        panelWindow->createCurveEdit(pid, propName);
+        // setInt creates the approximator; every call below it is a no-op before that. The control
+        // has no steps and no monotone mode, so all four kinds show their control polygon.
+        panelWindow->setInt(pid, PropPanel::CURVE_LINEAR_APP);
+        // Locks the point order and pins the end points: a double-click adds its point at the end.
+        panelWindow->setBool(pid, true);
+        panelWindow->setMinMaxStep(pid, CURVE_MIN_POINTS, CURVE_MAX_POINTS, PropPanel::CURVE_MIN_MAX_POINTS);
+        // Both axes, or the control's auto zoom divides by a zero wide view box.
+        panelWindow->setMinMaxStep(pid, 0.f, 1.f, PropPanel::CURVE_MIN_MAX_X);
+        panelWindow->setMinMaxStep(pid, 0.f, 1.f, PropPanel::CURVE_MIN_MAX_Y);
+        panelWindow->setColor(pid, curve_style_color(propDesc->getStr("style", "gray")));
+        panelWindow->setControlPoints(pid, controlPoints);
+        panelWindow->setTooltipId(pid, "Drag to move a point, double-click to add one or to type its coordinates, right-click a "
+                                       "point to remove it.\nThe end points keep their x.");
+      }
+    }
+    else if (!strcmp(propType, "gradient_preview"))
+    {
+      panelWindow->createStatic(pid + PROP_SLOT_AUX, propName);
+      curvePreviews.push_back(eastl::make_unique<CurvePreviewControl>(doc, node_id, nodeDesc, propDesc->getBlockByName("background")));
+      panelWindow->createCustomControlHolder(pid, curvePreviews.back().get());
     }
     else
     {
@@ -560,7 +650,7 @@ void PropertiesPanel::rebuildForNode(int node_id)
       panelWindow->createStatic(pid, label);
     }
 
-    ++pid;
+    ++propIndex;
   }
 }
 
@@ -579,32 +669,29 @@ void PropertiesPanel::onChange(int pcb_id, PropPanel::ContainerPropertyControl *
     {
       return;
     }
-    GraphSettings before;
-    plugin.getGraphSettings(before);
-    plugin.mutateGraphData([&](GraphData &gd) {
-      if (pcb_id == PID_GRAPH_TEX_WIDTH)
-      {
-        gd.graphTextureWidth = parse_graph_size(text, gd.graphTextureWidth);
-      }
-      else if (pcb_id == PID_GRAPH_TEX_HEIGHT)
-      {
-        gd.graphTextureHeight = parse_graph_size(text, gd.graphTextureHeight);
-      }
-      else if (pcb_id == PID_GRAPH_TEX_DEPTH)
-      {
-        gd.graphTextureDepth = parse_graph_size(text, gd.graphTextureDepth);
-      }
-      else if (pcb_id == PID_GRAPH_TEX_TYPE)
-      {
-        gd.graphTextureType = text;
-      }
-      else
-      {
-        gd.graphTextureWrap = text;
-      }
-    });
-    plugin.markGraphDirtyAndRegen();
-    plugin.recordGraphSettingsChange(eastl::move(before));
+    GraphSettings s;
+    doc.getGraphSettings(s);
+    if (pcb_id == PID_GRAPH_TEX_WIDTH)
+    {
+      s.graphTextureWidth = parse_graph_size(text, s.graphTextureWidth);
+    }
+    else if (pcb_id == PID_GRAPH_TEX_HEIGHT)
+    {
+      s.graphTextureHeight = parse_graph_size(text, s.graphTextureHeight);
+    }
+    else if (pcb_id == PID_GRAPH_TEX_DEPTH)
+    {
+      s.graphTextureDepth = parse_graph_size(text, s.graphTextureDepth);
+    }
+    else if (pcb_id == PID_GRAPH_TEX_TYPE)
+    {
+      s.graphTextureType = text;
+    }
+    else
+    {
+      s.graphTextureWrap = text;
+    }
+    doc.setGraphSettings(s);
     return;
   }
 
@@ -622,31 +709,21 @@ void PropertiesPanel::onChangeFinished(int pcb_id, PropPanel::ContainerPropertyC
   // intermediate onChange, so holding a spin button doesn't regenerate every frame.
   if (pcb_id == PID_GRAPH_HEIGHT_SCALE || pcb_id == PID_GRAPH_HEIGHT_MIN || pcb_id == PID_GRAPH_CELL_SIZE)
   {
-    GraphSettings before;
-    plugin.getGraphSettings(before);
-    plugin.mutateGraphData([&](GraphData &gd) {
-      if (pcb_id == PID_GRAPH_HEIGHT_SCALE)
-      {
-        gd.heightmapScale = panel->getFloat(pcb_id);
-      }
-      else if (pcb_id == PID_GRAPH_HEIGHT_MIN)
-      {
-        gd.heightmapMin = panel->getFloat(pcb_id);
-      }
-      else
-      {
-        gd.heightmapCellSize = panel->getFloat(pcb_id);
-      }
-    });
-
-    if (IGraphTexGenService *svc = plugin.getTexGenService())
+    GraphSettings s;
+    doc.getGraphSettings(s);
+    if (pcb_id == PID_GRAPH_HEIGHT_SCALE)
     {
-      const GraphData &gd = plugin.getGraphData();
-      svc->setHeightmapParams(effective_height(gd.heightmapScale, DEFAULT_HEIGHT_SCALE),
-        effective_height(gd.heightmapMin, DEFAULT_HEIGHT_MIN), effective_height(gd.heightmapCellSize, DEFAULT_CELL_SIZE));
-      svc->requestRegenerate();
+      s.heightmapScale = panel->getFloat(pcb_id);
     }
-    plugin.recordGraphSettingsChange(eastl::move(before));
+    else if (pcb_id == PID_GRAPH_HEIGHT_MIN)
+    {
+      s.heightmapMin = panel->getFloat(pcb_id);
+    }
+    else
+    {
+      s.heightmapCellSize = panel->getFloat(pcb_id);
+    }
+    doc.setGraphSettings(s);
     return;
   }
 
@@ -663,7 +740,7 @@ void PropertiesPanel::onChangeFinished(int pcb_id, PropPanel::ContainerPropertyC
       wingw::message_box(wingw::MBS_EXCL, "Invalid folder",
         "'%s' is outside the application directory:\n%s\n\nChoose a folder inside it.", text.str(),
         DAGORED2->getWorkspace().getAppDir());
-      const GraphData &gd = plugin.getGraphData();
+      const GraphData &gd = doc.getGraphData();
       const char *prev = pcb_id == PID_GRAPH_RENDER_DIR ? gd.renderDir.c_str() : gd.entityDir.c_str();
       panel->setText(pcb_id, prev);
       return;
@@ -674,32 +751,17 @@ void PropertiesPanel::onChangeFinished(int pcb_id, PropPanel::ContainerPropertyC
       panel->setText(pcb_id, newValue); // reflect the normalized app-relative form
     }
 
-    GraphSettings before;
-    plugin.getGraphSettings(before);
-    bool changed = false;
-    plugin.mutateGraphData([&](GraphData &gd) {
-      if (pcb_id == PID_GRAPH_RENDER_DIR)
-      {
-        if (gd.renderDir != newValue)
-        {
-          gd.renderDir = newValue;
-          changed = true;
-        }
-      }
-      else
-      {
-        if (gd.entityDir != newValue)
-        {
-          gd.entityDir = newValue;
-          changed = true;
-        }
-      }
-    });
-    if (changed)
+    GraphSettings s;
+    doc.getGraphSettings(s);
+    if (pcb_id == PID_GRAPH_RENDER_DIR)
     {
-      plugin.markGraphDirtyAndRegen();
+      s.renderDir = newValue;
     }
-    plugin.recordGraphSettingsChange(eastl::move(before));
+    else
+    {
+      s.entityDir = newValue;
+    }
+    doc.setGraphSettings(s);
     return;
   }
 
@@ -708,7 +770,14 @@ void PropertiesPanel::onChangeFinished(int pcb_id, PropPanel::ContainerPropertyC
 
 void PropertiesPanel::commitNodeProperty(int pcb_id, PropPanel::ContainerPropertyControl *panel, bool finished)
 {
-  auto it = pidToPropertyName.find(pcb_id);
+  if (pcb_id < PID_NODE_PROP_BASE)
+  {
+    return;
+  }
+
+  // Sub-controls report their own pid; every read below goes through the property's block base.
+  const int pid = prop_pid_base(pcb_id);
+  auto it = pidToPropertyName.find(pid);
   if (it == pidToPropertyName.end())
   {
     return;
@@ -721,7 +790,7 @@ void PropertiesPanel::commitNodeProperty(int pcb_id, PropPanel::ContainerPropert
   }
 
   const DataBlock *nodeDesc = plugin.findBaseNodeBlockByUid(n->templateUid.c_str());
-  const DataBlock *propDesc = findPropertyDesc(nodeDesc, it->second.c_str());
+  const DataBlock *propDesc = find_property_desc(nodeDesc, it->second.c_str());
   if (!propDesc)
   {
     return;
@@ -742,103 +811,97 @@ void PropertiesPanel::commitNodeProperty(int pcb_id, PropPanel::ContainerPropert
   eastl::string newVal;
   if (!strcmp(t, "string"))
   {
-    newVal = static_cast<const char *>(panel->getText(pcb_id));
+    newVal = static_cast<const char *>(panel->getText(pid));
   }
   else if (!strcmp(t, "bool"))
   {
-    newVal = panel->getBool(pcb_id) ? "true" : "false";
+    newVal = panel->getBool(pid) ? "true" : "false";
   }
   else if (!strcmp(t, "int"))
   {
     char buf[32];
-    _snprintf(buf, sizeof(buf), "%d", panel->getInt(pcb_id));
+    _snprintf(buf, sizeof(buf), "%d", panel->getInt(pid));
     newVal = buf;
   }
   else if (!strcmp(t, "float"))
   {
     char buf[32];
-    _snprintf(buf, sizeof(buf), "%g", panel->getFloat(pcb_id));
+    _snprintf(buf, sizeof(buf), "%g", panel->getFloat(pid));
     newVal = buf;
   }
   else if (!strcmp(t, "combobox"))
   {
     // createCombo's current selection is exposed as text via getText.
-    newVal = static_cast<const char *>(panel->getText(pcb_id));
+    newVal = static_cast<const char *>(panel->getText(pid));
   }
   else if (!strcmp(t, "color"))
   {
-    const E3DCOLOR c = panel->getColor(pcb_id);
+    const E3DCOLOR c = panel->getColor(pid);
     char buf[64];
     _snprintf(buf, sizeof(buf), "%g,%g,%g,%g", c.r / 255.f, c.g / 255.f, c.b / 255.f, c.a / 255.f);
     newVal = buf;
   }
   else if (!strcmp(t, "filepath"))
   {
-    const String base = filepath_base(propDesc, plugin.getGraphData());
-    const SimpleString raw = panel->getText(pcb_id);
+    const String base = filepath_base(propDesc, doc.getGraphData());
+    const SimpleString raw = panel->getText(pid);
     const String stored = relativize_under(base.str(), raw.str());
     if (strcmp(stored.str(), raw.str()) != 0)
     {
-      panel->setText(pcb_id, stored.str()); // reflect the canonical stored form
+      panel->setText(pid, stored.str()); // reflect the canonical stored form
     }
     newVal = stored.str();
   }
-  else
+  else if (!strcmp(t, "gradient_editor"))
   {
-    return; // read-only stub types -- not editable.
+    PropPanel::Gradient keys(tmpmem);
+    panel->getGradient(pid, &keys);
+    if (keys.size() < 2)
+    {
+      return; // the control always keeps its two pinned keys; writing back nothing would clear the value
+    }
+    eastl::vector<GradientStop> stops;
+    gradient_keys_to_stops(keys, stops);
+    // A key dragged past its neighbour, or a nan from a zero width strip, must not reach the .blk.
+    sanitize_gradient(stops);
+    newVal = format_gradient(stops, panel->getBool(pid + PROP_SLOT_AUX));
   }
-
-  // Skip a no-op edit (e.g. focus leaving an unchanged field): nothing to apply or record. Compare
-  // against the live value, treating an unset property as its descriptor default.
-  const eastl::string *curVal = find_property_value(*n, it->second.c_str());
-  if (curVal)
+  else if (CurveKind curveKind; curve_kind_for_prop_type(t, curveKind))
   {
-    if (*curVal == newVal)
+    Tab<Point2> controlPoints(tmpmem);
+    panel->getCurveCoefs(pid, controlPoints); // despite its name this hands back the control points
+    if (controlPoints.size() < CURVE_MIN_POINTS)
     {
       return;
     }
+    eastl::vector<Point2> points;
+    points.reserve(controlPoints.size());
+    for (int i = 0; i < controlPoints.size(); ++i)
+    {
+      points.push_back(controlPoints[i]);
+    }
+    newVal = format_curve(curveKind, points);
   }
-  else if (newVal == param_as_string(propDesc, "val"))
+  else
+  {
+    return; // gradient_preview and unknown types have nothing to write back
+  }
+
+  // Skip a no-op edit; gradients and curves compare in the form this editor writes them.
+  const eastl::string *curVal = find_property_value(*n, it->second.c_str());
+  eastl::string compareVal = curVal ? *curVal : param_as_string(propDesc, "val");
+  if (!strcmp(t, "gradient_editor"))
+  {
+    compareVal = canonical_gradient(compareVal.c_str());
+  }
+  else if (CurveKind curveKind; curve_kind_for_prop_type(t, curveKind))
+  {
+    compareVal = canonical_curve(compareVal.c_str(), curveKind);
+  }
+  if (compareVal == newVal)
   {
     return;
   }
 
-  // One undo entry per edit gesture (the daEditorX ObjectEditor UndoPropsChange pattern): snapshot the
-  // node's whole propertyValues before the change, apply, then accept. Continuous controls commit once
-  // on finish and discrete ones once per change, so each gesture is a single "Change property" entry.
-  UndoSystem *undoSystem = IEditorCoreEngine::get()->getUndoSystem();
-  undoSystem->begin();
-  undoSystem->put(new UndoNodeProps(plugin, lastRenderedNodeId));
-
-  // Re-find the node inside mutateGraphData so the mutable reference comes from the locked-access
-  // path. lastRenderedNodeId is stable across the lambda; main is the only writer that could remove
-  // a node and we're on main.
-  plugin.mutateGraphData([&](GraphData &gd) {
-    for (auto &node : gd.nodes)
-    {
-      if (node.id != lastRenderedNodeId)
-      {
-        continue;
-      }
-      bool found = false;
-      for (auto &pv : node.propertyValues)
-      {
-        if (pv.first == it->second)
-        {
-          pv.second = eastl::move(newVal);
-          found = true;
-          break;
-        }
-      }
-      if (!found)
-      {
-        node.propertyValues.emplace_back(it->second, eastl::move(newVal));
-      }
-      break;
-    }
-  });
-
-  // Worker thread runs compile_graph_to_blks asynchronously and then regenerates.
-  plugin.markGraphDirtyAndRegen();
-  undoSystem->accept("Change property");
+  doc.setNodeProperty(lastRenderedNodeId, it->second, eastl::move(newVal));
 }

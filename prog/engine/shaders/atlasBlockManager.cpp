@@ -3,6 +3,7 @@
 #include <shaders/dag_atlasBlockManager.h>
 #include <drv/3d/dag_driverDesc.h>
 #include <drv/3d/dag_resUpdateBuffer.h>
+#include <drv/3d/dag_texture.h>
 #include <ioSys/dag_dataBlock.h>
 #include <ioSys/dag_genIo.h>
 
@@ -303,7 +304,7 @@ bool AtlasBlockManager::loadChunkData(Chunk chunk, IGenLoad &source)
             {
               int dx = dy == dy0 ? dx0 : 0;
               int w = (dy == dy1 ? dx1 + 4 : dstBlockWidth << 2) - dx;
-              if (!pool.texture.getTex2D()->updateSubRegionNoOrder(tmpTex.getTex2D(), 0, x, y, 0, w, 4, 1, 0, dx, dy, 0))
+              if (!d3d::update_sub_region_no_order(tmpTex.getTex2D(), 0, x, y, 0, w, 4, 1, pool.texture.getTex2D(), 0, dx, dy, 0))
                 ok = false;
             }
           }

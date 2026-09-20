@@ -19,6 +19,7 @@
 #include <osApiWrappers/dag_files.h>
 #include <perfMon/dag_statDrv.h>
 #include <daECS/core/internal/performQuery.h>
+#include <daECS/core/internal/typesAndLimits.h>
 #include <ecs/scripts/dasEs.h>
 #include <startup/dag_globalSettings.h>
 #include <daECS/core/sharedComponent.h>
@@ -26,6 +27,7 @@
 #include <ioSys/dag_findFiles.h>
 #include <debug/dag_hwExcept.h>
 #include <debug/dag_except.h>
+#include <string.h>
 
 #include <ioSys/dag_dataBlock.h>
 #include <daECS/io/blk.h>
@@ -88,9 +90,22 @@ static void my_fatal_handler(const char *title, const char *msg, const char *cal
   exit(1);
 }
 
-static int log_callback(int lev_tag, const char * /*fmt*/, const void * /*arg*/, int /*anum*/, const char * /*ctx_file*/,
-  int /*ctx_line*/)
+static bool count_expected_errors = false;
+static int expected_errors_count = 0;
+// matches only the Template::validateSets logerr; unrelated errors keep failing the run
+static const char *validate_sets_err_marker = "is not a component of any known template";
+// swallows only the expected broken _component fixture logerr at load
+static bool swallow_component_block_err = false;
+
+static int log_callback(int lev_tag, const char *fmt, const void * /*arg*/, int /*anum*/, const char * /*ctx_file*/, int /*ctx_line*/)
 {
+  if (count_expected_errors && lev_tag == LOGLEVEL_ERR && fmt && strstr(fmt, validate_sets_err_marker))
+  {
+    expected_errors_count++;
+    return 1;
+  }
+  if (swallow_component_block_err && lev_tag == LOGLEVEL_ERR && fmt && strstr(fmt, "_component block at") && strstr(fmt, "is unknown"))
+    return 1;
   if (!ignore_log_errors && (lev_tag == LOGLEVEL_ERR || lev_tag == LOGLEVEL_FATAL))
     had_errors = true;
   return 1;
@@ -222,6 +237,137 @@ int myMain2(int startArgC)
 
   G_ASSERT(get_test_value("EventStartTriggered") == 1);
   G_ASSERT(get_test_value("EventEndTriggered") == 1);
+  {
+    // the replicated half of tests/trackedInherited.das; das observes only change events
+    const ecs::Template *t = g_entity_mgr->getTemplateDB().getTemplateByName("trackedInheritedChild");
+    G_ASSERT(t && t->isReplicated(ECS_HASH("inherited_track_val").hash, g_entity_mgr->getTemplateDB().data()));
+    G_UNUSED(t);
+  }
+  {
+    // validateSets: a never declared _tracked name logerrs at instantiate; a tag
+    // filtered component and a descendant declared one do not (see validate_sets.blk)
+    // a component created by code exists only in DataComponents (like net synced ones)
+    G_VERIFY(g_entity_mgr->createComponent(ECS_HASH("code_registered_comp"),
+               g_entity_mgr->getComponentTypes().findType(ecs::ComponentTypeInfo<int>::type), dag::Span<ecs::component_t>(), nullptr,
+               0) != ecs::INVALID_COMPONENT_INDEX);
+    ecs::TemplateRefs vtrefs(*g_entity_mgr);
+    swallow_component_block_err = true; // the failed_registered _component logerrs its unknown type by design
+    G_VERIFY(ecs::load_templates_blk_file(*g_entity_mgr, "validate_sets.blk", vtrefs, &g_entity_mgr->getTemplateDB().info()));
+    swallow_component_block_err = false;
+    g_entity_mgr->addTemplates(vtrefs);
+    // the dev suite must compile the validation it counts; rel builds skip the counts
+#if DAGOR_DBGLEVEL > 0
+    G_STATIC_ASSERT(DAECS_EXTENSIVE_CHECKS);
+#endif
+    // one instantiation per case; the counter resets per case, failures name the template
+    auto expectErrors = [&](const char *tname, int expected) {
+      G_UNUSED(expected);
+      expected_errors_count = 0;
+      count_expected_errors = true;
+      G_VERIFY(g_entity_mgr->createEntitySync(tname) != ecs::INVALID_ENTITY_ID);
+      count_expected_errors = false;
+#if DAECS_EXTENSIVE_CHECKS && DAGOR_DBGLEVEL > 0
+      G_ASSERTF(expected_errors_count == expected, "%s: %d != %d", tname, expected_errors_count, expected);
+#endif
+    };
+    // exempt through the components name map only: entities.blk loads without info, so
+    // noinfo_declared_comp is not in componentTags; pin that premise first
+#if DAGOR_DBGLEVEL > 0
+    G_ASSERT(g_entity_mgr->getTemplateDB().info().componentTags.count(ECS_HASH("noinfo_declared_comp").hash) == 0);
+#endif
+    expectErrors("tracksNoInfoDeclared", 0);
+    expectErrors("tracksCodeRegistered", 0);
+    // the instantiation consumes the parent's sets, so the parent's dangling name
+    // reports here, once
+    expectErrors("childOfDangling", 1);
+    // the second child must not re-report the parent: validateSets memoizes per template
+    expectErrors("childOfDangling2", 0);
+    // the ancestor walk reports every set; a parent's bad replicated name too
+    expectErrors("childOfDanglingRepl", 1);
+    // the walk is transitive: a grandparent's bad name reports through the grandchild
+    expectErrors("grandChildOfDangling", 1);
+    // exempt through componentTags: _component blocks and template components are
+    // recorded before the tag gate, a failed registration included
+    expectErrors("tracksTagFilteredComponent", 0);
+    expectErrors("tracksFailedRegistered", 0);
+    expectErrors("tracksPlainComponent", 0);
+    expectErrors("trackedTagFiltered", 0);
+    expectErrors("baseTracksChildComp", 0);
+    expectErrors("sameTemplTagSkipped", 0);
+    {
+      // tag skipped names (param and block form) must leave the sets at parse; a
+      // loaded component's name must stay
+      const ecs::Template *st = g_entity_mgr->getTemplateDB().getTemplateByName("sameTemplTagSkipped");
+      G_ASSERT(st && st->trackedSet().count(ECS_HASH("tag_skipped_own").hash) == 0);
+      G_ASSERT(st && st->trackedSet().count(ECS_HASH("tag_skipped_block").hash) == 0);
+      G_ASSERT(st && st->trackedSet().count(ECS_HASH("loaded_block").hash) == 1);
+      G_ASSERT(st && st->trackedSet().count(ECS_HASH("skip_own_plain").hash) == 1);
+      G_ASSERT(st && st->ignoredSet().count(ECS_HASH("tag_skipped_own").hash) == 0);
+      G_ASSERT(st && st->ignoredSet().count(ECS_HASH("skip_own_plain").hash) == 1);
+      G_ASSERT(st && st->replicatedSet().count(ECS_HASH("tag_skipped_own").hash) == 0);
+      G_ASSERT(st && st->replicatedSet().count(ECS_HASH("skip_own_plain").hash) == 1);
+      // per template isolation: the parent's tag skips do not drop the child's list name
+      const ecs::Template *ct = g_entity_mgr->getTemplateDB().getTemplateByName("trackedTagFiltered");
+      G_ASSERT(ct && ct->trackedSet().count(ECS_HASH("tag_filtered_comp").hash) == 1);
+      G_UNUSED(ct);
+      G_UNUSED(st);
+    }
+    expectErrors("typoTracked", 1);
+    expectErrors("typoReplicated", 1);
+    expectErrors("typoIgnored", 1);
+    // every bad name of a set is reported, not only the first
+    expectErrors("typoTrackedTwo", 2);
+    // late load order: the first instantiation reports the not yet declared name once;
+    // after the declaring load a second create adds no report
+    expectErrors("tracksLateDeclared", 1);
+    {
+      ecs::TemplateRefs ltrefs(*g_entity_mgr);
+      G_VERIFY(ecs::load_templates_blk_file(*g_entity_mgr, "validate_sets_late.blk", ltrefs, &g_entity_mgr->getTemplateDB().info()));
+      g_entity_mgr->addTemplates(ltrefs);
+    }
+    expectErrors("tracksLateDeclared", 0);
+    // the net sync shape: the first instantiation runs before the component exists in
+    // DataComponents and reports once; after creation a second create adds no report
+    expectErrors("tracksLateCodeRegistered", 1);
+    G_VERIFY(g_entity_mgr->createComponent(ECS_HASH("late_code_registered_comp"),
+               g_entity_mgr->getComponentTypes().findType(ecs::ComponentTypeInfo<int>::type), dag::Span<ecs::component_t>(), nullptr,
+               0) != ecs::INVALID_COMPONENT_INDEX);
+    expectErrors("tracksLateCodeRegistered", 0);
+    {
+      // membership branch: a code created template is in no load registry, so only
+      // hasComponent exempts its own tracked component
+      ecs::ComponentsMap cmap;
+      cmap[ECS_HASH("code_tracked_comp")] = ecs::ChildComponent(0);
+      ecs::Template::component_set tracked;
+      tracked.insert(ECS_HASH("code_tracked_comp").hash);
+      g_entity_mgr->addTemplate(ecs::Template("codeTracked", eastl::move(cmap), eastl::move(tracked), ecs::Template::component_set(),
+        ecs::Template::component_set(), false));
+      // parent walk half: the child tracks the parent's code declared component; the
+      // child instantiates first, so only the hierarchy walk can exempt the name
+      ecs::ComponentsMap childCmap;
+      ecs::Template::component_set childTracked;
+      childTracked.insert(ECS_HASH("code_tracked_comp").hash);
+      const char *codeParents[] = {"codeTracked"};
+      dag::ConstSpan<const char *> pspan(codeParents, 1);
+      G_VERIFY(
+        g_entity_mgr->getTemplateDB().addTemplate(ecs::Template("codeTrackedChild", eastl::move(childCmap), eastl::move(childTracked),
+                                                    ecs::Template::component_set(), ecs::Template::component_set(), false),
+          &pspan) == ecs::TemplateDB::AR_OK);
+      expectErrors("codeTrackedChild", 0);
+      expectErrors("codeTracked", 0);
+      // the inverse direction: a blk parent's name that only the code created child's
+      // component map declares is legal through the instantiating template's view
+      ecs::ComponentsMap invCmap;
+      invCmap[ECS_HASH("code_child_declared_comp")] = ecs::ChildComponent(0);
+      const char *invParents[] = {"parentTracksCodeChildComp"};
+      dag::ConstSpan<const char *> invSpan(invParents, 1);
+      G_VERIFY(g_entity_mgr->getTemplateDB().addTemplate(
+                 ecs::Template("codeChildOfTrackingParent", eastl::move(invCmap), ecs::Template::component_set(),
+                   ecs::Template::component_set(), ecs::Template::component_set(), false),
+                 &invSpan) == ecs::TemplateDB::AR_OK);
+      expectErrors("codeChildOfTrackingParent", 0);
+    }
+  }
   test_free_per_thread_query_data();
   int64_t reft = ref_time_ticks();
   g_entity_mgr->clear();

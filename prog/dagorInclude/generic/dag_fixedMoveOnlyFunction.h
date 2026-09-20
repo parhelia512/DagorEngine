@@ -8,6 +8,7 @@
 #include <EASTL/type_traits.h>
 #include <EASTL/internal/function_detail.h>
 #include <debug/dag_assert.h>
+#include <generic/dag_nullableCallable.h>
 
 #ifndef GCC_USED
 #if defined(__GNUC__) && !defined(__clang__)
@@ -66,6 +67,14 @@ struct FixedMoveOnlyFunctionBase
 
     static_assert(sizeof(UnqualF) <= size, "Function object is too big!");
     static_assert(alignof(UnqualF) <= align, "Function object over-aligned!");
+
+    // owning an empty callable would still report non empty, so store nothing instead
+    if constexpr (is_nullable_callable_v<UnqualF>)
+      if (!func_object)
+      {
+        call = nullptr;
+        return;
+      }
 
     if constexpr (!eastl::is_trivially_copyable_v<UnqualF>)
       relocate = &relocateImpl<UnqualF>;
@@ -166,6 +175,8 @@ class FixedMoveOnlyFunction<size, Ret(Args...)> : private detail::FixedMoveOnlyF
 public:
   FixedMoveOnlyFunction() {} // not "= default": value-init ({}) must not zero-fill the storage
 
+  FixedMoveOnlyFunction(std::nullptr_t) {}
+
   template <typename F, typename = EASTL_INTERNAL_FUNCTION_VALID_FUNCTION_ARGS(F, Ret, Args..., Base, FixedMoveOnlyFunction),
     typename = eastl::disable_if_t<detail::is_fixed_move_only_function_v<eastl::decay_t<F>>>>
   FixedMoveOnlyFunction(F &&func_object) : Base((F &&)func_object, &callImpl<eastl::decay_t<F>>)
@@ -204,6 +215,8 @@ class FixedMoveOnlyFunction<size, Ret(Args...) const> : private detail::FixedMov
 
 public:
   FixedMoveOnlyFunction() {} // not "= default": value-init ({}) must not zero-fill the storage
+
+  FixedMoveOnlyFunction(std::nullptr_t) {}
 
   template <typename F, typename = EASTL_INTERNAL_FUNCTION_VALID_FUNCTION_ARGS(F, Ret, Args..., Base, FixedMoveOnlyFunction),
     typename = eastl::disable_if_t<detail::is_fixed_move_only_function_v<eastl::decay_t<F>>>>

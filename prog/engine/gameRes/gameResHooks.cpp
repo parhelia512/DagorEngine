@@ -5,6 +5,7 @@
 bool (*gamereshooks::resolve_res_handle)(const char *resname, unsigned class_id, int &out_res_id) = 0;
 bool (*gamereshooks::get_res_refs)(int res_id, Tab<int> &out_refs) = 0;
 bool (*gamereshooks::on_get_game_res_class_id)(int res_id, unsigned &out_class_id) = 0;
+bool (*gamereshooks::is_res_class_stubbed)(unsigned class_id) = 0;
 bool (*gamereshooks::on_validate_game_res_id)(int res_id, int &out_res_id) = 0;
 bool (*gamereshooks::on_preload_all_required_res)(gameres_rrl_ptr_t rrl) = 0;
 bool (*gamereshooks::on_get_game_resource)(int res_id, gameres_rrl_cptr_t rrl, dag::Span<GameResourceFactory *> f,

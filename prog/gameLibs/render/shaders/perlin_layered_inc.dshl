@@ -305,15 +305,14 @@ macro PERLIN_LAYERED_PS_IMPL(is_writing_gbuffer, is_blending_hmap, order_bit, ha
     }
     #endif
 
-    #ifdef FORCE_EARLY_DEPTH_STENCIL
-      FORCE_EARLY_DEPTH_STENCIL
-    #endif
-
     #if RENDINST_IMPOSTOR_VOXEL
       VOXEL_BAKER_OUTPUT perlin_layered_ps(VsOutput input INPUT_VFACE HW_USE_SCREEN_POS)
     #elif VOXELIZE_ALBEDO_PASS
       void perlin_layered_ps(VsOutput input INPUT_VFACE HW_USE_SCREEN_POS)
     #else
+      #ifdef FORCE_EARLY_DEPTH_STENCIL
+        FORCE_EARLY_DEPTH_STENCIL
+      #endif
       GBUFFER_OUTPUT perlin_layered_ps(VsOutput input INPUT_VFACE HW_USE_SCREEN_POS
         ##if is_blending_hmap
           HW_USE_READ_SHADING_RATE
@@ -326,6 +325,8 @@ macro PERLIN_LAYERED_PS_IMPL(is_writing_gbuffer, is_blending_hmap, order_bit, ha
       #endif
       #ifdef VOXELIZE_DISCARD_PRIM
         VOXELIZE_DISCARD_PRIM
+      #else
+        VOXEL_BAKER_PRE_DISCARD
       #endif
       #ifndef IS_DYNAMIC
         #define IS_DYNAMIC 0
@@ -546,7 +547,7 @@ macro PERLIN_LAYERED_PS_IMPL(is_writing_gbuffer, is_blending_hmap, order_bit, ha
 
         #if RENDINST_IMPOSTOR_VOXEL
           const half alpha = 1;
-          const float depth = voxel_baker_depth(worldPos, GET_SCREEN_POS(input.pos).xy);
+          VOXEL_BAKER_DEPTH(worldPos, GET_SCREEN_POS(input.pos).xy);
           return baker_output_from_gbuffer(gbuffer, depth, alpha,
             coloringMul, palRow, palIndex);
         #else

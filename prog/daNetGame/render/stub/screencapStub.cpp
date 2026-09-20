@@ -10,6 +10,7 @@ void set_comments(const char *) {}
 void make_screenshot(Texture *) {}
 void make_hdr_screenshot(const ManagedTex &) {}
 void schedule_screenshot(bool, bool) {}
+void schedule_hdr_screenshot(const char *) {}
 bool is_hdr_screenshot_scheduled() { return false; }
 bool is_screenshot_scheduled() { return false; }
 

@@ -356,9 +356,9 @@ macro RAYCAST_CLOUDS(code)
           }
         ##endif
 
-        float4 nukeLightColorAndRad = loadBuffer(nuke_atmospheric_light_effects, i * 2 + 0).xyzw;
-        float4 nukeLightPosAndExtinctRad = loadBuffer(nuke_atmospheric_light_effects, i * 2 + 1).xyzw;
-        float3 nukeLightPos = nukeLightPosAndExtinctRad.xyz + float3(clouds_origin_offset.x, 0, clouds_origin_offset.y);
+        float4 nukeLightColorAndRad = asfloat(nuke_atmospheric_light_effects[i * 2 + 0].xyzw);
+        uint4 nukeLightPosAndExtinctRad = nuke_atmospheric_light_effects[i * 2 + 1].xyzw;
+        float3 nukeLightPos = asfloat(nukeLightPosAndExtinctRad.xyz) + float3(clouds_origin_offset.x, 0, clouds_origin_offset.y);
 
         if (nukeLightColorAndRad.w > 0)
         {
@@ -367,7 +367,7 @@ macro RAYCAST_CLOUDS(code)
 
           if (radFade > 0)
           {
-            float extinctionDistance = nukeLightPosAndExtinctRad.w;
+            float extinctionDistance = f16tof32(nukeLightPosAndExtinctRad.w >> 16);
             float3 lightDir = (nukeLightPos.xyz - cp.pos)*rcp(lightDist);
             float shadowStep = shadow_steps_for_nuke.y*max(lightDist - 2 * extinctionDistance, 0);
             float shadow = 0.75;
@@ -1543,7 +1543,7 @@ shader clouds2_temporal_cs, clouds2_close_temporal_cs
       DISCARD_IF_INVALID_VIEW_AREA_CS(scatteringTexcoord);
 
       float3 viewVect = getViewVecOptimized(scatteringTexcoord);
-      CLOUDS_RET tr = trace_clouds(viewVect, texcoord, dtid, scatteringTexcoord);
+      CLOUDS_RET tr = trace_clouds(viewVect, texcoord, dtid, remap_to_main_view_uv(scatteringTexcoord));
 
       texture2DAt(target0, writeId) = tr.target0;
       #if HAS_DEPTH_TARGET
@@ -1561,6 +1561,8 @@ float4 clouds_panorama_temp_res;
 float4 clouds_panorama_tex_res;
 float clouds_panorama_blend;
 
+// Register for the non-render-pass MRT fallback below; unrelated to the render pass path, which is
+// bound top-down from the last T register.
 int subpassTrace0_reg_no = 11;
 
 shader clouds_panorama, clouds_alpha_panorama
@@ -1632,7 +1634,8 @@ shader clouds_panorama, clouds_alpha_panorama
     if (hardware.vulkan || hardware.metaliOS)
     {
       hlsl(ps) {
-        SUBPASS_RESOURCE(subpassTrace0, t11, 0); // subpass_read_bind_offset
+        // Emulated backends bind read N at MAX_T_REGISTERS - 1 - N.
+        SUBPASS_RESOURCE(subpassTrace0, t31, 0);
       }
     }
     else

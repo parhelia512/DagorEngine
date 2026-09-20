@@ -15,17 +15,22 @@
 #include <shaders/dag_refinedBlock.h>
 #include <frustumCulling/frustumPlanes.h>
 #include <util/dag_convar.h>
+#include <perfMon/dag_statDrv.h>
 #include "../CSMShadows.h"
+#include "../globalManager.h"
 #include "../../shaders/dagdp_common.hlsli"
 #include "../../shaders/dagdp_common_placer.hlsli"
 #include "../../shaders/dagdp_volume.hlsli"
 #include "../block.h"
 #include "volume.h"
 #include <rendInst/rendInstExtra.h>
+#include <rendInst/rendInstExtraAccess.h>
+#include <rendInst/ccExtra.h>
 #include <util/dag_threadPool.h>
 #include <osApiWrappers/dag_cpuJobs.h>
 
 CONSOLE_BOOL_VAL("dagdp", volume_early_riex_gather, true);
+CONSOLE_BOOL_VAL("dagdp", volume_early_grid_gather, true);
 
 namespace var
 {
@@ -75,19 +80,11 @@ static ShaderVariableInfo tiles("dagdp_volume__tiles", true);
 
 using TmpName = eastl::fixed_string<char, 128>;
 
-namespace
-{
-bool requires_indirect_buf_copy()
-{
-  // We use a copy of the indirect buffer on DX12 non-Xbox because otherwise it can hang on nvidia GPUs.
-  return d3d::get_driver_code().is(d3d::dx12 && !d3d::anyXbox);
-}
-} // namespace
-
 namespace dagdp
 {
 
 bool is_volume_early_riex_gather_enabled() { return volume_early_riex_gather.get(); }
+bool is_volume_early_grid_gather_enabled() { return volume_early_grid_gather.get(); }
 
 struct VolumePersistentData;
 static dag::Vector<eastl::weak_ptr<VolumePersistentData>> g_volume_views;
@@ -147,10 +144,17 @@ struct GatheredInfo
     uint32_t tileEndIndex;
     uint32_t dispatchStartIndex;
     uint32_t dispatchEndIndex;
+    uint32_t meshEndIndex;
+    uint32_t volumeEndIndex;
   };
 
   dag::RelocatableFixedVector<PerViewport, DAGDP_MAX_VIEWPORTS> perViewport;
+  // Dispatch mesh ranges are consecutive, so N dispatches are stored as N+1 boundary
+  // offsets: dispatch i covers meshes [dispatches[i], dispatches[i+1]).
   dag::RelocatableFixedVector<uint32_t, MAX_VB_INDICES> dispatches;
+  static uint32_t numDispatchBoundaries(uint32_t num_dispatches) { return num_dispatches + 1; }
+  uint32_t numDispatches() const { return dispatches.size() - 1; }
+  void truncateDispatches(uint32_t num) { dispatches.resize(numDispatchBoundaries(num)); }
   RelevantMeshes relevantMeshes;
   RelevantTiles relevantTiles;
   RelevantVolumes relevantVolumes;
@@ -168,6 +172,11 @@ using PerProcessedMesh = dag::RelocatableFixedVector<T, ESTIMATED_PROCESSED_MESH
 void DagdpRiexGatherJob::reset()
 {
   entryCount = 0;
+  localVolumeCount = 0;
+  volumeCount = 0;
+  worldVolumeCount = 0;
+  volumeHandlePool.clear();
+  riGenSourcePool.clear();
   for (size_t i = 0; i < viewportCount; ++i)
   {
     viewportDataPool[i].onRi.clear();
@@ -198,11 +207,47 @@ size_t DagdpRiexGatherJob::addEntry(int res_idx, bbox3f_cref box)
   return entryCount++;
 }
 
+void DagdpRiexGatherJob::addEntries(PlacerData &rec, const ecs::IntList &resource_ids, bbox3f_cref box)
+{
+  rec.firstEntry = entryCount;
+  for (auto resIdx : resource_ids)
+    addEntry(resIdx, box);
+  rec.entryCount = entryCount - rec.firstEntry;
+}
+
+DagdpRiexGatherJob::LocalVolumeSnapshot &DagdpRiexGatherJob::addLocalVolume()
+{
+  if (localVolumeCount >= localVolumePool.size())
+    localVolumePool.emplace_back();
+  return localVolumePool[localVolumeCount++];
+}
+
+DagdpRiexGatherJob::VolumeEntry &DagdpRiexGatherJob::addVolumeEntry(
+  ecs::EntityId placer_eid, const TMatrix &tm, mat44f_cref tm44, float scale, int volume_type)
+{
+  if (volumeCount >= volumePool.size())
+    volumePool.emplace_back();
+  auto &e = volumePool[volumeCount++];
+  e.placerEid = placer_eid;
+  e.tm = tm;
+  e.scale = scale;
+  e.volumeType = volume_type;
+  e.box = volume_local_box(tm44, scale);
+  return e;
+}
+
+void DagdpRiexGatherJob::gatherVolumeHandles(VolumeEntry &e)
+{
+  e.firstHandle = volumeHandlePool.size();
+  rendinst::gatherRIGenExtraCollidableMin(volumeHandlePool, e.box, MIN_GEOMETRY_SIZE);
+  e.handleCount = volumeHandlePool.size() - e.firstHandle;
+}
+
 void DagdpRiexGatherJob::start(GatherMode mode)
 {
   launched = true;
   scheduled = false;
-  if (entryCount == 0)
+  if (entryCount == 0 && worldVolumeCount == 0)
     return;
   if (mode == GatherMode::Synchronous)
     doJob();
@@ -215,10 +260,81 @@ void DagdpRiexGatherJob::start(GatherMode mode)
 
 void DagdpRiexGatherJob::doJob()
 {
-  for (size_t i = 0; i < entryCount; ++i)
   {
-    auto &e = entryPool[i];
-    rendinst::getRiGenExtraInstances(e.handles, e.resIdx, e.box);
+    TIME_PROFILE(dagdp_volume_gather_world_volumes);
+    for (size_t i = 0; i < worldVolumeCount; ++i)
+      gatherVolumeHandles(volumePool[i]);
+  }
+
+  {
+    TIME_PROFILE(dagdp_volume_gather_riex_instances);
+    for (size_t i = 0; i < entryCount; ++i)
+    {
+      auto &e = entryPool[i];
+      rendinst::getRiGenExtraInstances(e.handles, e.resIdx, e.box);
+    }
+  }
+
+  {
+    TIME_PROFILE(dagdp_volume_gather_local_volumes);
+    for (size_t v = 0; v < viewportCount; ++v)
+      for (auto &rec : viewportDataPool[v].aroundRi)
+        gatherLocalVolumes(rec, v);
+  }
+
+  DA_PROFILE_TAG(dagdp_volume_gather_job, "world=%d riex_entries=%d local=%d", (int)worldVolumeCount, (int)entryCount,
+    (int)(volumeCount - worldVolumeCount));
+}
+
+void DagdpRiexGatherJob::gatherLocalVolumes(AroundRiPlacerData &rec, size_t viewport_index)
+{
+  size_t riexSourceCount = 0;
+  for (size_t i = 0; i < rec.entryCount; ++i)
+    riexSourceCount += entryPool[rec.firstEntry + i].handles.size();
+  if (rec.localVolumeCount == 0 || riexSourceCount + rec.riGenSourceCount == 0)
+    return;
+
+  if (sourceTmScratch.size() < riexSourceCount)
+    sourceTmScratch.resize(riexSourceCount);
+  {
+    TIME_PROFILE(dagdp_volume_source_tms);
+    rendinst::ScopedRIExtraReadLock rd;
+    size_t sourceIndex = 0;
+    for (size_t i = 0; i < rec.entryCount; ++i)
+      for (auto handle : entryPool[rec.firstEntry + i].handles)
+      {
+        mat44f sourceTm44;
+        v_mat43_transpose_to_mat44(sourceTm44, rendinst::getRIGenExtra43(handle));
+        v_mat_43cu_from_mat44(sourceTmScratch[sourceIndex++].array, sourceTm44);
+      }
+  }
+
+  const vec4f viewPos = viewportDataPool[viewport_index].worldPos;
+  const auto riGenSources = make_span_const(riGenSourcePool.data() + rec.firstRiGenSource, rec.riGenSourceCount);
+  const auto riexSources = make_span_const(sourceTmScratch.data(), riexSourceCount);
+  for (size_t localIndex = 0; localIndex < rec.localVolumeCount; ++localIndex)
+  {
+    LocalVolumeSnapshot &local = localVolumePool[rec.firstLocalVolume + localIndex];
+    local.firstVolume = volumeCount;
+
+    const auto gatherPairs = [&](dag::ConstSpan<TMatrix> sources) {
+      for (const TMatrix &sourceTm : sources)
+      {
+        DECL_ALIGN16(TMatrix, tm) = sourceTm * local.transform;
+
+        mat44f tm44;
+        v_mat44_make_from_43cu_unsafe(tm44, tm.array);
+        if (!volume_in_draw_range(tm44, volume_cull_extent2(tm44, local.scale, maxBoundingRadius), viewPos, rec.drawRadius))
+          continue;
+
+        gatherVolumeHandles(addVolumeEntry(rec.eid, tm, tm44, local.scale, local.volumeType));
+      }
+    };
+    // RIGen sources first: the order the synchronous path emits in.
+    gatherPairs(riGenSources);
+    gatherPairs(riexSources);
+
+    local.volumeCount = volumeCount - local.firstVolume;
   }
 }
 
@@ -231,6 +347,54 @@ void DagdpRiexGatherJob::waitDone()
     scheduled = false;
   }
   launched = false;
+}
+
+static void truncate_gathered_info(GatheredInfo &gathered_info, const VolumeConstants &constants)
+{
+  const uint32_t requiredMeshes = gathered_info.relevantMeshes.size();
+  const uint32_t requiredDispatches = gathered_info.numDispatches();
+  const uint32_t requiredTiles = gathered_info.relevantTiles.size();
+  const uint32_t requiredVolumes = gathered_info.relevantVolumes.size();
+
+  if (requiredMeshes <= constants.maxMeshes && requiredDispatches <= constants.maxDispatches && requiredTiles <= constants.maxTiles &&
+      requiredVolumes <= constants.maxVolumes)
+    return;
+
+  uint32_t fittingViewportsEnd = 0;
+  for (const auto &item : gathered_info.perViewport)
+  {
+    if (item.meshEndIndex > constants.maxMeshes || item.dispatchEndIndex > constants.maxDispatches ||
+        item.tileEndIndex > constants.maxTiles || item.volumeEndIndex > constants.maxVolumes)
+      break;
+    ++fittingViewportsEnd;
+  }
+
+  const bool any = fittingViewportsEnd > 0;
+  const uint32_t meshEnd = any ? gathered_info.perViewport[fittingViewportsEnd - 1].meshEndIndex : 0;
+  const uint32_t dispatchEnd = any ? gathered_info.perViewport[fittingViewportsEnd - 1].dispatchEndIndex : 0;
+  const uint32_t tileEnd = any ? gathered_info.perViewport[fittingViewportsEnd - 1].tileEndIndex : 0;
+  const uint32_t volumeEnd = any ? gathered_info.perViewport[fittingViewportsEnd - 1].volumeEndIndex : 0;
+
+  gathered_info.relevantMeshes.resize(meshEnd);
+  gathered_info.truncateDispatches(dispatchEnd);
+  gathered_info.relevantTiles.resize(tileEnd);
+  gathered_info.relevantVolumes.resize(volumeEnd);
+
+  // make the rest of the viewports that don't fit no-op
+  for (uint32_t i = fittingViewportsEnd; i < gathered_info.perViewport.size(); ++i)
+  {
+    auto &item = gathered_info.perViewport[i];
+    item.tileStartIndex = item.tileEndIndex = tileEnd;
+    item.dispatchStartIndex = item.dispatchEndIndex = dispatchEnd;
+    item.meshEndIndex = meshEnd;
+    item.volumeEndIndex = volumeEnd;
+  }
+
+  RequiredLimits required;
+  required.maxMeshes = requiredMeshes;
+  required.maxTiles = requiredTiles;
+  required.maxVolumes = requiredVolumes;
+  GlobalManager::updateRequiredLimits(required);
 }
 
 void create_volume_nodes(const ViewInfo &view_info,
@@ -265,7 +429,7 @@ void create_volume_nodes(const ViewInfo &view_info,
   constants.maxTriangles = rules_builder.maxTriangles;
   constants.maxMeshes = rules_builder.maxMeshes;
   constants.maxDispatches =
-    ((rules_builder.maxMeshes + MAX_DISPATCH_MESHES - 1) / MAX_DISPATCH_MESHES + MAX_VB_INDICES) * view_info.maxViewports + 1;
+    ((rules_builder.maxMeshes + MAX_DISPATCH_MESHES - 1) / MAX_DISPATCH_MESHES + MAX_VB_INDICES) * view_info.maxViewports;
   constants.maxTiles = rules_builder.maxTiles;
   constants.maxVolumes = rules_builder.maxVolumes;
   constants.targetMeshLod = rules_builder.targetMeshLod;
@@ -333,9 +497,10 @@ void create_volume_nodes(const ViewInfo &view_info,
 
   {
     TmpName bufferName(TmpName::CtorSprintf(), "%s_dispatches", bufferNamePrefix.c_str());
+    const uint32_t maxDispatchBoundaries = GatheredInfo::numDispatchBoundaries(constants.maxDispatches);
     persistentData->dispatchesBuffer =
-      dag::buffers::create_one_frame_sr_structured(sizeof(uint32_t), constants.maxDispatches, bufferName.c_str());
-    debug("[FRAMEMEM] - For dispatches '%s': %d", bufferName.c_str(), constants.maxDispatches);
+      dag::buffers::create_one_frame_sr_structured(sizeof(uint32_t), maxDispatchBoundaries, bufferName.c_str());
+    debug("[FRAMEMEM] - For dispatches '%s': %d", bufferName.c_str(), maxDispatchBoundaries);
   }
 
   {
@@ -368,7 +533,8 @@ void create_volume_nodes(const ViewInfo &view_info,
       G_ASSERT(view.viewports.size() <= constants.viewInfo.maxViewports);
 
       if (is_volume_early_riex_gather_enabled())
-        gather_start(persistentData->mutables.riexGatherJob, constants.mapping, constants.viewInfo, view, GatherMode::Synchronous);
+        gather_start(persistentData->mutables.riexGatherJob, constants.mapping, constants.viewInfo, view,
+          constants.maxPlaceableBoundingRadius, GatherMode::Synchronous);
 
       persistentData->mutables.riexProcessor.resetCurrent();
 
@@ -378,7 +544,7 @@ void create_volume_nodes(const ViewInfo &view_info,
       {
         const uint32_t meshStartIndex = gatheredInfo.relevantMeshes.size();
         const uint32_t tileStartIndex = gatheredInfo.relevantTiles.size();
-        const uint32_t dispatchStartIndex = gatheredInfo.dispatches.size() - 1;
+        const uint32_t dispatchStartIndex = gatheredInfo.numDispatches();
         const auto &viewport = view.viewports[viewportIndex];
         gather_process(persistentData->mutables.riexGatherJob, persistentData->constants.mapping, constants.viewInfo, viewportIndex,
           viewport, constants.maxPlaceableBoundingRadius, constants.targetMeshLod, persistentData->mutables.riexProcessor, meshes,
@@ -389,49 +555,56 @@ void create_volume_nodes(const ViewInfo &view_info,
         item.tileEndIndex = gatheredInfo.relevantTiles.size();
 
         // sort meshes by vbIndex
-        const uint32_t numMeshes = meshes.size();
-
-        uint32_t buckets[MAX_VB_INDICES + 1];
-        memset(buckets, 0, sizeof(buckets));
-
-        // count items per bucket
-        for (uint32_t meshIndex = 0; meshIndex < numMeshes; meshIndex++)
         {
-          const uint32_t vbIndex = meshes[meshIndex].vbIndex;
-          G_ASSERT(vbIndex < MAX_VB_INDICES);
-          buckets[vbIndex + 1]++;
-        }
+          TIME_PROFILE(dagdp_volume_sort_meshes);
+          const uint32_t numMeshes = meshes.size();
 
-        // prefix-sum counts to array offsets
-        for (uint32_t i = 0, s = meshStartIndex; i <= MAX_VB_INDICES; i++)
-        {
-          uint32_t n = buckets[i];
-          uint32_t s0 = s;
-          s += n;
-          buckets[i] = s;
-          while (s0 < s)
+          uint32_t buckets[MAX_VB_INDICES + 1];
+          memset(buckets, 0, sizeof(buckets));
+
+          // count items per bucket
+          for (uint32_t meshIndex = 0; meshIndex < numMeshes; meshIndex++)
           {
-            s0 += min<uint32_t>(s - s0, MAX_DISPATCH_MESHES);
-            gatheredInfo.dispatches.push_back(s0);
+            const uint32_t vbIndex = meshes[meshIndex].vbIndex;
+            G_ASSERT(vbIndex < MAX_VB_INDICES);
+            buckets[vbIndex + 1]++;
           }
-        }
-        G_ASSERT(buckets[MAX_VB_INDICES] == meshStartIndex + numMeshes);
 
-        // put meshes in the sorted order
-        gatheredInfo.relevantMeshes.resize(meshStartIndex + numMeshes);
-        for (uint32_t meshIndex = 0; meshIndex < numMeshes; meshIndex++)
-        {
-          const auto &mesh = meshes[meshIndex];
-          const uint32_t newIndex = buckets[mesh.vbIndex]++;
-          gatheredInfo.relevantMeshes[newIndex] = mesh;
+          // prefix-sum counts to array offsets
+          for (uint32_t i = 0, s = meshStartIndex; i <= MAX_VB_INDICES; i++)
+          {
+            uint32_t n = buckets[i];
+            uint32_t s0 = s;
+            s += n;
+            buckets[i] = s;
+            while (s0 < s)
+            {
+              s0 += min<uint32_t>(s - s0, MAX_DISPATCH_MESHES);
+              gatheredInfo.dispatches.push_back(s0);
+            }
+          }
+          G_ASSERT(buckets[MAX_VB_INDICES] == meshStartIndex + numMeshes);
+
+          // put meshes in the sorted order
+          gatheredInfo.relevantMeshes.resize(meshStartIndex + numMeshes);
+          for (uint32_t meshIndex = 0; meshIndex < numMeshes; meshIndex++)
+          {
+            const auto &mesh = meshes[meshIndex];
+            const uint32_t newIndex = buckets[mesh.vbIndex]++;
+            gatheredInfo.relevantMeshes[newIndex] = mesh;
+          }
         }
 
         item.dispatchStartIndex = dispatchStartIndex;
-        item.dispatchEndIndex = gatheredInfo.dispatches.size() - 1;
+        item.dispatchEndIndex = gatheredInfo.numDispatches();
+        item.meshEndIndex = gatheredInfo.relevantMeshes.size();
+        item.volumeEndIndex = gatheredInfo.relevantVolumes.size();
 
         meshes.clear();
       }
       meshes.shrink_to_fit();
+
+      truncate_gathered_info(gatheredInfo, constants);
 
       if (const auto *nextToProcess = persistentData->mutables.riexProcessor.current(); nextToProcess != nullptr)
       {
@@ -449,12 +622,15 @@ void create_volume_nodes(const ViewInfo &view_info,
         }
       }
 
+      TIME_PROFILE(dagdp_volume_upload);
+
       if (!update_frame_mem(make_span_const(gatheredInfo.relevantMeshes), persistentData->meshesBuffer.getBuf(),
             persistentData->constants.maxMeshes, "volume meshes"))
         return;
 
-      if (!update_frame_mem(make_span_const(gatheredInfo.dispatches), persistentData->dispatchesBuffer.getBuf(),
-            persistentData->constants.maxDispatches, "volume dispatches"))
+      const uint32_t maxDispatchBoundaries = GatheredInfo::numDispatchBoundaries(constants.maxDispatches);
+      if (!update_frame_mem(make_span_const(gatheredInfo.dispatches), persistentData->dispatchesBuffer.getBuf(), maxDispatchBoundaries,
+            "volume dispatches"))
         return;
 
       if (!update_frame_mem(make_span_const(gatheredInfo.relevantTiles), persistentData->tilesBuffer.getBuf(),
@@ -546,8 +722,9 @@ void create_volume_nodes(const ViewInfo &view_info,
 
       if (outOfMem)
       {
-        LOGERR_ONCE("daGdp: volume mesh processing ran out of memory! %" PRIu32 " > %" PRIu32, persistentData->mutables.areasUsed,
-          persistentData->constants.maxTriangles);
+        RequiredLimits required;
+        required.maxTriangles = persistentData->mutables.areasUsed;
+        GlobalManager::updateRequiredLimits(required);
         return;
       }
 
@@ -618,7 +795,7 @@ void create_volume_nodes(const ViewInfo &view_info,
     const auto &constants = persistentData->constants;
     view_multiplex(registry, constants.viewInfo.kind);
 
-    registry.create(requires_indirect_buf_copy() ? "dispatch_args_base" : "dispatch_args")
+    registry.create("dispatch_args")
       .buffer({sizeof(uint32_t), DISPATCH_INDIRECT_NUM_ARGS * constants.maxDispatches, SBCF_UA_SR_BYTE_ADDRESS | SBCF_UA_INDIRECT, 0})
       .atStage(dafg::Stage::COMPUTE)
       .bindToShaderVar("dagdp_volume__dispatch_args");
@@ -634,7 +811,7 @@ void create_volume_nodes(const ViewInfo &view_info,
     return [persistentData, gatheredInfoHandle, shader = ComputeShader("dagdp_volume_set_args")] {
       const auto &gatheredInfo = gatheredInfoHandle.ref();
 
-      if (!gatheredInfo.isValid)
+      if (!gatheredInfo.isValid || gatheredInfo.numDispatches() == 0)
         return;
 
       STATE_GUARD(ShaderGlobal::set_buffer(var::meshes, VALUE), persistentData->meshesBuffer.getBufId(), BAD_D3DRESID);
@@ -645,40 +822,12 @@ void create_volume_nodes(const ViewInfo &view_info,
       STATE_GUARD(ShaderGlobal::set_buffer(var::volume_variants, VALUE), persistentData->volumeVariantsBuffer.getBufId(),
         BAD_D3DRESID);
 
-      // since dispatch ranges are consecutive (end of one dispatch is the start of the next one),
-      // gatheredInfo.dispatch contains N+1 elements for N dispatches (N starting indices and one ending, or vice versa)
-      const bool dispatchSuccess = shader.dispatchGroups(gatheredInfo.dispatches.size() - 1, 1, 1);
+      const bool dispatchSuccess = shader.dispatchGroups(gatheredInfo.numDispatches(), 1, 1);
 
       if (!dispatchSuccess)
         logerr("daGdp: volume set args dispatch failed!");
     };
   });
-
-  dafg::NodeHandle copyArgsNode;
-  if (requires_indirect_buf_copy())
-    copyArgsNode = ns.registerNode("copy_args", DAFG_PP_NODE_SRC, [persistentData](dafg::Registry registry) {
-      const auto &constants = persistentData->constants;
-      view_multiplex(registry, constants.viewInfo.kind);
-
-      auto argsHndl = registry.read("dispatch_args_base").buffer().atStage(dafg::Stage::TRANSFER).useAs(dafg::Usage::COPY).handle();
-
-      auto argsCopyHndl = registry.create("dispatch_args")
-                            .buffer({sizeof(uint32_t), DISPATCH_INDIRECT_NUM_ARGS * constants.maxDispatches,
-                              SBCF_UA_SR_BYTE_ADDRESS | SBCF_UA_INDIRECT, 0})
-                            .atStage(dafg::Stage::TRANSFER)
-                            .useAs(dafg::Usage::COPY)
-                            .handle();
-
-      const auto gatheredInfoHandle = registry.readBlob<GatheredInfo>("gatheredInfo").handle();
-
-      return [gatheredInfoHandle, argsHndl, argsCopyHndl] {
-        const auto &gatheredInfo = gatheredInfoHandle.ref();
-
-        if (!gatheredInfo.isValid)
-          return;
-        argsHndl.get()->copyTo(argsCopyHndl.get());
-      };
-    });
 
   const auto createPlaceNode = [&](bool isOptimistic) {
     return ns.registerNode(isOptimistic ? "place_stage0" : "place_stage1", DAFG_PP_NODE_SRC,
@@ -750,6 +899,8 @@ void create_volume_nodes(const ViewInfo &view_info,
           ShaderGlobal::set_int(var::prng_seed_roll, constants.prngSeed + 0xF6A38A81u);
           ShaderGlobal::set_int(var::prng_seed_triangle1, constants.prngSeed + 0x54F2A367u);
           ShaderGlobal::set_int(var::prng_seed_triangle2, constants.prngSeed + 0x45F9668Eu);
+
+          constants.passBlock.setState();
 
           Ibuffer *ib = unitedvdata::riUnitedVdata.getIB();
           d3d::set_buffer(STAGE_CS, 0, ib);
@@ -868,6 +1019,7 @@ void create_volume_nodes(const ViewInfo &view_info,
           {
             const auto &viewport = view.viewports[viewportIndex];
             const auto &info = gatheredInfo.perViewport[viewportIndex];
+            ScopeFrustumPlanesShaderVars scopedFrustumVars(viewport.frustum);
 
             ShaderGlobal::set_float4(var::viewport_pos, viewport.worldPos);
             ShaderGlobal::set_float(var::viewport_max_distance,
@@ -891,8 +1043,6 @@ void create_volume_nodes(const ViewInfo &view_info,
   node_inserter(eastl::move(processNode));
 
   node_inserter(eastl::move(setArgsNode));
-  if (copyArgsNode)
-    node_inserter(eastl::move(copyArgsNode));
   node_inserter(createPlaceNode(true));
   node_inserter(createPlaceNode(false));
 
@@ -939,7 +1089,8 @@ void start_gather_before_draw_volumes(ecs::EntityManager &manager, const Point3 
 
     ViewPerFrameData viewData;
     if (populate_viewport_data_early(manager, pd->constants.viewInfo, cam_pos, cam_frustum, viewData))
-      gather_start(pd->mutables.riexGatherJob, pd->constants.mapping, pd->constants.viewInfo, viewData, GatherMode::Async);
+      gather_start(pd->mutables.riexGatherJob, pd->constants.mapping, pd->constants.viewInfo, viewData,
+        pd->constants.maxPlaceableBoundingRadius, GatherMode::Async);
   }
 }
 

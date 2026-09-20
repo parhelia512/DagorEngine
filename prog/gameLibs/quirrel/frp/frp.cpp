@@ -12,6 +12,7 @@
 #include <sqstdaux.h>
 
 #include <EASTL/algorithm.h>
+#include <EASTL/sort.h>
 #include <EASTL/string.h>
 #include <EASTL/hash_map.h>
 #include <EASTL/hash_set.h>
@@ -254,27 +255,13 @@ NodeId ObservablesGraph::allocSlot()
   {
     idx = (uint32_t)slots.size();
     slots.push_back();
+    slotsData.push_back();
+    G_ASSERT(slots.size() == slotsData.size());
   }
   NodeSlot &s = slots[idx];
   s.flags = 0;
   s.alive = true;
-  s.version = 0;
-  s.nodeState = NodeState::CLEAN;
-  s.numNoCheckSubscribers = 0;
-  s.lastChangeCause = NodeId{};
-  s.numDirtySources = 0;
-  s.deferredTriggerStreak = 0;
-  s.lastDeferredTriggerGen = 0;
-  s.timeChangeReq = 0;
-  s.timeChanged = 0;
-  sq_resetobject(&s.value);
-  sq_resetobject(&s.func);
-  s.nativeSource = nullptr;
-  s.sources.clear();
-  s.dependents.clear();
-  s.watchers.clear();
-  s.scriptSubscribers.clear();
-  s.initInfo.reset();
+  slotsData[idx] = {};
   varTraces->init(idx);
   return NodeId{idx, s.generation};
 }
@@ -309,16 +296,17 @@ void ObservablesGraph::freeSlot(NodeId id)
   // iteration, cascading freeSlot on not-yet-visited nodes skips their
   // onNodeGraphShutdown; (2) mutatorWhiteLists iterator invalidation if
   // re-entrant freeSlot erases a different key from the same vector_map.
-  pendingRelease.push_back(s.value);
-  pendingRelease.push_back(s.func);
-  sq_resetobject(&s.value);
-  sq_resetobject(&s.func);
+  NodeSlotData &d = slotsData[id.index];
+  pendingRelease.push_back(d.value);
+  pendingRelease.push_back(d.func);
+  sq_resetobject(&d.value);
+  sq_resetobject(&d.func);
 
-  s.sources.clear();
-  s.dependents.clear();
-  s.watchers.clear();
-  s.scriptSubscribers.clear();
-  s.initInfo.reset();
+  d.sources.clear();
+  d.dependents.clear();
+  d.watchers.clear();
+  d.scriptSubscribers.clear();
+  d.initInfo.reset();
 
   releaseMutatorWhiteList(id.index);
 
@@ -345,23 +333,19 @@ void ObservablesGraph::flushPendingRelease()
 NodeId ObservablesGraph::createWatched(HSQOBJECT initial_value)
 {
   NodeId id = allocSlot();
-  NodeSlot &s = node(id);
+  NodeSlotData &d = nodeData(id);
 
-  s.value = initial_value;
-  sq_addref(vm, &s.value);
+  d.value = initial_value;
+  sq_addref(vm, &d.value);
   if (forceImmutable)
-    s.value._flags |= SQOBJ_FLAG_IMMUTABLE;
+    d.value._flags |= SQOBJ_FLAG_IMMUTABLE;
 
-  s.isDeferred = true;
-  s.needImmediate = false;
-  registerInOwnerScope(id, s);
+  d.initInfo = eastl::make_unique<ScriptSourceInfo>();
+  d.initInfo->init(vm);
 
-  s.initInfo = eastl::make_unique<ScriptSourceInfo>();
-  s.initInfo->init(vm);
+  d.timeChangeReq = d.timeChanged = ::get_time_msec();
 
-  s.timeChangeReq = s.timeChanged = ::get_time_msec();
-
-  varTraces->save(id.index, s.value, vm);
+  varTraces->save(id.index, d.value, vm);
 
   notifyGraphChanged();
   return id;
@@ -373,27 +357,25 @@ NodeId ObservablesGraph::createComputed(HSQOBJECT func_obj, dag::Vector<SourceEn
   NodeSlot &s = node(id);
 
   s.isComputed = true;
-  s.isDeferred = true;
-  s.needImmediate = false;
   s.funcAcceptsCurVal = pass_cur_val;
-  registerInOwnerScope(id, s);
 
-  s.func = func_obj;
-  sq_addref(vm, &s.func);
-  s.sources = eastl::move(sources);
+  NodeSlotData &d = nodeData(id);
+  d.func = func_obj;
+  sq_addref(vm, &d.func);
+  d.sources = eastl::move(sources);
 
-  s.initInfo = eastl::make_unique<ScriptSourceInfo>();
+  d.initInfo = eastl::make_unique<ScriptSourceInfo>();
   SQFunctionInfo fi;
   if (SQ_SUCCEEDED(sq_ext_getfuncinfo(func_obj, &fi)))
   {
-    s.initInfo->initFuncName = fi.name;
-    s.initInfo->initSourceFileName = fi.source;
-    s.initInfo->initSourceLine = fi.line;
+    d.initInfo->initFuncName = fi.name;
+    d.initInfo->initSourceFileName = fi.source;
+    d.initInfo->initSourceLine = fi.line;
   }
   else
-    s.initInfo->init(vm);
+    d.initInfo->init(vm);
 
-  s.timeChangeReq = s.timeChanged = ::get_time_msec();
+  d.timeChangeReq = d.timeChanged = ::get_time_msec();
 
   notifyGraphChanged();
   return id;
@@ -407,18 +389,17 @@ NodeId ObservablesGraph::createNativeComputed(INativeComputedSource *src)
   NodeSlot &s = node(id);
 
   s.isComputed = true;
-  s.isDeferred = true;
-  s.needImmediate = false;
-  s.nativeSource = src;
   s.isNativeComputed = true;
   // no frp sources, so invalidateNativeComputed is the only change signal. Born
   // dirty: the value is built by the first pull, if anyone ever pulls
   s.nodeState = NodeState::DIRTY;
 
-  s.initInfo = eastl::make_unique<ScriptSourceInfo>();
-  s.initInfo->init(vm);
+  NodeSlotData &d = nodeData(id);
+  d.nativeSource = src;
+  d.initInfo = eastl::make_unique<ScriptSourceInfo>();
+  d.initInfo->init(vm);
 
-  s.timeChangeReq = s.timeChanged = ::get_time_msec();
+  d.timeChangeReq = d.timeChanged = ::get_time_msec();
 
   notifyGraphChanged();
   return id;
@@ -429,7 +410,7 @@ NodeId ObservablesGraph::createNativeComputed(INativeComputedSource *src)
 // Value access
 // --------------------------------------------------------------------------
 
-static void replace_value(HSQUIRRELVM vm, NodeSlot &s, HSQOBJECT new_val, bool force_immutable)
+static void replace_value(HSQUIRRELVM vm, NodeSlotData &s, HSQOBJECT new_val, bool force_immutable)
 {
   sq_release(vm, &s.value);
   s.value = new_val;
@@ -452,13 +433,13 @@ Sqrat::Object ObservablesGraph::getValue(NodeId id)
     if (!s)
       return Sqrat::Object();
   }
-  return Sqrat::Object(s->value, vm);
+  return Sqrat::Object(slotsData[id.index].value, vm);
 }
 
 
 bool ObservablesGraph::setValue(NodeId id, const Sqrat::Object &new_val)
 {
-  NodeSlot *s = resolve(id);
+  NodeSlotData *s = resolveData(id);
   if (!s)
     return logerr_graph_error(vm, "Stale NodeId");
 
@@ -492,9 +473,11 @@ void ObservablesGraph::destroyNode(NodeId id)
   if (!s)
     return;
 
+  NodeSlotData &d = slotsData[id.index];
+
   // Notify external watchers
   s->isIteratingWatchers = true;
-  for (IStateWatcher *w : s->watchers)
+  for (IStateWatcher *w : d.watchers)
     w->onObservableRelease(id);
   s->isIteratingWatchers = false;
 
@@ -504,18 +487,18 @@ void ObservablesGraph::destroyNode(NodeId id)
   // Remove from dependent lists of sources
   if (s->isComputed)
   {
-    bool wasImmediate = s->needImmediate;
+    bool wasImmediate = s->propagatesImmediate;
     bool wasConsumed = s->computedHasActiveConsumers;
-    for (auto &src : s->sources)
+    for (auto &src : d.sources)
       removeDependent(src.id, id);
     if (wasImmediate)
     {
-      for (auto &src : s->sources)
-        updateNeedImmediate(src.id);
+      for (auto &src : d.sources)
+        updatePropagatesImmediate(src.id);
     }
     if (wasConsumed)
     {
-      for (auto &src : s->sources)
+      for (auto &src : d.sources)
         updateComputedConsumed(src.id);
     }
   }
@@ -531,12 +514,14 @@ void ObservablesGraph::onNodeGraphShutdown(NodeId id, bool exiting, Tab<Sqrat::O
   if (!s)
     return;
 
+  NodeSlotData &d = slotsData[id.index];
+
   // Clear script subscribers
-  cleared_storage.reserve(cleared_storage.size() + s->scriptSubscribers.size());
-  for (Sqrat::Function &f : s->scriptSubscribers)
+  cleared_storage.reserve(cleared_storage.size() + d.scriptSubscribers.size());
+  for (Sqrat::Function &f : d.scriptSubscribers)
     cleared_storage.push_back(Sqrat::Object(f.GetFunc(), vm));
-  s->scriptSubscribers.clear();
-  s->numNoCheckSubscribers = 0;
+  d.scriptSubscribers.clear();
+  d.numNoCheckSubscribers = 0;
 
   releaseMutatorWhiteList(id.index);
 
@@ -545,11 +530,11 @@ void ObservablesGraph::onNodeGraphShutdown(NodeId id, bool exiting, Tab<Sqrat::O
     // Move value/func to pendingRelease (released in phase 3 of shutdown).
     if (s->isComputed)
     {
-      pendingRelease.push_back(s->func);
-      sq_resetobject(&s->func);
+      pendingRelease.push_back(d.func);
+      sq_resetobject(&d.func);
     }
-    pendingRelease.push_back(s->value);
-    sq_resetobject(&s->value);
+    pendingRelease.push_back(d.value);
+    sq_resetobject(&d.value);
   }
 }
 
@@ -584,17 +569,23 @@ void ObservablesGraph::shutdown(bool is_closing_vm)
     NodeSlot &s = slots[i];
     if (!s.alive)
       continue;
-    if (s.isComputed || is_closing_vm)
+    if (is_closing_vm || (s.isComputed && !s.isNativeComputed))
     {
       freeSlot(NodeId{i, s.generation});
+      continue;
     }
-    else
+    // Watched and native Computed outlive the scene: their handles are persist-cached or C++-owned
+    NodeSlotData &d = slotsData[i];
+    d.dependents.clear();
+    d.watchers.clear();
+    s.propagatesImmediate = s.isImmediate; // no dependents, so no stale immediate flag
+    s.computedHasActiveConsumers = false;
+    if (s.isNativeComputed)
     {
-      // Watched: keep alive with value so persist-cached handles remain valid.
-      s.dependents.clear();
-      s.watchers.clear();
-      // Dependents are gone; recompute so no stale immediate flag survives.
-      s.needImmediate = !s.isDeferred;
+      // the value belongs to the old scene; the next pull rebuilds it
+      pendingRelease.push_back(d.value);
+      sq_resetobject(&d.value);
+      s.nodeState = NodeState::DIRTY;
     }
   }
   deferredNotifyQueue.clear();
@@ -616,7 +607,7 @@ void ObservablesGraph::shutdown(bool is_closing_vm)
 
 void ObservablesGraph::addDependent(NodeId source, NodeId dependent)
 {
-  NodeSlot *s = resolve(source);
+  NodeSlotData *s = resolveData(source);
   if (!s)
     return;
   if (eastl::find(s->dependents.begin(), s->dependents.end(), dependent) == s->dependents.end())
@@ -625,7 +616,7 @@ void ObservablesGraph::addDependent(NodeId source, NodeId dependent)
 
 void ObservablesGraph::removeDependent(NodeId source, NodeId dependent)
 {
-  NodeSlot *s = resolve(source);
+  NodeSlotData *s = resolveData(source);
   if (!s)
     return;
   erase_item_by_value(s->dependents, dependent);
@@ -639,10 +630,11 @@ void ObservablesGraph::subscribeWatcher(NodeId id, IStateWatcher *watcher)
     return;
   G_ASSERT(!s->isIteratingWatchers);
   G_ASSERT(watcher);
-  if (watcher && find_value_idx(s->watchers, watcher) < 0)
+  NodeSlotData &d = slotsData[id.index];
+  if (watcher && find_value_idx(d.watchers, watcher) < 0)
   {
-    s->watchers.push_back(watcher);
-    updateNeedImmediate(id);
+    d.watchers.push_back(watcher);
+    updatePropagatesImmediate(id);
     markComputedConsumed(id);
   }
 }
@@ -654,8 +646,8 @@ void ObservablesGraph::unsubscribeWatcher(NodeId id, IStateWatcher *watcher)
   if (!s)
     return;
   G_ASSERT(!s->isIteratingWatchers);
-  erase_item_by_value(s->watchers, watcher);
-  updateNeedImmediate(id);
+  erase_item_by_value(slotsData[id.index].watchers, watcher);
+  updatePropagatesImmediate(id);
   updateComputedConsumed(id);
 }
 
@@ -683,63 +675,9 @@ static bool logerr_graph_error(HSQUIRRELVM vm, const char *err_msg)
 static bool are_sq_obj_equal(HSQUIRRELVM vm, const HSQOBJECT &a, const HSQOBJECT &b) { return sq_obj_is_equal(vm, &a, &b); }
 
 
-// --------------------------------------------------------------------------
-// Owner scopes
-// --------------------------------------------------------------------------
-
-void ObservablesGraph::registerInOwnerScope(NodeId id, NodeSlot &s)
-{
-  if (!currentOwnerScope)
-    return;
-  currentOwnerScope->ownedNodes.push_back(id);
-  if (currentOwnerScope->sourcesImmediate && !s.isComputed)
-  {
-    s.isDeferred = false;
-    s.needImmediate = true;
-    s.eagerPull = true;
-  }
-}
-
-
-void ObservablesGraph::unsubscribeOwnerScope(OwnerScope &scope)
-{
-  for (OwnerScope::SubEntry &sub : scope.subscriptions)
-  {
-    NodeSlot *s = resolve(sub.node);
-    if (!s)
-      continue;
-    for (int i = 0, n = s->scriptSubscribers.size(); i < n; ++i)
-    {
-      if (are_sq_obj_equal(vm, sub.func.GetObject(), s->scriptSubscribers[i].GetFunc()))
-      {
-        if (i < s->numNoCheckSubscribers)
-          s->numNoCheckSubscribers--;
-        erase_items(s->scriptSubscribers, i, 1);
-        if (s->scriptSubscribers.empty() && s->isComputed)
-          updateComputedConsumed(sub.node);
-        break;
-      }
-    }
-  }
-  scope.subscriptions.clear();
-}
-
-
-void ObservablesGraph::disposeOwnerScope(OwnerScope &scope)
-{
-  unsubscribeOwnerScope(scope);
-
-  // A handle that outlives the scope is left with a stale id, so its own
-  // destruction becomes a no-op.
-  for (NodeId id : scope.ownedNodes)
-    destroyNode(id);
-  scope.ownedNodes.clear();
-}
-
-
 bool ObservablesGraph::nodeHasConsumers(NodeId id) const
 {
-  const NodeSlot *s = resolve(id);
+  const NodeSlotData *s = resolveData(id);
   if (!s)
     return false;
   return !s->dependents.empty() || !s->watchers.empty() || !s->scriptSubscribers.empty();
@@ -748,7 +686,7 @@ bool ObservablesGraph::nodeHasConsumers(NodeId id) const
 
 void ObservablesGraph::markDependentsDirty(NodeId id)
 {
-  NodeSlot *s = resolve(id);
+  NodeSlotData *s = resolveData(id);
   if (!s)
     return;
   for (NodeId dep : s->dependents)
@@ -766,7 +704,7 @@ void ObservablesGraph::markDependentsDirty(NodeId id)
 void ObservablesGraph::invalidateNativeComputed(NodeId id)
 {
   NodeSlot *s = resolve(id);
-  if (!s || !s->nativeSource)
+  if (!s || !slotsData[id.index].nativeSource)
     return;
   // no value work here: this runs at the source's timing, not the graph's
   s->nodeState = NodeState::DIRTY;
@@ -779,7 +717,7 @@ void ObservablesGraph::detachNativeComputed(NodeId id)
   NodeSlot *s = resolve(id);
   if (!s)
     return;
-  s->nativeSource = nullptr;
+  slotsData[id.index].nativeSource = nullptr;
   s->nodeState = NodeState::CLEAN; // nothing can produce a new value anymore
 }
 
@@ -821,7 +759,7 @@ void ObservablesGraph::notifyGraphChanged()
   {
     if (inRecalc.isValid())
     {
-      String rinfo;
+      String rinfo(framemem_ptr());
       fillInfo(inRecalc, rinfo);
       logerr_graph_error(vm,
         String(0, "FRP graph %p changed during recalc of %s\nMove side-effects to subscriber", this, rinfo.c_str()).c_str());
@@ -837,7 +775,7 @@ void ObservablesGraph::notifyGraphChanged()
 
 static bool isInChangeCauseCycle(ObservablesGraph *graph, NodeId id)
 {
-  NodeSlot *s = graph->resolve(id);
+  NodeSlotData *s = graph->resolveData(id);
   if (!s)
     return false;
   NodeId cur = s->lastChangeCause;
@@ -846,7 +784,7 @@ static bool isInChangeCauseCycle(ObservablesGraph *graph, NodeId id)
   {
     if (depth >= 64)
       return false;
-    NodeSlot *cs = graph->resolve(cur);
+    NodeSlotData *cs = graph->resolveData(cur);
     if (!cs)
       return false;
     cur = cs->lastChangeCause;
@@ -860,7 +798,7 @@ bool ObservablesGraph::trigger(NodeId id)
   NodeSlot *s = resolve(id);
   if (!s)
     return logerr_graph_error(vm, String(0, "trigger: stale NodeId (index=%u, gen=%u)", id.index, id.generation).c_str());
-  ++s->version;
+  ++slotsData[id.index].version;
   markDependentsDirty(id);
   return triggerRoot(id);
 }
@@ -874,7 +812,7 @@ bool ObservablesGraph::notifyWatchers(NodeId id)
   bool ok = true;
   G_ASSERT(!s->isIteratingWatchers);
   s->isIteratingWatchers = true;
-  for (IStateWatcher *w : s->watchers)
+  for (IStateWatcher *w : slotsData[id.index].watchers)
   {
     G_ASSERT(w);
     if (!w->onSourceObservableChanged())
@@ -897,11 +835,11 @@ bool ObservablesGraph::triggerRoot(NodeId id)
   if (s->isInTrigger)
     return logerr_graph_error(vm, "Trigger root: already in trigger - probably side effect in Computed");
 
-  s->lastChangeCause = currentlyDispatchingSource;
+  slotsData[id.index].lastChangeCause = currentlyDispatchingSource;
 
   if (inRecalc.isValid())
   {
-    String info, rinfo;
+    String info(framemem_ptr()), rinfo(framemem_ptr());
     fillInfo(id, info);
     fillInfo(inRecalc, rinfo);
     logerr("%s triggered during recalc of %s", info.c_str(), rinfo.c_str());
@@ -916,13 +854,13 @@ bool ObservablesGraph::triggerRoot(NodeId id)
   s->isInTrigger = true;
 
   // Queue deferred root for later, or include in immediate processing
-  if (!s->needImmediate)
+  if (!s->propagatesImmediate)
     deferredNotifyQueue.insert(id);
 
   // Pull-based evaluation of downstream immediate Computed nodes.
-  // If needImmediate is false on the root, no downstream node can be immediate
-  // (needImmediate propagates upward through sources), so the DFS is skipped.
-  if (s->needImmediate)
+  // If propagatesImmediate is false on the root, no downstream node can be
+  // immediate (it propagates upward through sources), so the DFS is skipped.
+  if (s->propagatesImmediate)
   {
     // Captured before pull: script callbacks may reallocate slots.
     const bool eagerPull = s->eagerPull;
@@ -938,7 +876,7 @@ bool ObservablesGraph::triggerRoot(NodeId id)
         {
           NodeId cur = stack.back();
           stack.pop_back();
-          NodeSlot *cs = resolve(cur);
+          NodeSlotData *cs = resolveData(cur);
           if (!cs)
             continue;
           for (NodeId dep : cs->dependents)
@@ -958,7 +896,7 @@ bool ObservablesGraph::triggerRoot(NodeId id)
       for (NodeId dep : downstream)
       {
         NodeSlot *ds = resolve(dep);
-        if (ds && ds->nodeState != NodeState::CLEAN && (ds->needImmediate || eagerPull) && ds->computedHasActiveConsumers)
+        if (ds && ds->nodeState != NodeState::CLEAN && (ds->propagatesImmediate || eagerPull) && ds->computedHasActiveConsumers)
           pull(dep, changedNodes);
       }
 
@@ -989,7 +927,7 @@ bool ObservablesGraph::triggerRoot(NodeId id)
   }
 
   // Call subscribers
-  if (!callScriptSubscribers(s && s->needImmediate ? id : NodeId{}, changedNodes))
+  if (!callScriptSubscribers(s && s->propagatesImmediate ? id : NodeId{}, changedNodes))
     ok = false;
 
   // Re-resolve after script callbacks
@@ -1006,7 +944,7 @@ bool ObservablesGraph::triggerRoot(NodeId id)
 
 void ObservablesGraph::collectScriptSubscribers(NodeId id, Tab<SubscriberCall> &container) const
 {
-  const NodeSlot *s = resolve(id);
+  const NodeSlotData *s = resolveData(id);
   if (!s || s->scriptSubscribers.empty())
     return;
   Sqrat::Object val(s->value, vm);
@@ -1101,8 +1039,8 @@ bool ObservablesGraph::callScriptSubscribers(NodeId triggered_node, NodeIdVec &n
 
           if (callUsec > getCurSubscriberThresholdUsec())
           {
-            String sourceInfo;
-            NodeSlot *srcSlot = resolve(sc.source);
+            String sourceInfo(framemem_ptr());
+            NodeSlotData *srcSlot = resolveData(sc.source);
             if (srcSlot)
               fillInfo(sc.source, sourceInfo);
             String chain;
@@ -1112,10 +1050,10 @@ bool ObservablesGraph::callScriptSubscribers(NodeId triggered_node, NodeIdVec &n
             NodeId cause = srcSlot ? srcSlot->lastChangeCause : NodeId{};
             for (int depth = 0; cause.isValid() && depth < 10; depth++)
             {
-              NodeSlot *causeSlot = resolve(cause);
+              NodeSlotData *causeSlot = resolveData(cause);
               if (!causeSlot)
                 break;
-              String causeInfo;
+              String causeInfo(framemem_ptr());
               fillInfo(cause, causeInfo);
               chain.aprintf(0, " <- %s%s", uncertain ? "(?) " : "", causeInfo.c_str());
               if (!uncertain && causeSlot->numDirtySources > 1)
@@ -1135,9 +1073,12 @@ bool ObservablesGraph::callScriptSubscribers(NodeId triggered_node, NodeIdVec &n
             for (auto &tm : slowestSubscribersAllTime)
               if (timing.timeUsec > tm.timeUsec)
                 eastl::swap(timing, tm);
-            for (auto &tm : slowestSubscribersLastEpisode)
-              if (episodeTiming.timeUsec > tm.timeUsec)
-                eastl::swap(episodeTiming, tm);
+            if (slowestSubscribersLastEpisode.size() < slowestSubscribersLastEpisode.capacity())
+              slowestSubscribersLastEpisode.push_back(eastl::move(episodeTiming));
+            else // keeps the largest ones, unordered; sorted at report
+              for (auto &tm : slowestSubscribersLastEpisode)
+                if (episodeTiming.timeUsec > tm.timeUsec)
+                  eastl::swap(episodeTiming, tm);
           }
 #endif
         }
@@ -1188,7 +1129,7 @@ bool ObservablesGraph::updateDeferred()
   constexpr int MAX_CONSECUTIVE_DEFERRED = 10;
   for (NodeId nid : deferredBatch)
   {
-    NodeSlot *s = resolve(nid);
+    NodeSlotData *s = resolveData(nid);
     if (!s)
       continue;
     uint16_t frameGap = deferredUpdateGen - s->lastDeferredTriggerGen;
@@ -1200,7 +1141,7 @@ bool ObservablesGraph::updateDeferred()
     if (s->deferredTriggerStreak == MAX_CONSECUTIVE_DEFERRED && isInChangeCauseCycle(this, nid))
     {
       String msg;
-      String info;
+      String info(framemem_ptr());
       fillInfo(nid, info);
       msg.printf(0, "[FRP] Observable triggered in %d consecutive deferred updates - cross-frame cycle: %s", MAX_CONSECUTIVE_DEFERRED,
         info.c_str());
@@ -1224,10 +1165,11 @@ bool ObservablesGraph::updateDeferred()
 
     // Collect dirty computed nodes
     dag::Vector<NodeId, framemem_allocator> dirtyNodes;
-    for (uint32_t i = 0; i < slots.size(); ++i)
+    dirtyNodes.reserve(slots.size() / 16);
+    for (uint32_t j = 0; const NodeSlot &slot : slots)
     {
-      NodeSlot &slot = slots[i];
-      if (slot.alive && slot.isComputed && slot.nodeState != NodeState::CLEAN)
+      uint32_t i = j++;
+      if (slot.computedHasActiveConsumers && slot.alive && slot.isComputed && slot.nodeState != NodeState::CLEAN)
         dirtyNodes.push_back(NodeId{i, slot.generation});
     }
 
@@ -1303,9 +1245,10 @@ bool ObservablesGraph::updateDeferred()
       msg.aprintf(0, "%6d us max  %6d us avg: RECALC\n", timeMaxRecalc, timeTotalRecalc / slowUpdateFrames);
       msg.aprintf(0, "%6d us max  %6d us avg: NOTIFYING SUBSCRIBERS\n", timeMaxNotify, timeTotalNotify / slowUpdateFrames);
       msg.aprintf(0, "Slowest subscribers during this episode:\n");
+      eastl::sort(slowestSubscribersLastEpisode.begin(), slowestSubscribersLastEpisode.end(),
+        [](const SubscriberTiming &a, const SubscriberTiming &b) { return a.timeUsec > b.timeUsec; });
       for (auto &s : slowestSubscribersLastEpisode)
-        if (s.timeUsec > 0)
-          msg.aprintf(1024, "%6d us: SUBS %s\n", s.timeUsec, s.name.c_str());
+        msg.aprintf(1024, "%6d us: SUBS %s\n", s.timeUsec, s.name.c_str());
       msg.aprintf(0, "Slowest subscribers all-time:\n");
       for (auto &s : slowestSubscribersAllTime)
         if (s.timeUsec > 0)
@@ -1323,7 +1266,7 @@ bool ObservablesGraph::updateDeferred()
     timeTotalNotify = 0;
     timeMaxRecalc = 0;
     timeMaxNotify = 0;
-    slowestSubscribersLastEpisode = {};
+    slowestSubscribersLastEpisode.clear();
 #endif
   }
 
@@ -1340,7 +1283,7 @@ bool ObservablesGraph::pull(NodeId id, NodeIdVec &changed_nodes)
 
   if (s->isPulling)
   {
-    String info;
+    String info(framemem_ptr());
     fillInfo(id, info);
     logerr("[FRP] Circular dependency detected during pull: %s", info.c_str());
     s->nodeState = NodeState::CLEAN;
@@ -1352,9 +1295,9 @@ bool ObservablesGraph::pull(NodeId id, NodeIdVec &changed_nodes)
   if (s->nodeState == NodeState::CHECK)
   {
     // Verify if any source actually changed
-    for (uint32_t i = 0, n = s->sources.size(); i < n; ++i)
+    for (uint32_t i = 0, n = slotsData[id.index].sources.size(); i < n; ++i)
     {
-      NodeId srcId = s->sources[i].id;
+      NodeId srcId = slotsData[id.index].sources[i].id;
       NodeSlot *srcSlot = resolve(srcId);
       if (srcSlot && srcSlot->isComputed)
       {
@@ -1365,29 +1308,31 @@ bool ObservablesGraph::pull(NodeId id, NodeIdVec &changed_nodes)
           return false;
         srcSlot = resolve(srcId);
       }
-      if (srcSlot && srcSlot->version != s->sources[i].lastSeenVersion)
+      NodeSlotData &d = slotsData[id.index];
+      if (srcSlot && slotsData[srcId.index].version != d.sources[i].lastSeenVersion)
       {
-        s->lastChangeCause = srcId;
+        d.lastChangeCause = srcId;
         s->nodeState = NodeState::DIRTY;
         break;
       }
     }
 
+    NodeSlotData &d = slotsData[id.index];
     if (s->nodeState == NodeState::CHECK)
     {
-      s->numDirtySources = 0;
+      d.numDirtySources = 0;
       s->nodeState = NodeState::CLEAN;
       s->isPulling = false;
       return false;
     }
 
     // Count other dirty sources for diagnostics
-    s->numDirtySources = 1;
-    for (auto &src : s->sources)
+    d.numDirtySources = 1;
+    for (auto &src : d.sources)
     {
-      NodeSlot *srcSlot = resolve(src.id);
-      if (srcSlot && src.id != s->lastChangeCause && srcSlot->version != src.lastSeenVersion && s->numDirtySources < 255)
-        s->numDirtySources++;
+      NodeSlotData *srcSlot = resolveData(src.id);
+      if (srcSlot && src.id != d.lastChangeCause && srcSlot->version != src.lastSeenVersion && d.numDirtySources < 255)
+        d.numDirtySources++;
     }
   }
 
@@ -1416,8 +1361,10 @@ bool ObservablesGraph::recalculate(NodeId id, bool &ok)
   if (!s)
     return false;
 
+  NodeSlotData *d = &slotsData[id.index];
+
   // detached source: keep the last value, there is nothing to call
-  if (s->isNativeComputed && !s->nativeSource)
+  if (s->isNativeComputed && !d->nativeSource)
   {
     s->nodeState = NodeState::CLEAN;
     return false;
@@ -1425,8 +1372,8 @@ bool ObservablesGraph::recalculate(NodeId id, bool &ok)
 
 #if FRP_DEBUG_MODE
   {
-    FRPDBG("@#! RECALC [%s:%d %s]", s->initInfo->initSourceFileName.c_str(), s->initInfo->initSourceLine,
-      s->initInfo->initFuncName.c_str());
+    FRPDBG("@#! RECALC [%s:%d %s]", d->initInfo->initSourceFileName.c_str(), d->initInfo->initSourceLine,
+      d->initInfo->initFuncName.c_str());
   }
 #endif
 
@@ -1438,7 +1385,7 @@ bool ObservablesGraph::recalculate(NodeId id, bool &ok)
   bool callSucceeded = true;
   bool nativeChanged = false;
   Sqrat::Object newVal;
-  if (INativeComputedSource *nativeSource = s->nativeSource)
+  if (INativeComputedSource *nativeSource = d->nativeSource)
   {
     const NativePullResult pullRes = nativeSource->pull(vm);
     nativeChanged = pullRes == NativePullResult::Changed;
@@ -1456,10 +1403,10 @@ bool ObservablesGraph::recalculate(NodeId id, bool &ok)
   }
   else
   {
-    Sqrat::Function func(vm, Sqrat::Object(vm), s->func);
+    Sqrat::Function func(vm, Sqrat::Object(vm), d->func);
     Sqrat::optional<Sqrat::Object> optNewVal;
     if (s->funcAcceptsCurVal)
-      optNewVal = func.Eval<Sqrat::Object>(Sqrat::Object(s->value, vm));
+      optNewVal = func.Eval<Sqrat::Object>(Sqrat::Object(d->value, vm));
     else
       optNewVal = func.Eval<Sqrat::Object>();
     callSucceeded = optNewVal.has_value();
@@ -1475,11 +1422,12 @@ bool ObservablesGraph::recalculate(NodeId id, bool &ok)
     return false;
 
   s->nodeState = NodeState::CLEAN;
+  d = &slotsData[id.index];
 
   // Snapshot source versions after recompute
-  for (auto &src : s->sources)
+  for (auto &src : d->sources)
   {
-    NodeSlot *srcSlot = resolve(src.id);
+    NodeSlotData *srcSlot = resolveData(src.id);
     if (srcSlot)
       src.lastSeenVersion = srcSlot->version;
   }
@@ -1490,7 +1438,7 @@ bool ObservablesGraph::recalculate(NodeId id, bool &ok)
 
   if (timeUsec > 5000 && is_app_working())
   {
-    String info;
+    String info(framemem_ptr());
     fillInfo(id, info);
     logwarn("slow Computed (%dus): %s", timeUsec, info.c_str());
   }
@@ -1501,9 +1449,9 @@ bool ObservablesGraph::recalculate(NodeId id, bool &ok)
     return false;
   }
 
-  s->timeChangeReq = ::get_time_msec();
+  d->timeChangeReq = ::get_time_msec();
 
-  const HSQOBJECT &objOld = s->value;
+  const HSQOBJECT &objOld = d->value;
   const HSQOBJECT &objNew = newVal.GetObject();
   // a native source may rewrite its value in place and hand back the same object
   const bool sameObject = objOld._type == objNew._type && objOld._unVal.raw == objNew._unVal.raw;
@@ -1511,10 +1459,10 @@ bool ObservablesGraph::recalculate(NodeId id, bool &ok)
     return false;
 
   if (!sameObject)
-    replace_value(vm, *s, objNew, true); // Computed values are always immutable
-  s->timeChanged = s->timeChangeReq;
-  ++s->version;
-  varTraces->save(id.index, s->value, vm);
+    replace_value(vm, *d, objNew, true); // Computed values are always immutable
+  d->timeChanged = d->timeChangeReq;
+  ++d->version;
+  varTraces->save(id.index, d->value, vm);
 
   return true;
 }
@@ -1566,23 +1514,24 @@ ObservablesGraph::Stats ObservablesGraph::gatherGraphStats() const
     const NodeSlot &s = slots[i];
     if (!s.alive)
       continue;
-    st.totalSubscribers += (int)s.scriptSubscribers.size();
-    st.totalWatchers += (int)s.watchers.size();
+    const NodeSlotData &d = slotsData[i];
+    st.totalSubscribers += (int)d.scriptSubscribers.size();
+    st.totalWatchers += (int)d.watchers.size();
     if (s.isComputed)
     {
       st.computedTotal++;
       if (!s.computedHasActiveConsumers)
         st.computedUnused++;
-      if (s.scriptSubscribers.empty())
+      if (d.scriptSubscribers.empty())
         st.computedUnsubscribed++;
     }
     else
     {
       st.watchedTotal++;
-      if (s.scriptSubscribers.empty())
+      if (d.scriptSubscribers.empty())
       {
         st.watchedUnsubscribed++;
-        if (s.watchers.empty())
+        if (d.watchers.empty())
           st.watchedUnused++;
       }
     }
@@ -1592,32 +1541,33 @@ ObservablesGraph::Stats ObservablesGraph::gatherGraphStats() const
 }
 
 
-void ObservablesGraph::markImmediate(NodeId id)
+void ObservablesGraph::markPropagatesImmediate(NodeId id)
 {
   NodeSlot *s = resolve(id);
-  if (!s || s->needImmediate)
+  if (!s || s->propagatesImmediate)
     return;
-  s->needImmediate = true;
+  s->propagatesImmediate = true;
   if (s->isComputed)
   {
-    for (auto &src : s->sources)
-      markImmediate(src.id);
+    for (auto &src : slotsData[id.index].sources)
+      markPropagatesImmediate(src.id);
   }
 }
 
-void ObservablesGraph::updateNeedImmediate(NodeId id)
+void ObservablesGraph::updatePropagatesImmediate(NodeId id)
 {
   NodeSlot *s = resolve(id);
   if (!s)
     return;
 
-  bool imm = !s->isDeferred;
+  NodeSlotData &d = slotsData[id.index];
+  bool imm = s->isImmediate;
   if (!imm)
   {
-    for (NodeId dep : s->dependents)
+    for (NodeId dep : d.dependents)
     {
       NodeSlot *ds = resolve(dep);
-      if (ds && ds->needImmediate)
+      if (ds && ds->propagatesImmediate)
       {
         imm = true;
         break;
@@ -1625,17 +1575,17 @@ void ObservablesGraph::updateNeedImmediate(NodeId id)
     }
   }
 
-  if (imm == s->needImmediate)
+  if (imm == s->propagatesImmediate)
     return;
-  s->needImmediate = imm;
+  s->propagatesImmediate = imm;
   if (s->isComputed)
   {
-    for (auto &src : s->sources)
+    for (auto &src : d.sources)
     {
       if (imm)
-        markImmediate(src.id);
+        markPropagatesImmediate(src.id);
       else
-        updateNeedImmediate(src.id);
+        updatePropagatesImmediate(src.id);
     }
   }
 }
@@ -1648,7 +1598,7 @@ void ObservablesGraph::markComputedConsumed(NodeId id)
     return;
 
   s->computedHasActiveConsumers = true;
-  for (auto &src : s->sources)
+  for (auto &src : slotsData[id.index].sources)
     markComputedConsumed(src.id);
 }
 
@@ -1659,19 +1609,19 @@ void ObservablesGraph::updateComputedConsumed(NodeId id)
   if (!s || !s->isComputed)
     return;
 
-  bool consumed = !s->scriptSubscribers.empty();
+  NodeSlotData &d = slotsData[id.index];
+  bool consumed = !d.scriptSubscribers.empty();
   if (!consumed)
   {
-    for (NodeId dep : s->dependents)
+    for (NodeId dep : d.dependents)
     {
-      NodeSlot *ds = resolve(dep);
-      if (ds && ds->computedHasActiveConsumers)
+      if (NodeSlot *ds = resolve(dep); ds && ds->computedHasActiveConsumers)
       {
         consumed = true;
         break;
       }
     }
-    if (!consumed && !s->watchers.empty())
+    if (!consumed && !d.watchers.empty())
       consumed = true;
   }
 
@@ -1679,7 +1629,7 @@ void ObservablesGraph::updateComputedConsumed(NodeId id)
     return;
 
   s->computedHasActiveConsumers = consumed;
-  for (auto &src : s->sources)
+  for (auto &src : d.sources)
   {
     if (consumed)
       markComputedConsumed(src.id);
@@ -1737,7 +1687,7 @@ bool ObservablesGraph::isStubObservableInstance(const Sqrat::Object &inst) const
 
 void ObservablesGraph::fillInfo(NodeId id, Sqrat::Table &t) const
 {
-  const NodeSlot *s = resolve(id);
+  const NodeSlotData *s = resolveData(id);
   if (!s || !s->initInfo)
     return;
   s->initInfo->fillInfo(t);
@@ -1746,7 +1696,7 @@ void ObservablesGraph::fillInfo(NodeId id, Sqrat::Table &t) const
 
 void ObservablesGraph::fillInfo(NodeId id, String &str) const
 {
-  const NodeSlot *s = resolve(id);
+  const NodeSlotData *s = resolveData(id);
   if (!s)
   {
     str = "<stale node>";
@@ -1775,6 +1725,58 @@ void ObservablesGraph::fillInfo(NodeId id, String &str) const
 // Script subscriber management
 // --------------------------------------------------------------------------
 
+ObservablesGraph::SubscribeResult ObservablesGraph::addScriptSubscriber(NodeId id, HSQOBJECT func, bool check_behavior)
+{
+  NodeSlotData *s = resolveData(id);
+  if (!s)
+    return SubscribeResult::StaleNode;
+
+  bool exists = eastl::find_if(s->scriptSubscribers.begin(), s->scriptSubscribers.end(), [&](const Sqrat::Function &f) {
+    G_ASSERT(vm == f.GetVM());
+    return are_sq_obj_equal(vm, func, f.GetFunc());
+  }) != s->scriptSubscribers.end();
+  if (exists)
+    return SubscribeResult::Duplicate;
+
+  if (!check_behavior)
+  {
+    if (s->numNoCheckSubscribers >= 255)
+      return SubscribeResult::TooManyNoCheck;
+    // Insert at partition boundary (before first checked subscriber)
+    s->scriptSubscribers.insert(s->scriptSubscribers.begin() + s->numNoCheckSubscribers, Sqrat::Function(vm, Sqrat::Object(vm), func));
+    s->numNoCheckSubscribers++;
+  }
+  else
+  {
+    // Checked subscribers go at the end
+    s->scriptSubscribers.push_back(Sqrat::Function(vm, Sqrat::Object(vm), func));
+  }
+  markComputedConsumed(id);
+  return SubscribeResult::Added;
+}
+
+
+void ObservablesGraph::removeScriptSubscriber(NodeId id, HSQOBJECT func)
+{
+  NodeSlotData *s = resolveData(id);
+  if (!s)
+    return;
+  for (int i = 0, n = s->scriptSubscribers.size(); i < n; ++i)
+  {
+    G_ASSERT(vm == s->scriptSubscribers[i].GetVM());
+    if (are_sq_obj_equal(vm, func, s->scriptSubscribers[i].GetFunc()))
+    {
+      if (i < s->numNoCheckSubscribers)
+        s->numNoCheckSubscribers--;
+      erase_items(s->scriptSubscribers, i, 1);
+      if (s->scriptSubscribers.empty())
+        updateComputedConsumed(id);
+      break;
+    }
+  }
+}
+
+
 SQInteger ObservablesGraph::subscribe(HSQUIRRELVM vm, bool check_behavior)
 {
   if (!Sqrat::check_signature<WatchedHandle *>(vm))
@@ -1787,10 +1789,6 @@ SQInteger ObservablesGraph::subscribe(HSQUIRRELVM vm, bool check_behavior)
   if (h->graph->constructionLockMsg)
     return sq_throwerror(vm, h->graph->constructionLockMsg);
 
-  NodeSlot *s = h->graph->resolve(h->id);
-  if (!s)
-    return sq_throwerror(vm, "Stale observable");
-
   HSQOBJECT func;
   sq_getstackobj(vm, 2, &func);
 
@@ -1800,31 +1798,12 @@ SQInteger ObservablesGraph::subscribe(HSQUIRRELVM vm, bool check_behavior)
   if (!valid)
     return sqstd_throwerrorf(vm, "Subscriber function must accept 2 parameters (actual count is %d)", nparams);
 
-  bool isNew = eastl::find_if(s->scriptSubscribers.begin(), s->scriptSubscribers.end(), [&](const Sqrat::Function &f) {
-    G_ASSERT(vm == f.GetVM());
-    return are_sq_obj_equal(vm, func, f.GetFunc());
-  }) == s->scriptSubscribers.end();
-
-  if (isNew)
+  switch (h->graph->addScriptSubscriber(h->id, func, check_behavior))
   {
-    if (!check_behavior)
-    {
-      if (s->numNoCheckSubscribers >= 255)
-        return sq_throwerror(vm, "Non-checked subscriber count is 255 max. Limit exceeded.");
-      // Insert at partition boundary (before first checked subscriber)
-      s->scriptSubscribers.insert(s->scriptSubscribers.begin() + s->numNoCheckSubscribers,
-        Sqrat::Function(vm, Sqrat::Object(vm), func));
-      s->numNoCheckSubscribers++;
-    }
-    else
-    {
-      // Checked subscribers go at the end
-      s->scriptSubscribers.push_back(Sqrat::Function(vm, Sqrat::Object(vm), func));
-    }
-    if (s->isComputed)
-      h->graph->markComputedConsumed(h->id);
-    if (OwnerScope *scope = h->graph->currentOwnerScope)
-      scope->subscriptions.push_back(OwnerScope::SubEntry{h->id, Sqrat::Object(func, vm)});
+    case SubscribeResult::StaleNode: return sq_throwerror(vm, "Stale observable");
+    case SubscribeResult::TooManyNoCheck: return sq_throwerror(vm, "Non-checked subscriber count is 255 max. Limit exceeded.");
+    case SubscribeResult::Added:
+    case SubscribeResult::Duplicate: break;
   }
 
   sq_push(vm, 1);
@@ -1842,26 +1821,12 @@ SQInteger ObservablesGraph::unsubscribe(HSQUIRRELVM vm)
   if (!h || !h->graph)
     return sq_throwerror(vm, "Invalid observable");
 
-  NodeSlot *s = h->graph->resolve(h->id);
-  if (!s)
+  if (!h->graph->resolve(h->id))
     return sq_throwerror(vm, "Stale observable");
 
   HSQOBJECT func;
   sq_getstackobj(vm, 2, &func);
-
-  for (int i = 0, n = s->scriptSubscribers.size(); i < n; ++i)
-  {
-    G_ASSERT(vm == s->scriptSubscribers[i].GetVM());
-    if (are_sq_obj_equal(vm, func, s->scriptSubscribers[i].GetFunc()))
-    {
-      if (i < s->numNoCheckSubscribers)
-        s->numNoCheckSubscribers--;
-      erase_items(s->scriptSubscribers, i, 1);
-      if (s->scriptSubscribers.empty() && s->isComputed)
-        h->graph->updateComputedConsumed(h->id);
-      break;
-    }
-  }
+  h->graph->removeScriptSubscriber(h->id, func);
   return 1;
 }
 
@@ -1890,7 +1855,7 @@ SQInteger ObservablesGraph::dbgGetListeners(HSQUIRRELVM vm)
   if (!h || !h->graph)
     return sq_throwerror(vm, "Invalid observable");
 
-  NodeSlot *s = h->graph->resolve(h->id);
+  NodeSlotData *s = h->graph->resolveData(h->id);
   if (!s)
     return sq_throwerror(vm, "Stale observable");
 
@@ -2052,23 +2017,23 @@ Sqrat::Object WatchedHandle::getValueDeprecated()
   return getValue();
 }
 
-bool WatchedHandle::getDeferred() const
+bool WatchedHandle::getImmediate() const
 {
   if (!graph)
     return false;
   const NodeSlot *s = graph->resolve(id);
-  return s ? s->isDeferred : false;
+  return s ? s->isImmediate : false;
 }
 
-void WatchedHandle::setDeferred(bool v)
+void WatchedHandle::setImmediate(bool v)
 {
   if (!graph)
     return;
   NodeSlot *s = graph->resolve(id);
   if (s)
   {
-    s->isDeferred = v;
-    graph->updateNeedImmediate(id);
+    s->isImmediate = v;
+    graph->updatePropagatesImmediate(id);
   }
 }
 
@@ -2076,7 +2041,7 @@ int WatchedHandle::getTimeChangeReq() const
 {
   if (!graph)
     return 0;
-  const NodeSlot *s = graph->resolve(id);
+  const NodeSlotData *s = graph->resolveData(id);
   return s ? s->timeChangeReq : 0;
 }
 
@@ -2084,7 +2049,7 @@ int WatchedHandle::getTimeChanged() const
 {
   if (!graph)
     return 0;
-  const NodeSlot *s = graph->resolve(id);
+  const NodeSlotData *s = graph->resolveData(id);
   return s ? s->timeChanged : 0;
 }
 
@@ -2195,7 +2160,7 @@ SQInteger WatchedHandle::update(HSQUIRRELVM vm, int arg_pos)
   if (self->graph->vm != vm)
     return sq_throwerror(vm, "Invalid VM");
 
-  NodeSlot *s = self->graph->resolve(self->id);
+  NodeSlotData *s = self->graph->resolveData(self->id);
   if (!s)
     return sq_throwerror(vm, "Stale observable");
 
@@ -2236,7 +2201,7 @@ SQInteger WatchedHandle::mutate(HSQUIRRELVM vm)
   if (self->graph->vm != vm)
     return sq_throwerror(vm, "Invalid VM");
 
-  NodeSlot *s = self->graph->resolve(self->id);
+  NodeSlotData *s = self->graph->resolveData(self->id);
   if (!s)
     return sq_throwerror(vm, "Stale observable");
 
@@ -2268,7 +2233,7 @@ SQInteger WatchedHandle::mutate(HSQUIRRELVM vm)
     return sq_throwerror(vm, "Callback failure");
 
   // Re-resolve after callback
-  s = self->graph->resolve(self->id);
+  s = self->graph->resolveData(self->id);
   if (!s)
     return sq_throwerror(vm, "Observable destroyed during mutate");
 
@@ -2298,7 +2263,7 @@ SQInteger WatchedHandle::modify(HSQUIRRELVM vm)
   if (self->graph->vm != vm)
     return sq_throwerror(vm, "Invalid VM");
 
-  NodeSlot *s = self->graph->resolve(self->id);
+  NodeSlotData *s = self->graph->resolveData(self->id);
   if (!s)
     return sq_throwerror(vm, "Stale observable");
 
@@ -2336,7 +2301,7 @@ static SQInteger format_handle_tostring(HSQUIRRELVM vm, WatchedHandle *self, con
     return 1;
   }
 
-  NodeSlot *s = self->graph->resolve(self->id);
+  NodeSlotData *s = self->graph->resolveData(self->id);
   if (!s)
   {
     String stale(0, "%s (stale)", type_name);
@@ -2349,7 +2314,7 @@ static SQInteger format_handle_tostring(HSQUIRRELVM vm, WatchedHandle *self, con
   const char *name = s->initInfo ? s->initInfo->initFuncName.c_str() : "<unknown>";
   String str(0, "%s (0x%p) %s | %d watchers, %d subscribers", type_name, self, name, (int)s->watchers.size(),
     (int)s->scriptSubscribers.size());
-  if (s->isComputed)
+  if (self->graph->node(self->id).isComputed)
     str.aprintf(0, ", %d sources", (int)s->sources.size());
   if (SQ_SUCCEEDED(sq_tostring(vm, -1)))
   {
@@ -2474,7 +2439,7 @@ SQInteger ComputedHandle::script_ctor(HSQUIRRELVM vm)
 
   // Setup computed: store initial value and wire up dependencies
   {
-    NodeSlot *ns = graph->resolve(nodeId);
+    NodeSlotData *ns = graph->resolveData(nodeId);
     if (!ns)
       return sq_throwerror(vm, "Node lost during setup");
 
@@ -2486,17 +2451,10 @@ SQInteger ComputedHandle::script_ctor(HSQUIRRELVM vm)
     // Snapshot source versions and wire up dependent edges
     for (auto &src : ns->sources)
     {
-      NodeSlot *srcSlot = graph->resolve(src.id);
+      NodeSlotData *srcSlot = graph->resolveData(src.id);
       if (srcSlot)
         src.lastSeenVersion = srcSlot->version;
       graph->addDependent(src.id, nodeId);
-    }
-
-    // Propagate needImmediate/used through sources
-    if (ns->needImmediate)
-    {
-      for (auto &src : ns->sources)
-        graph->markImmediate(src.id);
     }
   }
 
@@ -2513,7 +2471,7 @@ SQInteger ComputedHandle::get_sources(HSQUIRRELVM vm)
   if (!h || !h->graph)
     return sq_throwerror(vm, "Invalid computed");
 
-  NodeSlot *s = h->graph->resolve(h->id);
+  NodeSlotData *s = h->graph->resolveData(h->id);
   if (!s)
     return sq_throwerror(vm, "Stale computed");
 
@@ -2521,7 +2479,7 @@ SQInteger ComputedHandle::get_sources(HSQUIRRELVM vm)
   for (SourceEntry &src : s->sources)
   {
     // Return the source observable value (not the handle) - matching old behavior
-    NodeSlot *srcSlot = h->graph->resolve(src.id);
+    NodeSlotData *srcSlot = h->graph->resolveData(src.id);
     if (srcSlot)
       res.SetValue(src.varName.c_str(), Sqrat::Object(srcSlot->value, vm));
   }
@@ -2544,6 +2502,20 @@ SQInteger ComputedHandle::_tostring(HSQUIRRELVM vm)
 
 static SQInteger forbid_computed_modify(HSQUIRRELVM vm) { return sq_throwerror(vm, "Can't modify computed observable"); }
 
+static SQInteger forbid_native_watched_modify(HSQUIRRELVM vm) { return sq_throwerror(vm, "Can't modify native watched"); }
+
+static SQInteger forbid_native_watched_set_immediate(HSQUIRRELVM vm)
+{
+  return sq_throwerror(vm, "Switching native watched immediate mode is not allowed");
+}
+
+static SQInteger native_watched_get_immediate(HSQUIRRELVM vm)
+{
+  if (!Sqrat::check_signature<WatchedHandle *>(vm))
+    return SQ_ERROR;
+  sq_pushbool(vm, Sqrat::Var<WatchedHandle *>(vm, 1).value->getImmediate());
+  return 1;
+}
 
 static SQInteger set_subscriber_validation(HSQUIRRELVM vm)
 {
@@ -2664,8 +2636,8 @@ void bind_frp_classes(SqModules *module_mgr)
       "instance.subscribe_with_nasty_disregard_of_frp_update(handler: function): instance")
     .SquirrelFuncDeclString(&ObservablesGraph::unsubscribe, "instance.unsubscribe(handler: function): any")
     .SquirrelFuncDeclString(&ObservablesGraph::dbgGetListeners, "instance.dbgGetListeners(): table")
-    .Prop("deferred", &WatchedHandle::getDeferred, &WatchedHandle::setDeferred)
-    .Func("setDeferred", &WatchedHandle::setDeferred)
+    .Prop("immediate", &WatchedHandle::getImmediate, &WatchedHandle::setImmediate)
+    .Func("setImmediate", &WatchedHandle::setImmediate)
     .Prop("value", &WatchedHandle::getValueDeprecated)
     .Func("get", &WatchedHandle::getValue)
     .Prop("timeChangeReq", &WatchedHandle::getTimeChangeReq)
@@ -2693,7 +2665,18 @@ void bind_frp_classes(SqModules *module_mgr)
     .SquirrelFuncDeclString(ComputedHandle::get_sources, "instance.getSources(): table")
     /**/;
 
+  ///@class frp/NativeWatched
+  ///@extends Watched
   Sqrat::DerivedClass<NativeWatched, WatchedHandle, Sqrat::NoConstructor<NativeWatched>> nativeWatchedClass(vm, "NativeWatched");
+  nativeWatchedClass //
+    .SquirrelFuncDeclString(forbid_native_watched_modify, "instance.mutate(...): null")
+    .SquirrelFuncDeclString(forbid_native_watched_modify, "instance.set(...): null")
+    .SquirrelFuncDeclString(forbid_native_watched_modify, "instance.modify(...): null")
+    .SquirrelFuncDeclString(
+      +[](HSQUIRRELVM vm) { return sq_throwerror(vm, "Triggering native watched is not allowed"); }, "instance.trigger(...): instance")
+    .SquirrelFuncDeclString(forbid_native_watched_set_immediate, "instance.setImmediate(...): null")
+    .SquirrelProp("immediate", native_watched_get_immediate, forbid_native_watched_set_immediate)
+    /**/;
 
   Sqrat::Table exports(vm);
   exports.Bind("Watched", watchedClass);

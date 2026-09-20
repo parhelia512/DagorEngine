@@ -11,6 +11,7 @@
 #include <ioSys/dag_dataBlockCommentsDef.h>
 #include <ioSys/dag_fileIo.h>
 #include <ioSys/dag_memIo.h>
+#include <libTools/util/appDirRelativePath.h>
 #include <libTools/util/blkUtil.h>
 #include <libTools/util/strUtil.h>
 #include <osApiWrappers/dag_direct.h>
@@ -19,6 +20,7 @@
 #include <propPanel/c_common.h>
 #include <propPanel/commonWindow/multiListDialog.h>
 #include <propPanel/constants.h>
+#include <propPanel/imguiHelper.h>
 #include <gui/dag_imgui.h>
 #include <imgui/imgui.h>
 #include <winGuiWrapper/wgw_dialogs.h>
@@ -1056,6 +1058,134 @@ static float get_canopy_save_footer_height()
   const ImGuiStyle &style = ImGui::GetStyle();
   return ImGui::GetFrameHeight() + style.WindowPadding.y * 2.0f;
 }
+
+static DagorAsset *find_fx_asset(const char *name)
+{
+  const int fxAssetType = DAEDITOR3.getAssetTypeId("fx");
+  const int efxAssetType = DAEDITOR3.getAssetTypeId("efx");
+  DagorAsset *fxAsset = fxAssetType >= 0 ? DAEDITOR3.getAssetByName(name, fxAssetType) : nullptr;
+  DagorAsset *efxAsset = !fxAsset && efxAssetType >= 0 ? DAEDITOR3.getAssetByName(name, efxAssetType) : nullptr;
+  if (fxAsset || efxAsset)
+    return fxAsset ? fxAsset : efxAsset;
+
+  DagorAsset *genericAsset = DAEDITOR3.getAssetByName(name);
+  return genericAsset && (genericAsset->getType() == fxAssetType || genericAsset->getType() == efxAssetType) ? genericAsset : nullptr;
+}
+
+static String resolve_canopy_fx_templates_path(const char *path)
+{
+#if !_TARGET_PC_WIN
+  // The shared helper treats leading slash paths as app-relative on Linux.
+  if (path && path[0] == '/')
+    return String(path);
+#endif
+  return make_eff_app_relative_path(path);
+}
+
+static String get_canopy_fx_templates_path()
+{
+  static const char *candidatePaths[] = {"prog/gameBase/gamebase/config/_effects_destruction.blk",
+    "prog/gameBase/gamedata/templates/effects_includes/effects_destruction.blk"};
+  static constexpr const char *AV_BLOCK_NAME = "asset_viewer";
+  // This setting follows the app-relative path convention of asset_viewer.
+  static constexpr const char *PARAM_NAME = "canopyFxTemplatesBlk";
+  static String loadedAppBlkPath;
+  static int64_t loadedAppBlkMtime = -1;
+  static String cachedTemplatesPath;
+  static String lastMissingTemplatesPath;
+
+  const char *appBlkPath = ::get_app().getWorkspace().getAppBlkPath();
+  DagorStat appBlkStat = {};
+  const int64_t currentAppBlkMtime = df_stat(appBlkPath, &appBlkStat) == 0 ? appBlkStat.mtime : -1;
+  if (loadedAppBlkPath != appBlkPath || loadedAppBlkMtime != currentAppBlkMtime || cachedTemplatesPath.empty())
+  {
+    loadedAppBlkPath = appBlkPath;
+    loadedAppBlkMtime = currentAppBlkMtime;
+    cachedTemplatesPath.clear();
+
+    String defaultRelativePath(candidatePaths[0]);
+    for (const char *candidatePath : candidatePaths)
+    {
+      String path = resolve_canopy_fx_templates_path(candidatePath);
+      if (dd_file_exists(path))
+      {
+        defaultRelativePath = candidatePath;
+        break;
+      }
+    }
+
+    DataBlock appBlk(appBlkPath);
+    const DataBlock *assetViewerBlk = appBlk.getBlockByNameEx(AV_BLOCK_NAME);
+    const char *configuredPath = assetViewerBlk->getStr(PARAM_NAME, nullptr);
+    const char *relativePath = configuredPath ? configuredPath : defaultRelativePath;
+    if (relativePath && *relativePath)
+    {
+      String path = resolve_canopy_fx_templates_path(relativePath);
+      if (dd_file_exists(path))
+      {
+        cachedTemplatesPath = path;
+        lastMissingTemplatesPath.clear();
+      }
+      else if (configuredPath && lastMissingTemplatesPath != path)
+      {
+        lastMissingTemplatesPath = path;
+        logwarn("Canopy FX templates BLK \"%s\" does not exist.", path.str());
+      }
+    }
+  }
+
+  return cachedTemplatesPath;
+}
+
+static const DataBlock *get_canopy_fx_templates()
+{
+  static String loadedPath;
+  static int64_t loadedMtime = -1;
+  static DataBlock templates;
+  static bool templatesLoaded = false;
+  static String lastLoadErrorPath;
+  static int64_t lastLoadErrorMtime = -2;
+
+  const String path = get_canopy_fx_templates_path();
+  if (path.empty())
+    return nullptr;
+
+  DagorStat stat = {};
+  const int64_t currentMtime = df_stat(path, &stat) == 0 ? stat.mtime : -1;
+  if (path != loadedPath || currentMtime != loadedMtime)
+  {
+    loadedPath = path;
+    loadedMtime = currentMtime;
+    templates.clearData();
+    templatesLoaded = templates.load(path);
+    if (!templatesLoaded && (lastLoadErrorPath != path || lastLoadErrorMtime != currentMtime))
+    {
+      lastLoadErrorPath = path;
+      lastLoadErrorMtime = currentMtime;
+      logwarn("Canopy FX templates BLK \"%s\" cannot be loaded.", path.str());
+    }
+  }
+
+  return templatesLoaded ? &templates : nullptr;
+}
+
+static const char *find_canopy_fx_template_asset_name(const char *template_name)
+{
+  const DataBlock *templates = get_canopy_fx_templates();
+  const DataBlock *effectTemplate = templates ? templates->getBlockByName(template_name) : nullptr;
+  if (!effectTemplate)
+    return nullptr;
+
+  if (const char *fxName = effectTemplate->getStr("fx", nullptr))
+    return fxName;
+
+  for (int i = 0; i < effectTemplate->blockCount(); ++i)
+    if (const DataBlock *block = effectTemplate->getBlock(i))
+      if (const char *fxName = block->getStr("effect__name", nullptr))
+        return fxName;
+
+  return nullptr;
+}
 } // namespace
 
 DagorAsset *resolve_canopy_fx_asset(const char *name)
@@ -1063,16 +1193,11 @@ DagorAsset *resolve_canopy_fx_asset(const char *name)
   if (is_empty_string(name))
     return nullptr;
 
-  const int fxAssetType = DAEDITOR3.getAssetTypeId("fx");
-  const int efxAssetType = DAEDITOR3.getAssetTypeId("efx");
-  DagorAsset *fxAsset = fxAssetType >= 0 ? DAEDITOR3.getAssetByName(name, fxAssetType) : nullptr;
-  DagorAsset *efxAsset = !fxAsset && efxAssetType >= 0 ? DAEDITOR3.getAssetByName(name, efxAssetType) : nullptr;
-  DagorAsset *resolvedFxAsset = fxAsset ? fxAsset : efxAsset;
-  if (resolvedFxAsset)
-    return resolvedFxAsset;
+  if (DagorAsset *asset = find_fx_asset(name))
+    return asset;
 
-  DagorAsset *genericAsset = DAEDITOR3.getAssetByName(name);
-  return genericAsset && (genericAsset->getType() == fxAssetType || genericAsset->getType() == efxAssetType) ? genericAsset : nullptr;
+  const char *templateAssetName = find_canopy_fx_template_asset_name(name);
+  return templateAssetName ? find_fx_asset(templateAssetName) : nullptr;
 }
 
 CanopyEditorWindow::CanopyEditorWindow() :
@@ -1368,16 +1493,20 @@ void CanopyEditorWindow::onClick(int pcb_id, PropPanel::ContainerPropertyControl
 
 void CanopyEditorWindow::updateImgui()
 {
-  const bool canSaveParameters = canEditParameters() && dirty;
-  const float footerHeight = get_canopy_save_footer_height();
+  const bool canSaveParameters = canEditParameters() && dirty && !pendingTextParse && !textParseError;
+  const float footerHeight = get_canopy_save_footer_height() + (textParseError ? ImGui::GetTextLineHeightWithSpacing() : 0.0f);
   ImGui::PushStyleColor(ImGuiCol_ChildBg, ImGui::GetStyleColorVec4(ImGuiCol_WindowBg));
   ImGui::BeginChild("##canopy_editor_scroll_region", ImVec2(0.0f, -footerHeight), false);
   PropPanel::ContainerPropertyControl::updateImgui();
+  PropPanel::ImguiHelper::hookWindowScrollbarsForTestRuntime();
   ImGui::Dummy(ImVec2(0.0f, 0.0f));
   ImGui::EndChild();
   ImGui::PopStyleColor();
 
   ImGui::Separator();
+  if (textParseError)
+    ImGui::TextUnformatted("Invalid BLK syntax.");
+
   if (!canSaveParameters)
     ImGui::BeginDisabled();
 
@@ -1468,8 +1597,10 @@ void CanopyEditorWindow::updateCurrentAssetParameters()
   currentDmgBlockFormat = CanopyDmgBlockFormat::Legacy;
   dirty = false;
   pendingTextParse = false;
+  textParseError = false;
 
   String normalizedAssetName;
+  String includeLoadErrorPath;
   const String selectedBlkResolvedPath = getResolvedBlkPath();
   if (!selectedBlkResolvedPath.empty() && !loadedBlkDocument.fileText.empty() && loadedBlkDocument.path != selectedBlkResolvedPath)
     reloadSelectedBlk();
@@ -1484,7 +1615,6 @@ void CanopyEditorWindow::updateCurrentAssetParameters()
 
     if (!selectedBlkResolvedPath.empty() && loadedBlkDocument.path == selectedBlkResolvedPath)
     {
-      String includeLoadErrorPath;
       if (!matchedDmgBlock)
       {
         CanopyBlkDocument includedDocument;
@@ -1499,16 +1629,6 @@ void CanopyEditorWindow::updateCurrentAssetParameters()
             matchedDmgBlock = get_block_by_path(loadedBlkDocument.blk, matchedPath);
         }
       }
-
-      const bool includeSearchSucceeded = matchedDmgBlock || loadedBlkDocument.path != selectedBlkResolvedPath;
-      if (!includeSearchSucceeded && !includeLoadErrorPath.empty() && includeLoadErrorPath != lastIncludeLoadErrorPath)
-      {
-        lastIncludeLoadErrorPath = includeLoadErrorPath;
-        wingw::message_box(wingw::MBS_EXCL | wingw::MBS_OK, "Canopy parameters", "Failed to load included canopy BLK from '%s'.",
-          includeLoadErrorPath.str());
-      }
-      else if (includeLoadErrorPath.empty())
-        lastIncludeLoadErrorPath.clear();
     }
 
     if (!matchedDmgBlock)
@@ -1527,8 +1647,9 @@ void CanopyEditorWindow::updateCurrentAssetParameters()
     else
     {
       const char *savedAssetName = normalizedAssetName.empty() ? currentAssetName.str() : normalizedAssetName.str();
-      if (const DataBlock *templateDmgBlock =
-            find_default_dmg_template_block(loadedBlkDocument.blk, savedAssetName, currentDmgBlockFormat))
+      const DataBlock *templateDmgBlock =
+        find_default_dmg_template_block(loadedBlkDocument.blk, savedAssetName, currentDmgBlockFormat);
+      if (templateDmgBlock)
       {
         editableDmgBlock.setFrom(templateDmgBlock);
         if (currentDmgBlockFormat == CanopyDmgBlockFormat::Named)
@@ -1549,6 +1670,15 @@ void CanopyEditorWindow::updateCurrentAssetParameters()
       editorParametersText = build_blk_text(editableDmgBlock, loadedBlkDocument.lineEnding);
     }
   }
+
+  if (!includeLoadErrorPath.empty() && currentDmgBlockPath.empty() && includeLoadErrorPath != lastIncludeLoadErrorPath)
+  {
+    lastIncludeLoadErrorPath = includeLoadErrorPath;
+    wingw::message_box(wingw::MBS_EXCL | wingw::MBS_OK, "Canopy parameters", "Failed to load included canopy BLK from '%s'.",
+      includeLoadErrorPath.str());
+  }
+  else if (includeLoadErrorPath.empty() || !currentDmgBlockPath.empty())
+    lastIncludeLoadErrorPath.clear();
 
   dirty = strcmp(editorParametersText, savedParametersText) != 0;
   updateViewportFxState();
@@ -1704,16 +1834,22 @@ void CanopyEditorWindow::rebuildParametersPanel(PropPanel::ContainerPropertyCont
     create_canopy_type_row(panel, get_top_level_canopy_type_value(editableDmgBlock));
 }
 
-void CanopyEditorWindow::applyEditorText(bool rebuild_parameters_panel)
+bool CanopyEditorWindow::applyEditorText(bool rebuild_parameters_panel)
 {
-  pendingTextParse = false;
-
   const String resolvedBlkPath = getResolvedBlkPath();
   const char *sourceName = resolvedBlkPath.empty() ? "<canopy_editor>" : resolvedBlkPath.str();
 
   DataBlock parsedBlock;
   if (!load_blk_text_from_string(editorParametersText, editorParametersText.length(), sourceName, parsedBlock))
-    return;
+  {
+    pendingTextParse = false;
+    textParseError = true;
+    updateControlStates();
+    return false;
+  }
+
+  pendingTextParse = false;
+  textParseError = false;
 
   editableDmgBlock.setFrom(&parsedBlock);
   const bool canopyTypeNormalized = normalize_top_level_canopy_type_params(editableDmgBlock);
@@ -1735,6 +1871,7 @@ void CanopyEditorWindow::applyEditorText(bool rebuild_parameters_panel)
 
   updateDirtyState();
   invalidate_viewport_cache();
+  return true;
 }
 
 bool CanopyEditorWindow::flushPendingEditorTextBeforeVisualChange()
@@ -1749,10 +1886,11 @@ bool CanopyEditorWindow::flushPendingEditorTextBeforeVisualChange()
 void CanopyEditorWindow::updateControlStates()
 {
   const bool canEdit = canEditParameters();
-  const bool canEditVisual = canEdit && !pendingTextParse;
+  const bool canEditVisual = canEdit && !pendingTextParse && !textParseError;
   setEnabledById(ID_CANOPY_SHOW_FX, viewportFxAvailable && canEditVisual);
   setEnabledById(ID_CANOPY_ADD_PARAMS,
     canEditVisual && has_available_addable_param_templates(loadedBlkDocument.blk, editableDmgBlock, currentDmgBlockFormat));
+  setEnabledById(ID_CANOPY_CANOPY_TYPE, canEditVisual);
   setEnabledById(ID_CANOPY_PARAMETERS_GROUP, canEditVisual);
   setEnabledById(ID_CANOPY_PARAMETERS_TEXT_GROUP, canEdit);
 }
@@ -1760,6 +1898,7 @@ void CanopyEditorWindow::updateControlStates()
 void CanopyEditorWindow::syncTextFromRecognizedParameters()
 {
   pendingTextParse = false;
+  textParseError = false;
   normalize_top_level_canopy_type_params(editableDmgBlock);
   editorParametersText = build_blk_text(editableDmgBlock, loadedBlkDocument.lineEnding);
   syncTextEditorWidget();
@@ -1796,13 +1935,14 @@ void CanopyEditorWindow::updateViewportFxState()
     return;
   }
 
-  if (!resolve_canopy_fx_asset(fxName))
+  DagorAsset *resolvedFxAsset = resolve_canopy_fx_asset(fxName);
+  if (!resolvedFxAsset)
   {
     showFx = false;
     return;
   }
 
-  viewportFxAssetName = fxName;
+  viewportFxAssetName = resolvedFxAsset->getName();
   viewportFxAvailable = true;
   if (!hadViewportFxAvailable || previousViewportFxAssetName != viewportFxAssetName)
     showFx = true;
@@ -1813,14 +1953,19 @@ void CanopyEditorWindow::discardUnsavedChanges()
   editorParametersText = savedParametersText;
   dirty = false;
   pendingTextParse = false;
+  textParseError = false;
   applyEditorText(true);
   refreshPanel(false);
 }
 
 bool CanopyEditorWindow::saveCurrentParameters()
 {
-  if (pendingTextParse)
-    applyEditorText(true);
+  if ((pendingTextParse || textParseError) && !applyEditorText(true))
+  {
+    wingw::message_box(wingw::MBS_EXCL | wingw::MBS_OK, "Canopy parameters",
+      "Cannot save canopy parameters while the text editor contains invalid BLK syntax.");
+    return false;
+  }
 
   if (loadedBlkDocument.path.empty())
     return false;
@@ -1832,7 +1977,10 @@ bool CanopyEditorWindow::saveCurrentParameters()
   if (currentDmgBlockFormat == CanopyDmgBlockFormat::Legacy)
     set_top_level_name_value(itemsToSave, savedAssetName);
 
-  DataBlock *currentBlock = currentDmgBlockPath.empty() ? nullptr : get_block_by_path(loadedBlkDocument.blk, currentDmgBlockPath);
+  DataBlock updatedBlk;
+  updatedBlk.setFrom(&loadedBlkDocument.blk);
+
+  DataBlock *currentBlock = currentDmgBlockPath.empty() ? nullptr : get_block_by_path(updatedBlk, currentDmgBlockPath);
   if (currentBlock)
   {
     currentBlock->setFrom(&itemsToSave);
@@ -1841,8 +1989,7 @@ bool CanopyEditorWindow::saveCurrentParameters()
   }
   else
   {
-    DataBlock *parentBlock =
-      newDmgBlockParentPath.empty() ? &loadedBlkDocument.blk : get_block_by_path(loadedBlkDocument.blk, newDmgBlockParentPath);
+    DataBlock *parentBlock = newDmgBlockParentPath.empty() ? &updatedBlk : get_block_by_path(updatedBlk, newDmgBlockParentPath);
     if (!parentBlock)
       return false;
 
@@ -1853,7 +2000,7 @@ bool CanopyEditorWindow::saveCurrentParameters()
       parentBlock->swapBlocks(blockIndex, blockIndex - 1);
   }
 
-  const String updatedFileText = build_blk_text(loadedBlkDocument.blk, loadedBlkDocument.lineEnding);
+  const String updatedFileText = build_blk_text(updatedBlk, loadedBlkDocument.lineEnding);
   if (!write_string_to_file(loadedBlkDocument.path, updatedFileText))
   {
     wingw::message_box(wingw::MBS_EXCL | wingw::MBS_OK, "Canopy parameters", "Failed to write canopy parameters to '%s'.",
@@ -1865,6 +2012,7 @@ bool CanopyEditorWindow::saveCurrentParameters()
   updateCurrentAssetParameters();
   dirty = false;
   pendingTextParse = false;
+  textParseError = false;
   refreshPanel();
   return true;
 }
@@ -1976,6 +2124,7 @@ void CanopyEditorWindow::onTextEditorValueChanged(const char *text)
   textEditorWidgetText = text ? text : "";
   editorParametersText = normalize_line_endings(textEditorWidgetText, loadedBlkDocument.lineEnding);
   pendingTextParse = true;
+  textParseError = false;
   lastTextChangeMs = get_time_msec();
   updateDirtyState();
 }

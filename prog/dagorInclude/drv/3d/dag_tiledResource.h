@@ -4,6 +4,8 @@
 //
 #pragma once
 
+#include <drv/3d/dag_multi_interface.h>
+
 struct ResourceHeap;
 class BaseTexture;
 
@@ -52,7 +54,7 @@ struct TextureTilingInfo
 };
 
 
-namespace d3d
+namespace d3d _MULTI_INTERFACE
 {
 /**
  * @brief Maps a memory area of the heap to the specified xyz location of the texture.
@@ -74,7 +76,7 @@ void map_tile_to_resource(BaseTexture *tex, ResourceHeap *heap, const TileMappin
  * @return The tiling information of the texture.
  */
 TextureTilingInfo get_texture_tiling_info(BaseTexture *tex, size_t subresource);
-} // namespace d3d
+} // namespace d3d _MULTI_INTERFACE
 
 #if _TARGET_D3D_MULTI
 #include <drv/3d/dag_interface_table.h>

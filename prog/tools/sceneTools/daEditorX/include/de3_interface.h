@@ -113,8 +113,9 @@ public:
   virtual bool getTexAssetBuiltDDSx(const char *a_name, const DataBlock &a_props, ddsx::Buffer &dest, unsigned target,
     const char *profile, ILogWriter *log) = 0;
 
-  virtual void imguiBegin(const char *name, bool *open = nullptr, unsigned window_flags = 0) = 0;
-  virtual void imguiBegin(PropPanel::PanelWindowPropertyControl &panel_window, bool *open = nullptr, unsigned window_flags = 0) = 0;
+  //! False when the window is hidden and its items are no-ops. Call imguiEnd() either way: ImGui pairs every Begin with an End.
+  virtual bool imguiBegin(const char *name, bool *open = nullptr, unsigned window_flags = 0) = 0;
+  virtual bool imguiBegin(PropPanel::PanelWindowPropertyControl &panel_window, bool *open = nullptr, unsigned window_flags = 0) = 0;
   virtual void imguiEnd() = 0;
 
   virtual PropPanel::IPropPanelService *getPropPanelService() = 0;

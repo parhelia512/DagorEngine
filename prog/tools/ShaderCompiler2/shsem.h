@@ -68,7 +68,7 @@ public:
   virtual void report_bool_eval_error(const char *error) {}
 
   virtual void decl_bool_alias(const char *name, const char *base_name) {}
-  virtual int add_message(const char *message, bool file_name) { return 0; }
+  virtual int add_message(const char *message) { return 0; }
   virtual int is_debug_mode_enabled() { return false; }
 };
 

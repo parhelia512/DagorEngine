@@ -5,7 +5,7 @@
 #pragma once
 
 #include <vecmath/dag_vecMath.h>
-#include <gameMath/traceUtils.h>
+#include <rendInst/traceUtils.h>
 
 namespace dacoll
 {

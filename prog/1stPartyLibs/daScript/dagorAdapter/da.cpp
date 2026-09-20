@@ -10,7 +10,9 @@ void foo() {dd_get_fname("");} //== pull in directoryService.obj
 
 das::smart_ptr<das::FileAccess> get_file_access( char * pak )
 {
-  if ( pak ) {
+  // a daslang string arrives empty rather than null, so both spellings of
+  // "no project file" have to land on the plain FsFileAccess below
+  if ( pak && *pak ) {
     // upstream: the 2nd ctor arg is the compiled .das_project Program (drives module_get), not a
     // fallback FileAccess. Compile the project with a plain FsFileAccess as the bootstrap loader.
     das::TextWriter tout;

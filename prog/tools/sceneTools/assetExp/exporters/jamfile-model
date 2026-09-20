@@ -14,7 +14,7 @@ AddIncludes =
   $(Root)/prog/engine/sharedInclude
 ;
 
-UseProgLibs =
+UseProgLibs +=
   engine/startup
   engine/math
 
@@ -22,15 +22,22 @@ UseProgLibs =
   engine/shaders
   engine/drv/drv3d_null
   engine/sceneRay
+  engine/gameRes
+  engine/scene
   engine/perfMon
 
   tools/libTools/assetMgr
-  tools/libTools/assetMgrHlp
   tools/libTools/shaderResBuilder
   tools/libTools/dagFileRW
-  tools/libTools/util
   engine/image
   tools/libTools/ambientOcclusion
+
+  3rdPartyLibs/image/avif
+  3rdPartyLibs/image/jpeg-6b
+  3rdPartyLibs/image/psdRead
+  3rdPartyLibs/image/tiff-4.4.0
+  3rdPartyLibs/image/libpng-1.4.22
+  3rdPartyLibs/arc/zlib-$(UseZlibVer)
 ;
 
 CPPopt = -D_DEBUG_TAB_ ;

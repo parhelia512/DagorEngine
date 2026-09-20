@@ -1,11 +1,11 @@
-from "%darg/ui_imports.nut" import *
 import "dagor.fs" as dagor_fs
 import "dagor.system" as dagor_sys
 import "dainput2" as dainput
+from "string" import startswith
+from "%darg/ui_imports.nut" import *
 
 let { loc } = require("%dngscripts/localizations.nut")
 let { isPlatformRelevant, platformId } = require("%dngscripts/platform.nut")
-let {startswith} = require("string")
 let controlsList = {
   win32 = [
     "config/outer_space.default"

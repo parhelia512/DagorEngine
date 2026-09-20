@@ -4,11 +4,11 @@
 //
 #pragma once
 
-#include <EASTL/fixed_function.h>
+#include <generic/dag_functionRef.h>
 #include <generic/dag_fixedMoveOnlyFunction.h>
 #include <scene/dag_physMatIdDecl.h>
 #include <gameRes/dag_collResDecl.h>
-#include <gameMath/traceUtils.h>
+#include <rendInst/traceUtils.h>
 #include <util/dag_simpleString.h>
 #include <memory/dag_framemem.h>
 #include <rendInst/rendInstDesc.h>
@@ -28,9 +28,10 @@ struct CollisionInfo
 {
   void *handle = nullptr;
   CollisionResource *collRes = nullptr;
-  SimpleString destrFxTemplate;
   RendInstDesc desc;
   int riPoolRef = -1;
+  // pool matId, resolved with the other pool props; PHYSMAT_INVALID when the pool has none
+  PhysMat::MatID matId = PHYSMAT_INVALID;
   TMatrix tm = TMatrix::IDENT;
   BBox3 localBBox = BBox3::IDENT;
   float destrImpulse = 0.0f;
@@ -46,8 +47,6 @@ struct CollisionInfo
   bool isParent = false;
   bool destructibleByParent = false;
   int destroyNeighbourDepth = 1;
-  SimpleString tag;
-  SimpleString destroyedByTag;
 
   explicit CollisionInfo(const RendInstDesc &ri_desc = RendInstDesc()) : desc(ri_desc) {}
 };
@@ -143,7 +142,8 @@ uint32_t setMaxNumRiCollisionCb(uint32_t new_max_num);
 
 // ======= trace ray stuff ========
 
-using TraceRayIgnoreRiExtraCbType = eastl::fixed_function<sizeof(void *), bool(riex_handle_t)>;
+// Non-owning: the callable must outlive the call, do not bind a temporary.
+using TraceRayIgnoreRiExtraCbType = dag::FunctionRef<bool(riex_handle_t) const>;
 
 bool traceRayRendInstsNormalized(const Point3 &from, const Point3 &dir, float &tout, Point3 &norm, bool extend_bbox = false,
   bool trace_meshes = false, rendinst::RendInstDesc *ri_desc = nullptr, bool trace_trees = false, int ray_mat_id = -1,
@@ -167,6 +167,10 @@ bool traceRayRendInstsRayBatchAllIntersections(dag::Span<Trace> traces, RendInst
 
 
 bool traceRayRIGenNormalized(dag::Span<Trace> traces, TraceFlags trace_flags, int ray_mat_id = -1,
+  rendinst::RendInstDesc *ri_desc = nullptr, const TraceMeshFaces *ri_cache = nullptr,
+  riex_handle_t skip_riex_handle = rendinst::RIEX_HANDLE_NULL);
+
+bool rayhitRIGenNormalized(dag::Span<Trace> traces, TraceFlags trace_flags, int ray_mat_id = -1,
   rendinst::RendInstDesc *ri_desc = nullptr, const TraceMeshFaces *ri_cache = nullptr,
   riex_handle_t skip_riex_handle = rendinst::RIEX_HANDLE_NULL);
 
@@ -205,7 +209,8 @@ inline bool traceRayRendInstsNormalized(dag::Span<Trace> traces, bool = false, b
 }
 
 // Warn: for RI (i.e. not RiEx) called once per pool
-using TraceDownMutiRayIgnoreCbType = eastl::fixed_function<sizeof(void *), bool(const RendInstDesc &)>;
+// Non-owning: the callable must outlive the call, do not bind a temporary.
+using TraceDownMutiRayIgnoreCbType = dag::FunctionRef<bool(const RendInstDesc &) const>;
 // Note: all rays should be down
 bool traceDownMultiRayNoCache(dag::Span<Trace> traces, bbox3f_cref rayBox, dag::Span<RendInstDesc> ri_desc, int ray_mat_id = -1,
   TraceFlags trace_flags = TraceFlag::Destructible, TraceDownMutiRayIgnoreCbType ignore_func = {});
@@ -244,6 +249,14 @@ void foreachRIGenInSphere(const BSphere3 &sphere, GatherRiTypeFlags ri_types, Fo
 
 using GetTmsCallbackType = dag::FixedMoveOnlyFunction<16, void(const RendInstDesc &, const mat44f &) const>;
 void getRIGenTMsInBox(const BBox3 &box, dag::ConstSpan<int16_t> pool_ids, GetTmsCallbackType &&tm_callback);
+// world space root pos, the palette yaw (identity quat for pools without palette rotation), placement scale
+using GetPosInstCallbackType = dag::FixedMoveOnlyFunction<16, void(const RendInstDesc &, vec3f pos, quat4f rot, vec3f scale) const>;
+// pos instance pools (trees, bushes), also the collision-less ones the collision walks miss.
+// guaranteed: every instance the cell and subcell content bboxes cover against the box.
+// extras: at most the roots inside the box grown per axis by margin (the unit scale reach)
+// times the instance max scale. callbacks run under the layer read lock
+void foreachRIGenPosInstanceInBox(const BBox3 &box, const Point3 &margin, bool (*pool_filter)(int layer_ix, int pool_ix, void *user),
+  void *user, GetPosInstCallbackType &&callback);
 
 void clipCapsuleRI(const ::Capsule &c, Point3 &lpt, Point3 &wpt, real &md, const Point3 &movedirNormalized,
   const TraceMeshFaces *ri_cache);

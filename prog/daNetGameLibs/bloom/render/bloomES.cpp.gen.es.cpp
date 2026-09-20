@@ -80,7 +80,7 @@ static ecs::EntitySystemDesc create_bloom_entity_es_es_desc
   empty_span(),
   empty_span(),
   empty_span(),
-  ecs::EventSetBuilder<OnLevelLoaded>::build(),
+  ecs::EventSetBuilder<EventRenderSceneLoaded>::build(),
   0
 ,"render");
 static constexpr ecs::ComponentDesc change_bloom_params_with_fg_change_es_comps[] =

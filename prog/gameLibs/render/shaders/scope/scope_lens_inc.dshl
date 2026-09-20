@@ -20,6 +20,8 @@ float lens_dof_depth = 0.5;
 float lens_brighthness = 1.0;
 // Start radius coefficient, distortion strength, aberration strength.
 float4 lens_distortion_params = (0.9, 0.7, 0.07, 0);
+// Distortion ramp exponent (1 = linear), lens zoom.
+float4 lens_distortion_curve_params = (1.0, 1.0, 0, 0);
 // cylinder len mul, cylinder shade radius norm, cylinder fading strength, collimator fading strength
 float4 lens_shading_params = (15.0, 22.5, 1.0, 100.0);
 // cylinder2 len mul, cylinder2 shade radius norm, cylinder2 fading strength
@@ -52,12 +54,13 @@ macro SAMPLE_ENVI_PROBE_REFLECTIONS()
 
   hlsl(ps) {
     half3 sample_scope_lens_reflections(VsOutput input, float4 screenpos,
-                                        float2 lens_input_plane_coord, float4 lens_diffuse_color)
+                                        float2 lens_input_plane_coord, float4 lens_diffuse_color, float lens_alpha)
     {
       half3 worldNormal = normalize(input.normal.xyz);
       half thickness = 0;
       half smoothness = 1;
-      return apply_glass_base(input, screenpos, lens_diffuse_color, worldNormal, thickness, smoothness).color.rgb;
+      return apply_glass_base(input, screenpos, lens_diffuse_color, worldNormal, thickness, smoothness).color.rgb
+            * lens_alpha;
     }
   }
 endmacro
@@ -450,6 +453,7 @@ macro SCOPE_LENS_SHADER()
         scope_lens_albedo@f4 = scope_lens_albedo;
         lens_brighthness@f1 = lens_brighthness;
         lens_distortion_params@f3 = lens_distortion_params;
+        lens_distortion_curve_params@f2 = lens_distortion_curve_params;
         lens_shading_params@f4 = lens_shading_params;
         lens_shading_params2@f3 = lens_shading_params2;
         crosshair_parallax_distance@f1 = crosshair_parallax_distance;
@@ -516,7 +520,15 @@ macro SCOPE_LENS_SHADER()
           float scopeRad = get_scope_phys_params().x;
           float scopeInvRad = get_scope_phys_params().z;
           float startRad = lens_distortion_params.x * scopeRad;
-          float distFactor = (k.x + max(r - startRad, 0) * scopeInvRad * k.y);
+          float dist = max(r - startRad, 0) * scopeInvRad;
+          float curve = lens_distortion_curve_params.x;
+          if (curve > 1.0)
+          {
+            // Normalized across the rim band so the exponent bends the ramp without changing its end value.
+            float band = max(1.0 - lens_distortion_params.x, 0.0001);
+            dist = pow(dist / band, curve) * band;
+          }
+          float distFactor = (k.x + dist * k.y) / max(lens_distortion_curve_params.y, 0.0001);
           return (lensScrPos + (scrpos - lensScrPos) * distFactor) * screen_pos_to_texcoord;
         }
         ##if lens_detail_level <= full
@@ -610,10 +622,14 @@ macro SCOPE_LENS_SHADER()
             #else
               half4 lensDiffuseColor = half4(0,0,0,1);
             #endif
-          reflections = sample_scope_lens_reflections(input, screenpos, input.lensInputPlaneCoord, lensDiffuseColor);
+          // Ignore full exposure to avoid making reflections being very noticeable
+          // otherwise it distracts player too much
+          const float exposure = max(1.0, get_exposure_mul() * 0.35);
+          const float exposureMul = get_exposure_inv() * exposure;
+          reflections = exposureMul * sample_scope_lens_reflections(input, screenpos, input.lensInputPlaneCoord, lensDiffuseColor, get_scope_lens_albedo().a);
           ##endif
 
-          const float shadowedLensAlpha = (1 - shade_factor) * get_scope_lens_albedo().a;
+          const float shadowedLensAlpha = (1 - shade_factor);
         ##if lens_detail_level == only_reflections
           const float reflectionAlpha = shadowedLensAlpha;
         ##else

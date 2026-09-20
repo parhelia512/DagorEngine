@@ -29,14 +29,12 @@
 #include <util/dag_convar.h>
 #include <perfMon/dag_statDrv.h>
 #include <workCycle/dag_workCycle.h>
-#include <osApiWrappers/dag_atomic.h>
 #include <EASTL/string.h>
 #include <EASTL/unique_ptr.h>
 #if _TARGET_C2
 
 #endif
 #include <fast_float/fast_float.h>
-#include <workCycle/dag_wcHooks.h>
 
 #if MOBILE_ANTIALIASING && !_TARGET_IOS
 #define HAS_SGSR 1
@@ -366,7 +364,6 @@ struct Context
 
   eastl::unique_ptr<SMAA> smaa;
 
-  RTargetPool::Ptr ssTargetPool;
   RTargetPool::Ptr ssInputTexturePool;
   RTargetPool::Ptr rTargetMetalfxUpscale;
 
@@ -382,7 +379,7 @@ struct Context
 
   PostFxRenderer uiBlend;
 
-  unsigned int textureFlg = TEXFMT_A16B16G16R16F | TEXCF_RTARGET;
+  unsigned int textureFlg = TEXFMT_A16B16G16R16F;
 
   ~Context()
   {
@@ -437,13 +434,6 @@ struct Context
 
   void enableFsrFrameGeneration(bool enable) { d3d::driver_command(Drv3dCommand::FSR_ENABLE_FG, &enable); }
 
-  int getFsrPresentedFrameCount() const
-  {
-    int presentedFrames = 1;
-    d3d::driver_command(Drv3dCommand::GET_FSR_PRESENTED_FRAME_COUNT, &presentedFrames);
-    return presentedFrames;
-  }
-
   int getFsrMaximumGeneratedFrames() const
   {
     int generatedFrames = 0;
@@ -467,7 +457,6 @@ struct Context
 
   void reset()
   {
-    ssTargetPool.reset();
     ssInputTexturePool.reset();
     rTargetMetalfxUpscale.reset();
     teardownFsrUpscaling();
@@ -549,10 +538,15 @@ struct Context
 
       bool needRecreate = method != newMethod || quality != newQuality || percentage != newPercentage || dlssGCount != newDlssGCount ||
                           dlssLegacyMode != newDlssLegacyMode || dlssRayReconstruction != newDlssRayReconstruction;
-      auto needReset = needRecreate && (method == AntialiasingMethod::DLSS || method == AntialiasingMethod::FSR ||
-                                         method == AntialiasingMethod::XeSS || method == AntialiasingMethod::MSAA ||
-                                         newMethod == AntialiasingMethod::DLSS || newMethod == AntialiasingMethod::FSR ||
-                                         newMethod == AntialiasingMethod::XeSS || newMethod == AntialiasingMethod::MSAA);
+      auto isResolutionScalingMethod = [](AntialiasingMethod m) {
+        return m == AntialiasingMethod::DLSS || m == AntialiasingMethod::XeSS || m == AntialiasingMethod::MSAA ||
+               m == AntialiasingMethod::TSR || m == AntialiasingMethod::TAA || m == AntialiasingMethod::FSR
+#if _TARGET_C2
+
+#endif
+          ;
+      };
+      auto needReset = needRecreate && (isResolutionScalingMethod(method) || isResolutionScalingMethod(newMethod));
 
       if (save_state)
       {
@@ -580,9 +574,6 @@ struct Context
 
   void initCommonUpscaling(const char *name, int quality_msg, const IPoint2 inputResolution, const IPoint2 outputResolution)
   {
-    textureFlg = TEXFMT_A16B16G16R16F | TEXCF_UNORDERED | TEXCF_RTARGET;
-    ssTargetPool = RTargetPool::get(outputResolution.x, outputResolution.y, textureFlg, 1);
-
     const int dlssInputTextureFlags = TEXFMT_A16B16G16R16F | TEXCF_UNORDERED | TEXCF_RTARGET;
     ssInputTexturePool = RTargetPool::get(inputResolution.x, inputResolution.y, dlssInputTextureFlags, 1);
 
@@ -717,8 +708,8 @@ struct Context
     {
       aaApplyNode =
         dafg::register_node("dlss", DAFG_PP_NODE_SRC, [this, outputResolution, input_name, depth_name](dafg::Registry registry) {
-          textureFlg = TEXFMT_A16B16G16R16F | TEXCF_UNORDERED | TEXCF_RTARGET;
-          auto antialiasedHndl = registry.createTexture2d("frame_after_aa", {textureFlg, outputResolution})
+          textureFlg = TEXFMT_A16B16G16R16F;
+          auto antialiasedHndl = registry.createTexture2d("frame_after_aa", {textureFlg | TEXCF_UNORDERED, outputResolution})
                                    .atStage(dafg::Stage::PS_OR_CS)
                                    .useAs(dafg::Usage::COLOR_ATTACHMENT)
                                    .handle();
@@ -727,10 +718,19 @@ struct Context
             registry.read(input_name).texture().atStage(dafg::Stage::PS_OR_CS).useAs(dafg::Usage::SHADER_RESOURCE).handle();
           auto applyCtxHndl = registry.readBlob<ApplyContext>("aa_apply_context").handle();
 
-          registry.readTexture(depth_name).atStage(dafg::Stage::COMPUTE).bindToShaderVar("depth_gbuf");
+          auto depthHndl = registry.readTexture(depth_name).atStage(dafg::Stage::COMPUTE).bindToShaderVar("depth_gbuf").handle();
 
-          return [this, frameHndl, applyCtxHndl, antialiasedHndl] {
-            applyDlss(frameHndl.get(), applyCtxHndl.ref(), antialiasedHndl.get());
+          auto colorBeforeTransparencyHndl = registry.readTexture("dlss_color_before_transparency")
+                                               .atStage(dafg::Stage::PS_OR_CS)
+                                               .useAs(dafg::Usage::SHADER_RESOURCE)
+                                               .optional()
+                                               .handle();
+
+          auto albedoHndl = prepareDlssRayReconstruction ? app_glue()->requestRayReconstructionGbuffer(registry) : eastl::nullopt;
+
+          return [this, frameHndl, applyCtxHndl, antialiasedHndl, depthHndl, colorBeforeTransparencyHndl, albedoHndl] {
+            applyDlss(frameHndl.get(), depthHndl.get(), colorBeforeTransparencyHndl.get(), albedoHndl ? albedoHndl->get() : nullptr,
+              applyCtxHndl.ref(), antialiasedHndl.get());
           };
         });
     }
@@ -738,12 +738,13 @@ struct Context
     return true;
   }
 
-  void applyDlss(Texture *in_color, const ApplyContext &apply_context, Texture *target)
+  void applyDlss(Texture *in_color, Texture *depth_tex, Texture *color_before_transparency_tex, Texture *albedo_tex,
+    const ApplyContext &apply_context, Texture *target)
   {
     TIME_D3D_PROFILE(applyDlss);
 
     G_ASSERT(in_color);
-    G_ASSERT(apply_context.depthTexture);
+    G_ASSERT(depth_tex);
     G_ASSERT(apply_context.motionTexture);
 
     G_ASSERT_RETURN(target, );
@@ -751,12 +752,12 @@ struct Context
     const IPoint2 &renderingResolution = app_glue()->getInputResolution();
     nv::DlssParams dlssParams = {};
     dlssParams.inColor = in_color;
-    dlssParams.inDepth = apply_context.depthTexture;
+    dlssParams.inDepth = depth_tex;
     dlssParams.inMotionVectors = apply_context.motionTexture;
     dlssParams.inExposure = apply_context.exposureTexture;
     dlssParams.inSsssGuide = apply_context.ssssGuideTexture;
-    dlssParams.inColorBeforeTransparency = apply_context.colorBeforeTransparencyTexture;
-    dlssParams.inAlbedo = apply_context.albedoTexture;
+    dlssParams.inColorBeforeTransparency = color_before_transparency_tex;
+    dlssParams.inAlbedo = albedo_tex;
     dlssParams.inHitDist = apply_context.hitDistTexture;
     dlssParams.inNormalRoughness = apply_context.normalRoughnessTexture;
     dlssParams.inSpecularAlbedo = apply_context.specularAlbedoTexture;
@@ -818,7 +819,7 @@ struct Context
   }
 
   bool tryInitFsr(const IPoint2 &outputResolution, bool dynamicResolutionEnabled, IPoint2 &inputResolution,
-    IPoint2 &min_dynamic_resolution, IPoint2 &max_dynamic_resolution, const char *input_name)
+    IPoint2 &min_dynamic_resolution, IPoint2 &max_dynamic_resolution, const char *input_name, const char *depth_name = nullptr)
   {
     if (method != AntialiasingMethod::FSR || !isFsrLoaded() || !isFsrUpscalingSupported())
       return false;
@@ -846,40 +847,44 @@ struct Context
 
     initCommonUpscaling("FSR", int(args.mode), inputResolution, outputResolution);
 
-    if (input_name)
+    if (input_name && depth_name)
     {
-      aaApplyNode = dafg::register_node("fsr", DAFG_PP_NODE_SRC, [this, outputResolution, input_name](dafg::Registry registry) {
-        textureFlg = TEXFMT_A16B16G16R16F | TEXCF_UNORDERED | TEXCF_RTARGET;
-        auto antialiasedHndl = registry.createTexture2d("frame_after_aa", {textureFlg, outputResolution})
-                                 .atStage(dafg::Stage::PS_OR_CS)
-                                 .useAs(dafg::Usage::COLOR_ATTACHMENT)
-                                 .handle();
+      aaApplyNode =
+        dafg::register_node("fsr", DAFG_PP_NODE_SRC, [this, outputResolution, input_name, depth_name](dafg::Registry registry) {
+          textureFlg = TEXFMT_A16B16G16R16F;
+          auto antialiasedHndl = registry.createTexture2d("frame_after_aa", {textureFlg | TEXCF_UNORDERED, outputResolution})
+                                   .atStage(dafg::Stage::PS_OR_CS)
+                                   .useAs(dafg::Usage::COLOR_ATTACHMENT)
+                                   .handle();
 
-        auto applyCtxHndl = registry.readBlob<ApplyContext>("aa_apply_context").handle();
-        auto frameHndl =
-          registry.read(input_name).texture().atStage(dafg::Stage::PS_OR_CS).useAs(dafg::Usage::SHADER_RESOURCE).handle();
+          auto applyCtxHndl = registry.readBlob<ApplyContext>("aa_apply_context").handle();
+          auto frameHndl =
+            registry.read(input_name).texture().atStage(dafg::Stage::PS_OR_CS).useAs(dafg::Usage::SHADER_RESOURCE).handle();
+          auto depthHndl =
+            registry.readTexture(depth_name).atStage(dafg::Stage::PS_OR_CS).useAs(dafg::Usage::SHADER_RESOURCE).handle();
 
-        return
-          [this, frameHndl, applyCtxHndl, antialiasedHndl] { applyFsr(frameHndl.get(), applyCtxHndl.ref(), antialiasedHndl.get()); };
-      });
+          return [this, frameHndl, applyCtxHndl, antialiasedHndl, depthHndl] {
+            applyFsr(frameHndl.get(), depthHndl.get(), applyCtxHndl.ref(), antialiasedHndl.get());
+          };
+        });
     }
 
     return true;
   }
 
-  void applyFsr(Texture *in_color, const ApplyContext &apply_context, Texture *target)
+  void applyFsr(Texture *in_color, Texture *depth_tex, const ApplyContext &apply_context, Texture *target)
   {
     TIME_D3D_PROFILE(applyFsr);
 
     G_ASSERT(in_color);
-    G_ASSERT(apply_context.depthTexture);
+    G_ASSERT(depth_tex);
     G_ASSERT(apply_context.motionTexture);
 
     G_ASSERT_RETURN(target, );
 
     amd::FSR::UpscalingArgs args;
     args.colorTexture = in_color;
-    args.depthTexture = apply_context.depthTexture;
+    args.depthTexture = depth_tex;
     args.motionVectors = apply_context.motionTexture;
     args.exposureTexture = apply_context.exposureTexture;
     args.outputTexture = target;
@@ -904,7 +909,7 @@ struct Context
   }
 
   bool tryInitXess(const IPoint2 &outputResolution, bool dynamicResolutionEnabled, IPoint2 &inputResolution,
-    IPoint2 &min_dynamic_resolution, IPoint2 &max_dynamic_resolution, const char *input_name)
+    IPoint2 &min_dynamic_resolution, IPoint2 &max_dynamic_resolution, const char *input_name, const char *depth_name = nullptr)
   {
     if (method != AntialiasingMethod::XeSS)
       return false;
@@ -925,33 +930,37 @@ struct Context
 
     initCommonUpscaling("Xess", int(convert_to_xess(quality)), inputResolution, outputResolution);
 
-    if (input_name)
+    if (input_name && depth_name)
     {
-      aaApplyNode = dafg::register_node("xess", DAFG_PP_NODE_SRC, [this, outputResolution, input_name](dafg::Registry registry) {
-        textureFlg = TEXFMT_A16B16G16R16F | TEXCF_UNORDERED;
-        auto antialiasedHndl = registry.createTexture2d("frame_after_aa", {textureFlg, outputResolution})
-                                 .atStage(dafg::Stage::CS)
-                                 .useAs(dafg::Usage::SHADER_RESOURCE)
-                                 .handle();
+      aaApplyNode =
+        dafg::register_node("xess", DAFG_PP_NODE_SRC, [this, outputResolution, input_name, depth_name](dafg::Registry registry) {
+          textureFlg = TEXFMT_A16B16G16R16F;
+          auto antialiasedHndl = registry.createTexture2d("frame_after_aa", {textureFlg | TEXCF_UNORDERED, outputResolution})
+                                   .atStage(dafg::Stage::CS)
+                                   .useAs(dafg::Usage::SHADER_RESOURCE)
+                                   .handle();
 
-        auto applyCtxHndl = registry.readBlob<ApplyContext>("aa_apply_context").handle();
-        auto frameHndl =
-          registry.read(input_name).texture().atStage(dafg::Stage::PS_OR_CS).useAs(dafg::Usage::SHADER_RESOURCE).handle();
+          auto applyCtxHndl = registry.readBlob<ApplyContext>("aa_apply_context").handle();
+          auto frameHndl =
+            registry.read(input_name).texture().atStage(dafg::Stage::PS_OR_CS).useAs(dafg::Usage::SHADER_RESOURCE).handle();
+          auto depthHndl =
+            registry.readTexture(depth_name).atStage(dafg::Stage::PS_OR_CS).useAs(dafg::Usage::SHADER_RESOURCE).handle();
 
-        return
-          [this, frameHndl, applyCtxHndl, antialiasedHndl] { applyXess(frameHndl.get(), applyCtxHndl.ref(), antialiasedHndl.get()); };
-      });
+          return [this, frameHndl, applyCtxHndl, antialiasedHndl, depthHndl] {
+            applyXess(frameHndl.get(), depthHndl.get(), applyCtxHndl.ref(), antialiasedHndl.get());
+          };
+        });
     }
 
     return true;
   }
 
-  void applyXess(Texture *in_color, const ApplyContext &apply_context, Texture *target)
+  void applyXess(Texture *in_color, Texture *depth_tex, const ApplyContext &apply_context, Texture *target)
   {
     TIME_D3D_PROFILE(applyXess);
 
     G_ASSERT(in_color);
-    G_ASSERT(apply_context.depthTexture);
+    G_ASSERT(depth_tex);
     G_ASSERT(apply_context.motionTexture);
 
     G_ASSERT_RETURN(target, );
@@ -959,7 +968,7 @@ struct Context
     const IPoint2 &renderingResolution = app_glue()->getInputResolution();
     XessParams xessParams = {};
     xessParams.inColor = in_color;
-    xessParams.inDepth = apply_context.depthTexture;
+    xessParams.inDepth = depth_tex;
     xessParams.inMotionVectors = apply_context.motionTexture;
     xessParams.inJitterOffsetX = apply_context.jitterPixelOffset.x;
     xessParams.inJitterOffsetY = apply_context.jitterPixelOffset.y;
@@ -1015,8 +1024,8 @@ struct Context
     if (input_name)
     {
       aaApplyNode = dafg::register_node("taa", DAFG_PP_NODE_SRC, [this, outputResolution, input_name](dafg::Registry registry) {
-        textureFlg = TEXFMT_A16B16G16R16F | TEXCF_RTARGET;
-        auto antialiasedHndl = registry.createTexture2d("frame_after_aa", {textureFlg, outputResolution})
+        textureFlg = TEXFMT_A16B16G16R16F;
+        auto antialiasedHndl = registry.createTexture2d("frame_after_aa", {textureFlg | TEXCF_RTARGET, outputResolution})
                                  .atStage(dafg::Stage::PS_OR_CS)
                                  .useAs(dafg::Usage::COLOR_ATTACHMENT)
                                  .handle();
@@ -1134,17 +1143,29 @@ struct Context
       aaApplyNode = tsr->createApplierNode(input_name);
     }
 
+    textureFlg = tsr->getOutputTextureFormat();
+
     return true;
   }
 
-  void applyTsr(Texture *in_color, const ApplyContext &apply_context, Texture *out_color, Texture *history_color,
-    Texture *out_confidence, Texture *history_confidence, Texture *reactive_tex)
+  void applyTsr(Texture *in_color, const ApplyContext &apply_context, Texture *out_color, Texture *history_color, Texture *out_depth,
+    Texture *history_depth, Texture *out_confidence, Texture *history_confidence, Texture *reactive_tex)
   {
     TIME_D3D_PROFILE(applyTsr);
 
-    tsr->apply(in_color, out_color, history_color, out_confidence, history_confidence, reactive_tex,
-      tsr->getDebugRenderTarget().getTex2D(), Point4::ZERO, apply_context.resetHistory, apply_context.jitterPixelOffset,
-      apply_context.vrVrsMask, apply_context.inputResolution);
+    TemporalSuperResolution::ApplyTextures textures;
+    textures.inColor = in_color;
+    textures.outColor = out_color;
+    textures.historyColor = history_color;
+    textures.outDepth = out_depth;
+    textures.historyDepth = history_depth;
+    textures.outConfidence = out_confidence;
+    textures.historyConfidence = history_confidence;
+    textures.reactiveMask = reactive_tex;
+    textures.vrsMask = apply_context.vrVrsMask;
+    textures.debug = tsr->getDebugRenderTarget().getTex2D();
+
+    tsr->apply(textures, Point4::ZERO, apply_context.resetHistory, apply_context.jitterPixelOffset, apply_context.inputResolution);
   }
 
   bool tryInitMetalFx()
@@ -1158,26 +1179,59 @@ struct Context
     return true;
   }
 
+  // The spatial scaler writes its output through a render pass, so any TEXCF_RTARGET texture is a
+  // valid direct target and the scratch target plus its copy can be skipped. Two cases still need
+  // the copy: the driver rejects an sRGB mismatch between input and output, and the backbuffer has
+  // no api texture outside of a render pass.
+  static bool canUpscaleDirectlyTo(Texture *dest_tex, const TextureInfo &src_info)
+  {
+    if (dest_tex == d3d::get_backbuffer_tex())
+      return false;
+
+    TextureInfo destInfo;
+    dest_tex->getinfo(destInfo);
+    if (!(destInfo.cflg & TEXCF_RTARGET))
+      return false;
+
+    constexpr uint32_t srgbFlags = TEXCF_SRGBWRITE | TEXCF_SRGBREAD;
+    return !(src_info.cflg & srgbFlags) == !(destInfo.cflg & srgbFlags);
+  }
+
   void applyMetalFx(Texture *source_tex, Texture *dest_tex)
   {
     TIME_D3D_PROFILE(applyMetalFx);
 
     G_ASSERT(source_tex);
+    G_ASSERT_RETURN(dest_tex, );
 
-    const Point2 &displayResolution = app_glue()->getDisplayResolution();
     TextureInfo ti;
     source_tex->getinfo(ti);
+
+    // also reported by get_frame_after_aa_flags(), so keep it up to date on both paths
     textureFlg = (hdrrender::is_hdr_enabled() ? TEXFMT_R11G11B10F : TEXFMT_A8R8G8B8) | TEXCF_RTARGET;
     if (ti.cflg & (TEXCF_SRGBWRITE | TEXCF_SRGBREAD))
       textureFlg |= TEXCF_SRGBWRITE | TEXCF_SRGBREAD;
+
+    MtlFxUpscaleParams params;
+    params.colorMode = MtlfxColorMode::PERCEPTUAL;
+    params.color = source_tex;
+
+    if (canUpscaleDirectlyTo(dest_tex, ti))
+    {
+      rTargetMetalfxUpscale.reset();
+
+      params.output = dest_tex;
+      d3d::driver_command(Drv3dCommand::EXECUTE_METALFX_UPSCALE, &params);
+      d3d::set_render_target();
+      return;
+    }
+
+    const Point2 &displayResolution = app_glue()->getDisplayResolution();
     if (!rTargetMetalfxUpscale)
       rTargetMetalfxUpscale = RTargetPool::get(displayResolution.x, displayResolution.y, textureFlg, 1);
 
     auto rtMetalfxUpscale = rTargetMetalfxUpscale->acquire();
 
-    MtlFxUpscaleParams params;
-    params.colorMode = MtlfxColorMode::PERCEPTUAL;
-    params.color = source_tex;
     params.output = rtMetalfxUpscale.get()->getBaseTex();
     d3d::driver_command(Drv3dCommand::EXECUTE_METALFX_UPSCALE, &params);
     d3d::stretch_rect(rtMetalfxUpscale.get()->getBaseTex(), dest_tex, nullptr, nullptr);
@@ -1201,7 +1255,7 @@ struct Context
     return true;
   }
 
-  void applyMetalFxTemporal(Texture *source_tex, Texture *dest_tex, const ApplyContext &ctx)
+  void applyMetalFxTemporal(Texture *source_tex, Texture *dest_tex, Texture *depth_tex, const ApplyContext &ctx)
   {
     TIME_D3D_PROFILE(applyMetalFxTemporal);
 
@@ -1227,7 +1281,7 @@ struct Context
     params.color = source_tex;
     params.output = rtMetalfxUpscale.get()->getBaseTex();
     params.motion = ctx.motionTexture;
-    params.depth = ctx.depthTexture;
+    params.depth = depth_tex;
     params.jitterX = ctx.jitterPixelOffset.x;
     params.jitterY = ctx.jitterPixelOffset.y;
     params.motionScaleX = inputResolution.x;
@@ -1306,7 +1360,7 @@ struct Context
     return true;
   }
 
-  void applyArmAsr(Texture *source_tex, Texture *dest_tex, const ApplyContext &ctx)
+  void applyArmAsr(Texture *source_tex, Texture *dest_tex, Texture *depth_tex, const ApplyContext &ctx)
   {
     TIME_D3D_PROFILE(applyArmAsr);
 
@@ -1315,7 +1369,7 @@ struct Context
 
     amd::FSR::UpscalingArgs args;
     args.colorTexture = source_tex;
-    args.depthTexture = ctx.depthTexture;
+    args.depthTexture = depth_tex;
     args.motionVectors = ctx.motionTexture;
     args.exposureTexture = nullptr;
     args.outputTexture = dest_tex;
@@ -1353,6 +1407,12 @@ struct Context
   void applySmaa(Texture *source_tex, Texture *dest_tex) { smaa->apply(source_tex, dest_tex); }
 
 #if _TARGET_C2
+
+
+
+
+
+
 
 
 
@@ -1597,35 +1657,6 @@ struct Context
     {
       d3d::driver_command(Drv3dCommand::XESS_ENABLE_FG, &enable);
     }
-  }
-
-  int getPresentedFrameCount()
-  {
-    if (method == AntialiasingMethod::DLSS)
-    {
-      if (dlss_without_streamline())
-        return 1;
-      else
-      {
-        nv::Streamline *streamline = nullptr;
-        d3d::driver_command(Drv3dCommand::GET_STREAMLINE, &streamline);
-        nv::DLSSFrameGeneration *dlssg = streamline ? streamline->getDlssGFeature(0) : nullptr;
-        if (dlssg)
-          return dlssg->getActualFramesPresented();
-      }
-    }
-    else if (method == AntialiasingMethod::FSR)
-    {
-      return getFsrPresentedFrameCount();
-    }
-    else if (method == AntialiasingMethod::XeSS)
-    {
-      int frameCount = 1;
-      d3d::driver_command(Drv3dCommand::GET_XESS_PRESENTED_FRAME_COUNT, &frameCount);
-      return frameCount;
-    }
-
-    return 1;
   }
 
   struct FrameGenerationCapabilities
@@ -1922,8 +1953,6 @@ void init(AppGlue *app_glue)
   g_ctx.demandInit();
 
   g_ctx->init();
-
-  interlocked_release_store_ptr(dwc_get_frames_presented, get_presented_frame_count);
 }
 
 void close()
@@ -1931,7 +1960,6 @@ void close()
   if (!g_ctx)
     return;
 
-  interlocked_release_store_ptr(dwc_get_frames_presented, (int (*)()) nullptr);
   g_ctx.demandDestroy();
 }
 
@@ -1947,6 +1975,7 @@ void reinit()
   if (!g_ctx)
     return;
 
+  TIME_PROFILE(antialiasing_reinit);
   d3d::driver_command(Drv3dCommand::D3D_FLUSH);
 
   g_ctx->reset();
@@ -1993,12 +2022,12 @@ void recreate(const IPoint2 &display_resolution, const IPoint2 &postfx_resolutio
       break;
     case AntialiasingMethod::FSR:
       if (!g_ctx->tryInitFsr(postfx_resolution, dynamic_resolution_enabled, rendering_resolution, min_dynamic_resolution,
-            max_dynamic_resolution, input_name))
+            max_dynamic_resolution, input_name, depth_name))
         fallbackToNone();
       break;
     case AntialiasingMethod::XeSS:
       if (!g_ctx->tryInitXess(postfx_resolution, dynamic_resolution_enabled, rendering_resolution, min_dynamic_resolution,
-            max_dynamic_resolution, input_name))
+            max_dynamic_resolution, input_name, depth_name))
         fallbackToNone();
       break;
     case AntialiasingMethod::TAA:
@@ -2090,6 +2119,20 @@ const char *get_quality_name(UpscalingQuality quality) { return convert(quality,
 
 UpscalingQuality get_quality() { return g_ctx ? g_ctx->quality : UpscalingQuality::Native; }
 
+eastl::optional<UpscalingQuality> get_upscaling_quality_from_name(const char *name)
+{
+  if (!name || *name == 0)
+    return eastl::nullopt;
+  bool valid = true;
+  UpscalingQuality quality = convert_quality(name, valid);
+  if (!valid)
+  {
+    logerr("antialiasing: unknown upscaling quality '%s'", name);
+    return eastl::nullopt;
+  }
+  return quality;
+}
+
 void set_quality_override(const char *quality_name)
 {
   if (g_ctx)
@@ -2098,6 +2141,18 @@ void set_quality_override(const char *quality_name)
     g_ctx->qualityOverride = quality_name ? (int)convert_quality(quality_name, valid) : -1;
     G_ASSERT(valid);
   }
+}
+
+void set_quality_override(UpscalingQuality quality)
+{
+  if (g_ctx)
+    g_ctx->qualityOverride = (int)quality;
+}
+
+void reset_quality_override()
+{
+  if (g_ctx)
+    g_ctx->qualityOverride = -1;
 }
 
 bool is_quality_override_active() { return g_ctx && g_ctx->qualityOverride >= 0; }
@@ -2340,18 +2395,18 @@ void apply_fxaa(AntialiasingMethod method, Texture *src_color, Texture *src_dept
   g_ctx->antialiasing->apply(src_color, src_depth, tc_scale_offset);
 }
 
-void apply_mobile_aa(Texture *source_tex, Texture *dest_tex, const ApplyContext &ctx)
+void apply_mobile_aa(Texture *source_tex, Texture *dest_tex, Texture *depth_tex, const ApplyContext &ctx)
 {
   switch (g_ctx->method)
   {
     case AntialiasingMethod::METALFX: g_ctx->applyMetalFx(source_tex, dest_tex); break;
-    case AntialiasingMethod::METALFX_TEMPORAL: g_ctx->applyMetalFxTemporal(source_tex, dest_tex, ctx); break;
+    case AntialiasingMethod::METALFX_TEMPORAL: g_ctx->applyMetalFxTemporal(source_tex, dest_tex, depth_tex, ctx); break;
     case AntialiasingMethod::MobileTAA:
     case AntialiasingMethod::MobileTAALow: g_ctx->applyMobileTaa(source_tex, dest_tex); break;
 #if HAS_SGSR
     case AntialiasingMethod::SGSR: g_ctx->applySgsr(source_tex, dest_tex); break;
     case AntialiasingMethod::SGSR2: g_ctx->applySgsr2(source_tex, dest_tex, ctx.resetHistory); break;
-    case AntialiasingMethod::ARM_ASR: g_ctx->applyArmAsr(source_tex, dest_tex, ctx); break;
+    case AntialiasingMethod::ARM_ASR: g_ctx->applyArmAsr(source_tex, dest_tex, depth_tex, ctx); break;
 #endif
     case AntialiasingMethod::SMAA: g_ctx->applySmaa(source_tex, dest_tex); break;
     default: break;
@@ -2731,13 +2786,6 @@ const char *get_frame_generation_unsupported_reason(const char *method, bool exc
   return g_ctx->getFrameGenerationUnsupportedReason(method, exclusive_fullscreen);
 }
 
-int get_presented_frame_count()
-{
-  if (!is_main_thread() || !g_ctx)
-    return 1;
-  return g_ctx->getPresentedFrameCount();
-}
-
 bool is_frame_generation_enabled()
 {
   if (!g_ctx)
@@ -2779,10 +2827,11 @@ bool try_init_dlss(IPoint2 postfx_resolution, IPoint2 &rendering_resolution, con
   return false;
 }
 
-void apply_dlss(Texture *in_color, const ApplyContext &apply_context, Texture *target)
+void apply_dlss(Texture *in_color, Texture *depth_tex, Texture *color_before_transparency_tex, Texture *albedo_tex,
+  const ApplyContext &apply_context, Texture *target)
 {
   if (g_ctx)
-    g_ctx->applyDlss(in_color, apply_context, target);
+    g_ctx->applyDlss(in_color, depth_tex, color_before_transparency_tex, albedo_tex, apply_context, target);
 }
 
 bool is_ray_reconstruction_enabled()
@@ -2799,41 +2848,42 @@ bool try_init_tsr(IPoint2 postfx_resolution, IPoint2 &rendering_resolution, cons
   return false;
 }
 
-void apply_tsr(Texture *in_color, const ApplyContext &apply_context, Texture *out_color, Texture *history_color,
-  Texture *out_confidence, Texture *history_confidence, Texture *reactive_tex)
+void apply_tsr(Texture *in_color, const ApplyContext &apply_context, Texture *out_color, Texture *history_color, Texture *out_depth,
+  Texture *history_depth, Texture *out_confidence, Texture *history_confidence, Texture *reactive_tex)
 {
   if (g_ctx)
-    g_ctx->applyTsr(in_color, apply_context, out_color, history_color, out_confidence, history_confidence, reactive_tex);
+    g_ctx->applyTsr(in_color, apply_context, out_color, history_color, out_depth, history_depth, out_confidence, history_confidence,
+      reactive_tex);
 }
 
-bool try_init_fsr(IPoint2 postfx_resolution, IPoint2 &rendering_resolution, const char *input_name)
+bool try_init_fsr(IPoint2 postfx_resolution, IPoint2 &rendering_resolution, const char *input_name, const char *depth_name)
 {
   IPoint2 dummy;
 
   if (g_ctx)
-    return g_ctx->tryInitFsr(postfx_resolution, false, rendering_resolution, dummy, dummy, input_name);
+    return g_ctx->tryInitFsr(postfx_resolution, false, rendering_resolution, dummy, dummy, input_name, depth_name);
   return false;
 }
 
-void apply_fsr(Texture *in_color, const ApplyContext &apply_context, Texture *target)
+void apply_fsr(Texture *in_color, Texture *depth_tex, const ApplyContext &apply_context, Texture *target)
 {
   if (g_ctx)
-    g_ctx->applyFsr(in_color, apply_context, target);
+    g_ctx->applyFsr(in_color, depth_tex, apply_context, target);
 }
 
-bool try_init_xess(IPoint2 outputResolution, IPoint2 &inputResolution, const char *input_name)
+bool try_init_xess(IPoint2 outputResolution, IPoint2 &inputResolution, const char *input_name, const char *depth_name)
 {
   IPoint2 dummy;
 
   if (g_ctx)
-    return g_ctx->tryInitXess(outputResolution, false, inputResolution, dummy, dummy, input_name);
+    return g_ctx->tryInitXess(outputResolution, false, inputResolution, dummy, dummy, input_name, depth_name);
   return false;
 }
 
-void apply_xess(Texture *in_color, const ApplyContext &apply_context, Texture *target)
+void apply_xess(Texture *in_color, Texture *depth_tex, const ApplyContext &apply_context, Texture *target)
 {
   if (g_ctx)
-    g_ctx->applyXess(in_color, apply_context, target);
+    g_ctx->applyXess(in_color, depth_tex, apply_context, target);
 }
 
 #if _TARGET_C2

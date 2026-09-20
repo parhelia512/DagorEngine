@@ -3,6 +3,7 @@
 
 #include "d3d12_error_handling.h"
 #include "d3d12_utils.h"
+#include "debug/names.h"
 #include "driver.h"
 
 #include <dag/dag_vector.h>
@@ -16,6 +17,20 @@
 
 namespace drv3d_dx12
 {
+
+constexpr const char *descriptor_heap_kind_name(const D3D12_DESCRIPTOR_HEAP_DESC &desc)
+{
+  const bool shaderVisible = 0 != (desc.Flags & D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE);
+  switch (desc.Type)
+  {
+    case D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV: return shaderVisible ? "ShaderVisibleCbvSrvUavHeap" : "CbvSrvUavHeap";
+    case D3D12_DESCRIPTOR_HEAP_TYPE_SAMPLER: return shaderVisible ? "ShaderVisibleSamplerHeap" : "SamplerHeap";
+    case D3D12_DESCRIPTOR_HEAP_TYPE_RTV: return "RtvHeap";
+    case D3D12_DESCRIPTOR_HEAP_TYPE_DSV: return "DsvHeap";
+    default: return "DescriptorHeap";
+  }
+}
+
 // Result of allocating a single descriptor (CPU handle) from a descriptor heap.
 using DescriptorHandleAllocationResult = dag::Expected<D3D12_CPU_DESCRIPTOR_HANDLE, HRESULT>;
 // Result of allocating a descriptor heap object that backs descriptors.
@@ -180,6 +195,7 @@ struct BasicBlockHeap
     {
       return dag::Unexpected{errorCode};
     }
+    debug::name_object(result.Get(), debug::make_pool_object_name(descriptor_heap_kind_name(desc)));
 
     return result;
   }
@@ -309,7 +325,7 @@ struct BasicFreeListHeap
     {
       return dag::Unexpected{errorCode};
     }
-
+    debug::name_object(result.Get(), debug::make_pool_object_name(descriptor_heap_kind_name(desc)));
     return result;
   }
 };
@@ -342,6 +358,7 @@ protected:
     desc.NodeMask = 0;
     if (DX12_CHECK_OK(device->CreateDescriptorHeap(&desc, COM_ARGS(&heap))))
     {
+      debug::name_object(heap.Get(), debug::make_pool_object_name(descriptor_heap_kind_name(desc)));
       gpuBaseAddress = heap->GetGPUDescriptorHandleForHeapStart();
       cpuBaseAddress = heap->GetCPUDescriptorHandleForHeapStart();
     }

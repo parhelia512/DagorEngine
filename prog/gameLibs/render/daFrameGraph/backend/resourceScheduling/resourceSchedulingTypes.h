@@ -37,6 +37,8 @@ struct AllocationLocation
 };
 using AllocationLocations = eastl::array<IdIndexedMapping<intermediate::ResourceIndex, AllocationLocation>, SCHEDULE_FRAME_WINDOW>;
 
+using AlreadyScheduled = eastl::array<IdIndexedFlags<intermediate::ResourceIndex, framemem_allocator>, SCHEDULE_FRAME_WINDOW>;
+
 struct HeapRequest
 {
   ResourceHeapGroup *group = nullptr;

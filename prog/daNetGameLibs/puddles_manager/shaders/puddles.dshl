@@ -330,3 +330,25 @@ macro USE_RI_PUDDLES()
     }
   }
 endmacro
+
+macro INIT_PUDDLE_QUERY_SAMPLE(stage)
+  INIT_WORLD_HEIGHTMAP_BASE(stage)
+  USE_HEIGHTMAP_COMMON_BASE(stage)
+
+  INIT_HEIGHTMAP_GATHERED_SAMPLING(stage)
+  USE_HEIGHTMAP_GATHERED_SAMPLING(stage)
+
+  INIT_PUDDLE(stage)
+  USE_PUDDLE(stage)
+endmacro
+
+macro USE_PUDDLE_QUERY_SAMPLE(stage)
+  hlsl(stage) {
+    float puddle_query_sample(float3 worldPos)
+    {
+      float puddle, worldPosYPuddleOffset, puddleHeight;
+      getPuddleData(worldPos.y, worldPos, puddle, worldPosYPuddleOffset, puddleHeight);
+      return puddle;
+    }
+  }
+endmacro

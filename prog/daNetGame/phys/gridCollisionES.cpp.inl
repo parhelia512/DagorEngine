@@ -277,12 +277,12 @@ bool rayhit_entities_in_grid(uint32_t grid_hash, const Point3 &from, const Point
 bool query_entities_intersections_in_grid(uint32_t grid_hash,
   dag::ConstSpan<plane3f> convex,
   const TMatrix &tm,
-  float rad,
+  const BBox3 &local_bbox,
   bool rayhit,
   IntersectedEntities &entities,
   SortIntersections do_sort)
 {
-  for_each_entity_in_grid(grid_hash, BSphere3(tm.getcol(3), rad), GridEntCheck::BOUNDING, [&](ecs::EntityId eid, vec3f) {
+  for_each_entity_in_grid(grid_hash, tm, local_bbox, convex, GridEntCheck::BOUNDING, [&](ecs::EntityId eid, vec3f) {
     intersected_eid_ecs_query(*g_entity_mgr, eid,
       [&](const TMatrix &transform, const CollisionResource &collres, const AnimV20::AnimcharBaseComponent &animchar) {
         dag::ConstSpan<CollisionNode> allNodes = collres.getAllNodes();

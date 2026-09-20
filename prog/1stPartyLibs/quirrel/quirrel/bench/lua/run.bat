@@ -14,7 +14,7 @@ luajit.exe -joff spectral-norm.lua
 luajit.exe -joff table-sort.lua
 luajit.exe -joff tree.lua
 
-echo "Lua (low res timer)"
+echo "Lua 5.5.1"
 lua.exe fib_loop.lua
 lua.exe fib_recursive.lua
 lua.exe primes.lua

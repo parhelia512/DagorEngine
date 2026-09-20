@@ -12,6 +12,8 @@ AddIncludes =
 Sources =
   assetBuildCache.cpp
   assetExpCache.cpp
+  assetRefsCache.cpp
+  daBuildPluginGlobals.cpp
   texConvCache.cpp
   texAssetBuilderTextureFactory.cpp
   reloadTexAsset.cpp

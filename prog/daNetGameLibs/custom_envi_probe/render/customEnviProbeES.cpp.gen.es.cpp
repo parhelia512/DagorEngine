@@ -143,9 +143,9 @@ static constexpr ecs::ComponentDesc custom_envi_probe_after_reset_es_comps[] =
 };
 static void custom_envi_probe_after_reset_es_all_events(const ecs::Event &__restrict evt, const ecs::QueryView &__restrict components)
 {
-  G_FAST_ASSERT(evt.is<AfterDeviceReset>());
+  G_FAST_ASSERT(evt.is<EventAfterDeviceReset>());
   auto comp = components.begin(), compE = components.end(); G_ASSERT(comp!=compE); do
-    custom_envi_probe_after_reset_es(static_cast<const AfterDeviceReset&>(evt)
+    custom_envi_probe_after_reset_es(static_cast<const EventAfterDeviceReset&>(evt)
         , ECS_RW_COMP(custom_envi_probe_after_reset_es_comps, "custom_envi_probe__needs_render", bool)
     );
   while (++comp != compE);
@@ -159,7 +159,7 @@ static ecs::EntitySystemDesc custom_envi_probe_after_reset_es_es_desc
   empty_span(),
   empty_span(),
   empty_span(),
-  ecs::EventSetBuilder<AfterDeviceReset>::build(),
+  ecs::EventSetBuilder<EventAfterDeviceReset>::build(),
   0
 );
 static constexpr ecs::ComponentDesc custom_envi_probe_render_es_event_handler_comps[] =

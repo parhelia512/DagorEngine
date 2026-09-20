@@ -18,7 +18,7 @@ static eastl::string_map<ColorPair> originalColors;
 
 extern bool is_level_loaded();
 
-ECS_ON_EVENT(on_appear, OnLevelLoaded)
+ECS_ON_EVENT(on_appear, EventRenderSceneLoaded)
 ECS_TAG(render)
 static void init_ri_color_override_es(const ecs::Event &,
   const ecs::string &ri_color_override__name,

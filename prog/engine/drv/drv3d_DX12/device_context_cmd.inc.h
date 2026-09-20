@@ -837,6 +837,7 @@ DX12_BEGIN_CONTEXT_COMMAND(true, FinishFrame)
   DX12_CONTEXT_COMMAND_PARAM(ImageViewInfo, swapchainClearView)
 
 #if DX12_CONTEXT_COMMAND_IMPLEMENTATION
+  DX12_PROFILE_MARKER_TAG(DX12_cmdFinishFrame, "progress %u", static_cast<uint32_t>(progress));
   ctx.finishFrame(progress, timingData, kickoffStamp, frontFrameId, frameId,
     {.mode = presentOnSwapchain ? PresentInfo::Mode::PresentSwapchain : PresentInfo::Mode::DoNotPresent,
       .clearView = swapchainClearView});
@@ -982,24 +983,6 @@ DX12_BEGIN_CONTEXT_COMMAND(false, ChangePresentWindow)
 #endif
 DX12_END_CONTEXT_COMMAND
 #endif
-
-DX12_BEGIN_CONTEXT_COMMAND_EXT_1(false, UpdateVertexShaderName, char, name)
-  DX12_CONTEXT_COMMAND_USE_DEVICE(false)
-  DX12_CONTEXT_COMMAND_PARAM(ShaderID, shader)
-
-#if DX12_CONTEXT_COMMAND_IMPLEMENTATION
-  ctx.updateVertexShaderName(shader, name);
-#endif
-DX12_END_CONTEXT_COMMAND
-
-DX12_BEGIN_CONTEXT_COMMAND_EXT_1(false, UpdatePixelShaderName, char, name)
-  DX12_CONTEXT_COMMAND_USE_DEVICE(false)
-  DX12_CONTEXT_COMMAND_PARAM(ShaderID, shader)
-
-#if DX12_CONTEXT_COMMAND_IMPLEMENTATION
-  ctx.updatePixelShaderName(shader, name);
-#endif
-DX12_END_CONTEXT_COMMAND
 
 DX12_BEGIN_CONTEXT_COMMAND(true, BeginVisibilityQuery)
   DX12_CONTEXT_COMMAND_PARAM(Query *, query)
@@ -1154,6 +1137,26 @@ DX12_BEGIN_CONTEXT_COMMAND(true, SetDlssOptions)
 
 #if DX12_CONTEXT_COMMAND_IMPLEMENTATION
   ctx.setDlssOptions(options, view_index);
+#endif
+DX12_END_CONTEXT_COMMAND
+
+DX12_BEGIN_CONTEXT_COMMAND(true, ExecuteDlssNR)
+  DX12_CONTEXT_COMMAND_PROFILE_MARKER(true)
+  DX12_CONTEXT_COMMAND_PARAM(nv::DlssNRParams<Image>, dlss_nr_params)
+  DX12_CONTEXT_COMMAND_PARAM(int, view_index)
+
+#if DX12_CONTEXT_COMMAND_IMPLEMENTATION
+  ctx.executeDlssNR(dlss_nr_params, view_index);
+#endif
+DX12_END_CONTEXT_COMMAND
+
+DX12_BEGIN_CONTEXT_COMMAND(true, SetDlssNROptions)
+  DX12_CONTEXT_COMMAND_PROFILE_MARKER(true)
+  DX12_CONTEXT_COMMAND_PARAM(nv::DlssNROptions, options)
+  DX12_CONTEXT_COMMAND_PARAM(int, view_index)
+
+#if DX12_CONTEXT_COMMAND_IMPLEMENTATION
+  ctx.setDlssNROptions(options, view_index);
 #endif
 DX12_END_CONTEXT_COMMAND
 

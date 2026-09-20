@@ -65,7 +65,7 @@ namespace SQCompilation
 #include <stdio.h>
 
 #define SQUIRREL_VERSION_NUMBER_MAJOR 4
-#define SQUIRREL_VERSION_NUMBER_MINOR 38
+#define SQUIRREL_VERSION_NUMBER_MINOR 41
 #define SQUIRREL_VERSION_NUMBER_PATCH 0
 
 #define SQ_STRINGIFY_HELPER(x) #x
@@ -343,6 +343,8 @@ SQUIRREL_API SQUserPointer sq_newuserdata(HSQUIRRELVM v,SQUnsignedInteger size);
 SQUIRREL_API void sq_newtable(HSQUIRRELVM v);
 SQUIRREL_API void sq_newtableex(HSQUIRRELVM v,SQInteger initialcapacity);
 SQUIRREL_API void sq_newarray(HSQUIRRELVM v,SQInteger size);
+// If SQ_STORE_DOC_OBJECTS is 0, the declaration text is not retained.
+// Native reflection then rebuilds reduced metadata from closure fields.
 SQUIRREL_API SQRESULT sq_new_closure_slot_from_decl_string(HSQUIRRELVM v, SQFUNCTION func, SQUnsignedInteger nfreevars, const char *function_decl, const char *docstring);
 SQUIRREL_API void sq_newclosure(HSQUIRRELVM v,SQFUNCTION func,SQUnsignedInteger nfreevars);
 SQUIRREL_API SQRESULT sq_setparamscheck(HSQUIRRELVM v,SQInteger nparamscheck,const char *typemask);
@@ -379,6 +381,8 @@ SQUIRREL_API SQRESULT sq_getfunctioninfo(HSQUIRRELVM v,SQInteger level,SQFunctio
 SQUIRREL_API SQRESULT sq_getclosureinfo(HSQUIRRELVM v,SQInteger idx,SQInteger *nparams,SQInteger *nfreevars);
 SQUIRREL_API SQRESULT sq_getclosurename(HSQUIRRELVM v,SQInteger idx);
 SQUIRREL_API SQRESULT sq_setnativeclosurename(HSQUIRRELVM v,SQInteger idx,const char *name);
+// If SQ_STORE_DOC_OBJECTS is 0, these setters validate the target and return
+// SQ_OK without storing the text.
 SQUIRREL_API SQRESULT sq_setnativeclosuredocstring(HSQUIRRELVM v,SQInteger idx,const char *docstring);
 SQUIRREL_API SQRESULT sq_setobjectdocstring(HSQUIRRELVM v, const HSQOBJECT *obj, const char *docstring);
 SQUIRREL_API SQRESULT sq_setinstanceup(HSQUIRRELVM v, SQInteger idx, SQUserPointer p);

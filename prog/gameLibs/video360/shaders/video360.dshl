@@ -31,7 +31,11 @@ shader cubemap_to_spherical_projection
   z_write=false;
   z_test=false;
 
-  (ps) { source_tex@smpCube = video360_screen_env; }
+  (ps) { source_tex@texCube = video360_screen_env; }
+  INIT_GLOBAL_LINEAR_WRAP_SAMPLER(ps)
+  hlsl(ps) {
+    #define source_tex_samplerstate global_linear_wrap_sampler
+  }
 
   POSTFX_VS_TEXCOORD(0, uv)
 

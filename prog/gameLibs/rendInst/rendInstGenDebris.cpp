@@ -74,7 +74,8 @@ static inline void prepareDestrExcl(RendInstGenData *rgl)
       rgl->grid2world * rgl->cellSz * rgl->cellNumH);
 }
 
-static int sweepRIGenInBoxByMask(RendInstGenData *rgl, const BBox3 &_box, unsigned frameNo, const Point3 &axis, bool create_debris)
+static int sweepRIGenInBoxByMask(RendInstGenData *rgl, const BBox3 &_box, unsigned frameNo, const Point3 &axis, bool create_debris,
+  rendinst::RIGenPoolSkipCbType pool_skip_cb = {})
 {
   static constexpr int SUBCELL_DIV = RendInstGenData::SUBCELL_DIV;
   float subcellSz = rgl->grid2world * rgl->cellSz / SUBCELL_DIV;
@@ -125,7 +126,8 @@ static int sweepRIGenInBoxByMask(RendInstGenData *rgl, const BBox3 &_box, unsign
         for (int p = 0; p < pcnt; p++)
         {
           const RendInstGenData::CellRtData::SubCellSlice &scs = crt.getCellSlice(p, idx);
-          if (!scs.sz || rgl->rtData->riProperties[p].immortal || rgl->rtData->riDestr[p].destructable)
+          if (!scs.sz || rgl->rtData->riProperties[p].immortal || rgl->rtData->riDestr[p].destructable ||
+              (pool_skip_cb && pool_skip_cb(rgl->rtData->layerIdx, p)))
             continue;
 
           mat44f tm;
@@ -235,7 +237,8 @@ static String get_name_for_skeleton_res(SimpleString s)
   return res_name + "skeleton";
 }
 
-void rendinst::doRIGenDamage(const BSphere3 &sphere, unsigned frameNo, const Point3 &axis, bool create_debris)
+void rendinst::doRIGenDamage(const BSphere3 &sphere, unsigned frameNo, const Point3 &axis, bool create_debris,
+  rendinst::RIGenPoolSkipCbType pool_skip_cb)
 {
   FOR_EACH_RG_LAYER_DO (rgl)
   {
@@ -244,7 +247,7 @@ void rendinst::doRIGenDamage(const BSphere3 &sphere, unsigned frameNo, const Poi
       prepareDestrExcl(rgl);
       rendinst::gen::destrExcl.markCircle(sphere.c.x, sphere.c.z, sphere.r);
     }
-    sweepRIGenInBoxByMask(rgl, sphere, frameNo, axis, create_debris);
+    sweepRIGenInBoxByMask(rgl, sphere, frameNo, axis, create_debris, pool_skip_cb);
   }
 }
 void rendinst::doRIGenDamage(const BBox3 &box, unsigned frameNo, const Point3 &axis, bool create_debris)
@@ -1066,6 +1069,7 @@ void RendInstGenData::RtData::initDebris(const DataBlock &ri_blk, int (*get_fx_t
   riDebris.reserve(32);
   destrNames.resize(riResCnt);
 
+  G_ASSERT(&ri_blk == rendinst::getRIGenExtraConfig()); // the riExtra{} reads below use its index
   const DataBlock *riExtraBlk = ri_blk.getBlockByNameEx("riExtra");
   const DataBlock *commonTreeBlk = ri_blk.getBlockByNameEx("tree_common");
   int errDuplicateBlocks = 0;
@@ -1089,7 +1093,7 @@ void RendInstGenData::RtData::initDebris(const DataBlock &ri_blk, int (*get_fx_t
   const rendinstdestr::TreeDestr &treeDestr = rendinstdestr::get_tree_destr();
   for (int i = 0; i < riResCnt; i++)
   {
-    const DataBlock *objectDmgBlk = riExtraBlk->getBlockByName(riResName[i]);
+    const DataBlock *objectDmgBlk = rendinst::getRIGenExtraBlockByName(riResName[i]);
     for (unsigned int blockNo = 0; !objectDmgBlk && blockNo < ri_blk.blockCount(); blockNo++)
     {
       const DataBlock *blk = ri_blk.getBlock(blockNo);
@@ -1167,12 +1171,22 @@ void RendInstGenData::RtData::initDebris(const DataBlock &ri_blk, int (*get_fx_t
       CollisionResource *collRes = riCollRes[i].collRes;
       if (collRes && riProperties[i].matId == PHYSMAT_DEFAULT)
       {
+        // A rendinst has one matId, so it may adopt the collision's only when the whole resource agrees on one: every node holding
+        // exactly that material and nothing else.
+        // A node with several materials answers a count above 1 and stops the adoption, which is the point -- there is no single right
+        // answer for it.
         int collMatId = PHYSMAT_INVALID;
-        for (const auto &n : collRes->getAllNodes())
+        for (const CollisionNode &n : collRes->getAllNodes())
         {
+          if (collRes->getNodePhysMatCount(n.nodeIndex) != 1)
+          {
+            collMatId = PHYSMAT_INVALID;
+            break;
+          }
+          const int nodeMatId = collRes->getNodePhysMatId(n.nodeIndex, 0);
           if (collMatId == PHYSMAT_INVALID)
-            collMatId = n.physMatId;
-          else if (collMatId != n.physMatId)
+            collMatId = nodeMatId;
+          else if (collMatId != nodeMatId)
           {
             collMatId = PHYSMAT_INVALID;
             break;
@@ -1296,14 +1310,18 @@ void RendInstGenData::RtData::initDebris(const DataBlock &ri_blk, int (*get_fx_t
 
   ScopedGameResRestrictionListHolder rllH(create_res_restriction_list(debris_nm_full));
 
+  // riResIdxByNameId may already be consumed by addRIGenExtraSubst, so rebuild the same
+  // name -> first pool index mapping over riResNameIds rather than rescanning riResName per name
+  Tab<int> riResRefIdx(framemem_ptr());
+  riResRefIdx.resize(riResNameIds.nameCount());
+  mem_set_ff(riResRefIdx);
+  for (int j = 0; j < riResName.size(); j++)
+    if (const int nid = riResNameIds.getNameId(riResName[j]); nid >= 0 && riResRefIdx[nid] < 0)
+      riResRefIdx[nid] = j;
+
   iterate_names(debris_nm, [&](int id, const char *name) {
-    int ref = -1;
-    for (int j = 0; j < riResName.size(); j++)
-      if (strcmp(riResName[j], name) == 0)
-      {
-        ref = j;
-        break;
-      }
+    const int refNameId = riResNameIds.getNameId(name);
+    const int ref = refNameId >= 0 ? riResRefIdx[refNameId] : -1;
     int riExId = rendinst::addRIGenExtraResIdx(name, ref, layerIdx, rendinst::AddRIFlag::UseShadow);
     riDebris[id].resIdx = riExId;
     if (riExId >= 0 && !RendInstGenData::renderResRequired)
@@ -1311,6 +1329,7 @@ void RendInstGenData::RtData::initDebris(const DataBlock &ri_blk, int (*get_fx_t
       {
         release_game_resource_ex(rendinst::riExtra[riExId].destroyedPhysRes, PhysObjGameResClassId);
         rendinst::riExtra[riExId].destroyedPhysRes = nullptr;
+        rendinst::riExtra[riExId].setupDestrPhysResLodMask(name);
       }
   });
 
@@ -1356,6 +1375,7 @@ void RendInstGenData::RtData::initDebris(const DataBlock &ri_blk, int (*get_fx_t
       {
         curRi.destroyedPhysRes = curRiDestr.res;
         ::game_resource_add_ref_ex(curRi.destroyedPhysRes, PhysObjGameResClassId);
+        curRi.setupDestrPhysResLodMask(rendinst::riExtraMap.getName(i));
       }
     });
   }
@@ -1572,9 +1592,10 @@ void RendInstGenData::RtData::addDebrisForRiExtraRange(const DataBlock &ri_blk, 
         riDestr[ref].destroyedByTag = destroyedByTag;
 
 #if RI_VERBOSE_OUTPUT
-      debug("riExtra[%d] %s destructible! riPoolRef=%d fxType=%d fxScale=%.3f stopsBullets=%d destructionImpulse=%f", i, ri_res_name,
-        ref, rendinst::riExtra[i].destrFxType, rendinst::riExtra[i].destrFxScale, (int)rendinst::riExtra[i].destrStopsBullets,
-        riDestr[ref].destructionImpulse);
+      if (rendinst::is_ri_verbose_dump_expected())
+        debug("riExtra[%d] %s destructible! riPoolRef=%d fxType=%d fxScale=%.3f stopsBullets=%d destructionImpulse=%f", i, ri_res_name,
+          ref, rendinst::riExtra[i].destrFxType, rendinst::riExtra[i].destrFxScale, (int)rendinst::riExtra[i].destrStopsBullets,
+          riDestr[ref].destructionImpulse);
 #endif
     }
 

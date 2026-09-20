@@ -5,7 +5,7 @@
 #include <render/lensFlare/render/lensFlareRenderer.h>
 #include <render/daFrameGraph/daFG.h>
 #include <render/rendererFeatures.h>
-#include <render/world/cameraInCamera.h>
+#include <render/cameraInCamera/cameraInCamera.h>
 #include <EASTL/shared_ptr.h>
 
 dafg::NodeHandle create_lens_flare_per_camera_res_node(const LensFlareQualityParameters &quality)

@@ -14,12 +14,13 @@
 #include <util/dag_nameHashers.h>
 #include <util/dag_hashedKeyMap.h>
 #include <util/dag_stringTableAllocator.h>
+#include <util/dag_compilerDefs.h>
 
 template <typename HashType = uint32_t,
   bool can_have_collisions = (sizeof(HashType) < 8), // by default we assume that 32bits hashes are not good enough, while 64bit are
                                                      // bullet-proof
   bool ignore_case = false, typename Hasher = DefaultOAHasher<ignore_case, HashType>>
-struct UniqueHashedNames
+struct DAGOR_WARN_IF_UNUSED UniqueHashedNames
 {
   typedef HashType hash_t;
   static constexpr uint32_t invalid_id = ~0u;

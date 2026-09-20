@@ -18,6 +18,7 @@ source
   file:t = "../dynamic_simple_painted.dshl"
   file:t = "../dynamic_alpha_blend.dshl"
   file:t = "../dynamic_masked_chrome.dshl"
+  file:t = "../dynamic_cloth_sim.dshl"
   file:t = "../heightmap.dshl"
   file:t = "../rendinst_clipmap.dshl"
   file:t = "../heightmap_patches.dshl"

@@ -82,6 +82,7 @@ void get_spectrum_bars(dag::Span<float>) {}
 
 // events.cpp
 bool has_event(const char *, const char *) { return false; }
+bool is_valid_event_banks(const char *, const char *) { return false; }
 int get_num_event_instances(const char *, const char *) { return 0; }
 int get_num_event_instances(EventHandle) { return 0; }
 EventHandle init_event(const char *, const char *, ieff_t, const Point3 *) { return {}; }

@@ -10,11 +10,12 @@
 #include <daECS/core/internal/asserts.h>
 #include <EASTL/vector_map.h>
 #include <generic/dag_smallTab.h>
+#include <util/dag_compilerDefs.h>
 
 namespace ecs
 {
 
-class Object
+class DAGOR_WARN_IF_UNUSED Object
 {
 public:
   // it is possible to optimize layout. our keys are immutable strings, i.e. we never change them

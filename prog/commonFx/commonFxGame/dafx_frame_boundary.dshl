@@ -362,7 +362,7 @@ shader frame_boundary_debug_update
 
       float4 frame_boundary = structuredBufferAt(dafx_frame_boundary_buffer, dafx_fill_boundary_offset + frame_id);
       frame_boundary.yw = 1 - frame_boundary.wy; // the inverse is stored for rendering, so we have to invert it back
-      if (any(delta_tc < frame_boundary.xy || delta_tc > frame_boundary.zw))
+      if (any(or(delta_tc < frame_boundary.xy, delta_tc > frame_boundary.zw)))
         result = lerp(result, float4(1,0,1,1), 0.5);
 
       return result;

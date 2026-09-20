@@ -91,6 +91,13 @@ void updateRiDestrFxIds(FxTypeByNameCallback get_fx_type_by_name);
 float debugGetSoundOcclusion(const char *ri_name, float def_value);
 
 void precomputeRIGenCellsAndPregenerateRIExtra();
+// Called on the loading thread after each precomputed cell, and once with
+// cells_done = 0 before the first: a host can estimate the pregen end from
+// cell throughput (e.g. to start a loading-screen exit in time).
+// Set the callback on the loading thread, before the precompute starts:
+// the pointer is sampled once at phase entry, unguarded.
+using RiGenPrecomputeProgressCb = void (*)(int cells_done, int cells_total);
+void set_ri_gen_precompute_progress_cb(RiGenPrecomputeProgressCb cb);
 // Builds the riExtra grid leaf trees. The streaming path calls this itself once its last cell job
 // lands; a host that pregenerates every cell instead replaces that path and has to call it.
 void optimizeRIGenExtra();
@@ -135,6 +142,7 @@ extern void updateRIGenImpostors(float shadowDistance, const Point3 &sunDir0, co
 extern void resetRiGenImpostors();
 extern void getLodCounter(int lod, const RiGenVisibility *visibility, int &subCellNo, int &cellNo);
 extern void set_per_instance_visibility_for_any_tree(bool on); // should be on only in tank
+extern void setTreeLod0Offset(bool on);
 
 extern float getMaxFarplaneRIGen(bool sec_layer = false);
 extern float getMaxAverageFarplaneRIGen(bool sec_layer = false);

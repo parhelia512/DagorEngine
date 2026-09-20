@@ -7,8 +7,9 @@
 class BaseTexture;
 
 #include <drv/3d/dag_consts.h>
+#include <drv/3d/dag_multi_interface.h>
 
-namespace d3d
+namespace d3d _MULTI_INTERFACE
 {
 /**
  * \brief Sets variable rate shading setup for next draw calls.
@@ -46,7 +47,7 @@ void set_variable_rate_shading(unsigned rate_x, unsigned rate_y,
  */
 void set_variable_rate_shading_texture(BaseTexture *rate_texture = nullptr);
 
-} // namespace d3d
+} // namespace d3d _MULTI_INTERFACE
 
 #if _TARGET_D3D_MULTI
 #include <drv/3d/dag_interface_table.h>

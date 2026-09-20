@@ -1,5 +1,6 @@
 // Copyright (C) Gaijin Games KFT.  All rights reserved.
 
+#include <daBVH/dag_bvhBuild.h> // the SAH entry decode
 #include <daBVH/dag_swTLAS.h>
 #include <util/dag_stlqsort.h>
 #include <math/dag_TMatrix.h>
@@ -68,8 +69,8 @@ static void writeTLASLeaf(WriteTLASTreeInfo &info, bbox3f_cref box, const mat43f
   m44.col0 = v_mul(m44.col0, v_splat_x(ext));
   m44.col1 = v_mul(m44.col1, v_splat_y(ext));
   m44.col2 = v_mul(m44.col2, v_splat_z(ext));
-  vec3f scale = v_perm_xycd(v_perm_xaxa(v_length3_x(m44.col0), v_length3(m44.col1)), v_length3(m44.col2));
-  const vec3f maxScale = v_max(v_max(scale, v_splat_y(scale)), v_splat_z(scale));
+  vec3f scale = v_sqrt(v_mat44_scale43_sq(m44));
+  const vec3f maxScale = v_hmax3(scale);
   m44.col0 = v_div(m44.col0, v_splat_x(scale));
   m44.col1 = v_div(m44.col1, v_splat_y(scale));
   m44.col2 = v_div(m44.col2, v_splat_z(scale));
@@ -82,7 +83,7 @@ static void writeTLASLeaf(WriteTLASTreeInfo &info, bbox3f_cref box, const mat43f
 
   // Detect reflection (negative determinant): cross(col0,col1) gives wrong sign for col2.
   // Encode the reflection flag in the sign of scale.x so the decoder can negate col2.
-  if (v_extract_x(v_dot3(v_cross3(m33.col0, m33.col1), m33.col2)) < 0.f)
+  if (v_extract_x(v_mat33_det(m33)) < 0.f)
     scale = v_xor(scale, v_cast_vec4f(v_make_vec4i((int)0x80000000, 0, 0, 0)));
 
   // For uint16 BLAS (non-halves), bake the 32767.5 mapping into origin/scale
@@ -97,15 +98,12 @@ static void writeTLASLeaf(WriteTLASTreeInfo &info, bbox3f_cref box, const mat43f
     scale = v_mul(scale, v_splats(32767.5f));
   }
 
-  memcpy(leaf->origin, &origin, sizeof(float) * 3);
-  memcpy(leaf->scale, &scale, sizeof(float) * 3);
+  v_stu_p3(leaf->origin, origin);
+  v_stu_p3(leaf->scale, scale);
   leaf->maxScale = v_extract_xi(v_float_to_half_up(maxScale));
   leaf->distToTreatAsBox = dim_as_box_dist;
-  alignas(16) float col0f[4], col1f[4];
-  v_st(col0f, invTm.col0);
-  v_st(col1f, invTm.col1);
-  memcpy(leaf->invTm, col0f, sizeof(float) * 3);     // -V1086
-  memcpy(leaf->invTm + 3, col1f, sizeof(float) * 3); // -V1086
+  v_stu_p3(leaf->invTm, invTm.col0);
+  v_stu_p3(leaf->invTm + 3, invTm.col1);
 
   G_STATIC_ASSERT(sizeof(TLASLeaf) % 4 == 0);
   G_STATIC_ASSERT(TLASLeaf::BOX_SIZE % 4 == 0);
@@ -119,12 +117,12 @@ static void writeTLASLeaf(WriteTLASTreeInfo &info, bbox3f_cref box, const mat43f
 
 static int writeTLASTree(WriteTLASTreeInfo &info, int node, int depth)
 {
-  int faceIndex = v_extract_wi(v_cast_vec4i(info.nodes[node].bmin));
-  int childrenCount = v_extract_wi(v_cast_vec4i(info.nodes[node].bmax));
+  int faceIndex = build_bvh::sahFaceIndex(info.nodes, node);
+  int childrenCount = build_bvh::sahChildrenCount(info.nodes, node);
 
-  if (faceIndex < 0) // intermediate node
+  if (!build_bvh::sahIsLeaf(info.nodes, node)) // intermediate node
   {
-    const int nodeSize = -faceIndex;
+    const int nodeSize = (int)build_bvh::sahSpan(info.nodes, node) - 1;
     const int tempDataOffset = info.nodesOffset;
     TLASNode *tlasNode = writeTLASNode(info, info.nodes[node]);
 

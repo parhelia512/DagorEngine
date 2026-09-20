@@ -7,6 +7,7 @@
 #include <render/daFrameGraph/singleShaders.h>
 #include <render/renderEvent.h>
 #include <render/cinematicMode.h>
+#include <render/antialiasing.h>
 #include <ecs/render/updateStageRender.h>
 
 #include <daECS/core/entityManager.h>
@@ -15,9 +16,12 @@
 #define INSIDE_RENDERER 1
 #include "../private_worldRenderer.h"
 #include "frameGraphNodes.h"
+#include "render/screencap.h"
 #include <render/world/global_vars.h>
 #include <render/world/frameGraphHelpers.h>
 #include <drv/3d/dag_renderTarget.h>
+#include <drv/3d/dag_tex3d.h>
+#include <3d/dag_resPtr.h>
 #include <drv/3d/dag_texture.h>
 #include <drv/3d/dag_driver.h>
 #include <render/world/dynModelRenderPass.h>
@@ -38,10 +42,8 @@ dafg::NodeHandle makeSSAANode()
     registry.readTexture("postfxed_frame").atStage(dafg::Stage::PS).bindToShaderVar("super_screenshot_tex");
     registry.requestRenderPass().color({"frame_after_postfx"});
 
-    return [downscaleSuperresScreenshot = PostFxRenderer("downscale_superres_screenshot")] {
-      ShaderGlobal::set_int(super_pixelsVarId, 2);
-      downscaleSuperresScreenshot.render();
-    };
+    registry.create("ssaa_super_pixels").blob<int>(2).bindToShaderVar("super_pixels");
+    dafg::postFx("downscale_superres_screenshot", registry);
   });
 }
 
@@ -91,7 +93,7 @@ dafg::NodeHandle makeStaticUpsampleNode(const char *source_name)
     registry.readTexture(source_name).atStage(dafg::Stage::PS).bindToShaderVar("upsampling_source_tex");
     registry.requestRenderPass().color({"frame_after_postfx"});
 
-    return [staticUpsample = PostFxRenderer("static_upsample")] { staticUpsample.render(); };
+    dafg::postFx("static_upsample", registry);
   });
 }
 
@@ -174,16 +176,12 @@ resource_slot::NodeHandleWithSlotsAccess makePostFxNode()
 
       postfx_read_additional_textures_from_registry(registry);
 
-      registry.readTexture(slotsState.resourceToReadFrom("postfx_input_slot"))
-        .atStage(dafg::Stage::POST_RASTER)
-        .bindToShaderVar("frame_tex");
+      auto frameHndl = registry.readTexture(slotsState.resourceToReadFrom("postfx_input_slot"))
+                         .atStage(dafg::Stage::POST_RASTER)
+                         .bindToShaderVar("frame_tex")
+                         .handle();
 
-      d3d::SamplerInfo postfxInputSmpInfo;
-      postfxInputSmpInfo.address_mode_u = postfxInputSmpInfo.address_mode_v = postfxInputSmpInfo.address_mode_w =
-        d3d::AddressMode::Mirror;
-      registry.create("postfx_input_mirror_sampler")
-        .blob<d3d::SamplerHandle>(d3d::request_sampler(postfxInputSmpInfo))
-        .bindToShaderVar("frame_tex_samplerstate");
+      registry.readTexture("tsr_depth").atStage(dafg::Stage::PS).bindToShaderVar("tsr_depth").optional();
 
       // Binding of the dof_depth_blend shader var is done with setBlendDepthTex,
       // "depth_with_transparency" or "lens_dof_blend_depth_tex" or "depth_for_postfx"
@@ -227,7 +225,23 @@ resource_slot::NodeHandleWithSlotsAccess makePostFxNode()
 
       g_entity_mgr->broadcastEventImmediate(RegisterPostfxResources(registry));
 
-      return [targetHndl, postfx = PostFxRenderer("postfx")] {
+      return [targetHndl, frameHndl, postfx = PostFxRenderer("postfx")] {
+        // the last point where the linear scene-referred frame exists: serve a
+        // pending HDR (EXR) screenshot request before tonemapping eats it.
+        // dafg::TextureView is a raw pointer with no TEXTUREID, and screencap
+        // binds the source to a shader var - copy into a managed tex instead
+        if (screencap::is_hdr_screenshot_scheduled())
+          if (Texture *src = frameHndl.view().getTex2D())
+          {
+            TextureInfo ti;
+            src->getinfo(ti);
+            UniqueTex copy = dag::create_tex(nullptr, ti.w, ti.h, TEXCF_RTARGET | (ti.cflg & TEXFMT_MASK), 1, "hdr_screenshot_tmp");
+            if (copy)
+            {
+              copy->update(src);
+              screencap::make_hdr_screenshot(copy);
+            }
+          }
         d3d::set_render_target({}, DepthAccess::RW, {{targetHndl.get(), 0, 0}, {d3d::get_secondary_backbuffer_tex(), 0, 0}});
         postfx.render();
       };
@@ -240,7 +254,6 @@ resource_slot::NodeHandleWithSlotsAccess makePostFxInputSlotProviderNode()
     {resource_slot::Create{"postfx_input_slot", "frame_for_postfx"}}, [](resource_slot::State slotsState, dafg::Registry registry) {
       registry.renameTexture("final_target_with_motion_blur", slotsState.resourceToCreateFor("postfx_input_slot"));
       registry.create("postfx_input_sampler").blob<d3d::SamplerHandle>(d3d::request_sampler({}));
-      return []() {};
     });
 }
 
@@ -302,13 +315,15 @@ resource_slot::NodeHandleWithSlotsAccess makePreparePostFxNode()
 dafg::NodeHandle makeFrameBeforeDistortionProducerNode()
 {
   return dafg::register_node("frame_before_distortion_producer", DAFG_PP_NODE_SRC, [](dafg::Registry registry) {
-    auto srcFrameHndl = registry.readTexture("frame_after_aa").atStage(dafg::Stage::TRANSFER).useAs(dafg::Usage::BLIT).handle();
+    auto srcFrameHndl =
+      registry.readTexture("frame_after_neural_rendering").atStage(dafg::Stage::TRANSFER).useAs(dafg::Usage::BLIT).handle();
 
-    auto dstFrameHndl =
-      registry.createTexture2d("frame_before_distortion", {TEXFMT_A16B16G16R16F | TEXCF_RTARGET, registry.getResolution<2>("post_fx")})
-        .atStage(dafg::Stage::TRANSFER)
-        .useAs(dafg::Usage::BLIT)
-        .handle();
+    auto dstFrameHndl = registry
+                          .createTexture2d("frame_before_distortion",
+                            {render::antialiasing::get_frame_after_aa_flags() | TEXCF_RTARGET, registry.getResolution<2>("post_fx")})
+                          .atStage(dafg::Stage::TRANSFER)
+                          .useAs(dafg::Usage::BLIT)
+                          .handle();
 
     auto hasThermalRender = registry.readBlob<OrderingToken>("thermal_spectre_rendered").optional().handle();
 
@@ -318,7 +333,7 @@ dafg::NodeHandle makeFrameBeforeDistortionProducerNode()
       distortionPostfxRequired.ref() = !hasThermalRender.get();
 
       if (!distortionPostfxRequired.ref())
-        d3d::stretch_rect(srcFrameHndl.get(), dstFrameHndl.get());
+        dstFrameHndl.get()->update(srcFrameHndl.view().getTex2D());
     };
   });
 }
@@ -328,7 +343,7 @@ dafg::NodeHandle makeFilmGrainNode()
   return dafg::register_node("make_film_grain", DAFG_PP_NODE_SRC, [](dafg::Registry registry) {
     registry.requestRenderPass().color({"film_grain"});
     registry.create("film_grain").texture({TEXFMT_A16B16G16R16F | TEXCF_RTARGET, IPoint2(128, 128)});
-    return [shader = PostFxRenderer("film_grain")]() { shader.render(); };
+    dafg::postFx("film_grain", registry);
   });
 }
 
@@ -341,13 +356,8 @@ dafg::NodeHandle makeDistortionFxNode()
     registry.requestRenderPass().color({frame});
 
 
-    d3d::SamplerInfo postfxInputSmpInfo;
-    postfxInputSmpInfo.address_mode_u = postfxInputSmpInfo.address_mode_v = postfxInputSmpInfo.address_mode_w =
-      d3d::AddressMode::Mirror;
-    registry.readTexture("frame_after_aa").atStage(dafg::Stage::POST_RASTER).bindToShaderVar("frame_tex");
-    registry.create("frame_after_aa_sampler")
-      .blob<d3d::SamplerHandle>(d3d::request_sampler(postfxInputSmpInfo))
-      .bindToShaderVar("frame_tex_samplerstate");
+    registry.readTexture("frame_after_neural_rendering").atStage(dafg::Stage::POST_RASTER).bindToShaderVar("frame_tex");
+    registry.readTexture("tsr_depth").atStage(dafg::Stage::PS).bindToShaderVar("tsr_depth").optional();
 
     auto distortionPostfxRequired = registry.readBlob<bool>("distortion_postfx_required").handle();
 

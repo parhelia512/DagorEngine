@@ -29,11 +29,13 @@
 G_STATIC_ASSERT(MAX_ACTIVE_PROBES == LightProbeSpecularCubesContainer::INDOOR_PROBES);
 
 static const uint32_t UPDATE_PROBE_THRESHOLD = 100;
+static const uint32_t VISIBLE_PROBES_DATA_SIZE = NON_CELL_PROBES_COUNT * 4 + NON_CELL_PROBES_COUNT / 4;
 static int indoor_probes_to_useVarId = -1;
 static int indoor_probes_grid_y_centerVarId = -1;
 static int indoor_probes_grid_xz_centerVarId = -1;
 static int indoor_probes_max_distanceVarId = -1;
 static int indoor_probes_max_distance_or_disabledVarId = -1; // if negative, indoor probes are disabled
+static int indoor_visible_probes_dataVarId = -1;
 
 CONSOLE_BOOL_VAL("render", indoor_probes, true);
 CONSOLE_FLOAT_VAL("render", indoor_probes_max_distance, 70.0f);
@@ -54,6 +56,7 @@ IndoorProbeManager::IndoorProbeManager(LightProbeSpecularCubesContainer *contain
   indoor_probes_grid_xz_centerVarId = get_shader_variable_id("indoor_probes_grid_xz_center", true);
   indoor_probes_max_distanceVarId = get_shader_variable_id("indoor_probes_max_distance", true);
   indoor_probes_max_distance_or_disabledVarId = get_shader_variable_id("indoor_probes_max_distance_or_disabled", true);
+  indoor_visible_probes_dataVarId = get_shader_variable_id("indoor_visible_probes_data", true);
 
   if (d3d::get_driver_desc().caps.hasVariableRateShadingBy4)
     debug("Indoor probes: hasVariableRateShadingBy4");
@@ -72,8 +75,8 @@ void IndoorProbeManager::initBuffers()
 {
   indoorActiveProbesData = dag::buffers::create_persistent_cb(MAX_ACTIVE_PROBES * 4 + QUARTER_OF_ACTIVE_PROBES,
     "indoor_active_probes_data", RESTAG_INDOOR_PROBES);
-  indoorVisibleProbesData = dag::buffers::create_persistent_cb(NON_CELL_PROBES_COUNT * 4 + NON_CELL_PROBES_COUNT / 4,
-    "indoor_visible_probes_data", RESTAG_INDOOR_PROBES);
+  indoorVisibleProbesData =
+    dag::buffers::create_persistent_cb(VISIBLE_PROBES_DATA_SIZE, "indoor_visible_probes_data", RESTAG_INDOOR_PROBES);
   cellClusters = dag::buffers::create_ua_sr_structured(sizeof(uint32_t) * 4, GRID_SIDE * GRID_SIDE * GRID_HEIGHT,
     "indoor_probe_cells_clusters", d3d::buffers::Init::No, RESTAG_INDOOR_PROBES);
   cellClusters.setVar();
@@ -363,6 +366,23 @@ void IndoorProbeManager::setVisibleBoxesData(dag::ConstSpan<uint32_t> probe_indi
 {
   const Point4LocalVector dataToShader = packMatricesAndProbesData(probe_indices, matrices, shape_types, NON_CELL_PROBES_COUNT);
   indoorVisibleProbesData.getBuf()->updateData(0, dataToShader.size() * sizeof(dataToShader[0]), dataToShader.data(), VBLOCK_DISCARD);
+}
+
+void IndoorProbeManager::bindSecondaryVisibleBoxesData(dag::ConstSpan<uint32_t> probe_indices, dag::ConstSpan<mat44f> matrices,
+  dag::ConstSpan<uint32_t> shape_types)
+{
+  if (!indoorVisibleProbesDataSecondary)
+    indoorVisibleProbesDataSecondary =
+      dag::buffers::create_persistent_cb(VISIBLE_PROBES_DATA_SIZE, "indoor_visible_probes_data_secondary", RESTAG_INDOOR_PROBES);
+  const Point4LocalVector dataToShader = packMatricesAndProbesData(probe_indices, matrices, shape_types, NON_CELL_PROBES_COUNT);
+  indoorVisibleProbesDataSecondary.getBuf()->updateData(0, dataToShader.size() * sizeof(dataToShader[0]), dataToShader.data(),
+    VBLOCK_DISCARD);
+  ShaderGlobal::set_buffer(indoor_visible_probes_dataVarId, indoorVisibleProbesDataSecondary);
+}
+
+void IndoorProbeManager::bindMainVisibleBoxesData()
+{
+  ShaderGlobal::set_buffer(indoor_visible_probes_dataVarId, indoorVisibleProbesData);
 }
 
 void IndoorProbeManager::setActiveProbe(int probe_idx, uint32_t active_slot)

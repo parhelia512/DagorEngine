@@ -19,6 +19,7 @@
 #include <levelSplines/levelSplines.h>
 #include "main/gameProjConfig.h"
 #include <render/dasModules/bvh.h>
+#include <generic/dag_functionRef.h>
 
 const char *gameproj::game_telemetry_name() { return nullptr; }
 
@@ -60,6 +61,8 @@ void send_echo_msg(uint32_t) { G_ASSERT(0); }
 bool is_server() { G_ASSERT_RETURN(false, false); }
 bool is_true_net_server() { G_ASSERT_RETURN(false, false); }
 bool has_network() { G_ASSERT_RETURN(false, false); }
+bool is_main_thread_network() { G_ASSERT_RETURN(false, true); }
+NetworkVariant network_variant() { return NetworkVariant::MainNet; }
 namespace net
 {
 bool is_this_thread_net_em_owner() { G_ASSERT_RETURN(false, true); }
@@ -126,7 +129,7 @@ void send_dasevent(ecs::EntityManager *,
   bind_dascript::DasEvent *,
   const char *,
   eastl::optional<dag::ConstSpan<net::IConnection *>>,
-  eastl::fixed_function<sizeof(void *), eastl::string()>)
+  dag::FunctionRef<eastl::string() const>)
 {
   G_ASSERT(0);
 }
@@ -188,7 +191,7 @@ const char *app_profile_get_session_id() { G_ASSERT_RETURN(false, nullptr); }
 const char *get_gun_stat_type_by_props_id(int gun_props_id) { G_ASSERT_RETURN(false, nullptr); }
 const char *get_shell_template_by_shell_id(int) { G_ASSERT_RETURN(false, nullptr); }
 const char *get_gun_template_by_props_id(int) { G_ASSERT_RETURN(false, nullptr); }
-Tab<const char *> ecs_get_global_tags_context() { return {}; }
+Tab<const char *> ecs_get_global_tags_context(ecs::EntityManager &) { return {}; }
 
 void TheEffect::reset() { G_ASSERT(0); }
 
@@ -293,7 +296,7 @@ bool trace_entities_in_grid_by_capsule(uint32_t, const Point3 &, const Point3 &,
 }
 bool rayhit_entities_in_grid(uint32_t, const Point3 &, const Point3 &, float, ecs::EntityId) { G_ASSERT_RETURN(false, false); }
 bool query_entities_intersections_in_grid(
-  uint32_t, dag::ConstSpan<plane3f>, const TMatrix &, float, bool, IntersectedEntities &, SortIntersections)
+  uint32_t, dag::ConstSpan<plane3f>, const TMatrix &, const BBox3 &, bool, IntersectedEntities &, SortIntersections)
 {
   G_ASSERT_RETURN(false, false);
 }
@@ -413,6 +416,7 @@ bool is_action_enabled(action_handle_t) { G_ASSERT_RETURN(false, false); }
 void set_action_enabled(action_handle_t, bool) { G_ASSERT(0); }
 void set_action_mask_immediate(action_handle_t, bool) { G_ASSERT(0); }
 bool is_action_mask_immediate(action_handle_t) { G_ASSERT_RETURN(false, false); }
+void action_binding_changed(action_handle_t, int) { G_ASSERT(0); }
 DigitalActionBinding *get_digital_action_binding(action_handle_t, int) { G_ASSERT_RETURN(false, nullptr); }
 AnalogAxisActionBinding *get_analog_axis_action_binding(action_handle_t, int) { G_ASSERT_RETURN(false, nullptr); }
 AnalogStickActionBinding *get_analog_stick_action_binding(action_handle_t, int) { G_ASSERT_RETURN(false, nullptr); }
@@ -440,6 +444,8 @@ bool set_analog_axis_action_state(action_handle_t, float) { G_ASSERT_RETURN(fals
 
 action_handle_t get_action_set_handle(const char *action_set_name) { G_ASSERT_RETURN(false, BAD_ACTION_SET_HANDLE); }
 void activate_action_set(action_set_handle_t set, bool activate) { G_ASSERT(0); }
+int get_action_set_priority(action_set_handle_t) { G_ASSERT_RETURN(false, 0); }
+bool are_action_sets_exclusive(action_set_handle_t, action_set_handle_t) { G_ASSERT_RETURN(false, false); }
 bool reset_digital_action_sticky_toggle(action_handle_t) { G_ASSERT_RETURN(false, false); }
 void send_action_event(action_handle_t action) { G_ASSERT(0); }
 
@@ -663,17 +669,17 @@ void add_decal(Point3, Point3)
 
 #include <animChar/dag_animCharacter2.h>
 
-bool recreate_material_with_new_params(AnimV20::AnimcharRendComponent &, eastl::function<void(ShaderMaterial *)> &&)
+bool recreate_material_with_new_params(AnimV20::AnimcharRendComponent &, dag::FunctionRef<void(ShaderMaterial *) const>)
 {
   G_ASSERT_RETURN(false, false);
 }
-bool recreate_material_with_new_params(AnimV20::AnimcharRendComponent &, const char *, eastl::function<void(ShaderMaterial *)> &&)
+bool recreate_material_with_new_params(AnimV20::AnimcharRendComponent &, const char *, dag::FunctionRef<void(ShaderMaterial *) const>)
 {
   G_ASSERT_RETURN(false, false);
 }
 bool recreate_material_with_new_params(AnimV20::AnimcharRendComponent &,
   const eastl::vector<const char *, framemem_allocator> &,
-  eastl::function<void(ShaderMaterial *)> &&)
+  dag::FunctionRef<void(ShaderMaterial *) const>)
 {
   G_ASSERT_RETURN(false, false);
 }
@@ -767,10 +773,12 @@ const eastl::unordered_map<matching::UserId, Json::Value> &dedicated_matching::g
   static eastl::unordered_map<matching::UserId, Json::Value> r;
   return r;
 }
+void dedicated_matching::notify_network_is_up() { G_ASSERT(0); }
 void dedicated_matching::on_level_loaded() { G_ASSERT(0); }
 void dedicated_matching::on_player_team_changed(matching::UserId, int) { G_ASSERT(0); }
 void dedicated_matching::player_kick_from_room(matching::UserId) { G_ASSERT(0); }
 void dedicated_matching::ban_player_in_room(matching::UserId) { G_ASSERT(0); }
+void dedicated_matching::leave_room() { G_ASSERT(0); }
 int dedicated_matching::get_room_members_count() { G_ASSERT_RETURN(false, 0); }
 int dedicated_matching::get_player_req_teams_num(matching::UserId) { G_ASSERT_RETURN(false, 0); }
 const char *dedicated_matching::get_player_custom_info(matching::UserId) { G_ASSERT_RETURN(false, ""); }
@@ -840,7 +848,12 @@ ILagCompensationMgr &get_lag_compensation()
 
 #include "main/hostedServerLauncher.h"
 bool is_hosted_internal_server_active() { G_ASSERT_RETURN(false, false); }
-bool try_begin_hosted_server_start() { G_ASSERT_RETURN(false, false); }
+const char *get_hosted_internal_server_uid() { G_ASSERT_RETURN(false, ""); }
+const char *allocate_hosted_server_uid() { G_ASSERT_RETURN(false, ""); }
+void set_hosted_server_start_uid(const char *) { G_ASSERT(0); }
+const char *resolve_hosted_server_start_uid(const char *) { G_ASSERT_RETURN(false, ""); }
+void kill_internal_server_uid(const char *, bool) { G_ASSERT(0); }
+bool try_begin_hosted_server_start(const char *) { G_ASSERT_RETURN(false, false); }
 void clear_hosted_server_start_pending() { G_ASSERT(0); }
 void cancel_scheduled_internal_server_start() { G_ASSERT(0); }
 bool is_hosted_server_start_pending() { G_ASSERT_RETURN(false, false); }

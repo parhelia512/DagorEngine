@@ -235,7 +235,10 @@ macro RENDER_TO_SHADOW_PS()
 endmacro
 
 macro USE_RENDINST_IMPOSTOR_SHADOW()
-  (ps) { impostor_shadow@shd = impostor_shadow; }
+  (ps) {
+    impostor_shadow@tex2d = impostor_shadow;
+    impostor_shadow_cmpSampler@cmpSampler = impostor_shadow_samplerstate;
+  }
 
   hlsl(ps) {
 

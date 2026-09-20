@@ -66,15 +66,13 @@ Global vars and link:
 
 Codegen and backends:
 - `codeBlocks.*` -> `assemblyShader.*` - per-variant code assembly.
-- `hlslCompiler/<target>.cpp` - emits final HLSL and invokes the
-  platform compiler (dxc/fxc) per target; `settings.cpp` holds shared
-  settings.
 - `dx12/`, `hlsl2spirv/`, `hlsl2metal/`, `hlsl11transcode/`,
   `ps4transcode/`, `ps5transcode/` - backend transcoders (see the
   Pipeline section in CLAUDE.md); shared helpers in
   `transcodeShader.*`, `transcodeCommon.h`.
-- `ver_obj_*.h` - per-target object-format version stamps; bump to
-  invalidate stale caches.
+- `ver_obj_*.cpp` - per-target object-format version stamps, with the
+  register limits they cover pinned by static asserts; bump the stamp to
+  invalidate stale caches. The `ver_obj_*.h` headers only declare them.
 
 Stcode (state-setting code):
 - `cppStcode.*`, `cppStcodeAssembly.*`, `cppStcodeBuilder.h`,

@@ -5,13 +5,14 @@
 #pragma once
 
 #include <drv/3d/dag_consts.h>
+#include <drv/3d/dag_multi_interface.h>
 
 class Sbuffer;
 
 using Ibuffer = Sbuffer;
 using Vbuffer = Sbuffer;
 
-namespace d3d
+namespace d3d _MULTI_INTERFACE
 {
 /**
  * @brief Creates a vertex buffer.
@@ -21,7 +22,8 @@ namespace d3d
  * @todo Make the name parameter mandatory.
  *
  * @param size_bytes The size of the vertex buffer in bytes.
- * @param flags The creation flags.
+ * @param flags The creation flags. Only SBCF_BIND_VERTEX and SBCF_BIND_SHADER_RES bind flags are allowed;
+ * create a buffer with other bind usage (e.g. a UAV) via create_sbuffer.
  * @param name The name of the vertex buffer (temporarily optional).
  * @return A pointer to the created vertex buffer.
  */
@@ -35,7 +37,8 @@ Sbuffer *create_vb(int size_bytes, int flags, const char *name = "", ResourceTag
  * @todo Make the name parameter mandatory.
  *
  * @param size_bytes The size of the index buffer in bytes.
- * @param flags The creation flags.
+ * @param flags The creation flags. Only SBCF_BIND_INDEX and SBCF_BIND_SHADER_RES bind flags are allowed;
+ * create a buffer with other bind usage via create_sbuffer.
  * @param stat_name The name of the index buffer (temporarily optional).
  * @return A pointer to the created index buffer.
  */
@@ -106,7 +109,7 @@ void delete_vdecl(VDECL vdecl);
  * @return True if the vertex declaration was set successfully, false otherwise.
  */
 bool setvdecl(VDECL vdecl);
-} // namespace d3d
+} // namespace d3d _MULTI_INTERFACE
 
 #if _TARGET_D3D_MULTI
 #include <drv/3d/dag_interface_table.h>

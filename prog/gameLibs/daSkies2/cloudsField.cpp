@@ -7,6 +7,7 @@
 #include <drv/3d/dag_draw.h>
 #include <drv/3d/dag_driverDesc.h>
 #include <drv/3d/dag_info.h>
+#include <drv/3d/dag_texture.h>
 #include <3d/dag_lockTexture.h>
 #include <render/viewVecs.h>
 
@@ -86,9 +87,9 @@ void CloudsField::copyFieldCompressed()
 {
   // todo: remove me on consoles - we can alias memory
   TIME_D3D_PROFILE(copy_compr);
-  cloudsFieldVolCompressed->updateSubRegion(cloudsFieldVolTemp.getVolTex(), 0, 0, 0, 0, // source mip, x,y,z
-    max(1, resXZ / 4), max(1, resXZ / 4), resY,                                         // width x height x depth
-    0, 0, 0, 0);                                                                        // dest mip, x,y,z
+  d3d::update_sub_region(cloudsFieldVolTemp.getVolTex(), 0, 0, 0, 0, // source tex, mip, x,y,z
+    max(1, resXZ / 4), max(1, resXZ / 4), resY,                      // width x height x depth
+    cloudsFieldVolCompressed.getBaseTex(), 0, 0, 0, 0);              // dest tex, mip, x,y,z
   // todo: we can remove temp texture
 }
 

@@ -143,68 +143,17 @@ static ecs::EntitySystemDesc spline_gen_geometry_decode_used_shapes_es_es_desc
 static constexpr ecs::ComponentDesc spline_gen_geometry_update_instancing_data_es_comps[] =
 {
 //start of 1 rw components at [0]
-  {ECS_HASH("spline_gen_geometry_renderer"), ecs::ComponentTypeInfo<SplineGenGeometry>()},
-//start of 25 ro components at [1]
-  {ECS_HASH("spline_gen_geometry__radii"), ecs::ComponentTypeInfo<ecs::List<Point2>>()},
-  {ECS_HASH("spline_gen_geometry__emissive_points"), ecs::ComponentTypeInfo<ecs::List<Point3>>()},
-  {ECS_HASH("spline_gen_geometry__emissive_color"), ecs::ComponentTypeInfo<Point4>()},
-  {ECS_HASH("spline_gen_geometry__displacement_strength"), ecs::ComponentTypeInfo<float>()},
-  {ECS_HASH("spline_gen_geometry__tiles_around"), ecs::ComponentTypeInfo<int>()},
-  {ECS_HASH("spline_gen_geometry__tile_size_meters"), ecs::ComponentTypeInfo<float>()},
-  {ECS_HASH("spline_gen_geometry__points"), ecs::ComponentTypeInfo<ecs::List<Point3>>()},
-  {ECS_HASH("spline_gen_geometry__obj_size_mul"), ecs::ComponentTypeInfo<float>()},
-  {ECS_HASH("spline_gen_geometry__meter_between_objs"), ecs::ComponentTypeInfo<float>()},
-  {ECS_HASH("spline_gen_geometry__cached_shape_ofs_data"), ecs::ComponentTypeInfo<ecs::List<IPoint2>>()},
-  {ECS_HASH("spline_gen_geometry__shape_positions"), ecs::ComponentTypeInfo<ecs::List<Point2>>()},
-  {ECS_HASH("spline_gen_geometry__cylinder_start_offset"), ecs::ComponentTypeInfo<float>()},
-  {ECS_HASH("spline_gen_geometry__index_of_refraction"), ecs::ComponentTypeInfo<float>()},
-  {ECS_HASH("spline_gen_geometry__first_normal"), ecs::ComponentTypeInfo<Point3>()},
-  {ECS_HASH("spline_gen_geometry__first_bitangent"), ecs::ComponentTypeInfo<Point3>()},
-  {ECS_HASH("spline_gen_geometry__use_last_point_to_orient_spline"), ecs::ComponentTypeInfo<bool>()},
-  {ECS_HASH("spline_gen_geometry__uv_scroll_first_offset_and_scale"), ecs::ComponentTypeInfo<Point4>()},
-  {ECS_HASH("spline_gen_geometry__uv_scroll_second_offset_and_scale"), ecs::ComponentTypeInfo<Point4>()},
-  {ECS_HASH("spline_gen_geometry__uv_scroll_interpolation_value"), ecs::ComponentTypeInfo<float>()},
-  {ECS_HASH("spline_gen_geometry__surface_opaqueness"), ecs::ComponentTypeInfo<float>()},
-  {ECS_HASH("spline_gen_geometry__additional_thickness_bounds"), ecs::ComponentTypeInfo<Point2>()},
-  {ECS_HASH("spline_gen_geometry__medium_tint"), ecs::ComponentTypeInfo<Point3>()},
-  {ECS_HASH("spline_gen_geometry__is_shell"), ecs::ComponentTypeInfo<float>()},
-  {ECS_HASH("spline_gen_geometry__is_rendered"), ecs::ComponentTypeInfo<bool>()},
-  {ECS_HASH("spline_gen_geometry__renderer_active"), ecs::ComponentTypeInfo<bool>()}
+  {ECS_HASH("spline_gen_repository"), ecs::ComponentTypeInfo<SplineGenGeometryRepository>()}
 };
 static void spline_gen_geometry_update_instancing_data_es_all_events(const ecs::Event &__restrict evt, const ecs::QueryView &__restrict components)
 {
   G_FAST_ASSERT(evt.is<UpdateStageInfoBeforeRender>());
   auto comp = components.begin(), compE = components.end(); G_ASSERT(comp!=compE); do
-  {
-    if ( !(ECS_RO_COMP(spline_gen_geometry_update_instancing_data_es_comps, "spline_gen_geometry__is_rendered", bool) && ECS_RO_COMP(spline_gen_geometry_update_instancing_data_es_comps, "spline_gen_geometry__renderer_active", bool)) )
-      continue;
     spline_gen_geometry_update_instancing_data_es(static_cast<const UpdateStageInfoBeforeRender&>(evt)
-          , ECS_RW_COMP(spline_gen_geometry_update_instancing_data_es_comps, "spline_gen_geometry_renderer", SplineGenGeometry)
-      , ECS_RO_COMP(spline_gen_geometry_update_instancing_data_es_comps, "spline_gen_geometry__radii", ecs::List<Point2>)
-      , ECS_RO_COMP(spline_gen_geometry_update_instancing_data_es_comps, "spline_gen_geometry__emissive_points", ecs::List<Point3>)
-      , ECS_RO_COMP(spline_gen_geometry_update_instancing_data_es_comps, "spline_gen_geometry__emissive_color", Point4)
-      , ECS_RO_COMP(spline_gen_geometry_update_instancing_data_es_comps, "spline_gen_geometry__displacement_strength", float)
-      , ECS_RO_COMP(spline_gen_geometry_update_instancing_data_es_comps, "spline_gen_geometry__tiles_around", int)
-      , ECS_RO_COMP(spline_gen_geometry_update_instancing_data_es_comps, "spline_gen_geometry__tile_size_meters", float)
-      , ECS_RO_COMP(spline_gen_geometry_update_instancing_data_es_comps, "spline_gen_geometry__points", ecs::List<Point3>)
-      , ECS_RO_COMP(spline_gen_geometry_update_instancing_data_es_comps, "spline_gen_geometry__obj_size_mul", float)
-      , ECS_RO_COMP(spline_gen_geometry_update_instancing_data_es_comps, "spline_gen_geometry__meter_between_objs", float)
-      , ECS_RO_COMP(spline_gen_geometry_update_instancing_data_es_comps, "spline_gen_geometry__cached_shape_ofs_data", ecs::List<IPoint2>)
-      , ECS_RO_COMP(spline_gen_geometry_update_instancing_data_es_comps, "spline_gen_geometry__shape_positions", ecs::List<Point2>)
-      , ECS_RO_COMP(spline_gen_geometry_update_instancing_data_es_comps, "spline_gen_geometry__cylinder_start_offset", float)
-      , ECS_RO_COMP(spline_gen_geometry_update_instancing_data_es_comps, "spline_gen_geometry__index_of_refraction", float)
-      , ECS_RO_COMP(spline_gen_geometry_update_instancing_data_es_comps, "spline_gen_geometry__first_normal", Point3)
-      , ECS_RO_COMP(spline_gen_geometry_update_instancing_data_es_comps, "spline_gen_geometry__first_bitangent", Point3)
-      , ECS_RO_COMP(spline_gen_geometry_update_instancing_data_es_comps, "spline_gen_geometry__use_last_point_to_orient_spline", bool)
-      , ECS_RO_COMP(spline_gen_geometry_update_instancing_data_es_comps, "spline_gen_geometry__uv_scroll_first_offset_and_scale", Point4)
-      , ECS_RO_COMP(spline_gen_geometry_update_instancing_data_es_comps, "spline_gen_geometry__uv_scroll_second_offset_and_scale", Point4)
-      , ECS_RO_COMP(spline_gen_geometry_update_instancing_data_es_comps, "spline_gen_geometry__uv_scroll_interpolation_value", float)
-      , ECS_RO_COMP(spline_gen_geometry_update_instancing_data_es_comps, "spline_gen_geometry__surface_opaqueness", float)
-      , ECS_RO_COMP(spline_gen_geometry_update_instancing_data_es_comps, "spline_gen_geometry__additional_thickness_bounds", Point2)
-      , ECS_RO_COMP(spline_gen_geometry_update_instancing_data_es_comps, "spline_gen_geometry__medium_tint", Point3)
-      , ECS_RO_COMP(spline_gen_geometry_update_instancing_data_es_comps, "spline_gen_geometry__is_shell", float)
-      );
-  } while (++comp != compE);
+        , components.manager()
+    , ECS_RW_COMP(spline_gen_geometry_update_instancing_data_es_comps, "spline_gen_repository", SplineGenGeometryRepository)
+    );
+  while (++comp != compE);
 }
 static ecs::EntitySystemDesc spline_gen_geometry_update_instancing_data_es_es_desc
 (
@@ -212,7 +161,7 @@ static ecs::EntitySystemDesc spline_gen_geometry_update_instancing_data_es_es_de
   "prog/daNetGameLibs/spline_geometry/render/splineGenGeometryES.cpp.inl",
   ecs::EntitySystemOps(nullptr, spline_gen_geometry_update_instancing_data_es_all_events),
   make_span(spline_gen_geometry_update_instancing_data_es_comps+0, 1)/*rw*/,
-  make_span(spline_gen_geometry_update_instancing_data_es_comps+1, 25)/*ro*/,
+  empty_span(),
   empty_span(),
   empty_span(),
   ecs::EventSetBuilder<UpdateStageInfoBeforeRender>::build(),
@@ -412,6 +361,86 @@ inline void get_lod_data_ecs_query(ecs::EntityManager &manager, ecs::EntityId ei
         }
     }
   );
+}
+static constexpr ecs::ComponentDesc spline_gen_update_instancing_ecs_query_comps[] =
+{
+//start of 1 rw components at [0]
+  {ECS_HASH("spline_gen_geometry_renderer"), ecs::ComponentTypeInfo<SplineGenGeometry>()},
+//start of 25 ro components at [1]
+  {ECS_HASH("spline_gen_geometry__radii"), ecs::ComponentTypeInfo<ecs::List<Point2>>()},
+  {ECS_HASH("spline_gen_geometry__emissive_points"), ecs::ComponentTypeInfo<ecs::List<Point3>>()},
+  {ECS_HASH("spline_gen_geometry__emissive_color"), ecs::ComponentTypeInfo<Point4>()},
+  {ECS_HASH("spline_gen_geometry__displacement_strength"), ecs::ComponentTypeInfo<float>()},
+  {ECS_HASH("spline_gen_geometry__tiles_around"), ecs::ComponentTypeInfo<int>()},
+  {ECS_HASH("spline_gen_geometry__tile_size_meters"), ecs::ComponentTypeInfo<float>()},
+  {ECS_HASH("spline_gen_geometry__points"), ecs::ComponentTypeInfo<ecs::List<Point3>>()},
+  {ECS_HASH("spline_gen_geometry__obj_size_mul"), ecs::ComponentTypeInfo<float>()},
+  {ECS_HASH("spline_gen_geometry__meter_between_objs"), ecs::ComponentTypeInfo<float>()},
+  {ECS_HASH("spline_gen_geometry__cached_shape_ofs_data"), ecs::ComponentTypeInfo<ecs::List<IPoint2>>()},
+  {ECS_HASH("spline_gen_geometry__shape_positions"), ecs::ComponentTypeInfo<ecs::List<Point2>>()},
+  {ECS_HASH("spline_gen_geometry__cylinder_start_offset"), ecs::ComponentTypeInfo<float>()},
+  {ECS_HASH("spline_gen_geometry__index_of_refraction"), ecs::ComponentTypeInfo<float>()},
+  {ECS_HASH("spline_gen_geometry__first_normal"), ecs::ComponentTypeInfo<Point3>()},
+  {ECS_HASH("spline_gen_geometry__first_bitangent"), ecs::ComponentTypeInfo<Point3>()},
+  {ECS_HASH("spline_gen_geometry__use_last_point_to_orient_spline"), ecs::ComponentTypeInfo<bool>()},
+  {ECS_HASH("spline_gen_geometry__uv_scroll_first_offset_and_scale"), ecs::ComponentTypeInfo<Point4>()},
+  {ECS_HASH("spline_gen_geometry__uv_scroll_second_offset_and_scale"), ecs::ComponentTypeInfo<Point4>()},
+  {ECS_HASH("spline_gen_geometry__uv_scroll_interpolation_value"), ecs::ComponentTypeInfo<float>()},
+  {ECS_HASH("spline_gen_geometry__surface_opaqueness"), ecs::ComponentTypeInfo<float>()},
+  {ECS_HASH("spline_gen_geometry__additional_thickness_bounds"), ecs::ComponentTypeInfo<Point2>()},
+  {ECS_HASH("spline_gen_geometry__medium_tint"), ecs::ComponentTypeInfo<Point3>()},
+  {ECS_HASH("spline_gen_geometry__is_shell"), ecs::ComponentTypeInfo<float>()},
+  {ECS_HASH("spline_gen_geometry__is_rendered"), ecs::ComponentTypeInfo<bool>()},
+  {ECS_HASH("spline_gen_geometry__renderer_active"), ecs::ComponentTypeInfo<bool>()}
+};
+static ecs::CompileTimeQueryDesc spline_gen_update_instancing_ecs_query_desc
+(
+  "spline_gen_update_instancing_ecs_query",
+  make_span(spline_gen_update_instancing_ecs_query_comps+0, 1)/*rw*/,
+  make_span(spline_gen_update_instancing_ecs_query_comps+1, 25)/*ro*/,
+  empty_span(),
+  empty_span()
+  , 1);
+template<typename Callable>
+inline void spline_gen_update_instancing_ecs_query(ecs::EntityManager &manager, Callable function)
+{
+  perform_query(&manager, spline_gen_update_instancing_ecs_query_desc.getHandle(),
+    [&function](const ecs::QueryView& __restrict components)
+    {
+        auto comp = components.begin(), compE = components.end(); G_ASSERT(comp != compE); do
+        {
+          if ( !(ECS_RO_COMP(spline_gen_update_instancing_ecs_query_comps, "spline_gen_geometry__is_rendered", bool) && ECS_RO_COMP(spline_gen_update_instancing_ecs_query_comps, "spline_gen_geometry__renderer_active", bool)) )
+            continue;
+          function(
+              ECS_RW_COMP(spline_gen_update_instancing_ecs_query_comps, "spline_gen_geometry_renderer", SplineGenGeometry)
+            , ECS_RO_COMP(spline_gen_update_instancing_ecs_query_comps, "spline_gen_geometry__radii", ecs::List<Point2>)
+            , ECS_RO_COMP(spline_gen_update_instancing_ecs_query_comps, "spline_gen_geometry__emissive_points", ecs::List<Point3>)
+            , ECS_RO_COMP(spline_gen_update_instancing_ecs_query_comps, "spline_gen_geometry__emissive_color", Point4)
+            , ECS_RO_COMP(spline_gen_update_instancing_ecs_query_comps, "spline_gen_geometry__displacement_strength", float)
+            , ECS_RO_COMP(spline_gen_update_instancing_ecs_query_comps, "spline_gen_geometry__tiles_around", int)
+            , ECS_RO_COMP(spline_gen_update_instancing_ecs_query_comps, "spline_gen_geometry__tile_size_meters", float)
+            , ECS_RO_COMP(spline_gen_update_instancing_ecs_query_comps, "spline_gen_geometry__points", ecs::List<Point3>)
+            , ECS_RO_COMP(spline_gen_update_instancing_ecs_query_comps, "spline_gen_geometry__obj_size_mul", float)
+            , ECS_RO_COMP(spline_gen_update_instancing_ecs_query_comps, "spline_gen_geometry__meter_between_objs", float)
+            , ECS_RO_COMP(spline_gen_update_instancing_ecs_query_comps, "spline_gen_geometry__cached_shape_ofs_data", ecs::List<IPoint2>)
+            , ECS_RO_COMP(spline_gen_update_instancing_ecs_query_comps, "spline_gen_geometry__shape_positions", ecs::List<Point2>)
+            , ECS_RO_COMP(spline_gen_update_instancing_ecs_query_comps, "spline_gen_geometry__cylinder_start_offset", float)
+            , ECS_RO_COMP(spline_gen_update_instancing_ecs_query_comps, "spline_gen_geometry__index_of_refraction", float)
+            , ECS_RO_COMP(spline_gen_update_instancing_ecs_query_comps, "spline_gen_geometry__first_normal", Point3)
+            , ECS_RO_COMP(spline_gen_update_instancing_ecs_query_comps, "spline_gen_geometry__first_bitangent", Point3)
+            , ECS_RO_COMP(spline_gen_update_instancing_ecs_query_comps, "spline_gen_geometry__use_last_point_to_orient_spline", bool)
+            , ECS_RO_COMP(spline_gen_update_instancing_ecs_query_comps, "spline_gen_geometry__uv_scroll_first_offset_and_scale", Point4)
+            , ECS_RO_COMP(spline_gen_update_instancing_ecs_query_comps, "spline_gen_geometry__uv_scroll_second_offset_and_scale", Point4)
+            , ECS_RO_COMP(spline_gen_update_instancing_ecs_query_comps, "spline_gen_geometry__uv_scroll_interpolation_value", float)
+            , ECS_RO_COMP(spline_gen_update_instancing_ecs_query_comps, "spline_gen_geometry__surface_opaqueness", float)
+            , ECS_RO_COMP(spline_gen_update_instancing_ecs_query_comps, "spline_gen_geometry__additional_thickness_bounds", Point2)
+            , ECS_RO_COMP(spline_gen_update_instancing_ecs_query_comps, "spline_gen_geometry__medium_tint", Point3)
+            , ECS_RO_COMP(spline_gen_update_instancing_ecs_query_comps, "spline_gen_geometry__is_shell", float)
+            );
+
+        }while (++comp != compE);
+      }
+    , nullptr, spline_gen_update_instancing_ecs_query_desc.getQuant());
 }
 static constexpr ecs::ComponentDesc reset_spline_gen_geometry_renderer_ecs_query_comps[] =
 {

@@ -6,7 +6,7 @@ ECS_DEF_PULL_VAR(dynamicMirror);
 #include <daECS/core/internal/performQuery.h>
 static constexpr ecs::ComponentDesc prepare_mirror_es_comps[] =
 {
-//start of 10 rw components at [0]
+//start of 11 rw components at [0]
   {ECS_HASH("dynamic_mirror_renderer"), ecs::ComponentTypeInfo<DynamicMirrorRenderer>()},
   {ECS_HASH("dynamic_mirror_prepare_node"), ecs::ComponentTypeInfo<dafg::NodeHandle>()},
   {ECS_HASH("dynamic_mirror_prepass_node"), ecs::ComponentTypeInfo<dafg::NodeHandle>()},
@@ -16,6 +16,7 @@ static constexpr ecs::ComponentDesc prepare_mirror_es_comps[] =
   {ECS_HASH("dynamic_mirror_render_ground_node"), ecs::ComponentTypeInfo<dafg::NodeHandle>()},
   {ECS_HASH("dynamic_mirror_resolve_gbuf_node"), ecs::ComponentTypeInfo<dafg::NodeHandle>()},
   {ECS_HASH("dynamic_mirror_resolve_node"), ecs::ComponentTypeInfo<dafg::NodeHandle>()},
+  {ECS_HASH("dynamic_mirror_prepare_envi_node"), ecs::ComponentTypeInfo<dafg::NodeHandle>()},
   {ECS_HASH("dynamic_mirror_envi_node"), ecs::ComponentTypeInfo<dafg::NodeHandle>()}
 };
 static void prepare_mirror_es_all_events(const ecs::Event &__restrict evt, const ecs::QueryView &__restrict components)
@@ -33,6 +34,7 @@ static void prepare_mirror_es_all_events(const ecs::Event &__restrict evt, const
     , ECS_RW_COMP(prepare_mirror_es_comps, "dynamic_mirror_render_ground_node", dafg::NodeHandle)
     , ECS_RW_COMP(prepare_mirror_es_comps, "dynamic_mirror_resolve_gbuf_node", dafg::NodeHandle)
     , ECS_RW_COMP(prepare_mirror_es_comps, "dynamic_mirror_resolve_node", dafg::NodeHandle)
+    , ECS_RW_COMP(prepare_mirror_es_comps, "dynamic_mirror_prepare_envi_node", dafg::NodeHandle)
     , ECS_RW_COMP(prepare_mirror_es_comps, "dynamic_mirror_envi_node", dafg::NodeHandle)
     );
   while (++comp != compE);
@@ -42,7 +44,7 @@ static ecs::EntitySystemDesc prepare_mirror_es_es_desc
   "prepare_mirror_es",
   "prog/daNetGameLibs/dynamic_mirror/render/dynamicMirrorES.cpp.inl",
   ecs::EntitySystemOps(nullptr, prepare_mirror_es_all_events),
-  make_span(prepare_mirror_es_comps+0, 10)/*rw*/,
+  make_span(prepare_mirror_es_comps+0, 11)/*rw*/,
   empty_span(),
   empty_span(),
   empty_span(),

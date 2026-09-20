@@ -2,8 +2,8 @@
 #pragma once
 
 #include "constants.h"
-#include "d3d12_debug_names.h"
 #include "d3d12_utils.h"
+#include "debug/names.h"
 #include "driver.h"
 #include "format_store.h"
 #include "image_global_subresource_id.h"
@@ -335,106 +335,97 @@ inline bool validate_transition_barrier(const D3D12_RESOURCE_TRANSITION_BARRIER 
     logdbg("DX12: validate_transition_barrier found an error, reporting resource properties:");
     printDesc(desc);
 
-    char resnameBuffer[MAX_OBJECT_NAME_LENGTH];
-    get_resource_name(barrier.pResource, resnameBuffer);
+    auto resourceName = debug::get_object_name(barrier.pResource);
     if (!subResourceIndexIsValid)
     {
-      D3D_ERROR("DX12: Invalid transition barrier, subresource index %u is out of range, for <%s> "
-                "(%s)",
-        barrier.Subresource, resnameBuffer, to_string(desc.Dimension));
+      D3D_ERROR("DX12: Invalid transition barrier, subresource index %u is out of range, for <%s> (%s)", barrier.Subresource,
+        resourceName, to_string(desc.Dimension));
     }
 
     if (barrier.StateBefore == barrier.StateAfter)
     {
-      D3D_ERROR("DX12: Invalid transition barrier, before and after state are identical, for <%s> "
-                "(%s) %u with StateBefore as 0x%08X",
-        resnameBuffer, to_string(desc.Dimension), barrier.Subresource, barrier.StateBefore);
+      D3D_ERROR("DX12: Invalid transition barrier, before and after state are identical, for <%s> (%s) %u with StateBefore as 0x%08X",
+        resourceName, to_string(desc.Dimension), barrier.Subresource, barrier.StateBefore);
     }
 
     if (beforeErrors.multipleWriteBitsConflict)
     {
-      D3D_ERROR("DX12: Invalid transition barrier, multiple write bits set, for <%s> (%s) %u with "
-                "StateBefore as 0x%08X",
-        resnameBuffer, to_string(desc.Dimension), barrier.Subresource, barrier.StateBefore);
+      D3D_ERROR("DX12: Invalid transition barrier, multiple write bits set, for <%s> (%s) %u with StateBefore as 0x%08X", resourceName,
+        to_string(desc.Dimension), barrier.Subresource, barrier.StateBefore);
     }
     if (beforeErrors.readWriteBitsConflict)
     {
-      D3D_ERROR("DX12: Invalid transition barrier, read and write bits set, for <%s> (%s) %u with "
-                "StateBefore as 0x%08X",
-        resnameBuffer, to_string(desc.Dimension), barrier.Subresource, barrier.StateBefore);
+      D3D_ERROR("DX12: Invalid transition barrier, read and write bits set, for <%s> (%s) %u with StateBefore as 0x%08X", resourceName,
+        to_string(desc.Dimension), barrier.Subresource, barrier.StateBefore);
     }
     if (beforeErrors.invalidReadBitsCombination)
     {
-      D3D_ERROR("DX12: Invalid transition barrier, invalid combination of read bits set, for <%s> "
-                "(%s) %u with StateBefore as 0x%08X",
-        resnameBuffer, to_string(desc.Dimension), barrier.Subresource, barrier.StateBefore);
+      D3D_ERROR("DX12: Invalid transition barrier, invalid combination of read bits set, for <%s> (%s) %u with StateBefore as 0x%08X",
+        resourceName, to_string(desc.Dimension), barrier.Subresource, barrier.StateBefore);
     }
     if (beforeErrors.uavOnIncompatibleResource)
     {
-      D3D_ERROR("DX12: Invalid transition barrier, UAV state without proper resource flags, for <%s> "
-                "(%s) %u with StateBefore as 0x%08X",
-        resnameBuffer, to_string(desc.Dimension), barrier.Subresource, barrier.StateBefore);
+      D3D_ERROR(
+        "DX12: Invalid transition barrier, UAV state without proper resource flags, for <%s> (%s) %u with StateBefore as 0x%08X",
+        resourceName, to_string(desc.Dimension), barrier.Subresource, barrier.StateBefore);
     }
     if (beforeErrors.renderTargetOnIncompatibleResource)
     {
-      D3D_ERROR("DX12: Invalid transition barrier, RTV state without proper resource flags, for <%s> "
-                "(%s) %u with StateBefore as 0x%08X",
-        resnameBuffer, to_string(desc.Dimension), barrier.Subresource, barrier.StateBefore);
+      D3D_ERROR(
+        "DX12: Invalid transition barrier, RTV state without proper resource flags, for <%s> (%s) %u with StateBefore as 0x%08X",
+        resourceName, to_string(desc.Dimension), barrier.Subresource, barrier.StateBefore);
     }
     if (beforeErrors.depthStencilOnIncompatibleResource)
     {
-      D3D_ERROR("DX12: Invalid transition barrier, DSV state without proper resource flags, for <%s> "
-                "(%s) %u with StateBefore as 0x%08X",
-        resnameBuffer, to_string(desc.Dimension), barrier.Subresource, barrier.StateBefore);
+      D3D_ERROR(
+        "DX12: Invalid transition barrier, DSV state without proper resource flags, for <%s> (%s) %u with StateBefore as 0x%08X",
+        resourceName, to_string(desc.Dimension), barrier.Subresource, barrier.StateBefore);
     }
     if (beforeErrors.srvOnIncompatibleResource)
     {
-      D3D_ERROR("DX12: Invalid transition barrier, SRV state without proper resource flags, for <%s> "
-                "(%s) %u with StateBefore as 0x%08X",
-        resnameBuffer, to_string(desc.Dimension), barrier.Subresource, barrier.StateBefore);
+      D3D_ERROR(
+        "DX12: Invalid transition barrier, SRV state without proper resource flags, for <%s> (%s) %u with StateBefore as 0x%08X",
+        resourceName, to_string(desc.Dimension), barrier.Subresource, barrier.StateBefore);
     }
 
     if (afterErrors.multipleWriteBitsConflict)
     {
-      D3D_ERROR("DX12: Invalid transition barrier, multiple write bits set, for <%s> (%s) %u with "
-                "StateAfter as 0x%08X",
-        resnameBuffer, to_string(desc.Dimension), barrier.Subresource, barrier.StateAfter);
+      D3D_ERROR("DX12: Invalid transition barrier, multiple write bits set, for <%s> (%s) %u with StateAfter as 0x%08X", resourceName,
+        to_string(desc.Dimension), barrier.Subresource, barrier.StateAfter);
     }
     if (afterErrors.readWriteBitsConflict)
     {
-      D3D_ERROR("DX12: Invalid transition barrier, read and write bits set, for <%s> (%s) %u with "
-                "StateAfter as 0x%08X",
-        resnameBuffer, to_string(desc.Dimension), barrier.Subresource, barrier.StateAfter);
+      D3D_ERROR("DX12: Invalid transition barrier, read and write bits set, for <%s> (%s) %u with StateAfter as 0x%08X", resourceName,
+        to_string(desc.Dimension), barrier.Subresource, barrier.StateAfter);
     }
     if (afterErrors.invalidReadBitsCombination)
     {
-      D3D_ERROR("DX12: Invalid transition barrier, invalid combination of read bits set, for <%s> "
-                "(%s) %u with StateAfter as 0x%08X",
-        resnameBuffer, to_string(desc.Dimension), barrier.Subresource, barrier.StateAfter);
+      D3D_ERROR("DX12: Invalid transition barrier, invalid combination of read bits set, for <%s> (%s) %u with StateAfter as 0x%08X",
+        resourceName, to_string(desc.Dimension), barrier.Subresource, barrier.StateAfter);
     }
     if (afterErrors.uavOnIncompatibleResource)
     {
-      D3D_ERROR("DX12: Invalid transition barrier, UAV state without proper resource flags, for <%s> "
-                "(%s) %u with StateAfter as 0x%08X",
-        resnameBuffer, to_string(desc.Dimension), barrier.Subresource, barrier.StateAfter);
+      D3D_ERROR(
+        "DX12: Invalid transition barrier, UAV state without proper resource flags, for <%s> (%s) %u with StateAfter as 0x%08X",
+        resourceName, to_string(desc.Dimension), barrier.Subresource, barrier.StateAfter);
     }
     if (afterErrors.renderTargetOnIncompatibleResource)
     {
-      D3D_ERROR("DX12: Invalid transition barrier, RTV state without proper resource flags, for <%s> "
-                "(%s) %u with StateAfter as 0x%08X",
-        resnameBuffer, to_string(desc.Dimension), barrier.Subresource, barrier.StateAfter);
+      D3D_ERROR(
+        "DX12: Invalid transition barrier, RTV state without proper resource flags, for <%s> (%s) %u with StateAfter as 0x%08X",
+        resourceName, to_string(desc.Dimension), barrier.Subresource, barrier.StateAfter);
     }
     if (afterErrors.depthStencilOnIncompatibleResource)
     {
-      D3D_ERROR("DX12: Invalid transition barrier, DSV state without proper resource flags, for <%s> "
-                "(%s) %u with StateAfter as 0x%08X",
-        resnameBuffer, to_string(desc.Dimension), barrier.Subresource, barrier.StateAfter);
+      D3D_ERROR(
+        "DX12: Invalid transition barrier, DSV state without proper resource flags, for <%s> (%s) %u with StateAfter as 0x%08X",
+        resourceName, to_string(desc.Dimension), barrier.Subresource, barrier.StateAfter);
     }
     if (afterErrors.srvOnIncompatibleResource)
     {
-      D3D_ERROR("DX12: Invalid transition barrier, SRV state without proper resource flags, for <%s> "
-                "(%s) %u with StateAfter as 0x%08X",
-        resnameBuffer, to_string(desc.Dimension), barrier.Subresource, barrier.StateAfter);
+      D3D_ERROR(
+        "DX12: Invalid transition barrier, SRV state without proper resource flags, for <%s> (%s) %u with StateAfter as 0x%08X",
+        resourceName, to_string(desc.Dimension), barrier.Subresource, barrier.StateAfter);
     }
 
     return false;
@@ -1650,10 +1641,9 @@ public:
 #if DX12_VALIDATE_USER_BARRIERS
     if (report_user_barriers)
     {
-      char cbuf[MAX_OBJECT_NAME_LENGTH];
       for (auto &&res : userUavResources)
       {
-        logwarn("DX12: Dropping UAV barrier for resource %s - %p, during %s", get_resource_name(res, cbuf), res, where);
+        logwarn("DX12: Dropping UAV barrier for resource %s - %p, during %s", debug::get_object_name(res), res, where);
       }
     }
 #else
@@ -1696,11 +1686,9 @@ public:
 #if DX12_VALIDATE_USER_BARRIERS
           if (report_user_barriers)
           {
-            char cbuf[MAX_OBJECT_NAME_LENGTH];
-            D3D_ERROR("DX12: Missing RB_FLUSH_UAV barrier for resource %s - %p, should "
-                      "this be on purpose, then add a RB_NONE barrier to silence this message, "
-                      "required during %s",
-              get_resource_name(*inPos, cbuf), *inPos, where);
+            D3D_ERROR("DX12: Missing RB_FLUSH_UAV barrier for resource %s - %p, should this be on purpose, then add a RB_NONE barrier "
+                      "to silence this message, required during %s",
+              debug::get_object_name(*inPos), *inPos, where);
           }
 #else
           G_UNUSED(where);
@@ -1807,63 +1795,60 @@ private:
     reportDecay = true;
 
     const char *resTypeTable[] = {"Buffer", "Texture"};
-    char resnameBuffer[MAX_OBJECT_NAME_LENGTH];
     char fromTransitionMaskText[256];
     char toTransitionMaskText[256];
 
-    get_resource_name(resource, resnameBuffer);
+    auto resourceName = debug::get_object_name(resource);
     resource_state_mask_as_string(from, fromTransitionMaskText);
     resource_state_mask_as_string(to, toTransitionMaskText);
     if (TransitionResult::Transitioned == action)
     {
-      logdbg("DX12: StateTrack: Transitioned %s 0x%p <%s>[%u] %u from <%s> to <%s>", resTypeTable[is_texture], resource, resnameBuffer,
+      logdbg("DX12: StateTrack: Transitioned %s 0x%p <%s>[%u] %u from <%s> to <%s>", resTypeTable[is_texture], resource, resourceName,
         sub_res_index, global_base + sub_res_index, fromTransitionMaskText, toTransitionMaskText);
     }
     else if (TransitionResult::AutoPromoted == action)
     {
-      logdbg("DX12: StateTrack: Auto promoted %s 0x%p <%s>[%u] %u from <%s> to <%s>", resTypeTable[is_texture], resource,
-        resnameBuffer, sub_res_index, global_base + sub_res_index, fromTransitionMaskText, toTransitionMaskText);
+      logdbg("DX12: StateTrack: Auto promoted %s 0x%p <%s>[%u] %u from <%s> to <%s>", resTypeTable[is_texture], resource, resourceName,
+        sub_res_index, global_base + sub_res_index, fromTransitionMaskText, toTransitionMaskText);
     }
     else if (TransitionResult::Merged == action)
     {
       logdbg("DX12: StateTrack: Updated existing transition of %s 0x%p <%s>[%u] %u from <%s> with <%s>", resTypeTable[is_texture],
-        resource, resnameBuffer, sub_res_index, global_base + sub_res_index, fromTransitionMaskText, toTransitionMaskText);
+        resource, resourceName, sub_res_index, global_base + sub_res_index, fromTransitionMaskText, toTransitionMaskText);
     }
     else if (TransitionResult::Folded == action)
     {
-      logdbg("DX12: StateTrack: Transformed split barrier into updated regular barrier (Folded) for "
-             "%s 0x%p <%s>[%u] %u from <%s> with <%s>",
-        resTypeTable[is_texture], resource, resnameBuffer, sub_res_index, global_base + sub_res_index, fromTransitionMaskText,
+      logdbg("DX12: StateTrack: Transformed split barrier into updated regular barrier (Folded) for %s 0x%p <%s>[%u] %u from <%s> "
+             "with <%s>",
+        resTypeTable[is_texture], resource, resourceName, sub_res_index, global_base + sub_res_index, fromTransitionMaskText,
         toTransitionMaskText);
     }
     else if (TransitionResult::Skipped == action)
     {
       logdbg("DX12: StateTrack: Skipped transition for %s 0x%p <%s>[%u] %u from <%s> to <%s>", resTypeTable[is_texture], resource,
-        resnameBuffer, sub_res_index, global_base + sub_res_index, fromTransitionMaskText, toTransitionMaskText);
+        resourceName, sub_res_index, global_base + sub_res_index, fromTransitionMaskText, toTransitionMaskText);
     }
     else if (TransitionResult::UserSkipped == action)
     {
-      logdbg("DX12: StateTrack: Skipped transition on user request for %s 0x%p <%s>[%u] %u from <%s> "
-             "to <%s>",
-        resTypeTable[is_texture], resource, resnameBuffer, sub_res_index, global_base + sub_res_index, fromTransitionMaskText,
+      logdbg("DX12: StateTrack: Skipped transition on user request for %s 0x%p <%s>[%u] %u from <%s> to <%s>",
+        resTypeTable[is_texture], resource, resourceName, sub_res_index, global_base + sub_res_index, fromTransitionMaskText,
         toTransitionMaskText);
     }
     else if (TransitionResult::UnderspecifiedEnd == action)
     {
-      logdbg("DX12: StateTrack: Split barrier end was broader than the begin barrier of %s 0x%p "
-             "<%s>[%u] %u from <%s> to <%s>",
-        resTypeTable[is_texture], resource, resnameBuffer, sub_res_index, global_base + sub_res_index, fromTransitionMaskText,
+      logdbg("DX12: StateTrack: Split barrier end was broader than the begin barrier of %s 0x%p <%s>[%u] %u from <%s> to <%s>",
+        resTypeTable[is_texture], resource, resourceName, sub_res_index, global_base + sub_res_index, fromTransitionMaskText,
         toTransitionMaskText);
     }
     else if (TransitionResult::Expanded == action)
     {
       logdbg("DX12: StateTrack: Expansion %s 0x%p <%s>[%u] %u from <%s> with additional <%s>", resTypeTable[is_texture], resource,
-        resnameBuffer, sub_res_index, global_base + sub_res_index, fromTransitionMaskText, toTransitionMaskText);
+        resourceName, sub_res_index, global_base + sub_res_index, fromTransitionMaskText, toTransitionMaskText);
     }
     else if (TransitionResult::Fused == action)
     {
       logdbg("DX12: StateTrack: Fused back and forth barrier %s 0x%p <%s>[%u] %u from <%s> to <%s>", resTypeTable[is_texture],
-        resource, resnameBuffer, sub_res_index, global_base + sub_res_index, fromTransitionMaskText, toTransitionMaskText);
+        resource, resourceName, sub_res_index, global_base + sub_res_index, fromTransitionMaskText, toTransitionMaskText);
     }
   }
 
@@ -1996,10 +1981,9 @@ public:
       else
       {
 #if DAGOR_DBGLEVEL
-        char cbuf[MAX_OBJECT_NAME_LENGTH];
-        get_resource_name(res, cbuf);
         G_ASSERTF(state == (D3D12_RESOURCE_STATE_COMMON & state), // -V616
-          "Unexpected state request for static texture %s state: 0x%08X / 0x%08X", cbuf, state, state & ~D3D12_RESOURCE_STATE_COMMON);
+          "Unexpected state request for static texture %s state: 0x%08X / 0x%08X", debug::get_object_name(res), state,
+          state & ~D3D12_RESOURCE_STATE_COMMON);
         image->setReportStateTransitions();
 #endif
       }
@@ -2055,18 +2039,16 @@ public:
         {
           auto splitEndState = *optionalEnd;
 
-          char cbuf[MAX_OBJECT_NAME_LENGTH];
-          get_resource_name(res, cbuf);
+          auto resourceName = debug::get_object_name(res);
           // remove it from in flight list or we generate a extra barrier that is invalid
           // we can fix those errors, but this is just a bandaid to keep going, root causes should
           // be properly fixed first see if we can patch a split barrier
           if (barriers.tryFixMissingEndTransition(res, i, state))
           {
             G_ASSERTF(false,
-              "Missing split barrier end for %s - %p - %u - %u, queued pending begin "
-              "barrier, stared with 0x%08X, ended with 0x%08X, was patched to end with "
-              "0x%08X",
-              cbuf, res, global_base, i, static_cast<D3D12_RESOURCE_STATES>(currentState), splitEndState, state);
+              "Missing split barrier end for %s - %p - %u - %u, queued pending begin barrier, stared with 0x%08X, ended with 0x%08X, "
+              "was patched to end with 0x%08X",
+              resourceName, res, global_base, i, static_cast<D3D12_RESOURCE_STATES>(currentState), splitEndState, state);
             currentState.transition(state);
             image->setReportStateTransitions();
             global_base.enableTransitionReporting();
@@ -2075,9 +2057,9 @@ public:
           else
           {
             G_ASSERTF(false,
-              "Missing split barrier end for %s - %p - %u - %u, no pending begin barrier "
-              "found, placing end barrier starting with 0x%08X, ending with 0x%08X",
-              cbuf, res, global_base, i, static_cast<D3D12_RESOURCE_STATES>(currentState), splitEndState);
+              "Missing split barrier end for %s - %p - %u - %u, no pending begin barrier found, placing end barrier starting with "
+              "0x%08X, ending with 0x%08X",
+              resourceName, res, global_base, i, static_cast<D3D12_RESOURCE_STATES>(currentState), splitEndState);
             image->setReportStateTransitions();
             global_base.enableTransitionReporting();
             // We insert the end barrier now and check if anything has to be done after that.
@@ -2281,11 +2263,9 @@ public:
         return;
       }
 #if DAGOR_DBGLEVEL > 0
-      char cbuf[MAX_OBJECT_NAME_LENGTH];
       G_ASSERTF(endState == state, // -V547 always false
-        "Subsequent split barrier begins for %s with different target state 0x%08X != "
-        "0x%08X",
-        get_resource_name(texture, cbuf), endState, state);
+        "Subsequent split barrier begins for %s with different target state 0x%08X != 0x%08X", debug::get_object_name(texture),
+        endState, state);
       image->setReportStateTransitions();
 #endif
       endTextureTransition(barriers, stt, image, global_base, subresource, endState);
@@ -2316,11 +2296,9 @@ public:
 #if DAGOR_DBGLEVEL > 0
     if (state != (endState & state))
     {
-      char cbuf[MAX_OBJECT_NAME_LENGTH];
       G_ASSERTF(state == (endState & state),
-        "Split barrier end with incompatible end state 0x%08X != (0x%08X & 0x%08X) for %s "
-        "- %p - %u",
-        state, endState, state, get_resource_name(texture, cbuf), texture, subresource);
+        "Split barrier end with incompatible end state 0x%08X != (0x%08X & 0x%08X) for %s - %p - %u", state, endState, state,
+        debug::get_object_name(texture), texture, subresource);
       image->setReportStateTransitions();
     }
 #endif
@@ -2394,11 +2372,10 @@ public:
       // cases its not (UAV use after async read back, as it changes what is read back).
       if ((state != (endState & state)) && (!has_read_state(endState) || !has_read_state(state)))
       {
-        char cbuf[MAX_OBJECT_NAME_LENGTH];
         G_ASSERTF(state == (endState & state),
-          "DX12: Split barrier ended early with either previous end state or new end state "
-          "not being read states (0x%08X != (0x%08X & 0x%08X)) for %s - %p - %u",
-          state, endState, state, get_resource_name(texture, cbuf), texture, subresource);
+          "DX12: Split barrier ended early with either previous end state or new end state not being read states "
+          "(0x%08X != (0x%08X & 0x%08X)) for %s - %p - %u",
+          state, endState, state, debug::get_object_name(texture), texture, subresource);
         image->setReportStateTransitions();
       }
 #endif
@@ -3791,8 +3768,7 @@ public:
     }
     else
     {
-      char buf[MAX_OBJECT_NAME_LENGTH];
-      nameIndex = addResourceName(get_resource_name(buffer.buffer, buf));
+      nameIndex = addResourceName(debug::get_object_name(buffer.buffer));
     }
     BufferUsageEntry e;
     e.buffer = buffer;
@@ -5234,8 +5210,8 @@ public:
 
   void activateTexture(Image *tex, ResourceActivationAction action, const ResourceClearValue &value, ImageViewState view_state,
     D3D12_CPU_DESCRIPTOR_HANDLE view, ResourceUsageManagerWithHistory &rst, BarrierBatcher &bb, SplitTransitionTracker &stt,
-    ID3D12Device2 *device, ShaderResourceViewDescriptorHeapManager &descriptors, PipelineManager &pipeMan, StatefulCommandBuffer &cmd,
-    Device &device_obj)
+    ID3D12Device2 *device, ShaderResourceViewDescriptorHeapManager &descriptors, PipelineManager &pipeMan, PipelineCache &cache,
+    StatefulCommandBuffer &cmd, Device &device_obj)
   {
     auto beforeBatchSize = bb.batchSize();
     // we do only the memory overlap, aliasing barrier and state barriers on mip level 0 and array
@@ -5368,7 +5344,7 @@ public:
             cmd.discardResource(tex->getHandle(), nullptr);
 
             cmd.setResourceHeap(descriptors.getActiveHandle(), descriptors.getBindlessGpuAddress());
-            auto clearPipeline = pipeMan.getClearPipeline(device_obj, tex->getFormat().asDxGiFormat<false>());
+            auto clearPipeline = pipeMan.getClearPipeline(device_obj, cache, tex->getFormat().asDxGiFormat<false>());
 
             if (!clearPipeline)
               return;

@@ -26,21 +26,6 @@
 #include "shaders/rtr_constants.hlsli"
 
 
-#if _TARGET_PC
-namespace
-{
-struct PostmortemTraceScope
-{
-  PostmortemTraceScope() { d3d::driver_command(Drv3dCommand::SET_GPU_POSTMORTEM_DATA_TRACE_ENABLED, (void *)(uintptr_t)1); }
-  ~PostmortemTraceScope() { d3d::driver_command(Drv3dCommand::SET_GPU_POSTMORTEM_DATA_TRACE_ENABLED, (void *)(uintptr_t)0); }
-};
-} // namespace
-
-#define GPU_POSTMORTEM_TRACE_SCOPE PostmortemTraceScope postmortemTraceScope;
-#else
-#define GPU_POSTMORTEM_TRACE_SCOPE
-#endif
-
 namespace rtr
 {
 
@@ -72,7 +57,6 @@ static int rtr_output_typeVarId = -1;
 static int rtr_denoisedVarId = -1;
 static int rtr_validation_textureVarId = -1;
 static int rtr_shadowVarId = -1;
-static int rtr_use_csmVarId = -1;
 static int rtr_fom_shadowVarId = -1;
 static int rtr_res_mulVarId = -1;
 static int rtr_checkerboardVarId = -1;
@@ -90,6 +74,7 @@ static int cameraFovYVarId = 1;
 static int downsampled_close_depth_texVarId = -1;
 static int denoiser_glass_history_confidence_tweakVarId = -1;
 static int denoiser_view_zVarId = -1;
+static int half_selected_depth_rtrVarId = -1;
 
 static float water_ray_length = 5000;
 static float gloss_ray_length = 1000;
@@ -138,6 +123,7 @@ static BaseTexture *tiles_ptr = nullptr;
 static BaseTexture *normal_roughness_ptr = nullptr;
 static BaseTexture *view_z_ptr = nullptr;
 static BaseTexture *half_depth_ptr = nullptr;
+static BaseTexture *half_selected_depth_rtr_ptr = nullptr;
 static BaseTexture *rtr_tex_unfiltered_ptr = nullptr;
 static BaseTexture *rtr_basetex = nullptr;
 static BaseTexture *denoised_reflection_ptr = nullptr;
@@ -146,7 +132,6 @@ static float image_debug_hmul = 1;
 
 static bvh::ContextId current_context_id = nullptr;
 static bool has_rt_shadow = false;
-static bool has_csm_shadow = false;
 static int tiles_width = 1;
 static int tiles_height = 1;
 static bool is_checkerboard = false;
@@ -185,7 +170,6 @@ void initialize(denoiser::ReflectionMethod method, bool half_res, bool checkerbo
   rtr_validation_textureVarId = get_shader_variable_id("rtr_validation_texture");
   rtr_res_mulVarId = get_shader_variable_id("rtr_res_mul");
   rtr_shadowVarId = get_shader_variable_id("rtr_shadow", true);
-  rtr_use_csmVarId = get_shader_variable_id("rtr_use_csm", true);
   rtr_fom_shadowVarId = get_shader_variable_id("rtr_fom_shadow", true);
   rtr_checkerboardVarId = get_shader_variable_id("rtr_checkerboard", true);
   rtr_probe_debug_sizeVarId = get_shader_variable_id("rtr_probe_debug_size", true);
@@ -202,6 +186,7 @@ void initialize(denoiser::ReflectionMethod method, bool half_res, bool checkerbo
   downsampled_close_depth_texVarId = get_shader_variable_id("downsampled_close_depth_tex");
   denoiser_glass_history_confidence_tweakVarId = get_shader_variable_id("denoiser_glass_history_confidence_tweak", true);
   denoiser_view_zVarId = get_shader_variable_id("denoiser_view_z", true);
+  half_selected_depth_rtrVarId = get_shader_variable_id("half_selected_depth_rtr", true);
   ShaderGlobal::set_int(rtr_res_mulVarId, half_res ? 2 : 1);
 
   if (!trace)
@@ -358,10 +343,8 @@ void update_probes(IPoint2 res_size, IPoint2 resolution, bool randomize_rays)
   if (!fix_probes)
     probeLocation->dispatch(usableProbeCountH, usableProbeCountV, 1);
 
-  d3d::set_cs_constbuffer_register_count(256);
   // One group is processing one probe (PROBE_RESOLUTION * PROBE_RESOLUTION)
   probeColor->dispatch(usableProbeCountH, usableProbeCountV, PROBE_LAYER_MUL);
-  d3d::set_cs_constbuffer_register_count(0);
 
   d3d::resource_barrier({rtr_probe_locations.getBuf(), RB_RO_SRV | RB_STAGE_COMPUTE | RB_STAGE_PIXEL});
   ShaderGlobal::set_int(rtr_probe_locations_buf_slotVarId, rtr_probes_bindless.locationBuf);
@@ -379,14 +362,13 @@ static IPoint2 get_resolution()
                                                    : denoiser::resolution_config.dynRes.res;
 }
 
-bool prepare(bvh::ContextId context_id, bool rt_shadow, bool csm_shadow, const denoiser::TexMap &textures, bool checkerboard)
+bool prepare(bvh::ContextId context_id, bool rt_shadow, const denoiser::TexMap &textures, bool checkerboard)
 {
   TIME_D3D_PROFILE(rtr::prepare);
 
   G_ASSERT(ray_limit_coeff != 0);
 
   current_context_id = context_id;
-  has_csm_shadow = csm_shadow;
   has_rt_shadow = rt_shadow;
 
   hit_dist_params = Point4(gloss_ray_length, distance_factor, scatter_factor, roughness_factor);
@@ -402,6 +384,7 @@ bool prepare(bvh::ContextId context_id, bool rt_shadow, bool csm_shadow, const d
   auto view_z = textures.find(denoiser::resolution_config.rtr.isHalfRes ? denoiser::TextureNames::denoiser_half_view_z
                                                                         : denoiser::TextureNames::denoiser_view_z);
   auto half_depth = textures.find(denoiser::TextureNames::half_depth);
+  auto half_selected_depth_rtr = textures.find(denoiser::TextureNames::half_selected_depth_rtr);
 
   G_ASSERT_RETURN(denoiser::is_ray_reconstruction_enabled() || tiles != textures.end(), false);
   G_ASSERT_RETURN(denoiser::is_ray_reconstruction_enabled() || denoised_reflection != textures.end(), false);
@@ -417,6 +400,7 @@ bool prepare(bvh::ContextId context_id, bool rt_shadow, bool csm_shadow, const d
   normal_roughness_ptr = basetex_or_null(normal_roughness);
   view_z_ptr = basetex_or_null(view_z);
   half_depth_ptr = basetex_or_null(half_depth);
+  half_selected_depth_rtr_ptr = basetex_or_null(half_selected_depth_rtr);
   rtr_tex_unfiltered_ptr = basetex_or_null(reflection_value);
   rtr_basetex = basetex_or_null(reflection_value);
   denoised_reflection_ptr = basetex_or_null(denoised_reflection);
@@ -464,8 +448,8 @@ void bind_params()
   ShaderGlobal::set_int(rtr_output_typeVarId, denoiser::is_ray_reconstruction_enabled() ? RTR_OUTPUT_RR : (int)output_type);
   ShaderGlobal::set_texture(rt_nrVarId, normal_roughness_ptr);
   ShaderGlobal::set_texture(downsampled_close_depth_texVarId, half_depth_ptr);
+  ShaderGlobal::set_texture(half_selected_depth_rtrVarId, half_selected_depth_rtr_ptr);
   ShaderGlobal::set_int(rtr_shadowVarId, has_rt_shadow ? 1 : 0);
-  ShaderGlobal::set_int(rtr_use_csmVarId, has_csm_shadow ? 1 : 0);
   ShaderGlobal::set_int(rtr_checkerboardVarId, is_checkerboard ? 1 : 0);
   ShaderGlobal::set_float(denoiser_glass_history_confidence_tweakVarId,
     denoiser::resolution_config.rtr.isHalfRes ? glass_tweak_half : glass_tweak_full);
@@ -482,6 +466,7 @@ void unbind_params()
 
   ShaderGlobal::set_texture(rt_nrVarId, nullptr);
   ShaderGlobal::set_texture(downsampled_close_depth_texVarId, nullptr);
+  ShaderGlobal::set_texture(half_selected_depth_rtrVarId, nullptr);
 }
 
 void do_update_probes(bool randomize_rays)
@@ -502,9 +487,7 @@ void do_trace(const TMatrix4 &proj_tm)
   }
 
   ShaderGlobal::set_float4x4(inv_proj_tmVarId, inverse44(proj_tm));
-  d3d::set_cs_constbuffer_register_count(128 + 32);
   trace->dispatch(tiles_width, tiles_height, 1);
-  d3d::set_cs_constbuffer_register_count(0);
   d3d::resource_barrier(ResourceBarrierDesc(rtr_basetex, RB_NONE, 0, 0));
 }
 
@@ -529,12 +512,10 @@ void denoise(const denoiser::TexMap &textures, bool use_smart_depth)
   denoiser::denoise_reflection(denoiser_params);
 }
 
-void render(bvh::ContextId context_id, const TMatrix4 &proj_tm, bool rt_shadow, bool csm_shadow, const denoiser::TexMap &textures,
-  bool checkerboard, bool randomize_rays)
+void render(bvh::ContextId context_id, const TMatrix4 &proj_tm, bool rt_shadow, const denoiser::TexMap &textures, bool checkerboard,
+  bool randomize_rays)
 {
-  GPU_POSTMORTEM_TRACE_SCOPE;
-
-  if (!prepare(context_id, rt_shadow, csm_shadow, textures, checkerboard))
+  if (!prepare(context_id, rt_shadow, textures, checkerboard))
     return;
 
   bind_params();

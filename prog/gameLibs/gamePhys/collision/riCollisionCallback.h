@@ -3,6 +3,7 @@
 
 #include <rendInst/rendInstGen.h>
 #include <gamePhys/collision/rendinstCollision.h>
+#include "collisionLibPrivate.h"
 
 template <typename T>
 struct RICollisionCB : public rendinst::RendInstCollisionCB
@@ -15,12 +16,12 @@ struct RICollisionCB : public rendinst::RendInstCollisionCB
   {
     dacoll::CollisionInstances *instance = dacoll::get_collision_instances_by_handle(info.handle);
     G_ASSERTF(instance, "Cannot find collision for ri at " FMT_P3, P3D(info.tm.getcol(3)));
-    if (!instance || !dacoll::is_ri_instance_enabled(instance, info.desc))
+    if (!instance || !dacoll::is_ri_instance_enabled(info.desc))
       return CollisionObject();
 
     CollisionObject cobj = instance->updateTm(info.desc, info.tm);
 
-    callback.collMatId = rendinst::getRIGenMaterialId(info.desc);
+    callback.collMatId = info.matId;
     return cobj;
   }
 

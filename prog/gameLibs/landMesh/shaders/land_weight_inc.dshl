@@ -4,7 +4,7 @@
 // The cell is resolved from the world position and its record is read from a
 // buffer, so a weight can be looked up anywhere without the cell's draw being
 // current - which is what lets a pixel be shaded without a per-cell draw.
-int land_weight_cells_const_no = 16 always_referenced; // above lmesh_sampler__max_used_sampler: the
+int land_weight_cells_const_no = 21 always_referenced; // above lmesh_sampler__max_used_sampler: the
                                                        // landmesh renderer raw-sets and nulls t0..t15
 // The four of them are hardcoded above the landmesh block instead of allocated:
 // the land shaders have room for one more ps const before the block's own range

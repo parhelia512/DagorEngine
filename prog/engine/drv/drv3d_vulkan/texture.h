@@ -15,7 +15,7 @@
 #include "image_resource.h"
 #include "async_completion_state.h"
 #include "globals.h"
-#include "translate_d3d_to_vk.h"
+#include <drv/shadersMetaData/spirv/translate_d3d_to_vk.h>
 #include "basetexture.h"
 #include "vk_format_utils.h"
 #include <validation/texture.h>
@@ -308,10 +308,6 @@ struct BaseTex final : public D3dResourceNameImpl<BaseTexture>
 
   int generateMips() override;
   int update(BaseTexture *src) override;
-  int updateSubRegion(BaseTexture *src, int src_subres_idx, int src_x, int src_y, int src_z, int src_w, int src_h, int src_d,
-    int dest_subres_idx, int dest_x, int dest_y, int dest_z) override;
-  int updateSubRegionNoOrder(BaseTexture *src, int src_subres_idx, int src_x, int src_y, int src_z, int src_w, int src_h, int src_d,
-    int dest_subres_idx, int dest_x, int dest_y, int dest_z) override;
 
   int lockimg(void **p, int &stride_bytes, int level = 0, unsigned flags = TEXLOCK_DEFAULT) override
   {

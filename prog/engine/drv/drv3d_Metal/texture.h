@@ -37,7 +37,7 @@ struct HazardTracker
   uint32_t heap_size = 0;
 };
 
-class Texture final : public D3dResourceNameImpl<BaseTexture>, public HazardTracker
+class Texture final : public D3dResourceNameImpl<BaseTexture>
 {
 public:
   struct SubMip
@@ -49,7 +49,7 @@ public:
     id<MTLTexture> tex;
   };
 
-  struct ApiTexture
+  struct ApiTexture : public HazardTracker
   {
     Texture *base = nullptr;
     id<MTLTexture> texture = nil;
@@ -65,6 +65,7 @@ public:
 
     ApiTexture(Texture *base, id<MTLTexture> tex, const char *name);
     ApiTexture(Texture *base);
+    // if immediate is false the deletion is queued until the frame is done
     void release(bool immediate);
     id<MTLTexture> allocateOrCreateSubmip(int set_minlevel, int set_maxlevel, bool is_uav, int start_slice);
     void destroyObject() {}
@@ -141,8 +142,6 @@ public:
   virtual int generateMips();
 
   virtual int update(BaseTexture *src);
-  virtual int updateSubRegion(BaseTexture *src, int src_subres_idx, int src_x, int src_y, int src_z, int src_w, int src_h, int src_d,
-    int dest_subres_idx, int dest_x, int dest_y, int dest_z);
 
   virtual void setApiName(const char * /*name*/) const;
 

@@ -121,15 +121,15 @@ PropPanel::DragAndDropResult ECSSceneOutlinerPanel::DropHandler::onDropTargetDir
 
       if (leafUserData->type == LeafType::ENTITY)
       {
-        owner.objEditor.getUndoSystem()->put(
-          new SetEntityParentUndoRedo(owner.getSceneObject(destUserData->sid), owner.getEntityObject(leafUserData->eid), owner));
+        owner.objEditor.getUndoSystem()->put<SetEntityParentUndoRedo>(owner.getSceneObject(destUserData->sid),
+          owner.getEntityObject(leafUserData->eid), owner);
 
         ecs::g_scenes->setEntityParent(destUserData->sid, {leafUserData->eid});
       }
       else
       {
-        owner.objEditor.getUndoSystem()->put(
-          new SetSceneParentUndoRedo(owner.getSceneObject(destUserData->sid), owner.getSceneObject(leafUserData->sid), owner));
+        owner.objEditor.getUndoSystem()->put<SetSceneParentUndoRedo>(owner.getSceneObject(destUserData->sid),
+          owner.getSceneObject(leafUserData->sid), owner);
 
         ecs::g_scenes->setNewParent(leafUserData->sid, destUserData->sid);
         owner.tree->setNewParent(sourceLeaf, leaf);
@@ -199,14 +199,14 @@ PropPanel::DragAndDropResult ECSSceneOutlinerPanel::DropHandler::onDropTargetBet
       {
         if (owner.tree->getParentLeaf(sourceLeaf) != leaf)
         {
-          owner.objEditor.getUndoSystem()->put(
-            new SetEntityParentUndoRedo(owner.getSceneObject(destUserData->sid), owner.getEntityObject(sourceUserData->eid), owner));
+          owner.objEditor.getUndoSystem()->put<SetEntityParentUndoRedo>(owner.getSceneObject(destUserData->sid),
+            owner.getEntityObject(sourceUserData->eid), owner);
           ecs::g_scenes->setEntityParent(destUserData->sid, {sourceUserData->eid});
         }
 
         uint32_t prevOrder = ecs::g_scenes->getEntityOrder(sourceUserData->eid);
-        owner.objEditor.getUndoSystem()->put(
-          new SetEntityOrderUndoRedo(prevOrder, idx, owner.getEntityObject(sourceUserData->eid), owner));
+        owner.objEditor.getUndoSystem()->put<SetEntityOrderUndoRedo>(prevOrder, idx, owner.getEntityObject(sourceUserData->eid),
+          owner);
         ecs::g_scenes->setEntityOrder(sourceUserData->eid, idx);
         if (prevOrder >= idx)
         {
@@ -217,15 +217,14 @@ PropPanel::DragAndDropResult ECSSceneOutlinerPanel::DropHandler::onDropTargetBet
       {
         if (owner.tree->getParentLeaf(sourceLeaf) != leaf)
         {
-          owner.objEditor.getUndoSystem()->put(
-            new SetSceneParentUndoRedo(owner.getSceneObject(destUserData->sid), owner.getSceneObject(sourceUserData->sid), owner));
+          owner.objEditor.getUndoSystem()->put<SetSceneParentUndoRedo>(owner.getSceneObject(destUserData->sid),
+            owner.getSceneObject(sourceUserData->sid), owner);
           ecs::g_scenes->setNewParent(sourceUserData->sid, destUserData->sid);
           owner.tree->setNewParent(sourceLeaf, leaf);
         }
 
         uint32_t prevOrder = ecs::g_scenes->getSceneOrder(sourceUserData->sid);
-        owner.objEditor.getUndoSystem()->put(
-          new SetSceneOrderUndoRedo(prevOrder, idx, owner.getSceneObject(sourceUserData->sid), owner));
+        owner.objEditor.getUndoSystem()->put<SetSceneOrderUndoRedo>(prevOrder, idx, owner.getSceneObject(sourceUserData->sid), owner);
         ecs::g_scenes->setSceneOrder(sourceUserData->sid, idx);
         owner.tree->setChildIndex(sourceLeaf, idx);
         if (prevOrder >= idx)

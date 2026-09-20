@@ -1,0 +1,3 @@
+lateDeclares {
+  late_declared_comp:i=0
+}

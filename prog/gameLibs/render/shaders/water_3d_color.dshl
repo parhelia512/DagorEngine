@@ -382,7 +382,7 @@ macro USE_WATER_3D_DEFERRED_COLOR()
       return saturate(log2(d) * 0.15051499 + fov_log_bias);
     }
 
-    WaterBaseContext computeWaterBaseContext(PsInput input INPUT_VFACE, ShoreData shoreData, ChopWaterData chopWaterData, float foam_color, float2 perlin_surf, float perlinSpotInfluence)
+    WaterBaseContext computeWaterBaseContext(PsInput input INPUT_VFACE, ShoreData shoreData, ChopWaterData chopWaterData, float foam_color, float foam_dissolve, float2 perlin_surf, float perlinSpotInfluence)
     {
       float4 screenPos = GET_SCREEN_POS(input.screenPos);
 
@@ -487,7 +487,11 @@ macro USE_WATER_3D_DEFERRED_COLOR()
 
       // Add flowmap normal
       ##if has_water_flowmap
-        vd.worldNormal = RNM_ndetail_normalized(vd.worldNormal.xzy, input.flowmap_normal.xzy).xzy;
+        #if SIMPLIFIED_FLOWMAP
+          vd.worldNormal.xz += input.flowmap_normal.xy;
+        #else
+          vd.worldNormal = RNM_ndetail_normalized(vd.worldNormal.xzy, input.flowmap_normal.xzy).xzy;
+        #endif
       ##endif
 
       // Wake
@@ -505,6 +509,7 @@ macro USE_WATER_3D_DEFERRED_COLOR()
       float3 ripplesGradient = get_water_ripples_gradient(vd.worldPos, vd.ripplesFoam);
       vd.wakeGradient = RNM_ndetail_normalized(vd.wakeGradient.xzy, ripplesGradient.xzy).xzy;
       vd.ripplesFoam = saturate(1.2*vd.ripplesFoam - 0.2 + 0.3*saturate(3 - 3*vd.wakeGradient.y));
+      vd.ripplesFoam *= 0.5 + 0.5*foam_dissolve;
 ##endif
 
       // Apply wake

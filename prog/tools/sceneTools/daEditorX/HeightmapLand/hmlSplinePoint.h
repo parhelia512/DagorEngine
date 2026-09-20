@@ -6,6 +6,7 @@
 #include <de3_splineGenSrv.h>
 #include <3d/dag_texMgr.h>
 #include <util/dag_simpleString.h>
+#include <EASTL/unique_ptr.h>
 
 #include <math/dag_bounds2.h>
 #include <math/dag_Point3.h>
@@ -111,6 +112,8 @@ public:
   bool mayRename() override { return false; }
   bool mayDelete() override { return true; }
   void setWtm(const TMatrix &wtm) override;
+  // matrix holds the position of the grabbed sub-object, so writing props directly leaves the gizmo behind
+  void updateMatrixFromProps();
 
   void onRemove(ObjectEditor *) override;
   void onAdd(ObjectEditor *objEditor) override;
@@ -121,9 +124,19 @@ public:
 
   EO_IMPLEMENT_RTTI(CID_SplinePointObject)
 
+  // the point as edited: for a filleted corner this sits off the curve, and a geometry consumer wants getKnotPos() below
   Point3 getPt() const { return props.pt; }
   Point3 getBezierIn() const { return props.pt + getPtEffRelBezierIn(); }
   Point3 getBezierOut() const { return props.pt + getPtEffRelBezierOut(); }
+
+  // Effective knot used to build the curve. For a point with active fillet the knot lies on the fillet blend (not at props.pt);
+  // for points adjacent to a fillet the handle facing it is shortened to preserve the base curve shape.
+  Point3 getKnotPos() const;
+  Point3 getKnotBezierIn() const;
+  Point3 getKnotBezierOut() const;
+  // handle of the generated point flanking this knot on the given side, or null when no blend is there
+  const Point3 *blendNeighbourHandle(int dir) const;
+  bool hasActiveFillet() const { return filletApplied; }
   Point3 getUpDir() const;
   float getRoadHalfWidth() const { return 0; }
 
@@ -151,6 +164,8 @@ public:
     Point3 pt, relIn, relOut;
     bool useDefSet;
     short cornerType; // -2=def as spline, -1=polyline, 0=smooth 1st deriv., 1=smooth 2nd deriv.
+    float filletR;    // non-destructive corner cut distance along curve, 0=off
+    short filletType; // 0=fillet (arc), 1=chamfer (straight cut)
     splineclass::Attr attr;
 
     void defaults();
@@ -213,10 +228,40 @@ public:
   unsigned short visible : 1, segChanged : 1;
   // real cross (mean, not road joint and not mere spline/road cross) must be checked together with isCross
   unsigned short isCross : 1, isRealCross : 1;
+  // derived fillet point: owned by the spline only (not registered in ObjectEditor), never saved,
+  // recomputed from the source point on every curve rebuild
+  unsigned short isFilletGen : 1;
+  // fillet knot data is valid and generated points exist (source points only)
+  unsigned short filletApplied : 1;
   Ptr<SplineObject> spline;
   Point3 tmpUpDir; //< computed when generating straight segments, used when generating cross roads
 
-  static E3DCOLOR norm_col, sel_col, sel2_col, hlp_col, norm_col_start_point;
+  // which half is live is the role: src/role/adjHandle on a generated point, knot*/cutS on a source point
+  struct Fillet
+  {
+    // the corner this point was generated for; owning ref, the source may leave the array before reconciliation drops us
+    Ptr<SplinePointObject> src;
+    // outer handle of the adjacent real knot, kept from the base curve subdivision (abs pos)
+    Point3 adjHandle = Point3(0, 0, 0);
+
+    // the knot on the blend middle, and the cut distance the reconciler could use (filletR limited by segment room)
+    Point3 knotPt = Point3(0, 0, 0), knotIn = Point3(0, 0, 0), knotOut = Point3(0, 0, 0);
+    float cutS = 0;
+    short role = 0; // 0=before source (V0), 1=after source (V1)
+  };
+  // allocated only for the points a fillet involves, a corner and its two generated ones, null on every other point.
+  // isFilletGen and filletApplied each imply it exists, so readers deref it behind one of those
+  eastl::unique_ptr<Fillet> fillet;
+  Fillet &ensureFillet();
+
+  // refreshes the panel line telling what the fillet really does, if shown
+  void updateFilletHint();
+
+  // where to put the point back while it is out of points[]: counted in source points,
+  // since arrId counts generated ones that are gone by then. -1 = unused
+  int reinsertSrcIdx = -1;
+
+  static E3DCOLOR norm_col, sel_col, sel2_col, hlp_col, norm_col_start_point, fillet_gen_col;
   static TEXTUREID texPt;
   static float ptScreenRad;
   static int ptRenderPassId;
@@ -253,6 +298,7 @@ protected:
     void redo() override;
 
     size_t size() override { return sizeof(*this); }
+    UNDO_MERGE_SNAPSHOT_BY_TARGET(0x17B47151u, obj.get()) // SplinePointObject_UndoPropsChange
     void accepted() override {}
     void get_description(String &s) override { s = "UndoSpolinePointPropsChange"; }
   };

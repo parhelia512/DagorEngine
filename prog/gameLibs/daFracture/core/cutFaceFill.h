@@ -4,6 +4,7 @@
 #include <cstdint>
 #include <EASTL/bitvector.h>
 #include <EASTL/numeric.h>
+#include <EASTL/variant.h>
 #include <EASTL/algorithm.h>
 #include <math/dag_Point3.h>
 #include <math/dag_e3dColor.h>
@@ -23,13 +24,15 @@
 #include "cutFaceGraph.h"
 #include "cutFaceBoundarySearch.h"
 #include "cutFaceTriangulatePlanar.h"
+#include "cutFaceTriangulateHmapGrid.h"
 
 
 namespace frx
 {
 
+template <typename HmapImplT = const eastl::monostate>
 DAGOR_NOINLINE void fill_cut_faces(DestrContext &ctx, const CutFaceData &cut_data, DestrMesh *up_mesh, DestrMesh *down_mesh,
-  uint16_t cut_face_mat)
+  uint16_t cut_face_mat, HmapImplT &hmap_impl = eastl::monostate())
 {
   FRAMEMEM_REGION;
 
@@ -50,15 +53,21 @@ DAGOR_NOINLINE void fill_cut_faces(DestrContext &ctx, const CutFaceData &cut_dat
     {
       graph.edges.push_back({.v0 = int(graph.verts.size()), .v1 = int(graph.verts.size() + 1)});
       v_stu_half(&graph.verts.push_back_noinit(), cut_data.verts[e.a]);
+      graph.vertsH.push_back(v_extract_z(cut_data.verts[e.a]));
       v_stu_half(&graph.verts.push_back_noinit(), cut_data.verts[e.b]);
+      graph.vertsH.push_back(v_extract_z(cut_data.verts[e.b]));
     }
   }
   else
   {
     graph.edges.reserve(cut_data.edges.size());
     graph.verts.reserve(cut_data.verts.size());
+    graph.vertsH.reserve(cut_data.verts.size());
     for (const auto &v : cut_data.verts)
+    {
+      graph.vertsH.push_back(v_extract_z(v));
       v_stu_half(&graph.verts.push_back_noinit(), v);
+    }
     for (const auto &e : cut_data.edges)
       graph.edges.push_back({.v0 = int(e.a), .v1 = int(e.b)});
   }
@@ -66,7 +75,7 @@ DAGOR_NOINLINE void fill_cut_faces(DestrContext &ctx, const CutFaceData &cut_dat
   if (ctx.dbgDraw.drawCutSegments)
   {
     for (const auto &e : graph.edges)
-      ctx.dbgDraw.drawArrow(basis.unProject(graph.verts[e.v0]), basis.unProject(graph.verts[e.v1]), E3DCOLOR(255, 255, 128));
+      dbg_draw_arrow(ctx, graph, basis, e.v0, e.v1, E3DCOLOR(255, 255, 128));
   }
 
   // preprocess segment soup & build graph
@@ -106,7 +115,7 @@ DAGOR_NOINLINE void fill_cut_faces(DestrContext &ctx, const CutFaceData &cut_dat
           continue;
 
         DestrMesh::Vertex vd;
-        vd.pos = basis.unProject(graph.verts[vi]);
+        vd.pos = basis.unProject(graph.verts[vi], graph.vertsH[vi]);
         vd.tc = graph.verts[vi];
 
         vPair.up = up_mesh ? up_mesh->verts.size() : 0; // validate
@@ -131,16 +140,7 @@ DAGOR_NOINLINE void fill_cut_faces(DestrContext &ctx, const CutFaceData &cut_dat
         continue;
       if (boundaries[i].area2 < 1e-6f)
         continue;
-      earcut_boundary_with_holes(ctx, graph, basis, boundaries, i, [&](int va, int vb, int vc) {
-        if (DAGOR_UNLIKELY(ctx.dbgDraw.drawBoundaryTriangles))
-        {
-          Point3 a = basis.unProject(graph.verts[va]);
-          Point3 b = basis.unProject(graph.verts[vb]);
-          Point3 c = basis.unProject(graph.verts[vc]);
-          ctx.dbgDraw.drawLine(a, b, E3DCOLOR(0, 255, 255));
-          ctx.dbgDraw.drawLine(b, c, E3DCOLOR(0, 255, 255));
-          ctx.dbgDraw.drawLine(c, a, E3DCOLOR(0, 255, 255));
-        }
+      const auto emitTri = [&](int va, int vb, int vc) {
         const VertPair &a = boundaryMeshVerts[va];
         const VertPair &b = boundaryMeshVerts[vb];
         const VertPair &c = boundaryMeshVerts[vc];
@@ -150,9 +150,39 @@ DAGOR_NOINLINE void fill_cut_faces(DestrContext &ctx, const CutFaceData &cut_dat
         if (down_mesh)
           down_mesh->faces.push_back(
             DestrMesh::Face{.idx = {uint32_t(a.down), uint32_t(c.down), uint32_t(b.down)}, .mat = cut_face_mat});
-      });
+      };
+      const auto emitVert = [&](Point3 p3d) -> int {
+        // a new interior grid vertex: create the up/down pair and return its handle
+        DestrMesh::Vertex vd;
+        Point2 p2d = Point2::xy(p3d);
+        graph.verts.push_back(p2d);
+        graph.vertsH.push_back(p3d.z);
+        vd.pos = basis.unProject(p2d, p3d.z);
+        vd.tc = p2d;
+        VertPair vp;
+        vp.up = up_mesh ? int(up_mesh->verts.size()) : 0;
+        if (up_mesh)
+        {
+          vd.norm = -basis.plane.n;
+          up_mesh->verts.push_back(vd);
+        }
+        vp.down = down_mesh ? int(down_mesh->verts.size()) : 0;
+        if (down_mesh)
+        {
+          vd.norm = basis.plane.n;
+          down_mesh->verts.push_back(vd);
+        }
+        const int h = int(boundaryMeshVerts.size());
+        boundaryMeshVerts.push_back(vp);
+        return h;
+      };
+      if constexpr (eastl::is_same_v<eastl::decay_t<HmapImplT>, eastl::monostate>)
+        earcut_boundary_with_holes(ctx, graph, basis, boundaries, i, emitTri);
+      else
+        heightmap_fill_stripes(ctx, graph, basis, boundaries, i, hmap_impl, emitVert, emitTri);
     }
   }
 }
+
 
 } // namespace frx

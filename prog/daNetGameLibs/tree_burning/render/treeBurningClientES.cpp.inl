@@ -365,7 +365,7 @@ static void invalidate_riex_handle_cb(rendinst::riex_handle_t handle)
 }
 
 ECS_TAG(render)
-static void register_tree_burning_callbacks_on_level_loaded_es(const OnLevelLoaded &)
+static void register_tree_burning_callbacks_on_level_loaded_es(const EventRenderSceneLoaded &)
 {
   rendinstdestr::set_on_tree_destr_created_cb(on_burned_tree_destr_created_cb);
   rendinst::registerRIGenExtraInvalidateHandleCb(invalidate_riex_handle_cb);

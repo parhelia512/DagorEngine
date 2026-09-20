@@ -1,5 +1,5 @@
 from "%sqstd/frp.nut" import WatchedRo
-from "ecs" import __assertValidQueryFilter
+from "ecs" import __assertValidQueryFilter, TYPE_TAG, TYPE_EID
 from "types" import Array, Class, Integer, String, Table
 
 // The real module returns an frp Computed fed by an ECS query. The stub hands out a
@@ -24,10 +24,11 @@ function validateStrParam(params, field) {
 function validateComps(params, field, required) {
   let comps = paramOf(params, field)
   if (comps == null) {
-    assert(!required, $"'{field}' is required")
+    assert(!required, $"'{field}' is required; to mirror entity ids alone write {field} = [\"eid\"]")
     return
   }
   assert(comps instanceof Array, $"'{field}' must be an array, got {showVal(comps)}")
+  assert(!required || comps.len() > 0, $"'{field}' is empty; name at least one component, \"eid\" included")
   // same forms as ecs.register_es; a default makes the component optional
   foreach (i, c in comps) {
     let entry = $"'{field}' entry #{i}"
@@ -43,8 +44,17 @@ function validateComps(params, field, required) {
     else
       assert(c instanceof String, $"{entry} must be a string or an array, got {showVal(c)}")
   }
-  if (required)
-    assert(comps.len() > 0, $"'{field}' must list at least one component")
+}
+
+// a mirror with nothing required would follow every entity in the world;
+// an entry with a default is optional, a required tag selects like comps_rq
+function assertSelective(params) {
+  if ((paramOf(params, "comps_rq") ?? []).len() > 0)
+    return
+  foreach (c in [].extend(paramOf(params, "comps") ?? []).extend(paramOf(params, "comps_filter") ?? []))
+    if (!(c instanceof Array && c.len() > 2) && compName(c) != "eid")
+      return
+  assert(false, "nothing selects the entities: every component is optional and 'comps_rq' is empty")
 }
 
 // the native filter is compiled against the mirrored components and comps_filter,
@@ -55,15 +65,19 @@ function validateFilter(params) {
   let names = {}
   foreach (c in mirrored)
     names[compName(c)] <- true
-  foreach (c in filterOnly)
+  foreach (c in filterOnly) {
+    assert(compName(c) != "eid", "'comps_filter' entry 'eid'; a filter can always name it, it is in every query")
     assert(compName(c) not in names,
       $"'comps_filter' entry '{compName(c)}' repeats a component from 'comps'; a filter can name mirrored components directly")
+  }
   validateStrParam(params, "filter")
   let filter = paramOf(params, "filter")
   if (filter == null || filter == "") // like an ecs query filter string, empty means no filter
     return
+  // the query always carries eid, whether or not it is mirrored
+  let implicitEid = "eid" in names ? [] : [["eid", TYPE_EID]]
   __assertValidQueryFilter("ecs.computed", {
-    comps_ro = [].extend(mirrored).extend(filterOnly)
+    comps_ro = [].extend(mirrored).extend(filterOnly).extend(implicitEid)
     comps_rq = paramOf(params, "comps_rq") ?? []
     comps_no = paramOf(params, "comps_no") ?? []
   }, filter)
@@ -76,6 +90,12 @@ function validateParams(params) {
   validateComps(params, "comps_no", false)
   // read by the filter expression, never mirrored into the value
   validateComps(params, "comps_filter", false)
+  // only the explicit TYPE_TAG form: analysis has no component registry, while
+  // the native module also refuses a registered tag written untyped
+  foreach (i, c in paramOf(params, "comps_filter") ?? [])
+    assert(!(c instanceof Array && c.len() > 1 && c[1] == TYPE_TAG),
+      $"'comps_filter' entry #{i} is a tag; the filter reads values and a tag has none, select with 'comps_rq' or 'comps_no' instead")
+  assertSelective(params)
   validateFilter(params)
   validateStrParam(params, "tags")
   validateStrParam(params, "name")

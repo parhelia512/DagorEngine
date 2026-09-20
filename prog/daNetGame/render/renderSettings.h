@@ -20,5 +20,6 @@ inline void prepare_united_vdata_setup(const DataBlock *level_blk = nullptr)
   prepare_voxel_atlas_setup(level_blk);
 }
 void apply_united_vdata_settings(const DataBlock *scene_blk);
+void apply_united_vdata_allocation_limits(bool apply_rt_limits);
 
 ecs::EntityId get_render_settings(const ecs::Event &);

@@ -46,8 +46,8 @@ namespace ecs
 {
 class EntityManager;
 }
-CameraSetup get_active_camera_setup(ecs::EntityManager &manager);
-CameraSetup get_active_camera_setup();
+CameraSetup get_active_camera_setup(ecs::EntityManager &manager, bool allow_missing_camera = false);
+CameraSetup get_active_camera_setup(bool allow_missing_camera = false);
 
 //! Convinience function to calculate glob tm from camera
 TMatrix4 calc_active_camera_globtm();

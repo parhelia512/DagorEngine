@@ -9,7 +9,7 @@ namespace bvh
 namespace fx
 {
 
-void init(void) {}
+void init(const AdditionalSettings &) {}
 void teardown(void) {}
 void collect_blas_addresses(dag::Vector<uint64_t> &) {}
 void init(struct bvh::Context *) {}

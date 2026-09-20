@@ -467,7 +467,8 @@ bool DaSkies::canCheckerboardTrace()
 }
 
 void DaSkies::changeSkiesData(int sky_detail_level, int clouds_detail_level, bool fly_through_clouds, int targetW, int targetH,
-  SkiesData *data, CloudsResolution clouds_resolution, bool use_blurred_clouds, bool ignore_panorama_state)
+  SkiesData *data, CloudsResolution clouds_resolution, bool use_blurred_clouds, bool ignore_panorama_state,
+  const IPoint2 &render_resolution)
 {
   if (cpuOnly)
     return;
@@ -489,6 +490,12 @@ void DaSkies::changeSkiesData(int sky_detail_level, int clouds_detail_level, boo
 
   sky_detail_level = clamp(sky_detail_level, 0, 3);
   clouds_detail_level = clamp((int)clouds_detail_level, 0, 4);
+  const int divider = get_clouds_res_divider(clouds_detail_level);
+  G_ASSERT(divider > 0);
+
+  const bool wantsDynamicRes = render_resolution.x > 0 && render_resolution.y > 0 && divider > 0;
+  data->clouds.setUsedResolution(wantsDynamicRes ? render_resolution / divider : IPoint2::ZERO);
+
   if (data->tw == targetW && data->th == targetH && data->flyThrough == fly_through_clouds &&
       data->skyDetailLevel == sky_detail_level && data->cloudsDetailLevel == clouds_detail_level)
     return;
@@ -519,7 +526,6 @@ void DaSkies::changeSkiesData(int sky_detail_level, int clouds_detail_level, boo
   }
 
   data->cloudsDetailLevel = clouds_detail_level;
-  const int divider = get_clouds_res_divider(clouds_detail_level);
   if (clouds_detail_level > 0 || clouds_resolution == CloudsResolution::ForceFullresClouds)
     data->clouds.init(IPoint2(targetW / divider, targetH / divider), data->base_name, fly_through_clouds, clouds_resolution,
       use_blurred_clouds);
@@ -772,7 +778,7 @@ void DaSkies::prepareSky(const DPoint3 &origin, uint32_t render_sun_moon, SkiesD
 
   TIME_D3D_PROFILE(render_sky);
   d3d::set_render_target({}, DepthAccess::RW, {{data->lowresSkies.getTex2D(), 0, 0}});
-  d3d::clearview(CLEAR_DISCARD_TARGET, 0, 0, 0);
+  d3d::clearview(DISCARD_TARGET, 0, 0, 0);
   skies.renderSky();
 
   if (data->strataInLowres)
@@ -1192,13 +1198,9 @@ void DaSkies::dispatchCloudsTraces()
       {
         int numThreadGroups = (dispatchSize - 1) / numCloudsTracesPerGroup + 1;
         // register must match rays[] in trace_clouds_cs
-        if (numThreadGroups > 1)
-          d3d::set_cs_constbuffer_register_count(12 + numThreadGroups * numCloudsTracesPerGroup * 2);
         d3d::set_cs_const(12, &dispatchData[0], dispatchSize * 2);
         STATE_GUARD_NULLPTR(d3d::set_rwbuffer(STAGE_CS, 0, VALUE), (Sbuffer *)resultBuffer);
         traceCloudsCs->dispatch(numThreadGroups, 1, 1);
-        if (numThreadGroups > 1)
-          d3d::set_cs_constbuffer_register_count(0);
       }
       else
       {

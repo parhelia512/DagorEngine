@@ -1,10 +1,8 @@
 wi initial: 10
-wi deferred: false
+wi immediate: true
 ci initial: 20
-ci deferred: false
+ci immediate: true
 ci after immediate set: 10
-isWatched(w): true
-isWatched(c): true
 isComputed(w): false
 isComputed(c): true
 isObservable(w): true

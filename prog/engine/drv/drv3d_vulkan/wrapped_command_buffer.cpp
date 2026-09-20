@@ -22,16 +22,12 @@ void WrappedCommandBuffer::endLoop()
   parMem.clear();
 }
 
-#define FILL_CMD_PAR(parameters_type)                                                 \
-  CmdAndParameter<parameters_type> cmdAndParameter;                                   \
-  memcpy((void *)&cmdAndParameter, cmdPtr, sizeof(CmdAndParameter<parameters_type>)); \
-  cmdPtr += sizeof(CmdAndParameter<parameters_type>);                                 \
-  parameters_type &cmdPar = cmdAndParameter.param;
+#define FILL_CMD_PAR(parameters_type)                                       \
+  parameters_type cmdPar;                                                   \
+  memcpy((void *)&cmdPar, cmdPtr + sizeof(CmdID), sizeof(parameters_type)); \
+  cmdPtr += sizeof(CmdID) + sizeof(parameters_type);
 
-#define FILL_CMD_PAR_EMPTY(parameters_type)                                           \
-  CmdAndParameter<parameters_type> cmdAndParameter;                                   \
-  memcpy((void *)&cmdAndParameter, cmdPtr, sizeof(CmdAndParameter<parameters_type>)); \
-  cmdPtr += sizeof(CmdAndParameter<parameters_type>);
+#define FILL_CMD_PAR_EMPTY(parameters_type) cmdPtr += sizeof(CmdID) + sizeof(parameters_type);
 
 void WrappedCommandBuffer::flush()
 {

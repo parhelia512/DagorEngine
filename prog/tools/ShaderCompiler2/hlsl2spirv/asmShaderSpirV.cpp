@@ -37,10 +37,6 @@
 
 using namespace std;
 
-static constexpr char const *SPIRV_CHUNK_TYPE_NAMES[] = {"SHADER_HEADER", "SMOL_V", "MARK_V", "SPIR_V", "SPIR_V_DISASSEMBLY",
-  "HLSL_DISASSEMBLY", "RECONSTRUCTED_GLSL", "RECONSTRUCTED_HLSL_DISASSEMBLY", "HLSL_AND_RECONSTRUCTED_HLSL_XDIF", "UNPROCESSED_HLSL",
-  "SHADER_NAME"};
-
 eastl::vector<uint8_t> get_SpirV_bytecode(const Tab<spirv::ChunkHeader> &chunks, const Tab<uint8_t> &chunk_store,
   bool write_compressed = false)
 {
@@ -171,7 +167,8 @@ CompileResult compileShaderSpirV(const SpirVCompileInputs &inputs)
   flags |= inputs.noConversionWarnings ? spirv::CompileFlags::NO_CONVERSION_WARNINGS : spirv::CompileFlags::NONE;
   flags |= inputs.useScalarLayout ? spirv::CompileFlags::USE_SCALAR_LAYOUT : spirv::CompileFlags::NONE;
 
-  auto finalSpirV = spirv::compileHLSL_DXC(inputs.dxcCtx, sourceRange, inputs.entry, inputs.profile, flags, disabledSpirvOptims);
+  auto finalSpirV = spirv::compileHLSL_DXC(inputs.dxcCtx, sourceRange, inputs.entry, inputs.profile, inputs.implicitCbufRegCount,
+    flags, disabledSpirvOptims);
   spirv = eastl::move(finalSpirV.byteCode);
   header = finalSpirV.header;
 
@@ -292,7 +289,7 @@ CompileResult compileShaderSpirV(const SpirVCompileInputs &inputs)
   }
 
   header.verMagic = spirv::HEADER_MAGIC_VER;
-  header.maxConstantCount = inputs.maxConstantsNo;
+  header.implicitCbufRegCount = inputs.implicitCbufRegCount;
 
   smolv::ByteArray smol;
   smolv::Encode(spirv.data(), spirv.size() * sizeof(unsigned int), smol, 0);
@@ -301,7 +298,6 @@ CompileResult compileShaderSpirV(const SpirVCompileInputs &inputs)
 
   header.smolvSize = uint32_t(smol.size());
   add_chunk(chunks, chunkStore, spirv::ChunkType::SHADER_HEADER, 0, &header, 1);
-  add_chunk(chunks, chunkStore, spirv::ChunkType::SHADER_NAME, 0, inputs.shaderName, static_cast<uint32_t>(strlen(inputs.shaderName)));
 
   result.metadata = get_SpirV_bytecode(chunks, chunkStore);
 
@@ -313,210 +309,4 @@ CompileResult compileShaderSpirV(const SpirVCompileInputs &inputs)
   else
     result.bytecode = {(const uint8_t *)spirv.data(), (const uint8_t *)spirv.data() + spirv.size() * sizeof(unsigned int)};
   return result;
-}
-
-eastl::string disassembleShaderSpirV(dag::ConstSpan<uint8_t> bytecode, dag::ConstSpan<uint8_t> metadata)
-{
-#define FORMAT_FAIL(fmt_, ...)                                            \
-  do                                                                      \
-  {                                                                       \
-    logerr("Invalid SpirV shader blob format: " fmt_ ".", ##__VA_ARGS__); \
-    return {};                                                            \
-  } while (0)
-
-  Tab<spirv::ChunkHeader> chunks{};
-  Tab<uint8_t> storage{};
-
-  {
-    InPlaceMemLoadCB reader{metadata.data(), int(metadata.size())};
-
-    int const blobIdent = reader.readInt();
-    if (blobIdent != spirv::SPIR_V_BLOB_IDENT && blobIdent != spirv::SPIR_V_BLOB_IDENT_UNCOMPRESSED)
-      FORMAT_FAIL("invalid blob ident %d", blobIdent);
-    bool const readCompressed = blobIdent == spirv::SPIR_V_BLOB_IDENT;
-
-    int const dataSize = reader.beginBlock();
-
-    if (readCompressed)
-    {
-      ZlibLoadCB compressedReader{reader, dataSize};
-      compressedReader.readTab(chunks);
-      compressedReader.readTab(storage);
-    }
-    else
-    {
-      reader.readTab(chunks);
-      reader.readTab(storage);
-    }
-
-    reader.endBlock();
-  }
-
-  // @TODO: disasm more information
-  eastl::string existingChunksDisasm{};
-  eastl::string headerDisasm{};
-  eastl::string spirvDisasm{};
-  eastl::string unprocessedHlsl{};
-  eastl::string shaderName{};
-  eastl::string warnings{};
-  bool hasEmbeddedDisasm = false;
-
-  auto disasmSpirv = [](dag::ConstSpan<uint32_t> spirv, eastl::string &out) {
-    spvtools::SpirvTools tools{SPV_ENV_VULKAN_1_0};
-
-    std::stringstream infoStream;
-    tools.SetMessageConsumer([&infoStream](spv_message_level_t level, const char *, const spv_position_t &position,
-                               const char *message) { infoStream << "[" << level << "][" << position << "] " << message << endl; });
-
-    std::vector<uint32_t> data(spirv.size());
-    memcpy(data.data(), spirv.data(), spirv.size() * elem_size(spirv));
-    std::string disas;
-
-    if (tools.Disassemble(data, &disas, SPV_BINARY_TO_TEXT_OPTION_INDENT))
-    {
-      out.resize(disas.size());
-      strncpy(out.data(), disas.data(), out.size());
-    }
-
-    string infoMessage = infoStream.str();
-    if (!infoMessage.empty())
-    {
-      debug("Spir-V Disassemble log: %s", infoMessage.c_str());
-    }
-  };
-
-  spirv::ShaderHeader header;
-
-  for (auto const &chunkHeader : chunks)
-  {
-    if (!existingChunksDisasm.empty())
-      existingChunksDisasm.append(" ");
-    existingChunksDisasm.append(SPIRV_CHUNK_TYPE_NAMES[uint32_t(chunkHeader.type)]);
-
-    switch (chunkHeader.type)
-    {
-      case spirv::ChunkType::SHADER_HEADER:
-      {
-        if (chunkHeader.size != sizeof(spirv::ShaderHeader))
-          FORMAT_FAIL("invalid shader header");
-        memcpy(&header, storage.data() + chunkHeader.offset, sizeof(header));
-        // @TODO: this would benefit greatly from some struct printing lib functionality (friend injection or wait for c++26
-        // reflection).
-        headerDisasm.append("\n");
-        if (header.verMagic != spirv::HEADER_MAGIC_VER)
-        {
-          warnings.append_sprintf("\n  WARNING: header version mismatch, %d in blob, %d in exe", header.verMagic,
-            spirv::HEADER_MAGIC_VER);
-        }
-        headerDisasm.append_sprintf("  magic=%u\n", header.verMagic);
-        headerDisasm.append_sprintf("  inputAttachmentCount=%u\n", header.inputAttachmentCount);
-        headerDisasm.append_sprintf("  descriptorCountsCount=%u\n", header.descriptorCountsCount);
-        headerDisasm.append_sprintf("  registerCount=%u\n", header.registerCount);
-        headerDisasm.append_sprintf("  pushConstantsCount=%u\n", header.pushConstantsCount);
-        headerDisasm.append_sprintf("  bindlessSetsUsed=%u\n", header.bindlessSetsUsed);
-        headerDisasm.append_sprintf("  maxConstantCount=%u\n", header.maxConstantCount);
-        headerDisasm.append_sprintf("  tRegisterUseMask=0x%x\n", header.tRegisterUseMask);
-        headerDisasm.append_sprintf("  uRegisterUseMask=0x%x\n", header.uRegisterUseMask);
-        headerDisasm.append_sprintf("  bRegisterUseMask=0x%x\n", header.bRegisterUseMask);
-        headerDisasm.append_sprintf("  sRegisterUseMask=0x%x\n", header.sRegisterUseMask);
-        headerDisasm.append_sprintf("  inputMask=0x%x\n", header.inputMask);
-        headerDisasm.append_sprintf("  outputMask=0x%x\n", header.sRegisterUseMask);
-        headerDisasm.append_sprintf("  smolvSize=%u\n", header.smolvSize);
-        headerDisasm.append_sprintf("  resTypeMask.u=0x%x\n", header.resTypeMask.u);
-        headerDisasm.append_sprintf("  resTypeMask.t=0x%llx\n", header.resTypeMask.t);
-        headerDisasm.append("  inputAttachmentIndexRegPairs=[");
-        for (auto [index, flatBinding] : header.inputAttachmentIndexRegPairs)
-          headerDisasm.append_sprintf(" {index=%d, flatBinding=%d}", index, flatBinding);
-        headerDisasm.append(" ]\n");
-        headerDisasm.append("  registerToSlotMapping=[");
-        for (auto [slot, type] : header.registerToSlotMapping)
-          headerDisasm.append_sprintf(" {slot=%d, type=%d}", slot, type);
-        headerDisasm.append(" ]\n");
-        headerDisasm.append("  slotToRegisterMapping=[");
-        for (uint8_t reg : header.slotToRegisterMapping)
-          headerDisasm.append_sprintf(" %d", reg);
-        headerDisasm.append(" ]\n");
-        headerDisasm.append("  missingTableIndex=[");
-        for (uint8_t id : header.missingTableIndex)
-          headerDisasm.append_sprintf(" %d", id);
-        headerDisasm.append(" ]\n");
-        headerDisasm.append("  descriptorTypes=[");
-        for (auto type : header.descriptorTypes)
-          headerDisasm.append_sprintf(" %d", type.value);
-        headerDisasm.append(" ]\n");
-        headerDisasm.append("  descriptorCounts=[");
-        for (auto [type, count] : header.descriptorCounts)
-          headerDisasm.append_sprintf(" {type=%d, count=%d}", type.value, count);
-        headerDisasm.append(" ]\n");
-        break;
-      }
-      case spirv::ChunkType::SMOL_V:
-      case spirv::ChunkType::MARK_V:
-      case spirv::ChunkType::SPIR_V: break;
-      case spirv::ChunkType::SPIR_V_DISASSEMBLY:
-      {
-        hasEmbeddedDisasm = true;
-        spirvDisasm.assign((char const *)storage.data() + chunkHeader.offset, chunkHeader.size);
-
-        break;
-      }
-      case spirv::ChunkType::UNPROCESSED_HLSL:
-      {
-        if (!unprocessedHlsl.empty())
-          break;
-
-        unprocessedHlsl.assign((char const *)storage.data() + chunkHeader.offset, chunkHeader.size);
-
-        break;
-      }
-      case spirv::ChunkType::SHADER_NAME:
-      {
-        if (!shaderName.empty())
-          break;
-
-        shaderName.assign((char const *)storage.data() + chunkHeader.offset, chunkHeader.size);
-
-        break;
-      }
-
-      default:
-      {
-        // @TODO: disasm more chunk types
-        break;
-      }
-    }
-  }
-
-  if (!hasEmbeddedDisasm)
-  {
-    if (headerDisasm.empty())
-    {
-      FORMAT_FAIL("shader header not found");
-    }
-
-    if (header.smolvSize)
-    {
-      Tab<uint32_t> spirv(smolv::GetDecodedBufferSize(bytecode.data(), bytecode.size()) / sizeof(uint32_t));
-      smolv::Decode(bytecode.data(), bytecode.size(), spirv.data(), spirv.size() * sizeof(uint32_t));
-
-      disasmSpirv(spirv, spirvDisasm);
-    }
-    else
-    {
-      disasmSpirv(dag::ConstSpan<uint32_t>{(uint32_t const *)bytecode.data(), intptr_t(bytecode.size() / sizeof(uint32_t))},
-        spirvDisasm);
-    }
-  }
-
-  auto optStr = [](auto const &str) -> char const * { return str.empty() ? "<not present>" : str.c_str(); };
-
-  return eastl::string{eastl::string::CtorSprintf{},
-    "Found chunks: %s\n"
-    "Shader: %s\n"
-    "Warnings: %s\n"
-    "Header: %s\n"
-    "Disasm%s: %s\n"
-    "Hlsl: %s\n", //
-    optStr(existingChunksDisasm), optStr(shaderName), optStr(warnings), optStr(headerDisasm), hasEmbeddedDisasm ? " (embedded)" : "",
-    optStr(spirvDisasm), optStr(unprocessedHlsl)};
 }

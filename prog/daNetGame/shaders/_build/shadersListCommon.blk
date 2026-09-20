@@ -2,6 +2,7 @@
   include "../../../gameLibs/daSkies2/shaders/daSkiesList.blk"
   file:t = "../computeFullTonemapLUT.dshl"
   file:t = "../../../gameLibs/render/shaders/debug_tri_count.dshl"
+  file:t = "../../../gameLibs/render/shaders/camera_in_camera_debug.dshl"
   file:t = "../debug_gbuffer_sphere.dshl"
   file:t = "../deferred_light.dshl"
   file:t = "../deferred_light_compute.dshl"
@@ -48,6 +49,7 @@
   file:t = "../water_3d_rt.dshl"
   file:t = "../distortion_postfx.dshl"
   file:t = "../postfx.dshl"
+  file:t = "../neural_rendering.dshl"
   file:t = "../film_grain.dshl"
   file:t = "../static_upsample.dshl"
   file:t = "../screenshot_composer.dshl"
@@ -69,6 +71,7 @@
   file:t = "../dynamic_simple_painted.dshl"
   file:t = "../dynamic_alpha_blend.dshl"
   file:t = "../dynamic_masked_chrome.dshl"
+  file:t = "../dynamic_cloth_sim.dshl"
 
   file:t = "debugGbuffer.dshl"
   file:t = "debugDepthAbove.dshl"

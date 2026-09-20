@@ -1,6 +1,7 @@
 // Copyright (C) Gaijin Games KFT.  All rights reserved.
 
 #include "resource_memory_heap.h"
+#include "debug/names.h"
 #include "frontend_state.h"
 
 #include <supp/dag_cpuControl.h>
@@ -83,7 +84,7 @@ dag::Expected<ImageCreateResult, MemoryAllocationError> TextureImageFactory::cre
             createResult.image->getBaseExtent(), createResult.image->getMemory().size(), createResult.image->getFormat(), name);
           return createResult;
         })
-        .or_else([&, this](auto error) -> dag::Expected<ImageCreateResult, MemoryAllocationError> {
+        .or_else([&](auto error) -> dag::Expected<ImageCreateResult, MemoryAllocationError> {
 #if _TARGET_PC_WIN
           ComPtr<ID3D12Resource> texture;
 
@@ -168,6 +169,8 @@ dag::Expected<ImageCreateResult, MemoryAllocationError> TextureImageFactory::cre
     0 != (ii.usage & (D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS | D3D12_RESOURCE_FLAG_ALLOW_DEPTH_STENCIL |
                        D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET)));
 
+  debug::name_resource_or_pool(result.image->getHandle(), name, "Texture");
+
   return result;
 }
 
@@ -232,13 +235,10 @@ TextureImageFactory::ImageResult TextureImageFactory::cloneRenderTarget(DXGIAdap
         auto imagePoolAccess = imageObjectPool.access();
         result = tryCloneTextureToMemory(device.getDevice(), original, initial_state, desc, memory, imagePoolAccess);
       }
-      if (!result.has_value())
-      {
-        return result;
-      }
-      updateMemoryRangeUse(memory, result.value());
-
-      return result;
+      return result.transform([&](auto *image) {
+        updateMemoryRangeUse(memory, image);
+        return image;
+      });
     });
 }
 #endif
@@ -299,12 +299,18 @@ TextureImageFactory::ImageResult TextureImageFactory::tryCloneTextureToMemory(ID
     newImageObjectNoLock(access, memory, eastl::move(texture), original->getType(), original->getLayout(), original->getFormat(),
       original->getBaseExtent(), original->getMipLevelRange(), original->getArrayLayers(), subResIdBase, original->getMsaaLevel());
 
-  original->getDebugName([=](const auto &name) { result->setDebugName(name); });
-
-  result->getDebugName([DX12_CAPTURE_DEF_EQ](const auto &name) {
-    recordTextureAllocated(result->getMipLevelRange(), result->getArrayLayers(), result->getBaseExtent(), result->getMemory().size(),
-      result->getFormat(), name);
+  original->getDebugName([&](const auto &name) {
+    result->setDebugName(name);
+    debug::name_resource_or_pool(result->getHandle(), name.c_str(), "RelocatedTexture");
   });
+
+  if (isCollectingMetric(Metric::TEXTURES))
+  {
+    result->getDebugName([DX12_CAPTURE_DEF_EQ](const auto &name) {
+      recordTextureAllocated(result->getMipLevelRange(), result->getArrayLayers(), result->getBaseExtent(), result->getMemory().size(),
+        result->getFormat(), eastl::string_view{name.c_str(), static_cast<size_t>(name.length())});
+    });
+  }
   result->setGPUChangeable(0 != (desc.Flags & (D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS | D3D12_RESOURCE_FLAG_ALLOW_DEPTH_STENCIL |
                                                 D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET)));
   return result;
@@ -338,12 +344,10 @@ TextureImageFactory::ImageCloneResult TextureImageFactory::tryCloneTexture(DXGIA
     auto imagePoolAccess = imageObjectPool.access();
     result = tryCloneTextureToMemory(device, original, initial_state, desc, memory, imagePoolAccess);
   }
-  if (!result.has_value())
-  {
-    return dag::Unexpected{result.error()};
-  }
-  updateMemoryRangeUse(memory, result.value());
-  return eastl::optional<Image *>{result.value()};
+  return result.transform([&, this](auto *image) {
+    updateMemoryRangeUse(memory, image);
+    return eastl::optional<Image *>{image};
+  });
 }
 
 void TextureImageFactory::destroyTextures(eastl::span<Image *> textures, frontend::BindlessManager &bindless_manager)
@@ -365,10 +369,14 @@ void TextureImageFactory::destroyTextures(eastl::span<Image *> textures, fronten
       freeView(view);
     }
     freeView(texture->getRecentView());
-    texture->getDebugName([this, texture](auto &name) {
-      recordTextureFreed(texture->getMipLevelRange(), texture->getArrayLayers(), texture->getBaseExtent(),
-        !texture->isAliased() ? texture->getMemory().size() : 0, texture->getFormat(), name);
-    });
+    if (isCollectingMetric(Metric::TEXTURES))
+    {
+      texture->getDebugName([this, texture](const auto &name) {
+        recordTextureFreed(texture->getMipLevelRange(), texture->getArrayLayers(), texture->getBaseExtent(),
+          !texture->isAliased() ? texture->getMemory().size() : 0, texture->getFormat(),
+          eastl::string_view{name.c_str(), static_cast<size_t>(name.length())});
+      });
+    }
     G_ASSERT(!bindless_manager.hasImageReference(texture));
   }
   deleteImageObjects(textures);
@@ -552,10 +560,9 @@ uint32_t AliasHeapProvider::adoptMemoryAsAliasHeap(ResourceMemory memory)
   return index;
 }
 
-::ResourceHeap *AliasHeapProvider::newUserHeap(DXGIAdapter *adapter, Device &device, ::ResourceHeapGroup *group, size_t size,
-  ResourceHeapCreateFlags flags, ResourceTagType tag)
+AliasHeapProvider::UserHeapResult AliasHeapProvider::newUserHeap(DXGIAdapter *adapter, Device &device, ::ResourceHeapGroup *group,
+  size_t size, ResourceHeapCreateFlags flags, ResourceTagType tag)
 {
-  using UserResourceHeapType = ::ResourceHeap;
   AllocationFlags allocFlags{};
   if (RHCF_REQUIRES_DEDICATED_HEAP & flags)
   {
@@ -582,12 +589,9 @@ uint32_t AliasHeapProvider::adoptMemoryAsAliasHeap(ResourceMemory memory)
   {
     if (device.isIll())
     {
-      return reinterpret_cast<UserResourceHeapType *>(0xFFFFFFFF);
+      return unexpected_memory_allocation_error(E_UNEXPECTED);
     }
-    else
-    {
-      return nullptr;
-    }
+    return dag::Unexpected{allocationResult.error()};
   }
 
   newPHeap.memory = eastl::move(allocationResult.value());
@@ -613,22 +617,24 @@ uint32_t AliasHeapProvider::adoptMemoryAsAliasHeap(ResourceMemory memory)
       }
       updateMemoryRangeUse(newPHeap.memory, AliasHeapReference{uint32_t(index)});
       (*aliasHeapsAccess)[index] = eastl::move(newPHeap);
-      // have to start with 1 as null -> nullptr which is invalid
-      return reinterpret_cast<UserResourceHeapType *>(index + 1);
+      return make_user_heap_handle(index);
     }
 
     updateMemoryRangeUse(newPHeap.memory, AliasHeapReference{uint32_t(index)});
     aliasHeapsAccess->push_back(eastl::move(newPHeap));
   }
-  // have to start with 1 as null -> nullptr which is invalid
-  return reinterpret_cast<UserResourceHeapType *>(index + 1);
+  return make_user_heap_handle(index);
 }
 
 // assumes mutex is locked
 void AliasHeapProvider::freeUserHeap(ID3D12Device *device, ::ResourceHeap *ptr)
 {
-  // heap ptr / index starts with 1, so adjust to start from 0
-  auto index = reinterpret_cast<uintptr_t>(ptr) - 1;
+  if (is_ill_device_user_heap_handle(ptr))
+  {
+    logdbg("DX12: Ignored the free of resource heap %p, no heap was created for it as the device is ill", ptr);
+    return;
+  }
+  auto index = user_heap_handle_to_index(ptr);
 
   auto aliasHeapsAccess = aliasHeaps.access();
   G_ASSERTF(index < aliasHeapsAccess->size(), "DX12: Tried to free non existing resource heap %p", ptr);
@@ -661,9 +667,8 @@ void AliasHeapProvider::freeUserHeap(ID3D12Device *device, ::ResourceHeap *ptr)
     auto bufferHeapStateAccess = bufferHeapState.access();
     for (auto bufferID : heap.buffers)
     {
-      char resnameBuffer[MAX_OBJECT_NAME_LENGTH];
       auto resPtr = bufferHeapStateAccess->getConstHeap(bufferID.index()).getResourcePtr();
-      D3D_ERROR("DX12:   stuck buffer %016p <%s>", resPtr, get_resource_name(resPtr, resnameBuffer));
+      D3D_ERROR("DX12:   stuck buffer %016p <%s>", resPtr, debug::get_object_name(resPtr));
     }
   }
 #endif
@@ -680,37 +685,43 @@ void AliasHeapProvider::freeUserHeap(ID3D12Device *device, ::ResourceHeap *ptr)
   heap.reset();
 }
 
-ResourceAllocationProperties AliasHeapProvider::getResourceAllocationProperties(ID3D12Device *device, const ResourceDescription &desc)
+AliasHeapProvider::ResourceAllocationPropertiesResult AliasHeapProvider::getResourceAllocationProperties(ID3D12Device *device,
+  const ResourceDescription &desc)
 {
   using ResourceHeapGroupType = ::ResourceHeapGroup;
 
   auto dxDesc = as_desc(desc);
   auto allocInfo = get_resource_allocation_info(device, dxDesc);
 
-  ResourceAllocationProperties props{};
-  if (is_valid_allocation_info(allocInfo))
-  {
-    G_STATIC_ASSERT(sizeof(ResourceAllocationProperties::heapGroup) >= sizeof(ResourceHeapProperties::raw));
-    G_ASSERTF(allocInfo.SizeInBytes <= eastl::numeric_limits<decltype(props.sizeInBytes)>::max(),
-      "DX12: allocInfo.SizeInBytes (%llu) is larger than props.sizeInBytes can hold (%llu)", uint64_t{allocInfo.SizeInBytes},
-      uint64_t{eastl::numeric_limits<decltype(props.sizeInBytes)>::max()});
-
-    props.sizeInBytes = static_cast<decltype(props.sizeInBytes)>(allocInfo.SizeInBytes);
-    props.offsetAlignment = static_cast<decltype(props.offsetAlignment)>(allocInfo.Alignment);
-    props.heapGroup = reinterpret_cast<ResourceHeapGroupType *>(
-      static_cast<uintptr_t>(getProperties(dxDesc.Flags, get_memory_class(desc), allocInfo.Alignment).raw));
-  }
-  else
+  if (!is_valid_allocation_info(allocInfo))
   {
     report_resource_alloc_info_error(dxDesc);
+    return unexpected_memory_allocation_error(E_INVALIDARG);
   }
+
+  G_STATIC_ASSERT(sizeof(ResourceAllocationProperties::heapGroup) >= sizeof(ResourceHeapProperties::raw));
+  G_ASSERTF(allocInfo.SizeInBytes <= eastl::numeric_limits<decltype(ResourceAllocationProperties::sizeInBytes)>::max(),
+    "DX12: allocInfo.SizeInBytes (%llu) is larger than props.sizeInBytes can hold (%llu)", uint64_t{allocInfo.SizeInBytes},
+    uint64_t{eastl::numeric_limits<decltype(ResourceAllocationProperties::sizeInBytes)>::max()});
+
+  ResourceAllocationProperties props{};
+  props.sizeInBytes = static_cast<decltype(props.sizeInBytes)>(allocInfo.SizeInBytes);
+  props.offsetAlignment = static_cast<decltype(props.offsetAlignment)>(allocInfo.Alignment);
+  props.heapGroup = reinterpret_cast<ResourceHeapGroupType *>(
+    static_cast<uintptr_t>(getProperties(dxDesc.Flags, get_memory_class(desc), allocInfo.Alignment).raw));
 
   return props;
 }
 
-ImageCreateResult AliasHeapProvider::placeTextureInHeap(DXGIAdapter *adapter, ID3D12Device *device, ::ResourceHeap *heap,
-  const ResourceDescription &desc, size_t offset, const ResourceAllocationProperties &alloc_info, const char *name)
+AliasHeapProvider::ImageCreateResultOrError AliasHeapProvider::placeTextureInHeap(DXGIAdapter *adapter, ID3D12Device *device,
+  ::ResourceHeap *heap, const ResourceDescription &desc, size_t offset, const ResourceAllocationProperties &alloc_info,
+  const char *name)
 {
+  if (is_ill_device_user_heap_handle(heap))
+  {
+    logwarn("DX12: Unable to place texture <%s>, no heap was created for %p as the device is ill", name, heap);
+    return unexpected_memory_allocation_error(E_UNEXPECTED);
+  }
   ImageCreateResult result{};
   auto dxDesc = as_desc(desc);
   auto fmt = FormatStore::fromCreateFlags(desc.asBasicRes.cFlags);
@@ -746,8 +757,7 @@ ImageCreateResult AliasHeapProvider::placeTextureInHeap(DXGIAdapter *adapter, ID
   if (desc.asBasicRes.cFlags & TEXCF_NO_STATE_TRACKING)
     result.state = D3D12_RESOURCE_STATE_COMMON;
 
-  // heap ptr / index starts with 1, so adjust to start from 0
-  auto index = reinterpret_cast<uintptr_t>(heap) - 1;
+  auto index = user_heap_handle_to_index(heap);
 
   eastl::optional<MemoryAllocationError> errorInfo;
   auto oomCheckOnExit = checkForOOMOnExit(
@@ -756,7 +766,8 @@ ImageCreateResult AliasHeapProvider::placeTextureInHeap(DXGIAdapter *adapter, ID
   auto aliasHeapsAccess = aliasHeaps.access();
   if (index >= aliasHeapsAccess->size())
   {
-    return result;
+    D3D_ERROR("DX12: Unable to place texture <%s>, resource heap %p does not exist", name, heap);
+    return unexpected_memory_allocation_error(E_INVALIDARG);
   }
   auto &heapRef = (*aliasHeapsAccess)[index];
   auto memory = heapRef.memory.aliasSubRange(index, offset, alloc_info.sizeInBytes);
@@ -797,7 +808,7 @@ ImageCreateResult AliasHeapProvider::placeTextureInHeap(DXGIAdapter *adapter, ID
   if (!texture)
   {
     errorInfo = memory_allocation_error(errorCode);
-    return result;
+    return dag::Unexpected{*errorInfo};
   }
 
   Extent3D ext;
@@ -826,6 +837,7 @@ ImageCreateResult AliasHeapProvider::placeTextureInHeap(DXGIAdapter *adapter, ID
 
   recordTexturePlacedInUserResourceHeap(result.image->getMipLevelRange(), result.image->getArrayLayers(),
     result.image->getBaseExtent(), result.image->getMemory().size(), result.image->getFormat(), name);
+  debug::name_resource_or_pool(result.image->getHandle(), name, "UserHeapTexture");
   heapRef.images.push_back(result.image);
 
   result.image->setGPUChangeable(
@@ -913,7 +925,7 @@ ResourceHeapGroupProperties AliasHeapProvider::getResourceHeapGroupProperties(::
 ResourceMemory AliasHeapProvider::getUserHeapMemory(::ResourceHeap *heap)
 {
   ResourceMemory result{};
-  auto index = reinterpret_cast<uintptr_t>(heap) - 1;
+  auto index = user_heap_handle_to_index(heap);
 
   {
     auto aliasHeapsAccess = aliasHeaps.access();
@@ -972,12 +984,17 @@ void AliasHeapProvider::processAutoFree()
   }
 }
 
-BufferState AliasHeapProvider::placeBufferInHeap(DXGIAdapter *adapter, ID3D12Device *device, ::ResourceHeap *heap,
-  const ResourceDescription &desc, size_t offset, const ResourceAllocationProperties &alloc_info, const char *name)
+AliasHeapProvider::BufferAllocationResult AliasHeapProvider::placeBufferInHeap(DXGIAdapter *adapter, ID3D12Device *device,
+  ::ResourceHeap *heap, const ResourceDescription &desc, size_t offset, const ResourceAllocationProperties &alloc_info,
+  const char *name)
 {
+  if (is_ill_device_user_heap_handle(heap))
+  {
+    logwarn("DX12: Unable to place buffer <%s>, no heap was created for %p as the device is ill", name, heap);
+    return unexpected_memory_allocation_error(E_UNEXPECTED);
+  }
   BufferState result;
-  // heap ptr / index starts with 1, so adjust to start from 0
-  auto index = reinterpret_cast<uintptr_t>(heap) - 1;
+  auto index = user_heap_handle_to_index(heap);
 
   eastl::optional<MemoryAllocationError> errorInfo;
   auto oomCheckOnExit =
@@ -987,7 +1004,7 @@ BufferState AliasHeapProvider::placeBufferInHeap(DXGIAdapter *adapter, ID3D12Dev
   if (index >= aliasHeapsAccess->size())
   {
     D3D_ERROR("DX12: placeBufferInHeap failed (heap does not exists)");
-    return result;
+    return unexpected_memory_allocation_error(E_INVALIDARG);
   }
   auto &heapRef = (*aliasHeapsAccess)[index];
 
@@ -1002,12 +1019,12 @@ BufferState AliasHeapProvider::placeBufferInHeap(DXGIAdapter *adapter, ID3D12Dev
   auto heapProperties = getHeapGroupProperties(alloc_info.heapGroup);
   auto memory = heapRef.memory.aliasSubRange(index, offset, alloc_info.sizeInBytes);
 
-  HRESULT errorCode = newHeap.create(device, dxDesc, memory, state, heapProperties.isCPUVisible(getFeatureSet()));
+  HRESULT errorCode = newHeap.create(device, dxDesc, memory, state, heapProperties.isCPUVisible(getFeatureSet()), {});
 
   if (DX12_CHECK_FAIL(errorCode))
   {
     errorInfo = memory_allocation_error(errorCode);
-    return result;
+    return dag::Unexpected{*errorInfo};
   }
 
   // Leave free ranges empty so that sub allocation never tries to use our buffers
@@ -1067,8 +1084,8 @@ bool AliasHeapProvider::detachBuffer(const BufferState &buf)
   return false;
 }
 
-ImageCreateResult AliasHeapProvider::aliasTexture(DXGIAdapter *adapter, ID3D12Device *device, const ImageInfo &ii, Image *base,
-  const char *name)
+AliasHeapProvider::ImageCreateResultOrError AliasHeapProvider::aliasTexture(DXGIAdapter *adapter, ID3D12Device *device,
+  const ImageInfo &ii, Image *base, const char *name)
 {
   ImageCreateResult result{};
   auto desc = ii.asDesc();
@@ -1081,7 +1098,7 @@ ImageCreateResult AliasHeapProvider::aliasTexture(DXGIAdapter *adapter, ID3D12De
       logwarn("DX12: Can not alias textures '%s' with '%s'. No heap associated with '%s'. Possibly a committed resource.", base_name,
         name, base_name);
     });
-    return result;
+    return unexpected_memory_allocation_error(E_INVALIDARG);
   }
 #endif
 
@@ -1089,7 +1106,7 @@ ImageCreateResult AliasHeapProvider::aliasTexture(DXGIAdapter *adapter, ID3D12De
   if (!is_valid_allocation_info(allocInfo))
   {
     report_resource_alloc_info_error(desc);
-    return result;
+    return unexpected_memory_allocation_error(E_INVALIDARG);
   }
 
   auto baseHeapID = baseMemory.getHeapID();
@@ -1104,7 +1121,7 @@ ImageCreateResult AliasHeapProvider::aliasTexture(DXGIAdapter *adapter, ID3D12De
               "incompatible",
         base_name, name, baseMemoryProperties.raw, memoryProperties.raw);
     });
-    return result;
+    return unexpected_memory_allocation_error(E_INVALIDARG);
   }
 
 
@@ -1139,7 +1156,7 @@ ImageCreateResult AliasHeapProvider::aliasTexture(DXGIAdapter *adapter, ID3D12De
                 "can provide %u bytes but alias needs %u bytes",
           name, base_name, heap.memory.size(), allocInfo.SizeInBytes);
       });
-      return result;
+      return unexpected_memory_allocation_error(E_INVALIDARG);
     }
 
     uint64_t offsetInHeap = isAdoptedHeap ? 0llu : heap.memory.calculateOffset(baseMemory);
@@ -1148,7 +1165,7 @@ ImageCreateResult AliasHeapProvider::aliasTexture(DXGIAdapter *adapter, ID3D12De
       logwarn("DX12: Tried to create aliasing texture %s on insufficient memory region of heap, "
               "heap can provide %u bytes but alias needs %u bytes at offset %u",
         name, heap.memory.size(), allocInfo.SizeInBytes, offsetInHeap);
-      return result;
+      return unexpected_memory_allocation_error(E_INVALIDARG);
     }
 
     auto memory = heap.memory.aliasSubRange(baseHeapID.index, offsetInHeap, allocInfo.SizeInBytes);
@@ -1168,7 +1185,7 @@ ImageCreateResult AliasHeapProvider::aliasTexture(DXGIAdapter *adapter, ID3D12De
     {
       // PVS does not see that errorInfo is captured by oomCheckOnExit and forwarded on its destructor.
       errorInfo = memory_allocation_error(errorCode); // -V1001
-      return result;
+      return dag::Unexpected{*errorInfo};
     }
 
     auto subResIdBase = allocateGlobalResourceIdRange(ii.getSubResourceCount());
@@ -1180,9 +1197,11 @@ ImageCreateResult AliasHeapProvider::aliasTexture(DXGIAdapter *adapter, ID3D12De
 
   recordTextureAliased(result.image->getMipLevelRange(), result.image->getArrayLayers(), result.image->getBaseExtent(),
     result.image->getFormat(), name);
+  debug::name_resource_or_pool(result.image->getHandle(), name, "AliasedTexture");
   result.image->setGPUChangeable(
     0 != (ii.usage & (D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS | D3D12_RESOURCE_FLAG_ALLOW_DEPTH_STENCIL |
                        D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET)));
+
   return result;
 }
 
@@ -4080,8 +4099,7 @@ void DebugView::drawUserHeapsTable()
             {
               auto &buffer = bufferHeapStateAccess->getConstHeap(bufferID.index());
 
-              char resnameBuffer[MAX_OBJECT_NAME_LENGTH];
-              begin_selectable_row(get_resource_name(buffer.getResourcePtr(), resnameBuffer));
+              begin_selectable_row(debug::get_object_name(buffer.getResourcePtr()).c_str());
 
               auto &mem = buffer.getBufferMemory();
               auto offset = heap.memory.calculateOffset(mem);
@@ -4244,59 +4262,36 @@ void DebugView::drawTempuraryUploadMemorySegmentsTable()
   if (ImGui::BeginTable("DX12-Temp-Buffer-Segment-Table", 6,
         ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg | ImGuiTableFlags_Resizable))
   {
-    make_table_header({"Buffer Object", "CPU Pointer", "GPU Pointer", "Size", "Ring offset", "Allocated"});
+    make_table_header({"Buffer Object", "CPU Pointer", "GPU Pointer", "Size", "Free Ranges", "Allocated"});
 
-    ID3D12Resource *lastBuf = nullptr;
+    auto tempBufferAccess = tempBuffer.access();
+    auto drawRow = [](auto &buffer) //
     {
-      auto tempBufferAccess = tempBuffer.access();
-      for (;;)
-      {
-        decltype(&tempBufferAccess->currentBuffer) candidate = nullptr;
-        // updates candidate if the buffer has a larger address and a smaller address than the last
-        // candidate
-        auto updateCandidate = [&candidate, &lastBuf](auto &contender) //
-        {
-          if (contender.getResourcePtr() <= lastBuf)
-            return;
-          if (candidate && candidate->getResourcePtr() < contender.getResourcePtr())
-            return;
-          candidate = &contender;
-        };
-        if (tempBufferAccess->currentBuffer)
-        {
-          updateCandidate(tempBufferAccess->currentBuffer);
-        }
-        if (tempBufferAccess->standbyBuffer)
-        {
-          updateCandidate(tempBufferAccess->standbyBuffer);
-        }
-        for (auto &buffer : tempBufferAccess->buffers)
-        {
-          updateCandidate(buffer);
-        }
-        if (!candidate)
-        {
-          break;
-        }
-        auto &buffer = *candidate;
-        lastBuf = buffer.getResourcePtr();
-        auto sizeUnits = size_to_unit_table(buffer.getBufferMemorySize());
-        auto allocatedUnits = size_to_unit_table(buffer.allocationSize);
-        char strBuf[32];
-        sprintf_s(strBuf, "%p", buffer.getResourcePtr());
-        begin_selectable_row(strBuf);
-        ImGui::TableNextColumn();
-        ImGui::Text("%p", buffer.getCPUPointer());
-        ImGui::TableNextColumn();
-        ImGui::Text("%016I64X", buffer.getGPUPointer());
-        ImGui::TableNextColumn();
-        ImGui::Text("%.2f %s", compute_unit_type_size(buffer.getBufferMemorySize(), sizeUnits), get_unit_name(sizeUnits));
-        ImGui::TableNextColumn();
-        ImGui::Text("%08X", buffer.allocationOffset);
-        ImGui::TableNextColumn();
-        ImGui::Text("%.2f %s", compute_unit_type_size(buffer.allocationSize, allocatedUnits), get_unit_name(allocatedUnits));
-      }
+      auto sizeUnits = size_to_unit_table(buffer.getBufferMemorySize());
+      auto allocatedUnits = size_to_unit_table(buffer.allocationSize);
+      char strBuf[32];
+      sprintf_s(strBuf, "%p", buffer.getResourcePtr());
+      begin_selectable_row(strBuf);
+      ImGui::TableNextColumn();
+      ImGui::Text("%p", buffer.getCPUPointer());
+      ImGui::TableNextColumn();
+      ImGui::Text("%016I64X", buffer.getGPUPointer());
+      ImGui::TableNextColumn();
+      ImGui::Text("%.2f %s", compute_unit_type_size(buffer.getBufferMemorySize(), sizeUnits), get_unit_name(sizeUnits));
+      ImGui::TableNextColumn();
+      ImGui::Text("%u", static_cast<uint32_t>(buffer.freeRanges.size()));
+      ImGui::TableNextColumn();
+      ImGui::Text("%.2f %s", compute_unit_type_size(buffer.allocationSize, allocatedUnits), get_unit_name(allocatedUnits));
+    };
+    for (auto &buffer : tempBufferAccess->buffers)
+    {
+      drawRow(buffer);
     }
+    for (auto &buffer : tempBufferAccess->deletedBuffers)
+    {
+      drawRow(buffer);
+    }
+
     ImGui::EndTable();
   }
 }
@@ -4853,9 +4848,8 @@ void DebugView::drawHeapsTable()
                   {
                     auto id = eastl::get<BufferGlobalId>(res);
                     auto &buffer = bufferHeapStateAccess->getConstHeap(id.index());
-                    char resnameBuffer[MAX_OBJECT_NAME_LENGTH];
                     draw_segment(heap->heapPointer(), *segment, heap->totalSize,
-                      get_resource_name(buffer.getResourcePtr(), resnameBuffer));
+                      debug::get_object_name(buffer.getResourcePtr()).c_str());
                   }
                   else if (eastl::holds_alternative<AliasHeapReference>(res))
                   {
@@ -5450,7 +5444,7 @@ struct ResourceHeapReportVisitor
 
   void visitHeapUsedRange(ValueRange<uint64_t> range, const ResourceMemoryHeap::AnyResourceReference &res)
   {
-    eastl::visit([this, range](const auto &e) { visitResourceInHeap(range, e); }, res);
+    eastl::visit([this, range](const auto &e) { this->visitResourceInHeap(range, e); }, res);
   }
 
   void visitHeapFreeRange(ValueRange<uint64_t> range)
@@ -6035,7 +6029,7 @@ struct FrameCompletionReportVisitor
       target("User resource heap frees");
       for (auto heap : data.deletedResourceHeaps)
       {
-        target("#%llu", reinterpret_cast<uintptr_t>(heap) - 1);
+        target("#%llu", user_heap_handle_to_index(heap));
       }
     }
 
@@ -6417,6 +6411,8 @@ void OutOfMemoryRepoter::reportOOMInformation(DXGIAdapter *adapter)
     ResourceHeapWalker walker;
     walker(adapter, *(ResourceMemoryHeap *)this, ToDebugWriter{});
     logdbg("======================\nEND GPU MEMORY STATISTICS");
+    if (dgs_report_gpu_out_of_memory)
+      dgs_report_gpu_out_of_memory();
   }
   else
   {
@@ -6464,6 +6460,12 @@ bool OutOfMemoryRepoter::checkForOOM(DXGIAdapter *adapter, const eastl::optional
   D3D_ERROR("DX12: OOM%s report: %s", budgetStatus, report_data.toString());
   reportOOMInformation(adapter);
 
+  // recoverable failures are reported by the caller; a modal box per failed attempt would spam
+  if (!fatal)
+  {
+    return false;
+  }
+
 #if _TARGET_PC_WIN
   const char *message = nullptr;
   const char *caption = nullptr;
@@ -6490,8 +6492,7 @@ bool OutOfMemoryRepoter::checkForOOM(DXGIAdapter *adapter, const eastl::optional
     drv_message_box(message, caption, flags);
   }
 #endif
-  if (fatal)
-    DAG_FATAL("DX12: OOM%s during %s (check logs to get more info)", budgetStatus, report_data.getMethodName());
+  DAG_FATAL("DX12: OOM%s during %s (check logs to get more info)", budgetStatus, report_data.getMethodName());
   return false;
 }
 
@@ -7019,7 +7020,6 @@ HeapFragmentationManager::ResourceMoveResolution HeapFragmentationManager::moveR
 {
   G_UNUSED(ctx);
   G_UNUSED(bindless_manager);
-  G_UNUSED(heap_id);
 
   DEFRAG_VERBOSE(is_emergency_defragmentation, "DX12: Trying to move scratch buffer");
   auto scratchBufferAccess = tempScratchBufferState.access();
@@ -7030,13 +7030,14 @@ HeapFragmentationManager::ResourceMoveResolution HeapFragmentationManager::moveR
     // is probably queued for deletion already
     return ResourceMoveResolution::QUEUED_FOR_DELETION;
   }
-  if (tryMoveScratchBuffer(scratchBufferAccess, adapter, device, allocation_flags))
+  if (tryMoveScratchBuffer(scratchBufferAccess, adapter, device, allocation_flags, heap_id, is_emergency_defragmentation))
   {
     DEFRAG_VERBOSE(is_emergency_defragmentation, "DX12: Moved scratch buffer");
     return ResourceMoveResolution::MOVING;
   }
   DEFRAG_VERBOSE(is_emergency_defragmentation, "DX12: Unable to move scratch buffer");
-  // Only way move can fail is if there is no space in non locked free memory
+  // NO_SPACE covers all three: no space in non locked free memory, an attempt the allocator refused
+  // because the defragmentation generation moved on, and the failures tryMoveScratchBuffer reports.
   return ResourceMoveResolution::NO_SPACE;
 }
 
@@ -7049,11 +7050,6 @@ HeapFragmentationManager::ResourceMoveResolution HeapFragmentationManager::moveR
   G_UNUSED(heap_id);
 
   DEFRAG_VERBOSE(is_emergency_defragmentation, "DX12: Trying to move temp upload buffer");
-  if (tryMoveTemporaryUploadStandbyBuffer(adapter, device, ref.buffer, allocation_flags))
-  {
-    DEFRAG_VERBOSE(is_emergency_defragmentation, "DX12: Moved temporary upload buffer (was standby)");
-    return ResourceMoveResolution::MOVED;
-  }
   if (tryMoveTemporaryUploadBuffer(adapter, device, ref.buffer, allocation_flags))
   {
     DEFRAG_VERBOSE(is_emergency_defragmentation, "DX12: Moved temporary upload buffer");
@@ -7637,46 +7633,37 @@ void HeapFragmentationManager::afterEmergencyDefragmentation(uint32_t group_inde
   groupsFragmentationState[group_index].skipGeneration = getHeapGroupGeneration(group_index);
 }
 
-ScratchBuffer ScratchBufferProvider::getTempScratchBufferSpace(DXGIAdapter *adapter, Device &device, size_t size, size_t alignment)
+ScratchBufferProvider::ScratchBufferResult ScratchBufferProvider::getTempScratchBufferSpace(DXGIAdapter *adapter, Device &device,
+  size_t size, size_t alignment)
 {
   auto result = tempScratchBufferState.access()->getSpace(adapter, device.getDevice(), size, alignment, this);
-  if (!result)
+  if (!result.has_value())
   {
     device.processEmergencyDefragmentation(getScratchBufferHeapProperties().raw, true, false, false, size, false);
     result = tempScratchBufferState.access()->getSpace(adapter, device.getDevice(), size, alignment, this);
   }
-  eastl::optional<MemoryAllocationError> errorInfo;
-  if (!result)
-  {
-    errorInfo = memory_allocation_error(E_OUTOFMEMORY);
-  }
-  checkForOOM(adapter, errorInfo,
+  checkForOOM(adapter, as_optional_error(result),
     OomReportData{"getTempScratchBufferSpace", nullptr, size, AllocationFlags{}.toUlong(), getScratchBufferHeapProperties().raw});
-  if (result)
+  if (result.has_value())
   {
     recordScratchBufferTempUse(size);
   }
   return result;
 }
 
-ScratchBuffer ScratchBufferProvider::getPersistentScratchBufferSpace(DXGIAdapter *adapter, Device &device, size_t size,
-  size_t alignment)
+ScratchBufferProvider::ScratchBufferResult ScratchBufferProvider::getPersistentScratchBufferSpace(DXGIAdapter *adapter, Device &device,
+  size_t size, size_t alignment)
 {
   auto result = tempScratchBufferState.access()->getPersistentSpace(adapter, device.getDevice(), size, alignment, this);
-  if (!result)
+  if (!result.has_value())
   {
     device.processEmergencyDefragmentation(getScratchBufferHeapProperties().raw, true, false, false, size, false);
     result = tempScratchBufferState.access()->getPersistentSpace(adapter, device.getDevice(), size, alignment, this);
   }
-  eastl::optional<MemoryAllocationError> errorInfo;
-  if (!result)
-  {
-    errorInfo = memory_allocation_error(E_OUTOFMEMORY);
-  }
-  checkForOOM(adapter, errorInfo,
+  checkForOOM(adapter, as_optional_error(result),
     OomReportData{
       "getPersistentScratchBufferSpace", nullptr, size, AllocationFlags{}.toUlong(), getScratchBufferHeapProperties().raw});
-  if (result)
+  if (result.has_value())
   {
     recordScratchBufferPersistentUse(size);
   }
@@ -7940,8 +7927,15 @@ HeapFragmentationManager::ResourceLocationUpdateResult HeapFragmentationManager:
 {
   auto &bufferHeaps = access.bufferHeapState->getBufferHeaps();
 
-  char name[MAX_OBJECT_NAME_LENGTH] = {};
-  get_resource_name(bufferHeaps[buffer_id.index()].getResourcePtr(), name);
+  char strBuf[32];
+  auto objectName = debug::get_object_name(bufferHeaps[buffer_id.index()].getResourcePtr());
+
+  eastl::string_view name = objectName;
+  if (objectName.empty())
+  {
+    name = make_buffer_heap_name(strBuf, buffer_id.index());
+  }
+
   DEFRAG_VERBOSE(true, "DX12: Trying to move buffer %u (%s) from %u:%u", buffer_id.index(), name,
     bufferHeaps[buffer_id.index()].getHeapID().group, bufferHeaps[buffer_id.index()].getHeapID().index);
 
@@ -8007,8 +8001,10 @@ HeapFragmentationManager::ResourceLocationUpdateResult HeapFragmentationManager:
 
   auto &movedBufferId = heapCreateResult.value();
 
-  if (strlen(name) == 0)
-    sprintf_s(name, "Buffer#%u", movedBufferId.index());
+  if (objectName.empty())
+  {
+    name = make_buffer_heap_name(strBuf, movedBufferId.index());
+  }
 
   recordBufferHeapAllocated(allocInfo.SizeInBytes, allocatedProperties.isOnDevice(getFeatureSet()), name);
   updateMemoryRangeUseNoLock(newMemory, movedBufferId);
@@ -8070,7 +8066,8 @@ HeapFragmentationManager::ResourceLocationUpdateResult HeapFragmentationManager:
   }
   auto &newMemory = newMemoryResult.value();
 
-  const auto errorCode = newBuffer.create(system_resources.device, desc, newMemory, D3D12_RESOURCE_STATE_INITIAL_BUFFER_STATE, false);
+  const auto errorCode = newBuffer.create(system_resources.device, desc, newMemory, D3D12_RESOURCE_STATE_INITIAL_BUFFER_STATE, false,
+    debug::make_pool_object_name(ScratchBuffer::debug_name));
   if (DX12_CHECK_FAIL(errorCode))
   {
     G_ASSERT_FAIL("DX12: Unable to move scratch buffer, failed to create resource");
@@ -8167,6 +8164,8 @@ void DebugResourceAllocator::processDebugAllocations(ID3D12Device1 *device)
       setDebugAllocationSizeMb(group.raw, currentSize / (1024ull * 1024)); // revert to previous size, will try again next frame
       continue;
     }
+
+    debug::name_object(debugAllocations[group.raw].Get(), debug::format_object_name("DebugAllocation.%s", group.typeName()));
 
     logdbg("DX12: Created debug allocation for group %u, size %u MB", group.raw, alignedRequiredSize / (1024ull * 1024));
 

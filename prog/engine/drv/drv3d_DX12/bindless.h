@@ -82,13 +82,13 @@ class BindlessManager : BindlessTypesValidator
   {
     dag::Vector<ValueRange<uint32_t>> freeSlotRanges;
     dag::VariantVector<eastl::monostate, BufferSlotUsage, TextureSlotUsage> resourceSlotInfo;
-    SamplerState samplerTable[::bindless::MAX_SAMPLER_INDEX_COUNT];
+    SamplerState samplerTable[::bindless::MAX_SAMPLER_INDEX_COUNT] = {};
     uint32_t samplerTableAllocated = 0;
     ContainerMutexWrapper<dag::Vector<D3D12_CPU_DESCRIPTOR_HANDLE>, OSSpinlock> pendingBufferFrees;
     ContainerMutexWrapper<dag::Vector<BaseTex *>, OSSpinlock> pendingTextureFrees;
   };
 
-  State state;
+  State state{};
   const NullResourceTable *nullResourceTable = nullptr;
 
 public:

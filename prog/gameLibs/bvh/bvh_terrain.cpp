@@ -18,11 +18,6 @@ int bvh_terrain_lod_count = 5;
 
 bool bvh_terrain_lock = false;
 
-namespace bvh
-{
-Sbuffer *alloc_scratch_buffer(uint32_t size, uint32_t &offset);
-}
-
 namespace bvh::terrain
 {
 
@@ -261,7 +256,7 @@ struct TerrainBVHJob : public cpujobs::IJob
 
   dag::Vector<dag::Vector<uint8_t>> scratches;
 
-  const char *getJobName(bool &) const override { return "TerrainBVHJob"; }
+  const char *getJobName(bool &) const override { return DAPROFILER_STRING("TerrainBVHJob"); }
 
   void doJob()
   {
@@ -397,6 +392,8 @@ static void update_terrain(ContextId context_id, const Point2 &location)
             job.leftBottomOrigin + Point2(1, 1) * lodCellSize, job.lodGridSize);
       }
 
+      context_id->terrainDirty = true;
+
       job.state = TerrainBVHJob::Idle;
     }
     else if (job.state != TerrainBVHJob::Idle)
@@ -461,6 +458,8 @@ void teardown(ContextId context_id)
     indices_bindless_slot = -1;
   }
 }
+
+bool is_dirty(ContextId context_id) { return context_id->terrainDirty; }
 
 dag::Vector<eastl::tuple<uint64_t, MeshMetaAllocator::AllocId, Point2>> get_blases(ContextId context_id)
 {

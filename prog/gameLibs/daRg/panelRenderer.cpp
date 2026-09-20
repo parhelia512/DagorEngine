@@ -15,6 +15,7 @@
 #include <math/dag_mathAng.h>
 #include <math/dag_mathUtils.h>
 #include <math/dag_bounds3.h>
+#include <startup/dag_globalSettings.h>
 #include <memory/dag_framemem.h>
 #include <util/dag_finally.h>
 #include "guiScene.h"
@@ -402,9 +403,15 @@ void render_panels_in_world(const darg::IGuiScene &scene_, RenderPass render_pas
     d3d::settm(TM_WORLD, adjustedTm);
 
     spatialInfo.lastTransform.setCurrentView(view_index);
+    spatialInfo.lastTransformFrameNo.setCurrentView(view_index);
     TMatrix lastAdjustedTm{spatialInfo.lastTransform.current() ? spatialInfo.lastTransform.current().value() : adjustedTm};
-    if (render_pass == RenderPass::GBuffer)
+    const bool passWritesMotion = render_pass == RenderPass::GBuffer || render_pass == RenderPass::Translucent ||
+                                  render_pass == RenderPass::TranslucentWithoutDepth;
+    if (passWritesMotion && spatialInfo.lastTransformFrameNo.current() != dagor_frame_no())
+    {
       spatialInfo.lastTransform.current() = adjustedTm;
+      spatialInfo.lastTransformFrameNo.current() = dagor_frame_no();
+    }
 
     TMatrix adjustedNormalTm{renderInfo.transform};
     adjustedNormalTm.setcol(0, normalize(adjustedNormalTm.getcol(0)));

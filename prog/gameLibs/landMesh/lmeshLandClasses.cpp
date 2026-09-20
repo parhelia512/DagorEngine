@@ -33,7 +33,7 @@
 #include <render/blkToConstBuffer.h>
 
 #include <heightmap/heightmapHandler.h>
-#include <gameMath/traceUtils.h>
+#include <rendInst/traceUtils.h>
 #include <EASTL/string.h>
 #include <EASTL/hash_map.h>
 #include <EASTL/type_traits.h>

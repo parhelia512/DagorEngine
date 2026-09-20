@@ -188,7 +188,6 @@ bool PsExternalTab::onOkPressed()
     if ((bool)app->getPluginData(i)->externalSource != checked || app->getPluginData(i)->externalPath != fn)
     {
       const char *name = app->getPlugin(i)->getInternalName();
-      String dir, fname;
 
       if (needSave)
         if (!app->getPluginData(i)->externalSource || !app->getPluginData(i)->externalPath.length())
@@ -203,7 +202,6 @@ bool PsExternalTab::onOkPressed()
 
       app->getPlugin(i)->clearObjects();
 
-      String path(256, "%s/%s/", (const char *)dir, name);
       DataBlock blk(DAGORED2->getPluginFilePath(app->getPlugin(i), name) + ".plugin.blk");
 
       app->getPlugin(i)->loadObjects(blk, DataBlock(), DAGORED2->getPluginFilePath(app->getPlugin(i), "."));

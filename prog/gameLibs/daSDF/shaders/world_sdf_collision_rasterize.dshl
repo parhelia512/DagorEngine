@@ -141,7 +141,7 @@ shader world_sdf_collision_rasterize
         //early out of pixel shader
         float3 bmin = min(output.va, min(output.vb, output.vc))*voxelize_world_to_rasterize_space_mul  + voxelize_world_to_rasterize_space_add;
         float3 bmax = max(output.va, max(output.vb, output.vc))*voxelize_world_to_rasterize_space_mul  + voxelize_world_to_rasterize_space_add;
-        if (any(bmin > 1 || bmax < -1))
+        if (any(or(bmin > 1, bmax < -1)))
           output.pos = NaN;
         #endif
       #endif

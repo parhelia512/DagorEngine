@@ -116,7 +116,7 @@ static constexpr ecs::ComponentDesc spot_light_es_comps[] =
   {ECS_HASH("spot_light"), ecs::ComponentTypeInfo<SpotLightEntity>()},
   {ECS_HASH("animchar"), ecs::ComponentTypeInfo<AnimV20::AnimcharBaseComponent>()},
   {ECS_HASH("light__force_max_light_radius"), ecs::ComponentTypeInfo<bool>()},
-//start of 27 ro components at [3]
+//start of 28 ro components at [3]
   {ECS_HASH("lightModTm"), ecs::ComponentTypeInfo<TMatrix>()},
   {ECS_HASH("light__offset"), ecs::ComponentTypeInfo<Point3>()},
   {ECS_HASH("light__texture_name"), ecs::ComponentTypeInfo<ecs::string>()},
@@ -144,7 +144,8 @@ static constexpr ecs::ComponentDesc spot_light_es_comps[] =
   {ECS_HASH("light__approximate_static"), ecs::ComponentTypeInfo<bool>(), ecs::CDF_OPTIONAL},
   {ECS_HASH("light__shadow_two_sided"), ecs::ComponentTypeInfo<bool>(), ecs::CDF_OPTIONAL},
   {ECS_HASH("light__force_affect_volfog"), ecs::ComponentTypeInfo<bool>(), ecs::CDF_OPTIONAL},
-//start of 1 no components at [30]
+  {ECS_HASH("spot_light__cull_radius_optimization"), ecs::ComponentTypeInfo<bool>(), ecs::CDF_OPTIONAL},
+//start of 1 no components at [31]
   {ECS_HASH("transform"), ecs::ComponentTypeInfo<TMatrix>()}
 };
 static void spot_light_es_all(const ecs::UpdateStageInfo &__restrict info, const ecs::QueryView & __restrict components)
@@ -182,6 +183,7 @@ static void spot_light_es_all(const ecs::UpdateStageInfo &__restrict info, const
     , ECS_RO_COMP_OR(spot_light_es_comps, "light__approximate_static", bool(false))
     , ECS_RO_COMP_OR(spot_light_es_comps, "light__shadow_two_sided", bool(false))
     , ECS_RO_COMP_OR(spot_light_es_comps, "light__force_affect_volfog", bool(false))
+    , ECS_RO_COMP_OR(spot_light_es_comps, "spot_light__cull_radius_optimization", bool(true))
     );
   while (++comp != compE);
 }
@@ -191,9 +193,9 @@ static ecs::EntitySystemDesc spot_light_es_es_desc
   "prog/gameLibs/ecs/lights/lightES.cpp.inl",
   ecs::EntitySystemOps(spot_light_es_all),
   make_span(spot_light_es_comps+0, 3)/*rw*/,
-  make_span(spot_light_es_comps+3, 27)/*ro*/,
+  make_span(spot_light_es_comps+3, 28)/*ro*/,
   empty_span(),
-  make_span(spot_light_es_comps+30, 1)/*no*/,
+  make_span(spot_light_es_comps+31, 1)/*no*/,
   ecs::EventSetBuilder<>::build(),
   (1<<ecs::UpdateStageInfoAct::STAGE)
 ,"render",nullptr,"*");
@@ -509,7 +511,7 @@ static constexpr ecs::ComponentDesc update_spot_light_es_comps[] =
 //start of 2 rw components at [0]
   {ECS_HASH("spot_light"), ecs::ComponentTypeInfo<SpotLightEntity>()},
   {ECS_HASH("light__force_max_light_radius"), ecs::ComponentTypeInfo<bool>()},
-//start of 32 ro components at [2]
+//start of 33 ro components at [2]
   {ECS_HASH("eid"), ecs::ComponentTypeInfo<ecs::EntityId>()},
   {ECS_HASH("light__offset"), ecs::ComponentTypeInfo<Point3>()},
   {ECS_HASH("light__texture_name"), ecs::ComponentTypeInfo<ecs::string>()},
@@ -541,7 +543,8 @@ static constexpr ecs::ComponentDesc update_spot_light_es_comps[] =
   {ECS_HASH("light__enable_lens_flares"), ecs::ComponentTypeInfo<bool>(), ecs::CDF_OPTIONAL},
   {ECS_HASH("light__approximate_static"), ecs::ComponentTypeInfo<bool>(), ecs::CDF_OPTIONAL},
   {ECS_HASH("light__shadow_two_sided"), ecs::ComponentTypeInfo<bool>(), ecs::CDF_OPTIONAL},
-  {ECS_HASH("light__force_affect_volfog"), ecs::ComponentTypeInfo<bool>(), ecs::CDF_OPTIONAL}
+  {ECS_HASH("light__force_affect_volfog"), ecs::ComponentTypeInfo<bool>(), ecs::CDF_OPTIONAL},
+  {ECS_HASH("spot_light__cull_radius_optimization"), ecs::ComponentTypeInfo<bool>(), ecs::CDF_OPTIONAL}
 };
 static void update_spot_light_es_all_events(const ecs::Event &__restrict evt, const ecs::QueryView &__restrict components)
 {
@@ -582,6 +585,7 @@ static void update_spot_light_es_all_events(const ecs::Event &__restrict evt, co
     , ECS_RO_COMP_OR(update_spot_light_es_comps, "light__approximate_static", bool(false))
     , ECS_RO_COMP_OR(update_spot_light_es_comps, "light__shadow_two_sided", bool(false))
     , ECS_RO_COMP_OR(update_spot_light_es_comps, "light__force_affect_volfog", bool(false))
+    , ECS_RO_COMP_OR(update_spot_light_es_comps, "spot_light__cull_radius_optimization", bool(true))
     );
   while (++comp != compE);
 }
@@ -591,7 +595,7 @@ static ecs::EntitySystemDesc update_spot_light_es_es_desc
   "prog/gameLibs/ecs/lights/lightES.cpp.inl",
   ecs::EntitySystemOps(nullptr, update_spot_light_es_all_events),
   make_span(update_spot_light_es_comps+0, 2)/*rw*/,
-  make_span(update_spot_light_es_comps+2, 32)/*ro*/,
+  make_span(update_spot_light_es_comps+2, 33)/*ro*/,
   empty_span(),
   empty_span(),
   ecs::EventSetBuilder<CmdRecreateAllLights,
@@ -605,7 +609,7 @@ static constexpr ecs::ComponentDesc update_high_priority_spot_light_es_comps[] =
 //start of 2 rw components at [0]
   {ECS_HASH("spot_light"), ecs::ComponentTypeInfo<SpotLightEntity>()},
   {ECS_HASH("light__force_max_light_radius"), ecs::ComponentTypeInfo<bool>()},
-//start of 29 ro components at [2]
+//start of 30 ro components at [2]
   {ECS_HASH("eid"), ecs::ComponentTypeInfo<ecs::EntityId>()},
   {ECS_HASH("light__offset"), ecs::ComponentTypeInfo<Point3>()},
   {ECS_HASH("light__texture_name"), ecs::ComponentTypeInfo<ecs::string>()},
@@ -635,7 +639,8 @@ static constexpr ecs::ComponentDesc update_high_priority_spot_light_es_comps[] =
   {ECS_HASH("light__approximate_static"), ecs::ComponentTypeInfo<bool>(), ecs::CDF_OPTIONAL},
   {ECS_HASH("light__shadow_two_sided"), ecs::ComponentTypeInfo<bool>(), ecs::CDF_OPTIONAL},
   {ECS_HASH("light__force_affect_volfog"), ecs::ComponentTypeInfo<bool>(), ecs::CDF_OPTIONAL},
-//start of 1 rq components at [31]
+  {ECS_HASH("spot_light__cull_radius_optimization"), ecs::ComponentTypeInfo<bool>(), ecs::CDF_OPTIONAL},
+//start of 1 rq components at [32]
   {ECS_HASH("light__high_priority_update"), ecs::ComponentTypeInfo<ecs::Tag>()}
 };
 static void update_high_priority_spot_light_es_all_events(const ecs::Event &__restrict evt, const ecs::QueryView &__restrict components)
@@ -674,6 +679,7 @@ static void update_high_priority_spot_light_es_all_events(const ecs::Event &__re
     , ECS_RO_COMP_OR(update_high_priority_spot_light_es_comps, "light__approximate_static", bool(false))
     , ECS_RO_COMP_OR(update_high_priority_spot_light_es_comps, "light__shadow_two_sided", bool(false))
     , ECS_RO_COMP_OR(update_high_priority_spot_light_es_comps, "light__force_affect_volfog", bool(false))
+    , ECS_RO_COMP_OR(update_high_priority_spot_light_es_comps, "spot_light__cull_radius_optimization", bool(true))
     );
   while (++comp != compE);
 }
@@ -683,8 +689,8 @@ static ecs::EntitySystemDesc update_high_priority_spot_light_es_es_desc
   "prog/gameLibs/ecs/lights/lightES.cpp.inl",
   ecs::EntitySystemOps(nullptr, update_high_priority_spot_light_es_all_events),
   make_span(update_high_priority_spot_light_es_comps+0, 2)/*rw*/,
-  make_span(update_high_priority_spot_light_es_comps+2, 29)/*ro*/,
-  make_span(update_high_priority_spot_light_es_comps+31, 1)/*rq*/,
+  make_span(update_high_priority_spot_light_es_comps+2, 30)/*ro*/,
+  make_span(update_high_priority_spot_light_es_comps+32, 1)/*rq*/,
   empty_span(),
   ecs::EventSetBuilder<CmdUpdateHighPriorityLights>::build(),
   0

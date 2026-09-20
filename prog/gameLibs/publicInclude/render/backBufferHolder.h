@@ -5,12 +5,14 @@
 #pragma once
 
 #include <3d/dag_textureIDHolder.h>
+#include <3d/dag_resPtr.h>
 #include <EASTL/unique_ptr.h>
 
 class BackBufferHolder
 {
 private:
   TextureIDPair srgbFrame;
+  ExternalTex backbuffer;
   bool readable;
 
   void init();
@@ -24,10 +26,10 @@ public:
   static void update();
   static void destroy(); // destroys holder
   static void d3dReset(bool);
+  static void beforeD3dReset(bool);
 
   static bool isReadable() { return holder && holder->readable; }
   static const TextureIDPair getTex();
-  static void releaseTex();
 
   ~BackBufferHolder();
 };

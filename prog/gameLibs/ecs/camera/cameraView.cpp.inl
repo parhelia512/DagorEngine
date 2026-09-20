@@ -20,7 +20,7 @@ static inline float deg_to_fov(float deg) { return 1.f / tanf(DEG_TO_RAD * 0.5f 
 template <typename Callable>
 static inline void process_active_camera_ecs_query(ecs::EntityManager &manager, Callable);
 
-CameraSetup get_active_camera_setup(ecs::EntityManager &manager)
+CameraSetup get_active_camera_setup(ecs::EntityManager &manager, bool allow_missing_camera)
 {
   CameraSetup camSetup;
   ecs::EntityId active_camera_eid = ecs::INVALID_ENTITY_ID;
@@ -59,8 +59,9 @@ CameraSetup get_active_camera_setup(ecs::EntityManager &manager)
       active_camera_found++;
     });
 
+  G_UNUSED(allow_missing_camera);
 #if DAGOR_DBGLEVEL > 0
-  if (!active_camera_found)
+  if (!active_camera_found && !allow_missing_camera)
   {
     static unsigned last_warn_frame_no = 0;
     if (last_warn_frame_no == 0 || dagor_frame_no() - last_warn_frame_no > 1)
@@ -110,9 +111,9 @@ CameraSetup get_active_camera_setup(ecs::EntityManager &manager)
   return camSetup;
 }
 
-CameraSetup get_active_camera_setup()
+CameraSetup get_active_camera_setup(bool allow_missing_camera)
 {
-  return get_active_camera_setup(*g_entity_mgr); // still singleton
+  return get_active_camera_setup(*g_entity_mgr, allow_missing_camera); // still singleton
 }
 
 TMatrix4 calc_active_camera_globtm()

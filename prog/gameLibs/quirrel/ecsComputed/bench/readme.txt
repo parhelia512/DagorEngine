@@ -36,6 +36,13 @@ Parameters:
                 not mirror, so rows enter and leave membership without any
                 mirrored value changing; the single shape filters on a component
                 it does mirror, and reads as defVal while rejected
+  -tageid:1     pull mode only. Adds four mirrors over the tag-column and
+                mirrored-eid forms (a required tag as the only selector, a tag
+                read as a bool column, eid beside value columns, eid as the
+                only column in both shapes) and verifies them at the end. Off
+                by default so their entity systems do not skew the measured
+                modes; the creation calls the module must refuse are checked in
+                every run, they cost nothing
   -samewrites:1 map shape with -filter:pass only. The per-frame writes rewrite
                 the current values; daECS drops same-value writes when it
                 compares its shadow copies, so only the bench__alive flips reach

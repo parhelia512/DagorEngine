@@ -4,6 +4,9 @@
 //
 #pragma once
 
+#include <drv/3d/dag_multi_interface.h>
+#include <util/dag_stdint.h>
+
 class DataBlock;
 
 struct FrameEvents
@@ -145,10 +148,6 @@ enum class Drv3dCommand
   BEGIN_EXTERNAL_ACCESS,
   END_EXTERNAL_ACCESS,
 
-  SET_VS_DEBUG_INFO,
-  SET_PS_DEBUG_INFO,
-  SET_CS_DEBUG_INFO,
-
   // MRT clear sequence is an optimization to clear mrt targets with different colors in
   // an optimized fashion for target APIs like Vulkan.
 
@@ -191,6 +190,9 @@ enum class Drv3dCommand
   INT10_HDR_BUFFER,
   HDR_OUTPUT_MODE,
   HDR_HEADROOM,
+  //! change to the hdr mode without a device reset.
+  //! returns 0 when the driver cannot do it
+  APPLY_HDR_MODE,
   GET_LUMINANCE,
 
   MEM_STAT, // Single line tex and buffers statistics.
@@ -215,6 +217,10 @@ enum class Drv3dCommand
 
   // Ask driver by what factor it was limited when rendering last frame
   GET_FRAMERATE_LIMITING_FACTOR,
+
+  // Returns the number of frames the swapchain presented for the last finished frame: 1, or more with
+  // frame generation. Safe to call from any thread. No parameters required
+  GET_PRESENTED_FRAME_COUNT,
 
   // Loads additional pipeline cache from path @par1
   LOAD_PIPELINE_CACHE,
@@ -278,6 +284,17 @@ enum class Drv3dCommand
   // par2: int *view_index
   SET_DLSS_OPTIONS,
 
+  // Executes DLSS-NR (neural rendering)
+  // par1: nv::DlssNRParams *
+  // par2: int *view_index
+  EXECUTE_DLSS_NR,
+
+  // Sets DLSS-NR options. Routed through the render backend thread so slDLSSNRSetOptions is not
+  // called from the calling (e.g. main) thread.
+  // par1: nv::DlssNROptions *
+  // par2: int *view_index
+  SET_DLSS_NR_OPTIONS,
+
   // Executes DLSS
   // par1: XessParams *
   EXECUTE_XESS,
@@ -290,10 +307,6 @@ enum class Drv3dCommand
   // Gets the number of frames XeSS can generate.
   // par1: int* frames
   GET_XESS_SUPPORTED_GEN_FRAMES,
-
-  // Gets the number of frames XeSS was presented since the last real frame
-  // par1: int* presented_frames
-  GET_XESS_PRESENTED_FRAME_COUNT,
 
   // Tells if XeSS frame generation is enabled
   // par1: bool* enabled
@@ -338,10 +351,6 @@ enum class Drv3dCommand
   // Gets the number of frames FSR can generate.
   // par1: int* frames
   GET_FSR_SUPPORTED_GEN_FRAMES,
-
-  // Gets the number of frames FSR was presented since the last real frame
-  // par1: int* presented_frames
-  GET_FSR_PRESENTED_FRAME_COUNT,
 
   // Tells if FSR frame generation is active
   // par1: bool* enabled
@@ -763,11 +772,11 @@ struct Drv3dMakeTextureParams
   ResourceBarrier currentState;
 };
 
-namespace d3d
+namespace d3d _MULTI_INTERFACE
 {
 /// send specific command to driver
 int driver_command(Drv3dCommand command, void *par1 = nullptr, void *par2 = nullptr, void *par3 = nullptr);
-} // namespace d3d
+} // namespace d3d _MULTI_INTERFACE
 
 #if _TARGET_D3D_MULTI
 #include <drv/3d/dag_interface_table.h>

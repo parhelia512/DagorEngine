@@ -81,6 +81,8 @@ shader dagdp_dynamic_recount
       else
         count += (dyn_region.y - totalPlaced) / dyn_counters_num; // Distribute extra capacity across all counters equally.
 
+      GroupMemoryBarrierWithGroupSync();
+
       inclusive_prefix_sum_gs(tId, count);
       const bool isAlreadyPlaced = structuredBufferAt(dyn_counters, DYN_COUNTERS_INDEX_OVERFLOW_FLAG) == 0u;
 

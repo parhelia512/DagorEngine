@@ -138,6 +138,47 @@ auto convertDlssGParams(const DlssGParams<InHandleType> &in,
     in.inDepthState, in.inMotionVectorsState, in.suppressed};
 }
 
+template <typename HandleType = BaseTexture>
+struct DlssNRParams
+{
+  HandleType *inColor = nullptr;         // tonemapped SDR, output resolution
+  HandleType *inDepth = nullptr;         // render resolution
+  HandleType *inMotionVectors = nullptr; // render resolution
+  // Optional. R, G and B are per pixel multipliers on intensity, tone strength and structure strength.
+  HandleType *inControlMask = nullptr;
+
+  float inJitterOffsetX = .0f;
+  float inJitterOffsetY = .0f;
+  float inMVScaleX = .0f;
+  float inMVScaleY = .0f;
+  // Depth and motion vectors come at render resolution, the color pair does not.
+  int inWidth = 0;
+  int inHeight = 0;
+  uint32_t frameId = 0;
+  bool inReset = false;
+
+  Camera camera = {};
+
+  // May be the same texture as inColor, neural rendering supports in place uplift.
+  HandleType *outColor = nullptr;
+
+  uint32_t inColorState = UINT_MAX;
+  uint32_t inDepthState = UINT_MAX;
+  uint32_t inMotionVectorsState = UINT_MAX;
+  uint32_t inControlMaskState = UINT_MAX;
+
+  uint32_t outColorState = UINT_MAX;
+};
+
+template <typename InHandleType, typename F>
+auto convertDlssNRParams(const DlssNRParams<InHandleType> &in,
+  F &&converter) -> DlssNRParams<eastl::remove_pointer_t<decltype(converter(nullptr))>>
+{
+  return {converter(in.inColor), converter(in.inDepth), converter(in.inMotionVectors), converter(in.inControlMask), in.inJitterOffsetX,
+    in.inJitterOffsetY, in.inMVScaleX, in.inMVScaleY, in.inWidth, in.inHeight, in.frameId, in.inReset, in.camera,
+    converter(in.outColor), in.inColorState, in.inDepthState, in.inMotionVectorsState, in.inControlMaskState, in.outColorState};
+}
+
 struct DLSS
 {
   enum class State : int
@@ -202,6 +243,21 @@ struct DlssOptions
   bool useLegacyModel = false;
 };
 
+struct DlssNROptions
+{
+  bool enabled = false;
+  uint32_t style = 0;  // opaque look index
+  uint32_t preset = 0; // 0 is the default model, 1..7 select a fixed one
+  float intensity = 1.f;
+  float localToneStrength = 1.f;
+  float localStructureStrength = 1.f;
+  bool useAutoMask = false;
+  float skinStructureStrength = 1.f;
+  // Streamline 2.14 ignores these two, they are passed through for later SDK versions.
+  float globalToneStrength = 1.f;
+  DLSS::Mode performanceMode = DLSS::Mode::MaxQuality;
+};
+
 struct DLSSFrameGenerationCapabilities
 {
   uint32_t maximumNumberOfGeneratedFrames : 30 = 0;
@@ -213,7 +269,6 @@ struct DLSSFrameGeneration
 {
   virtual void setEnabled(int frames_to_generate) = 0;
   virtual bool isEnabled() const = 0;
-  virtual unsigned getActualFramesPresented() const = 0;
 };
 
 struct Streamline
@@ -221,6 +276,7 @@ struct Streamline
   virtual nv::SupportState isDlssSupported() const = 0;
   virtual nv::SupportState isDlssGSupported() const = 0;
   virtual nv::SupportState isDlssRRSupported() const = 0;
+  virtual nv::SupportState isDlssNRSupported() const = 0;
 
   virtual dag::Expected<eastl::string, nv::SupportState> getDlssVersion() const = 0;
 

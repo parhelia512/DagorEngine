@@ -47,6 +47,37 @@ local loadout = null     // pull/single: object component, checks deep-copy conv
 local rawMirror = null   // filter=script: the unfiltered mirror behind state
 let derived = []         // -derived:N: what a HUD builds on top of the row
 
+// -tageid:1 mirrors, verified at the end of the run and never benchmarked
+let tagEid = bench?.tagEid ?? false
+local tagMap = null    // {eid: {bench_bot=true, bench_hero=false, bench__value=N, eid=E}}
+local eidMap = null    // the bench_bot eids
+local eidSingle = null // the bench_hero eid, or INVALID_ENTITY_ID
+local tagSingle = null // bench_hero presence as a bool
+
+// Creations the module must refuse. A refused mirror registers nothing, so
+// these run in every mode at no cost to the measured path.
+function refusedToCreate(fn) {
+  try {
+    fn()
+  }
+  catch (e) {
+    return true
+  }
+  return false
+}
+let refusals = {
+  missingComps = refusedToCreate(@() mkEcsComputed({ comps_rq = ["bench_bot"] }))
+  emptyComps = refusedToCreate(@() mkEcsComputed({ comps = [], comps_rq = ["bench_bot"] }))
+  allOptional = refusedToCreate(@() mkEcsComputed({ comps = [["bench__value", ecs.TYPE_INT, 0]] }))
+  eidOnlySelects = refusedToCreate(@() mkEcsComputedEidMap({ comps = ["eid"] }))
+  eidInCompsFilter = refusedToCreate(@() mkEcsComputedEidMap({ comps = [["bench__value", ecs.TYPE_INT]],
+    comps_rq = ["bench_bot"], comps_filter = ["eid"] }))
+  tagInCompsFilter = refusedToCreate(@() mkEcsComputedEidMap({ comps = [["bench__value", ecs.TYPE_INT]],
+    comps_rq = ["bench_bot"], comps_filter = [["bench_hero", ecs.TYPE_TAG]] }))
+  tagInFilter = refusedToCreate(@() mkEcsComputed({ comps = [["bench_bot", ecs.TYPE_TAG, false], ["bench__value", ecs.TYPE_INT]],
+    comps_rq = ["bench_bot"], filter = "opt(bench_bot, false)" }))
+}
+
 let mapCompsRo = [["bench__value", ecs.TYPE_INT], ["bench__hp", ecs.TYPE_FLOAT]]
 let mapTrack = "bench__value,bench__hp"
 let heroCompsRo = [
@@ -218,6 +249,17 @@ else if (mode == "pull") {
   }
 }
 
+if (tagEid) {
+  // the tag-column and mirrored-eid forms; tagMap has no comps_rq, its
+  // required entries select
+  tagMap = mkEcsComputedEidMap({
+    comps = [["bench_bot", ecs.TYPE_TAG], ["bench_hero", ecs.TYPE_TAG, false], ["bench__value", ecs.TYPE_INT], "eid"]
+  })
+  eidMap = mkEcsComputedEidMap({ comps = ["eid"], comps_rq = ["bench_bot"] })
+  eidSingle = mkEcsComputed({ comps = ["eid"], comps_rq = ["bench_hero"], defVal = ecs.INVALID_ENTITY_ID })
+  tagSingle = mkEcsComputed({ comps = [["bench_hero", ecs.TYPE_TAG]], defVal = false })
+}
+
 // a HUD watches the values it derived, not the row they were built from
 if (derived.len() > 0) {
   foreach (i, obs in derived)
@@ -347,18 +389,54 @@ function verifyMap(eids, errors) {
       errors.append($"map: eid {eid} is missing from the mirror")
 }
 
+function verifyTagEid(eids, errors) {
+  foreach (name, threw in refusals)
+    if (!threw)
+      errors.append($"tageid: refused creation '{name}' did not throw")
+  if (!tagEid)
+    return
+  // every bot has bench_bot and none has bench_hero, so the tag columns read
+  // constants; the eid mirrors track membership, which -recreate churns
+  let bots = shape == "map" ? eids : []
+  let mirroredEids = eidMap.get()
+  let rows = tagMap.get()
+  if (mirroredEids.len() != bots.len())
+    errors.append($"tageid: eid map has {mirroredEids.len()} rows, want {bots.len()}")
+  if (rows.len() != bots.len())
+    errors.append($"tageid: tag map has {rows.len()} rows, want {bots.len()}")
+  foreach (eid in bots) {
+    if (mirroredEids?[eid] != eid)
+      errors.append($"tageid: eid map slot {eid} reads {mirroredEids?[eid]}")
+    let row = rows?[eid]
+    if (row?.bench_bot != true || row?.bench_hero != false)
+      errors.append($"tageid: tag map eid {eid} reads {row?.bench_bot}/{row?.bench_hero}, want true/false")
+    if (row?.eid != eid)
+      errors.append($"tageid: tag map eid {eid} mirrors eid {row?.eid}")
+    let want = ecs.obsolete_dbg_get_comp_val(eid, "bench__value")
+    if (row?.bench__value != want)
+      errors.append($"tageid: tag map eid {eid} bench__value is {row?.bench__value}, want {want}")
+  }
+  let heroExists = shape != "map"
+  let heroEid = heroExists ? eids[0] : ecs.INVALID_ENTITY_ID
+  if (eidSingle.get() != heroEid)
+    errors.append($"tageid: eid single reads {eidSingle.get()}, want {heroEid}")
+  if (tagSingle.get() != heroExists) //-compared-with-bool: both sides are bools, strict compare is the point
+    errors.append($"tageid: tag single reads {tagSingle.get()}, want {heroExists}")
+}
+
 // eids is [hero] on the single shape and every bot on the map shape.
 // Returns null when everything matches, otherwise a joined error list.
 function verifyFields(eids) {
-  if (state == null)
-    return null
   let errors = []
-  if (shape != "map") {
-    verifySingle(eids[0], errors)
-    verifyDerived(eids[0], errors)
+  verifyTagEid(eids, errors)
+  if (state != null) {
+    if (shape != "map") {
+      verifySingle(eids[0], errors)
+      verifyDerived(eids[0], errors)
+    }
+    else
+      verifyMap(eids, errors)
   }
-  else
-    verifyMap(eids, errors)
   return errors.len() > 0 ? "; ".join(errors) : null
 }
 
@@ -383,6 +461,10 @@ function dropMirrors() {
   storage = null
   loadout = null
   rawMirror = null
+  tagMap = null
+  eidMap = null
+  eidSingle = null
+  tagSingle = null
   derived.clear()
 }
 

@@ -26,7 +26,8 @@ class HmapLandObjectEditor;
 
 
 E3DCOLOR SplinePointObject::norm_col(200, 10, 10), SplinePointObject::norm_col_start_point(10, 10, 200),
-  SplinePointObject::sel_col(255, 255, 255), SplinePointObject::sel2_col(190, 190, 190), SplinePointObject::hlp_col(10, 200, 10);
+  SplinePointObject::sel_col(255, 255, 255), SplinePointObject::sel2_col(190, 190, 190), SplinePointObject::hlp_col(10, 200, 10),
+  SplinePointObject::fillet_gen_col(255, 160, 10);
 TEXTUREID SplinePointObject::texPt = BAD_TEXTUREID;
 float SplinePointObject::ptScreenRad = 7.0;
 int SplinePointObject::ptRenderPassId = -1;
@@ -49,7 +50,46 @@ enum
   PID_ROADBHV,
   PID_CORNER_TYPE,
   PID_LEVEL_POINTS,
+  PID_FILLET_TYPE,
+  PID_FILLET_RADIUS,
+  PID_FILLET_LIMIT,
+  PID_FILLET_BAKE,
 };
+
+// what the requested filletR turned into: the room on the shorter side limits it, and a point that cannot carry a corner ignores it
+static String fillet_hint(const SplinePointObject &p)
+{
+  if (p.getProps().filletR <= 0)
+    return String();
+  if (!p.hasActiveFillet())
+    return String("no rounding here (spline end, cross point or too small)");
+  if (p.fillet->cutS + 1e-3f < p.getProps().filletR)
+    return String(0, "cut ~%.2f m, limited by segment length", p.fillet->cutS);
+  return String(0, "cut ~%.2f m", p.fillet->cutS);
+}
+
+// the panel line is shared by the whole selection, so it can only speak for it as a whole
+static String fillet_hint_for_sel(ObjectEditor *ed)
+{
+  if (!ed)
+    return String();
+
+  String common;
+  bool first = true;
+  for (int i = 0; i < ed->selectedCount(); i++)
+    if (SplinePointObject *p = RTTI_cast<SplinePointObject>(ed->getSelected(i)))
+    {
+      String one = fillet_hint(*p);
+      if (first)
+      {
+        common = one;
+        first = false;
+      }
+      else if (strcmp(common, one) != 0)
+        return String("different for the selected points");
+    }
+  return common;
+}
 
 void SplinePointObject::Props::defaults()
 {
@@ -62,6 +102,8 @@ void SplinePointObject::Props::defaults()
   attr.followOverride = -1;
   attr.roadBhvOverride = -1;
   cornerType = -2;
+  filletR = 0;
+  filletType = 0;
 }
 
 void SplinePointObject::initStatics()
@@ -93,6 +135,8 @@ SplinePointObject::SplinePointObject() : selObj(SELOBJ_POINT), targetSelObj(SELO
   visible = true;
   isCross = false;
   isRealCross = false;
+  isFilletGen = false;
+  filletApplied = false;
   segChanged = false;
   roadGeom = NULL;
   roadGeomBox.setempty();
@@ -106,6 +150,12 @@ void SplinePointObject::renderPts(DynRenderBuffer &dynBuf, const TMatrix4 &gtm, 
 {
   if (!visible)
     return;
+
+  if (isFilletGen)
+  {
+    renderPoint(dynBuf, toPoint4(props.pt, 1) * gtm, s * ptScreenRad * 0.5, fillet_gen_col);
+    return;
+  }
 
   E3DCOLOR rendCol = isSelected() ? (selObj == SELOBJ_POINT ? sel_col : sel2_col) : (start ? norm_col_start_point : norm_col);
 
@@ -307,6 +357,16 @@ void SplinePointObject::fillProps(PropPanel::ContainerPropertyControl &op, DClas
     commonGrp->setInt(PID_CORNER_TYPE, props.cornerType);
 
     commonGrp->createSeparator(0);
+    PropPanel::ContainerPropertyControl &filletGrp = *commonGrp->createRadioGroup(PID_FILLET_TYPE, "Corner fillet");
+    filletGrp.createRadio(0, "Fillet (arc)");
+    filletGrp.createRadio(1, "Chamfer (straight cut)");
+    commonGrp->setInt(PID_FILLET_TYPE, props.filletType);
+    commonGrp->createEditFloat(PID_FILLET_RADIUS, "Fillet size (m), 0=off", props.filletR);
+    commonGrp->setMinMaxStep(PID_FILLET_RADIUS, 0.0f, 1e6f, 0.1f);
+    commonGrp->createStatic(PID_FILLET_LIMIT, fillet_hint_for_sel(getObjEditor()));
+    commonGrp->createButton(PID_FILLET_BAKE, String(64, "Bake fillet to real points (%d points)", objects.size()));
+
+    commonGrp->createSeparator(0);
     commonGrp->createButton(PID_LEVEL_TANGENTS, String(64, "Level tangents (%d points)", objects.size()));
     if (objects.size() > 1)
     {
@@ -333,6 +393,8 @@ void SplinePointObject::fillProps(PropPanel::ContainerPropertyControl &op, DClas
 
     if (o->props.cornerType != props.cornerType)
       commonGrp->resetById(PID_CORNER_TYPE);
+    if (o->props.filletType != props.filletType)
+      commonGrp->resetById(PID_FILLET_TYPE);
   }
 }
 
@@ -350,7 +412,7 @@ void SplinePointObject::onPPChange(int pid, bool edit_finished, PropPanel::Conta
       SplinePointObject *o = RTTI_cast<SplinePointObject>(objects[i]);
       if (!o || o->props.useDefSet == val)
         continue;
-      getObjEditor()->getUndoSystem()->put(new UndoChangeAsset(o->spline, o->arrId));
+      getObjEditor()->getUndoSystem()->put<UndoChangeAsset>(o->spline, o->arrId);
 
       o->props.useDefSet = val;
       o->resetSplineClass();
@@ -409,7 +471,7 @@ void SplinePointObject::onPPChange(int pid, bool edit_finished, PropPanel::Conta
       if (!o)
         continue;
 
-      getObjEditor()->getUndoSystem()->put(new UndoPropsChange(o));
+      getObjEditor()->getUndoSystem()->put<UndoPropsChange>(o);
       if (pid == PID_SCALE_H)
         o->props.attr.scale_h = val;
       if (pid == PID_SCALE_W)
@@ -437,7 +499,7 @@ void SplinePointObject::onPPChange(int pid, bool edit_finished, PropPanel::Conta
       if (!o)
         continue;
 
-      getObjEditor()->getUndoSystem()->put(new UndoPropsChange(o));
+      getObjEditor()->getUndoSystem()->put<UndoPropsChange>(o);
       o->props.attr.followOverride = val;
       if (o->spline)
         o->markChanged();
@@ -452,7 +514,7 @@ void SplinePointObject::onPPChange(int pid, bool edit_finished, PropPanel::Conta
       if (!o)
         continue;
 
-      getObjEditor()->getUndoSystem()->put(new UndoPropsChange(o));
+      getObjEditor()->getUndoSystem()->put<UndoPropsChange>(o);
       o->props.attr.roadBhvOverride = val;
       if (o->spline)
         o->markChanged();
@@ -467,7 +529,7 @@ void SplinePointObject::onPPChange(int pid, bool edit_finished, PropPanel::Conta
       if (!o)
         continue;
 
-      getObjEditor()->getUndoSystem()->put(new UndoPropsChange(o));
+      getObjEditor()->getUndoSystem()->put<UndoPropsChange>(o);
       o->props.cornerType = val;
       if (o->spline)
       {
@@ -475,6 +537,29 @@ void SplinePointObject::onPPChange(int pid, bool edit_finished, PropPanel::Conta
         o->spline->invalidateSplineCurve();
       }
     }
+  }
+  if (pid == PID_FILLET_RADIUS || pid == PID_FILLET_TYPE)
+  {
+    for (int i = 0; i < objects.size(); ++i)
+    {
+      SplinePointObject *o = RTTI_cast<SplinePointObject>(objects[i]);
+      if (!o)
+        continue;
+
+      getObjEditor()->getUndoSystem()->put(new UndoPropsChange(o));
+      if (pid == PID_FILLET_RADIUS)
+        o->props.filletR = panel.getFloat(pid);
+      else
+        o->props.filletType = panel.getInt(pid);
+      if (o->spline)
+      {
+        o->markChanged();
+        o->spline->invalidateSplineCurve();
+        o->spline->markModifChangedWhenUsed();
+      }
+      o->updateFilletHint(); // the reconcile refreshes it too, but it early-returns when nothing is left to reconcile
+    }
+    IEditorCoreEngine::get()->invalidateViewportCache();
   }
 }
 void SplinePointObject::onPPBtnPressed(int pid, PropPanel::ContainerPropertyControl &panel,
@@ -534,13 +619,27 @@ void SplinePointObject::onPPBtnPressed(int pid, PropPanel::ContainerPropertyCont
     }
     IEditorCoreEngine::get()->invalidateViewportCache();
   }
+  else if (pid == PID_FILLET_BAKE)
+  {
+    getObjEditor()->getUndoSystem()->begin();
+    for (int i = 0; i < objects.size(); ++i)
+    {
+      SplinePointObject *o = RTTI_cast<SplinePointObject>(objects[i]);
+      if (!o || !o->spline || o->getProps().filletR <= 0)
+        continue;
+      o->spline->bakeFilletPoint(o);
+    }
+    getObjEditor()->getUndoSystem()->accept("Bake spline fillet");
+    IEditorCoreEngine::get()->invalidateViewportCache();
+    getObjEditor()->invalidateObjectProps();
+  }
   else if (pid == PID_LEVEL_TANGENTS)
   {
     for (int i = 0; i < objects.size(); ++i)
     {
       SplinePointObject *o = RTTI_cast<SplinePointObject>(objects[i]);
 
-      getObjEditor()->getUndoSystem()->put(new UndoPropsChange(o));
+      getObjEditor()->getUndoSystem()->put<UndoPropsChange>(o);
       if (o->spline)
         o->spline->putObjTransformUndo();
 
@@ -586,6 +685,12 @@ void SplinePointObject::saveProps(const SplinePointObject::Props &props, DataBlo
   }
   if (props.cornerType != -2)
     blk.setInt("cornerType", props.cornerType);
+  if (props.filletR > 0)
+  {
+    blk.setReal("filletR", props.filletR);
+    if (props.filletType != 0)
+      blk.setInt("filletType", props.filletType);
+  }
 }
 void SplinePointObject::loadProps(SplinePointObject::Props &props, const DataBlock &blk)
 {
@@ -603,6 +708,8 @@ void SplinePointObject::loadProps(SplinePointObject::Props &props, const DataBlo
   props.attr.followOverride = blk.getInt("followOverride", -1);
   props.attr.roadBhvOverride = blk.getInt("roadBhvOverride", -1);
   props.cornerType = blk.getInt("cornerType", -2);
+  props.filletR = blk.getReal("filletR", 0);
+  props.filletType = blk.getInt("filletType", 0);
 }
 void SplinePointObject::save(DataBlock &blk) { saveProps(props, blk, !spline->isPoly()); }
 void SplinePointObject::load(const DataBlock &blk)
@@ -622,9 +729,11 @@ Point3 SplinePointObject::getPtEffRelBezierIn() const
   int pn = spline->points.size();
   if (pn < 2)
     return Point3(0, 0, 0);
-  if (arrId > 0)
-    return normalize(spline->points[arrId - 1]->props.pt - props.pt) * 0.05;
-  return normalize(props.pt - spline->points[arrId + 1]->props.pt) * 0.05;
+  if (SplinePointObject *p = spline->nextRealPoint(arrId, -1))
+    return normalize(p->props.pt - props.pt) * 0.05;
+  if (SplinePointObject *p = spline->nextRealPoint(arrId, +1))
+    return normalize(props.pt - p->props.pt) * 0.05;
+  return Point3(0, 0, 0);
 }
 Point3 SplinePointObject::getPtEffRelBezierOut() const
 {
@@ -637,9 +746,48 @@ Point3 SplinePointObject::getPtEffRelBezierOut() const
   int pn = spline->points.size();
   if (pn < 2)
     return Point3(0, 0, 0);
-  if (arrId + 1 < pn)
-    return normalize(spline->points[arrId + 1]->props.pt - props.pt) * 0.05;
-  return normalize(props.pt - spline->points[arrId - 1]->props.pt) * 0.05;
+  if (SplinePointObject *p = spline->nextRealPoint(arrId, +1))
+    return normalize(p->props.pt - props.pt) * 0.05;
+  if (SplinePointObject *p = spline->nextRealPoint(arrId, -1))
+    return normalize(props.pt - p->props.pt) * 0.05;
+  return Point3(0, 0, 0);
+}
+
+Point3 SplinePointObject::getKnotPos() const { return hasActiveFillet() ? fillet->knotPt : props.pt; }
+
+// the handle a knot flanking a blend adopts, kept by the generated point on that side from the base curve subdivision.
+// Role 1 sits after its source, so it is the entry before us; role 0 sits before its source, so it is the one after us
+const Point3 *SplinePointObject::blendNeighbourHandle(int dir) const
+{
+  const int n = spline->points.size(); // spline is set, as getBezierIn()/getBezierOut() assume as well
+  int id = arrId + dir;
+  if (id < 0)
+    id = spline->isClosed() ? n - 2 : -1; // past the seam, skipping the closure duplicate
+  else if (id >= n)
+    id = spline->isClosed() ? 1 : -1;
+  if (id < 0 || id >= n)
+    return nullptr;
+
+  SplinePointObject *p = spline->points[id];
+  return p->isFilletGen && p->fillet->role == (dir < 0 ? 1 : 0) ? &p->fillet->adjHandle : nullptr;
+}
+
+Point3 SplinePointObject::getKnotBezierIn() const
+{
+  if (hasActiveFillet())
+    return fillet->knotIn;
+  if (const Point3 *h = blendNeighbourHandle(-1))
+    return *h;
+  return getBezierIn();
+}
+
+Point3 SplinePointObject::getKnotBezierOut() const
+{
+  if (hasActiveFillet())
+    return fillet->knotOut;
+  if (const Point3 *h = blendNeighbourHandle(1))
+    return *h;
+  return getBezierOut();
 }
 
 void SplinePointObject::setWtm(const TMatrix &wtm)
@@ -676,7 +824,12 @@ void SplinePointObject::onRemove(ObjectEditor *objEditor)
   getObjEd(objEditor).updateCrossRoadsOnPointRemove(this);
 
   if (spline)
+  {
+    // a slot in source points: arrId counts generated ones, which are gone by the time undo re-adds this point
+    if (spline->hasFilletPoints())
+      reinsertSrcIdx = spline->sourcePointOrdinal(this);
     spline->onPointRemove(arrId);
+  }
 }
 
 
@@ -687,12 +840,7 @@ void SplinePointObject::selectObject(bool select)
   if (select && selObj != targetSelObj)
   {
     selObj = targetSelObj;
-    if (selObj == SELOBJ_POINT)
-      matrix.setcol(3, props.pt);
-    else if (selObj == SELOBJ_IN)
-      matrix.setcol(3, props.relIn + props.pt);
-    else if (selObj == SELOBJ_OUT)
-      matrix.setcol(3, props.relOut + props.pt);
+    updateMatrixFromProps();
     if (objEditor)
     {
       objEditor->onObjectGeomChange(this);
@@ -704,8 +852,18 @@ void SplinePointObject::selectObject(bool select)
   if (!select && selObj != SELOBJ_POINT)
   {
     targetSelObj = selObj = SELOBJ_POINT;
-    matrix.setcol(3, props.pt);
+    updateMatrixFromProps();
   }
+}
+
+void SplinePointObject::updateMatrixFromProps()
+{
+  if (selObj == SELOBJ_IN)
+    matrix.setcol(3, props.relIn + props.pt);
+  else if (selObj == SELOBJ_OUT)
+    matrix.setcol(3, props.relOut + props.pt);
+  else
+    matrix.setcol(3, props.pt);
 }
 
 Point3 SplinePointObject::getUpDir() const { return Point3(0, 1, 0); }
@@ -761,8 +919,8 @@ void SplinePointObject::moveObject(const Point3 &delta, IEditorCoreEngine::Basis
     {
       for (int j = 0; j < ed->getSpline(i)->points.size(); j++)
       {
-        if (this == ed->getSpline(i)->points[j])
-          continue;
+        if (this == ed->getSpline(i)->points[j] || ed->getSpline(i)->points[j]->isFilletGen)
+          continue; // a derived point is not a place a dragged point can stay
 
         real ddist = ed->screenDistBetweenPoints(wnd, this, ed->getSpline(i)->points[j]);
         if (ddist <= 16 && ddist > 0)
@@ -867,6 +1025,22 @@ void SplinePointObject::renderRoadGeom(bool opaque)
     opaque ? dagGeom->geomObjectRender(*roadGeom) : dagGeom->geomObjectRenderTrans(*roadGeom);
 }
 
+void SplinePointObject::updateFilletHint()
+{
+  ObjectEditor *ed = getObjEditor();
+  // one owner for a line the selection shares, so it is written once per rebuild
+  if (!ed || !ed->selectedCount() || ed->getSelected(0) != this)
+    return;
+
+  PropPanel::ContainerPropertyControl *pw = getObjEd().getObjectPropertiesPanel();
+  if (!pw || !pw->getById(PID_FILLET_LIMIT)) // a mixed selection has no such line
+    return;
+
+  String hint = fillet_hint_for_sel(ed);
+  if (strcmp(pw->getText(PID_FILLET_LIMIT), hint) != 0)
+    pw->setText(PID_FILLET_LIMIT, hint);
+}
+
 void SplinePointObject::resetSplineClass()
 {
   clearSegment();
@@ -916,7 +1090,7 @@ void SplinePointObject::importGenerationParams(const char *blkname, FastNameMap 
   splineclass::AssetData *a = srv ? srv->getSplineClassData(blkname) : NULL;
 
   gen->layerOrder = spline->getLayer();
-  setEditLayerIdx(spline->getEditLayerIdx());
+  setEditLayerIdx(spline->getRenderLayerIdx());
   if (gen->splineClass != a)
   {
     if (srv)
@@ -1016,7 +1190,7 @@ void SplinePointObject::setEffectiveAsset(const char *asset_name, bool _undo, in
     {
       SplinePointObject *o = spline->points[i];
       if (_undo)
-        getObjEditor()->getUndoSystem()->put(new UndoChangeAsset(o->spline, o->arrId));
+        getObjEditor()->getUndoSystem()->put<UndoChangeAsset>(o->spline, o->arrId);
 
       o->props.blkGenName = asset_name;
       if (!asset_name)
@@ -1032,7 +1206,7 @@ void SplinePointObject::setEffectiveAsset(const char *asset_name, bool _undo, in
   {
     SplinePointObject *o = spline->points[0];
     if (_undo)
-      getObjEditor()->getUndoSystem()->put(new UndoChangeAsset(o->spline, o->arrId));
+      getObjEditor()->getUndoSystem()->put<UndoChangeAsset>(o->spline, o->arrId);
 
     o->props.blkGenName = asset_name;
     if (!asset_name)
@@ -1059,17 +1233,21 @@ void SplinePointObject::UndoPropsChange::restore(bool save_redo)
   if (save_redo)
     redoProps = obj->props;
   obj->props = oldProps;
+  obj->updateMatrixFromProps();
   obj->pointChanged();
   if (obj->spline)
     obj->spline->invalidateSplineCurve();
+  obj->getObjEd().onObjectGeomChange(obj);
   obj->getObjEd().invalidateObjectProps();
 }
 
 void SplinePointObject::UndoPropsChange::redo()
 {
   obj->props = redoProps;
+  obj->updateMatrixFromProps();
   obj->pointChanged();
   if (obj->spline)
     obj->spline->invalidateSplineCurve();
+  obj->getObjEd().onObjectGeomChange(obj);
   obj->getObjEd().invalidateObjectProps();
 }

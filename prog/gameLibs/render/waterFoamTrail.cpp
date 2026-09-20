@@ -268,7 +268,6 @@ struct Renderer
   {
     float areaSize;
     bbox3f box;
-    TMatrix4 mat;
     int activeBufferTriCount;
     int finalizedBufferTriCount;
   };
@@ -284,15 +283,11 @@ struct Renderer
   Ptr<ShaderElement> shElem;
   Ptr<ShaderMaterial> shMat;
 
-  int texArrayVarId;
-  TEXTUREID texArrayId;
-
-  ArrayTexture *texArray;
   SharedTexWithShaderVar maskTex;
 
   shaders::UniqueOverrideStateId blendOpStateId;
 
-  Renderer(Ctx *ctx_) : ctx(ctx_), texArray(NULL), texArrayId(BAD_TEXTUREID)
+  Renderer(Ctx *ctx_) : ctx(ctx_)
   {
     for (int i = 0; i < g_settings.cascadeCount; ++i)
     {
@@ -347,16 +342,12 @@ struct Renderer
     blendOpState.blendOpA = BLENDOP_MIN;
     blendOpStateId = shaders::overrides::create(blendOpState);
 
-    texArrayVarId = ::get_shader_variable_id("water_foam_trail");
     resetTex();
   }
 
   ~Renderer()
   {
     blendOpStateId.reset();
-
-    ShaderGlobal::set_texture(texArrayVarId, BAD_TEXTUREID);
-    ShaderGlobal::reset_from_vars_and_release_managed_tex_verified(texArrayId, texArray);
 
     del_d3dres(activeBuffer);
     del_d3dres(finalizedBuffer);
@@ -389,12 +380,7 @@ struct Renderer
 
         seg->owner = c_id == 0 ? endCascade : seg->owner; // clear ownership for new frame
 
-        if (!g_settings.useTexArray)
-        {
-          if (!frustum.testBoxB(seg->box.bmin, seg->box.bmax))
-            continue;
-        }
-        else if (seg->owner < c_id || !v_bbox3_test_box_intersect(csc.box, seg->box))
+        if (!frustum.testBoxB(seg->box.bmin, seg->box.bmax))
           continue;
 
         seg->owner = c_id;
@@ -427,14 +413,6 @@ struct Renderer
 
   void calcCascades()
   {
-    static int matVarId[8] = {::get_shader_variable_id("water_foam_trail_mat00"), ::get_shader_variable_id("water_foam_trail_mat01"),
-      ::get_shader_variable_id("water_foam_trail_mat10"), ::get_shader_variable_id("water_foam_trail_mat11"),
-      ::get_shader_variable_id("water_foam_trail_mat20"), ::get_shader_variable_id("water_foam_trail_mat21"),
-      ::get_shader_variable_id("water_foam_trail_mat30"), ::get_shader_variable_id("water_foam_trail_mat31")};
-
-    TMatrix4 view = matrix_look_at_lh(Point3::x0y(ctx->currentOrigin) + Point3(0.f, 1.f, 0.f), Point3::x0y(ctx->currentOrigin),
-      Point3(0.f, 0.f, 1.f));
-
     for (int ci = 0; ci < cascades.size(); ++ci)
     {
       Cascade &c = cascades[ci];
@@ -444,23 +422,12 @@ struct Renderer
 
       float s = c.areaSize * g_settings.cascadeAreaScale;
       float hs = s * 0.5f;
-      TMatrix4 proj = matrix_ortho_lh_forward(s, s, 0.f, 1.f);
-      c.mat = view * proj;
-      c.mat._41 = floor(c.mat._41 / texelAlign.x) * texelAlign.x;
-      c.mat._42 = floor(c.mat._42 / texelAlign.y) * texelAlign.y;
 
       Point2 lt = Point2(-hs, -hs) + ctx->currentOrigin;
       Point2 rb = Point2(+hs, +hs) + ctx->currentOrigin;
       v_bbox3_init_empty(c.box);
       v_bbox3_add_pt(c.box, v_make_vec4f(lt.x, -1.f, lt.y, 0.f));
       v_bbox3_add_pt(c.box, v_make_vec4f(rb.x, +1.f, rb.y, 0.f));
-
-      int mat0VarId = matVarId[ci * 2 + 0];
-      int mat1VarId = matVarId[ci * 2 + 1];
-
-      ShaderGlobal::set_float4(mat0VarId, Color4(c.mat[0][0], c.mat[1][0], c.mat[2][0], c.mat[3][0]));
-
-      ShaderGlobal::set_float4(mat1VarId, Color4(c.mat[0][1], c.mat[1][1], c.mat[2][1], c.mat[3][1]));
     }
   }
 
@@ -480,10 +447,7 @@ struct Renderer
     bool needTrail = g_settings.useTrail && (activeBufferTriCount > 0 || finalizedBufferTriCount > 0);
 
     if (!needTrail)
-    {
-      ShaderGlobal::set_texture(texArrayVarId, BAD_TEXTUREID);
       return false;
-    }
 
     SCOPE_RENDER_TARGET;
     SCOPE_VIEW_PROJ_MATRIX;
@@ -500,8 +464,6 @@ struct Renderer
 
     shaders::overrides::reset();
 
-    ShaderGlobal::set_texture(texArrayVarId, texArrayId);
-
     return true;
   }
 
@@ -517,16 +479,6 @@ struct Renderer
       TIME_D3D_PROFILE_NAME(water_trail_render_, name);
 
       const Cascade &c = cascades[ci];
-
-      if (texArray)
-      {
-        d3d::settm(TM_VIEW, &TMatrix4::IDENT);
-        d3d::settm(TM_PROJ, &c.mat);
-
-        ShaderGlobal::set_texture(texArrayVarId, BAD_TEXTUREID);
-        d3d::set_render_target({}, DepthAccess::RW, {{texArray, 0, static_cast<uint32_t>(ci)}});
-        d3d::clearview(CLEAR_TARGET, 0x00000000, 0.f, 0);
-      }
 
       shElem->setStates(0, true);
 
@@ -557,9 +509,6 @@ struct Renderer
   {
     texelAlign = Point2(2.f / g_settings.texSize, 2.f / g_settings.texSize);
 
-    ShaderGlobal::set_texture(texArrayVarId, BAD_TEXTUREID);
-    ShaderGlobal::reset_from_vars_and_release_managed_tex_verified(texArrayId, texArray);
-
     ShaderGlobal::set_sampler(::get_shader_variable_id("water_foam_trail_mask_samplerstate", true),
       d3d::request_sampler(get_sampler_info(get_texture_meta_data(maskTex.getTexId()))));
 
@@ -567,14 +516,6 @@ struct Renderer
     smpInfo.address_mode_u = smpInfo.address_mode_v = smpInfo.address_mode_w = d3d::AddressMode::Wrap;
     smpInfo.anisotropic_max = ::dgs_tex_anisotropy;
     ShaderGlobal::set_sampler(::get_shader_variable_id("water_foam_trail_samplerstate", true), d3d::request_sampler(smpInfo));
-
-    if (g_settings.useTexArray)
-    {
-      texArray = d3d::create_array_tex(g_settings.texSize, g_settings.texSize, cascades.size(), TEXFMT_R8 | TEXCF_RTARGET, 1,
-        "water_foam_trail", RESTAG_WATER);
-
-      texArrayId = register_managed_tex("water_foam_trail", texArray);
-    }
   }
 };
 
@@ -837,11 +778,7 @@ struct Context
       del_it(renderer);
 
     if (!renderer)
-    {
-      static int texVarId = ::get_shader_variable_id("water_foam_trail");
-      ShaderGlobal::set_texture(texVarId, BAD_TEXTUREID);
       return;
-    }
 
     renderer->calcCascades();
 

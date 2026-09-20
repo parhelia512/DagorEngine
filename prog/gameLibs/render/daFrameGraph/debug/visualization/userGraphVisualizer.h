@@ -27,7 +27,12 @@ class Visualizer
 {
 public:
   Visualizer(InternalRegistry &int_registry, const DependencyData &dep_data, const intermediate::Graph &ir_graph,
-    const PassColoring &coloring);
+    const PassColoring &coloring) :
+    registry(int_registry), depData(dep_data), intermediateGraph(ir_graph), intermediatePassColoring(coloring)
+  {
+    REGISTER_IMGUI_WINDOW(IMGUI_WINDOW_GROUP_FG2, IMGUI_USG_WIN_NAME, [&]() { this->draw(); });
+    REGISTER_IMGUI_WINDOW(IMGUI_WINDOW_GROUP_FG2, IMGUI_GPU_CAPTURE_WIN_NAME, [&]() { this->drawGpuCaptureWindow(); });
+  }
 
   void draw();
   void updateVisualization(const IdIndexedFlags<NodeNameId, framemem_allocator> &nodes_changed);
@@ -96,10 +101,16 @@ private:
   IdIndexedMapping<ResourceId, Resource> userResources;   // filtered of debug instances
   IdIndexedMapping<NodeNameId, NodeId> regNodesRepresent; // and mappings registry id -> represantative id
   IdIndexedMapping<ResNameId, ResourceId> regResRepresent;
-  inline NodeNameId nameIdByNodeId(const NodeId node_id) const { return userNodes[node_id].regId; };
-  inline ResNameId nameIdByResId(const ResourceId resource_id) const { return userResources[resource_id].regId; }
-  inline bool nodeIsPresented(NodeNameId id) const { return regNodesRepresent[id] != NodeId::Invalid; }
-  inline bool resIsPresented(ResNameId id) const { return regResRepresent[id] != ResourceId::Invalid; }
+
+  bool isFrontend(const NodeId id) const { return id != NodeId::Invalid && userNodes[id].regId != NodeNameId::Invalid; }
+  bool isFrontend(const ResourceId id) const { return id != ResourceId::Invalid && userResources[id].regId != ResNameId::Invalid; }
+  NodeNameId getNameId(const NodeId id) const { return id != NodeId::Invalid ? userNodes[id].regId : NodeNameId::Invalid; }
+  ResNameId getNameId(const ResourceId id) const { return id != ResourceId::Invalid ? userResources[id].regId : ResNameId::Invalid; }
+
+  bool isPresented(const NodeNameId id) const { return id != NodeNameId::Invalid && regNodesRepresent[id] != NodeId::Invalid; }
+  bool isPresented(const ResNameId id) const { return id != ResNameId::Invalid && regResRepresent[id] != ResourceId::Invalid; }
+  NodeId getRepresentId(const NodeNameId id) const { return id != NodeNameId::Invalid ? regNodesRepresent[id] : NodeId::Invalid; }
+  ResourceId getRepresentId(const ResNameId id) const { return id != ResNameId::Invalid ? regResRepresent[id] : ResourceId::Invalid; }
 
   IdIndexedMapping<NameSpaceNameId, NameSpace> nameSpaces; // Information about sub namespaces, nodes and resources for
   dag::Vector<NodeNameId> nsNodeNameIds;                   // ImGuiDagor::ComboWithFilter() and treeWithFilter()
@@ -142,95 +153,235 @@ private:
 
   // hovering
 private:
-  struct
+  struct HoverState
   {
     bool window = false;
-    bool searchBox = false;
     bool canvas = false;
 
     NodeId node = NodeId::Invalid;
     ResourceId resource = ResourceId::Invalid;
     dag::Vector<DependencyId> deps = {};
+    // History edges are not a part of the layout, so they are hovered while they are drawn
+    bool historyEdge = false;
 
     String tooltip;
 
     void reset()
     {
       window = false;
-      searchBox = false;
       canvas = false;
 
       node = NodeId::Invalid;
       resource = ResourceId::Invalid;
       deps.clear();
+      historyEdge = false;
 
       tooltip.clear();
     }
+    bool isActive() { return window && canvas; }
   } hoverState;
-  NodeId popupNode = NodeId::Invalid;
-  dag::Vector<DependencyId> popupDeps = {};
+
+
+  // popup
+private:
+  struct PopupState
+  {
+    NodeId nodeId = NodeId::Invalid;
+    ResourceId resourceId = ResourceId::Invalid;
+
+    NodeNameId nodeNameId = NodeNameId::Invalid;
+    ResNameId resNameId = ResNameId::Invalid;
+
+    dag::Vector<DependencyId> deps = {};
+
+    dag::Vector<eastl::pair<NodeNameId, NodeNameId>> fromToNameIds = {};
+
+    bool history = false;
+
+    bool nodeValid() const { return nodeId != NodeId::Invalid; }
+    bool resValid() const { return resourceId != ResourceId::Invalid; }
+  } popupState;
+
+  void setPopupState(const HoverState &hover_state)
+  {
+    popupState.nodeId = hover_state.node;
+    popupState.resourceId = hover_state.resource;
+    popupState.deps = hover_state.deps;
+    popupState.history = hover_state.historyEdge;
+
+    popupState.nodeNameId = getNameId(hover_state.node);
+    popupState.resNameId = getNameId(hover_state.resource);
+
+    popupState.fromToNameIds.clear();
+    for (const auto depId : hover_state.deps)
+      popupState.fromToNameIds.push_back(
+        eastl::pair<NodeNameId, NodeNameId>{getNameId(registryDependencies[depId].from), getNameId(registryDependencies[depId].to)});
+  }
+
+  void resolvePopupState()
+  {
+    popupState.nodeId = getRepresentId(popupState.nodeNameId);
+    popupState.resourceId = getRepresentId(popupState.resNameId);
+
+    popupState.deps.clear();
+    if (popupState.resNameId != ResNameId::Invalid && !popupState.fromToNameIds.empty())
+      for (auto [depId, dep] : registryDependencies.enumerate())
+        if (!dep.disabled && (dep.type == DependencyType::IMPLICIT_RES_HIST) == popupState.history &&
+            popupState.resNameId == getNameId(dep.resource) &&
+            eastl::find(popupState.fromToNameIds.begin(), popupState.fromToNameIds.end(),
+              eastl::pair<NodeNameId, NodeNameId>{getNameId(dep.from), getNameId(dep.to)}) != popupState.fromToNameIds.end())
+          popupState.deps.push_back(depId);
+  }
 
 
   // focusing
 private:
+  struct FocusState
+  {
+    NodeId nodeId = NodeId::Invalid;
+    ResourceId resId = ResourceId::Invalid;
+
+    NodeNameId nodeNameId = NodeNameId::Invalid;
+    ResNameId resNameId = ResNameId::Invalid;
+
+    ResourceFocusType focusType = ResourceFocusType::All;
+    bool hasRenames = false;
+
+    bool nodeValid() const { return nodeId != NodeId::Invalid; }
+    bool resValid() const { return resId != ResourceId::Invalid; }
+  } focusState;
+
   eastl::string nodeSearchInput;
   int focusedNodeIndex = UNKNOWN_INDEX;
-  struct
-  {
-    NodeId id = NodeId::Invalid;
-    bool wasChanged = false;
-
-    inline bool valid() const { return id != NodeId::Invalid; }
-  } focusedNode;
 
   eastl::string resourceSearchInput;
   int focusedResourceIndex = UNKNOWN_INDEX;
-  struct
-  {
-    ResourceId id = ResourceId::Invalid;
-    bool wasChanged = false;
-    bool hasRenames = false;
-    ResourceFocusType type = ResourceFocusType::All;
 
-    inline bool valid() const { return id != ResourceId::Invalid; }
-  } focusedResource;
-
-  void setFocusedNode(NodeId node_id);
-  void centerOnFocusedNode();
-  inline void resetFocusedNode()
+  void clearFocus()
   {
+    focusState = {};
     nodeSearchInput.clear();
     focusedNodeIndex = UNKNOWN_INDEX;
-    focusedNode = {};
-  };
-
-  void setFocusedResource(ResourceId res_id, ResourceFocusType focus_type = ResourceFocusType::All);
-  void centerOnFocusedRes();
-  inline void resetFocusedResource()
-  {
     resourceSearchInput.clear();
     focusedResourceIndex = UNKNOWN_INDEX;
-    focusedResource = {};
-  };
+  }
+
+  void setFocus(NodeNameId id)
+  {
+    clearFocus();
+
+    focusState = {
+      .nodeId = getRepresentId(id),
+      .resId = ResourceId::Invalid,
+
+      .nodeNameId = id,
+      .resNameId = ResNameId::Invalid,
+
+      .focusType = ResourceFocusType::All,
+      .hasRenames = false,
+    };
+
+    if (auto it = eastl::find(nsNodeNameIds.begin(), nsNodeNameIds.end(), id); it != nsNodeNameIds.end())
+    {
+      focusedNodeIndex = int(it - nsNodeNameIds.begin());
+      nodeSearchInput = nsNodeNames[focusedNodeIndex];
+    }
+  }
+
+  void setFocus(ResNameId id, ResourceFocusType focus_type = ResourceFocusType::All)
+  {
+    clearFocus();
+
+    focusState = {
+      .nodeId = NodeId::Invalid,
+      .resId = getRepresentId(id),
+
+      .nodeNameId = NodeNameId::Invalid,
+      .resNameId = id,
+
+      .focusType = focus_type,
+      .hasRenames = false,
+    };
+
+    if (auto it = eastl::find(nsResNameIds.begin(), nsResNameIds.end(), id); it != nsResNameIds.end())
+    {
+      focusedResourceIndex = int(it - nsResNameIds.begin());
+      resourceSearchInput = nsResNames[focusedResourceIndex];
+    }
+
+    if (focusState.resValid())
+      for (const auto [from, to] : depData.renamingChains.enumerate())
+        if ((from != id && to == id) || (from == id && to != id))
+        {
+          focusState.hasRenames = true;
+          break;
+        }
+  }
+
+  void setFocus(NodeId id) { setFocus(getNameId(id)); }
+
+  void setFocus(ResourceId id, ResourceFocusType focus_type = ResourceFocusType::All) { setFocus(getNameId(id), focus_type); }
+
+  void resolveFocusState()
+  {
+    if (focusState.nodeNameId != NodeNameId::Invalid)
+      setFocus(focusState.nodeNameId);
+    if (focusState.resNameId != ResNameId::Invalid)
+      setFocus(focusState.resNameId, focusState.focusType);
+  }
+
+  void centerOnFocus();
 
 
   // inspecting
 private:
-  struct
+  struct InspectedDependency
   {
-    DependencyId id = DependencyId::Invalid;
-    bool wasChanged = false;
+    NodeNameId fromNameId = NodeNameId::Invalid;
+    NodeNameId toNameId = NodeNameId::Invalid;
+    ResNameId resNameId = ResNameId::Invalid;
 
-    inline void set(const DependencyId dep_id)
-    {
-      id = dep_id;
-      wasChanged = true;
-    }
-    inline void reset() { set(DependencyId::Invalid); }
+    DependencyId depId = DependencyId::Invalid;
+    bool history = false;
+    bool wasChanged = false;
   } inspectedDependency;
 
-  GpuCapture gpuCapture;
-  void setCaptureBoundary(CaptureBoundary &boundary, NodeNameId id);
+  void setInspectedDependency(const DependencyId dep_id)
+  {
+    const auto &dep = registryDependencies[dep_id];
+    inspectedDependency = {
+      .fromNameId = getNameId(dep.from),
+      .toNameId = getNameId(dep.to),
+      .resNameId = getNameId(dep.resource),
+      .depId = dep_id,
+      .history = dep.type == DependencyType::IMPLICIT_RES_HIST,
+      .wasChanged = true,
+    };
+  }
+
+  void clearInspectedDependency()
+  {
+    inspectedDependency = {
+      .wasChanged = true,
+    };
+  }
+
+  void resolveInspectedDependency()
+  {
+    for (auto [depId, dep] : registryDependencies.enumerate())
+      if (!dep.disabled && inspectedDependency.resNameId == getNameId(dep.resource) &&
+          inspectedDependency.fromNameId == getNameId(dep.from) && inspectedDependency.toNameId == getNameId(dep.to) &&
+          (dep.type == DependencyType::IMPLICIT_RES_HIST) == inspectedDependency.history)
+      {
+        inspectedDependency.depId = depId;
+        inspectedDependency.wasChanged = true;
+        return;
+      }
+
+    inspectedDependency = {
+      .wasChanged = true,
+    };
+  }
 
   struct BlobInstance
   {
@@ -258,6 +409,12 @@ private:
     }
     inline void reset() { set(DependencyId::Invalid, dafg::ResourceSubtypeTag::Invalid); }
   } inspectedBlob;
+
+
+  // gpu capture
+private:
+  GpuCapture gpuCapture;
+  void setCaptureBoundary(CaptureBoundary &boundary, NodeNameId id);
 
 
   // misc functions
@@ -293,11 +450,11 @@ private:
   inline bool isResourceVisible(const ResourceId res_id) const
   {
     return res_id == ResourceId::Invalid ||
-           !userResources[res_id].hidden && (!focusedResource.valid() || focusedResource.type == ResourceFocusType::All ||
-                                              focusedResource.type == ResourceFocusType::Resource && focusedResource.id == res_id ||
-                                              focusedResource.type == ResourceFocusType::ResourceAndRenames &&
-                                                depData.renamingRepresentatives[nameIdByResId(res_id)] ==
-                                                  depData.renamingRepresentatives[nameIdByResId(focusedResource.id)]);
+           !userResources[res_id].hidden &&
+             (!focusState.resValid() || focusState.focusType == ResourceFocusType::All ||
+               focusState.focusType == ResourceFocusType::Resource && res_id == focusState.resId ||
+               focusState.focusType == ResourceFocusType::ResourceAndRenames &&
+                 depData.renamingRepresentatives[getNameId(res_id)] == depData.renamingRepresentatives[getNameId(focusState.resId)]);
   }
 
 

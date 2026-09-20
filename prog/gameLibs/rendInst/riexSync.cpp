@@ -114,7 +114,7 @@ void mark_all_loaded_pools_synced()
 {
   rendinst::ScopedRIExtraReadLock rd;
   g_pool_sync.clear();
-  g_pool_sync.syncedPoolsOffset = rendinst::getRIExtraMapSize();
+  g_pool_sync.syncedPoolsOffset = rendinst::getRiGenExtraResCount();
   debug("[riex sync] set synced pool offset to current rendinst pool count %i", g_pool_sync.syncedPoolsOffset);
 }
 

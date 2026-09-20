@@ -41,6 +41,5 @@ block(scene) dynamic_scene_trans_fom
 
   (vs) { globtm@f44 = globtm; }    //FIXME: Should be in particle_frame.
 
-  INIT_SUN_STCODE()
   INIT_ZNZFAR()
 }

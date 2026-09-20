@@ -119,17 +119,22 @@ bool use_cs_water = true;
 #define USE_CS_WATER true
 #endif
 
+static bool isUnorderedSupported(uint32_t fmt)
+{
+  return (d3d::get_texformat_usage(fmt) & d3d::USAGE_UNORDERED) == d3d::USAGE_UNORDERED;
+}
 
 uint32_t WaterNVRender::getFormatForFoam()
 {
   // interval water_cascades : two<3, three<4, four<5, five<6, one_to_four;
   // todo: could be TEXFMT_*8F is enough
-  const bool fp32Fallback = computeGradientsEnabled && d3d::get_driver_desc().issues.hasBrokenComputeFormattedOutput;
+  const bool brokenComputeFmt = d3d::get_driver_desc().issues.hasBrokenComputeFormattedOutput;
   if (oneToFourCascades)
-    return fp32Fallback ? TEXFMT_R32F : TEXFMT_R16F;
+    return (computeGradientsEnabled && (brokenComputeFmt || !isUnorderedSupported(TEXFMT_R16F))) ? TEXFMT_R32F : TEXFMT_R16F;
   if (numCascades == 2)
-    return fp32Fallback ? TEXFMT_G32R32F : TEXFMT_G16R16F;
-  return fp32Fallback ? TEXFMT_A32B32G32R32F : TEXFMT_A16B16G16R16F;
+    return (computeGradientsEnabled && (brokenComputeFmt || !isUnorderedSupported(TEXFMT_G16R16F))) ? TEXFMT_G32R32F : TEXFMT_G16R16F;
+  return (computeGradientsEnabled && (brokenComputeFmt || !isUnorderedSupported(TEXFMT_A16B16G16R16F))) ? TEXFMT_A32B32G32R32F
+                                                                                                        : TEXFMT_A16B16G16R16F;
 }
 
 void WaterNVRender::initFoam()
@@ -511,7 +516,7 @@ WaterNVRender::WaterNVRender(const NVWaveWorks_FFT_CPU_Simulation::Params &p, co
   if (computeGradientsEnabled) // Leave TEXCF_RTARGET so we are able to clear it easily if needed.
     usageFlag |= TEXCF_UNORDERED;
   unsigned fmt = TEXFMT_A16B16G16R16F;
-  if (computeGradientsEnabled && d3d::get_driver_desc().issues.hasBrokenComputeFormattedOutput)
+  if (computeGradientsEnabled && (d3d::get_driver_desc().issues.hasBrokenComputeFormattedOutput || !isUnorderedSupported(fmt)))
     fmt = TEXFMT_A32B32G32R32F;
   unsigned gradientTexFlags = fmt | usageFlag | mipflag;
 
@@ -703,7 +708,7 @@ CONSOLE_BOOL_VAL("water", debug_draw_culling_boxes, false);
 
 void WaterNVRender::setAnisotropy(int aniso, float mip_bias)
 {
-  aniso = clamp(aniso, 0, 5);
+  aniso = clamp(aniso, 0, 4);
   mip_bias = clamp(mip_bias, -1.f, 0.f);
   if (aniso == anisotropy && mip_bias == mipBias)
     return;
@@ -955,7 +960,7 @@ void WaterNVRender::calculateGradients()
       else
         d3d::set_render_target({}, DepthAccess::RW, {{foamGradient.getArrayTex(), 0, 0}});
 
-      d3d::clearview(CLEAR_DISCARD, 0, 0.f, 0);
+      d3d::clearview(DISCARD_ALL, 0, 0.f, 0);
 
       gradientFoamRenderer.render(); // vblur and render
 
@@ -1082,17 +1087,23 @@ void WaterNVRender::calculateCascadesRoughness()
   FRAME_LAYER_GUARD(-1);
 
   d3d::set_render_target({}, DepthAccess::RW, {{normals.getTex2D(), 0, 0}});
-  d3d::clearview(CLEAR_DISCARD_TARGET, 0, 0, 0);
+  d3d::clearview(DISCARD_TARGET, 0, 0, 0);
 
   for (int cascadeNo = 0; cascadeNo < numFftCascades; ++cascadeNo)
   {
     ShaderGlobal::set_int(waterNormalsCascadeNoVarId, cascadeNo);
 
-    normalsRenderer.render();
-    // generate mipmaps
-    normals.getTex2D()->generateMips();
+    {
+      // sample per cascade time with proper scoping
+      TIME_D3D_PROFILE(cascade);
+      normalsRenderer.render();
+      // generate mipmaps
+      normals.getTex2D()->generateMips();
+    }
 
-    d3d::driver_command(Drv3dCommand::D3D_FLUSH);
+    // no issues with following blocking lock on vk
+    if (!d3d::get_driver_code().is(d3d::vulkan))
+      d3d::driver_command(Drv3dCommand::D3D_FLUSH);
 
     uint16_t *data;
     int stride;
@@ -1253,8 +1264,6 @@ void WaterNVRender::render(const Point3 &origin, TEXTUREID distanceTex, int geom
 
   static int tess_distanceVarId = get_shader_variable_id("tess_distance", true);
 
-  ShaderGlobal::set_float(tess_distanceVarId, lod0AreaRadius * 0.66f);
-
   if (cascadesLodResolution0123VarId >= 0 && cascadesLodResolution4567VarId >= 0)
   {
     Color4 cascadesLodResolution0123 = Color4(0, 0, 0, 0);
@@ -1383,6 +1392,8 @@ void WaterNVRender::render(const Point3 &origin, TEXTUREID distanceTex, int geom
   float scatterFactor = clamp(safediv(origin.y - maxWaterHeight, maxScatterDist), 0.f, 1.f);
   ShaderGlobal::set_float(scatter_disappear_factorVarId, 1 - scatterFactor * scatterFactor * scatterFactor);
 
+  ShaderGlobal::set_float(tess_distanceVarId, lod0AreaRadius * 0.66f);
+
   ShaderGlobal::set_float4(water_originVarId, Color4(origin.x, origin.y, origin.z));
   ShaderGlobal::set_float4(water_heightmap_regionVarId,
     Color4(heightmapRegion.left(), heightmapRegion.top(), heightmapRegion.right(), heightmapRegion.bottom()));
@@ -1408,13 +1419,10 @@ void WaterNVRender::render(const Point3 &origin, TEXTUREID distanceTex, int geom
         waterHeightmapUseTessellation ? waterHeightmapTessFactor : 0);
       if (shElem && shElem->setStates(0, true))
       {
-        constexpr int waterRenderRegistersUsage = 522;
-        d3d::set_vs_constbuffer_register_count(waterRenderRegistersUsage);
         d3d::setvsrc(0, 0, 0);
         ShaderGlobal::set_float4(::get_shader_variable_id("water_lods_region"), lodsRegion[0].x, lodsRegion[0].y, lodsRegion[1].x,
           lodsRegion[1].y);
         d3d::draw(PRIM_4_CONTROL_POINTS, 0, waterHeightmapPatchesCount);
-        d3d::set_vs_constbuffer_register_count(0);
       }
     }
     else

@@ -3,7 +3,9 @@
 #include "modelExp.h"
 #include <assets/assetPlugin.h>
 #include <assets/assetExporter.h>
+#include <assets/assetExpCache.h>
 #include <assets/assetRefs.h>
+#include <assets/assetRefsCache.h>
 #include <assets/asset.h>
 #include <assets/assetMgr.h>
 #include <assets/assetMsgPipe.h>
@@ -12,6 +14,8 @@
 #include <libTools/shaderResBuilder/dynSceneResSrc.h>
 #include <libTools/shaderResBuilder/rendInstResSrc.h>
 #include <libTools/shaderResBuilder/globalVertexDataConnector.h>
+#include <libTools/shaderResBuilder/validateAlphaTest.h>
+#include <image/dag_loadImage.h>
 #include <shaders/dag_shaders.h>
 #include <../shaders/shadersBinaryData.h>
 #include <startup/dag_startupTex.h>
@@ -37,14 +41,38 @@ public:
 
   const char *__stdcall getAssetType() const override { return "prefab"; }
 
-  void __stdcall onRegister() override {}
-  void __stdcall onUnregister() override {}
+  void __stdcall onRegister() override
+  {
+    G_ASSERT(!refsCache);
+    refsCache = AssetRefsCache::createCache(getAssetType(), PrefabGameResClassId, appBlkCopy);
+  }
+
+  void __stdcall onUnregister() override { refsCache.reset(); }
 
   void __stdcall getAssetRefs(DagorAsset &a, Tab<Ref> &refs) override
   {
-    refs.clear();
-    add_dag_texture_and_proxymat_refs(a.getTargetFilePath(), refs, a);
+    // NOTE: increase ASSET_REFERENCES_CACHE_FILE_VERSION if the asset reference gathering logic changes.
+
+    setup_tex_subst(a.props);
+
+    Tab<SimpleString> srcFiles(tmpmem);
+    srcFiles.push_back() = a.getTargetFilePath();
+
+    if (!refsCache || !refsCache->get(a, srcFiles, {}, refs))
+    {
+      refs.clear();
+      const bool parsedOk = add_dag_texture_and_proxymat_refs(srcFiles[0], refs, a);
+      if (refsCache)
+        refsCache->put(a, srcFiles, {}, refs, parsedOk);
+    }
+
+    reset_tex_subst();
   }
+
+private:
+  static constexpr unsigned PrefabGameResClassId = 0x0BD4F106u; // Prefab
+
+  eastl::unique_ptr<AssetRefsCache> refsCache;
 };
 
 
@@ -57,6 +85,18 @@ struct DabuildIntStrPair
 static Tab<DabuildIntStrPair> shaderBinFnameAlt(inimem);
 static unsigned curLoadedShaderTarget = 0;
 
+// Content hash of the dump file that load_shaders_for_target() read for curLoadedShaderTarget.
+static uint8_t curLoadedShaderBinMd5Hash[AssetExportCache::HASH_SZ] = {};
+
+// The one dump that load_shaders_for_target() reads for the target.
+static const char *get_shdump_for_target(unsigned tc)
+{
+  for (const DabuildIntStrPair &alt : shaderBinFnameAlt)
+    if (alt.code == tc)
+      return alt.fn;
+  return shaderBinFname;
+}
+
 void add_shdump_deps(Tab<SimpleString> &files)
 {
   if (shadermeshbuilder_strip_d3dres)
@@ -65,6 +105,25 @@ void add_shdump_deps(Tab<SimpleString> &files)
   for (int i = 0; i < shaderBinFnameAlt.size(); i++)
     files.push_back() = shaderBinFnameAlt[i].fn;
 }
+
+bool get_shdump_id_for_ref_gather(bool may_process, uint8_t out_hash[AssetExportCache::HASH_SZ],
+  dag::ConstSpan<uint8_t> &out_hash_span)
+{
+  out_hash_span = {};
+  if (!may_process || shadermeshbuilder_strip_d3dres)
+    return true;
+
+  // Hash the dump that is loaded. When none is loaded yet, hash the file that the gathering will load.
+  const unsigned tc = _MAKE4C('PC');
+  if (curLoadedShaderTarget == tc)
+    memcpy(out_hash, curLoadedShaderBinMd5Hash, AssetExportCache::HASH_SZ);
+  else if (!AssetExportCache::sharedDataGetFileHash(get_shdump_for_target(tc), out_hash))
+    return false;
+
+  out_hash_span = make_span_const(out_hash, AssetExportCache::HASH_SZ);
+  return true;
+}
+
 void load_shaders_for_target(unsigned tc)
 {
   static const size_t suffix_len = strlen(".psXX.shdump.bin");
@@ -74,13 +133,11 @@ void load_shaders_for_target(unsigned tc)
     ::unload_shaders_bindump(true);
 
   curLoadedShaderTarget = tc;
-  const char *fn = shaderBinFname;
-  for (int i = 0; i < shaderBinFnameAlt.size(); i++)
-    if (shaderBinFnameAlt[i].code == tc)
-    {
-      fn = shaderBinFnameAlt[i].fn;
-      break;
-    }
+  const char *fn = get_shdump_for_target(tc);
+
+  if (!AssetExportCache::sharedDataGetFileHash(fn, curLoadedShaderBinMd5Hash))
+    memset(curLoadedShaderBinMd5Hash, 0, sizeof(curLoadedShaderBinMd5Hash));
+
   d3d::shadermodel::Version ver = d3d::smAny;
   if (strstr(fn, ".ps66.shdump"))
     ver = 6.6_sm;
@@ -180,6 +237,7 @@ public:
   }
   ~ModelExporterPlugin()
   {
+    AlphaTestValidation::shutdown();
     riExp = dmExp = skExp = rgExp = NULL;
     riRef = dmRef = rgRef = NULL;
   }
@@ -240,12 +298,25 @@ public:
     set_global_tex_name_resolver(this);
     ::shadermeshbuilder_strip_d3dres = appblk.getBool("strip_d3dres", false);
 
+    register_tga_tex_load_factory();
+    register_tiff_tex_load_factory();
+    register_psd_tex_load_factory();
+    register_jpeg_tex_load_factory();
+    register_png_tex_load_factory();
+    register_avif_tex_load_factory();
+
     const DataBlock *dm_blk = appblk.getBlockByNameEx("assets")->getBlockByNameEx("build")->getBlockByNameEx("dynModel");
     const DataBlock *ri_blk = appblk.getBlockByNameEx("assets")->getBlockByNameEx("build")->getBlockByNameEx("rendInst");
     if (const DataBlock *remap_blk = dm_blk->getBlockByName("remapShaders"))
       DynamicRenderableSceneLodsResSrc::setupMatSubst(*remap_blk);
     if (const DataBlock *remap_blk = ri_blk->getBlockByName("remapShaders"))
       RenderableInstanceLodsResSrc::setupMatSubst(*remap_blk);
+    if (const DataBlock *b = appblk.getBlockByNameEx("assets")->getBlockByNameEx("build")->getBlockByName("validateAlphaTest"))
+    {
+      AlphaTestValidation::init(
+        *b, []() -> DagorAssetMgr * { return cur_asset ? &cur_asset->getMgr() : nullptr; },
+        [](const char *path, IMemAlloc *mem) { return load_image(path, mem); });
+    }
     set_missing_texture_usage(false);
     set_missing_texture_name("", false);
     GlobalVertexDataConnector::allowVertexMerge = true;

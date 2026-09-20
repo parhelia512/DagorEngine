@@ -53,7 +53,6 @@ static bool displayInfo = false;
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 static Vbuffer *vcm_vb = NULL;
-static Ibuffer *vcm_ib = NULL;
 
 bool create_visclipmesh(CfgReader &cfg, bool for_game)
 {
@@ -86,8 +85,6 @@ bool create_visclipmesh(CfgReader &cfg, bool for_game)
 
   vcm_vb = d3d::create_vb((MAX_VISCLIPMESH_FACETS * 6) * sizeof(VisClipMeshVertex), SBCF_DYNAMIC, __FILE__, RESTAG_PERFMON);
   d3d_err(vcm_vb);
-  vcm_ib = d3d::create_ib(MAX_VISCLIPMESH_FACETS * 3 * sizeof(uint16_t), SBCF_DYNAMIC, "visClipMesh_ib", RESTAG_PERFMON);
-  d3d_err(vcm_ib);
 
   // vcm_consoleproc.demandInit();
   // add_con_proc(vcm_consoleproc);
@@ -127,7 +124,6 @@ void delete_visclipmesh(void)
     return;
 
   del_d3dres(vcm_vb);
-  del_d3dres(vcm_ib);
 
   shaders::overrides::destroy(clipMeshState);
 }
@@ -305,70 +301,65 @@ void render_visclipmesh(const FastRtDump &cliprtr, const Point3 &pos)
   end_render_clipmesh();
 }
 
-//==============================================================================
-void render_visclipmesh(StaticSceneRayTracer &rt, const Point3 &pos)
+struct VcmPart
+{
+  VisClipMeshVertex *vcmv = nullptr;
+  int faces = 0;
+};
+static void vcm_lock_part(VcmPart &part)
+{
+  d3d_err(vcm_vb->lockEx(0, 0, &part.vcmv, VBLOCK_WRITEONLY | VBLOCK_DISCARD));
+  part.faces = 0;
+}
+// the emit writes each face's verts in draw order, so the stream needs no index buffer
+static void vcm_draw_part(const VcmPart &part)
+{
+  d3d_err(vcm_vb->unlock());
+  if (!part.faces)
+    return;
+  d3d::draw(vcm_lines ? PRIM_LINELIST : PRIM_TRILIST, 0, part.faces * (vcm_lines ? 3 : 1));
+}
+
+void render_visclipmesh_stream(const eastl::fixed_function<sizeof(void *) * 2, void(const VisClipMeshEmit &)> &walk)
 {
   if (!vcm_use || !vcm_enable || !vcm_vb)
     return;
 
-  G_UNUSED(pos);
-
   start_render_clipmesh();
   d3d::setvsrc(0, vcm_vb, sizeof(VisClipMeshVertex));
-  d3d::setind(vcm_ib);
 
-  int firstFace = 0;
-  int facesCount = rt.getFacesCount();
-
-  const int partCount = (facesCount + MAX_VISCLIPMESH_FACETS - 1) / MAX_VISCLIPMESH_FACETS;
-
-  for (int partId = 1; partId <= partCount; ++partId)
-  {
-    VisClipMeshVertex *vcmv = NULL;
-    uint16_t *indices = NULL;
-    const int lastFace = partId * MAX_VISCLIPMESH_FACETS;
-    const int faceCount = (facesCount < lastFace) ? facesCount : lastFace;
-
-    d3d_err(vcm_vb->lockEx(0, 0, &vcmv, VBLOCK_WRITEONLY | VBLOCK_DISCARD));
-    d3d_err(vcm_ib->lock(0, 0, (void **)&indices, VBLOCK_WRITEONLY | VBLOCK_DISCARD));
-
-    uint16_t vertexNo = 0;
-
-    for (int faceId = firstFace; faceId < faceCount; ++faceId)
+  VcmPart part;
+  vcm_lock_part(part);
+  walk([&part](vec3f a, vec3f b, vec3f c, int phys_mat_id) {
+    if (part.faces == MAX_VISCLIPMESH_FACETS)
     {
-      E3DCOLOR color = E3DCOLOR(255, 100, 100, 128);
-
-      for (int i = 0; i < 3; ++i)
+      vcm_draw_part(part);
+      vcm_lock_part(part);
+    }
+    // a face whose node carries no own material answers PHYSMAT_INVALID, which the table refuses
+    const E3DCOLOR color = PhysMat::getMaterial(phys_mat_id < 0 ? PHYSMAT_DEFAULT : phys_mat_id).vcm_color;
+    Point3 p3[3];
+    v_stu_p3(&p3[0].x, a);
+    v_stu_p3(&p3[1].x, b);
+    v_stu_p3(&p3[2].x, c);
+    for (int i = 0; i < 3; ++i)
+    {
+      part.vcmv->pos = p3[i];
+      part.vcmv->color = color;
+      part.vcmv++;
+      if (vcm_lines)
       {
-        vcmv->pos = rt.verts(rt.faces(faceId).v[i]);
-        vcmv->color = color;
-        vcmv++;
-        *(indices) = vertexNo;
-        indices++;
-
-        vertexNo++;
-
-        if (vcm_lines)
-        {
-          vcmv->pos = rt.verts(rt.faces(faceId).v[(i > 0) ? (i - 1) : 2]);
-          vcmv->color = color;
-          vcmv++;
-        }
+        part.vcmv->pos = p3[(i > 0) ? (i - 1) : 2];
+        part.vcmv->color = color;
+        part.vcmv++;
       }
     }
-
-    d3d_err(vcm_vb->unlock());
-    d3d_err(vcm_ib->unlock());
-    if (vcm_lines)
-      d3d::draw(PRIM_LINELIST, 0, (faceCount - firstFace) * 3);
-    else
-      d3d::drawind(PRIM_TRILIST, 0, (faceCount - firstFace), 0);
-
-    firstFace = faceCount;
-  }
-
+    ++part.faces;
+  });
+  vcm_draw_part(part);
   end_render_clipmesh();
 }
+
 
 //==============================================================================
 void render_visclipmesh(const FastRtDumpManager &cliprtr, const Point3 &pos)

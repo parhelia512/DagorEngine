@@ -254,7 +254,8 @@ macro USE_DAGDP_COMMON_HEIGHTMAP(isStage1)
 
       GroupMemoryBarrierWithGroupSync();
 
-      uint baseInstanceOffset = g_storage[rInfo.baseThreadId];
+      // branchless mask out Out-Of-Range address error when rInfo.baseThreadId == ~0
+      uint baseInstanceOffset = g_storage[rInfo.baseThreadId & (TILE_INSTANCE_COUNT - 1)];
       BRANCH
       if (isPlaced && baseInstanceOffset != ~0u)
       {

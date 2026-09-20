@@ -117,6 +117,7 @@ text styling, and inline embedded components. Handles text parsing and layout fo
 - ``maxContentWidth`` – float. Maximum text width before wrapping.
 - ``valign`` – enum. Vertical alignment (top/center/bottom).
 - ``monoWidth`` – float/bool. Monospace width override.
+* ``breakLongWords`` — bool, break a word that is wider than the text area across lines, at any character. Default: true.
 
 **Embedded Components**
 
@@ -281,6 +282,8 @@ Calls a handler when layout is recalculated, useful for responding to size chang
 **Properties**
 
 - ``onRecalcLayout([initial[, elemRef]])`` – function. Called on layout recalculation.
+  The call is deferred and skipped if the element was detached before the call;
+  put detach-time effects in ``onDetach``.
 
 RtPropUpdate
 ------------
@@ -358,6 +361,38 @@ Handles mouse wheel events to scroll the element content, with configurable step
 - ``wheelStep`` – float. Scroll amount per wheel notch (default: 0.2).
 - ``orientation`` – enum (horizontal/vertical). Scroll direction (default: vertical).
 - ``onWheelScroll(delta)`` – function. Called on wheel scroll with delta amount.
+
+VirtualList
+-----------
+Builds only the items that fall inside the scroll viewport. Items come from ``virtualItems``
+instead of ``children``; the runs skipped before and after the window become empty spacer
+children, so the content extent, and the scrollbar with it, still cover the whole list.
+
+Every item must lay out at exactly its declared height and carry no margin on the flow axis, and
+the container no ``gap`` - a spacer stands in for a whole run of items, and it can only reproduce
+what the heights declared. ``children`` and ``sortChildren`` must be left unset too: each of them
+breaks the mapping from a built child back to its item. The flow axis must stay aligned to its
+start - ``ALIGN_CENTER`` and ``ALIGN_RIGHT_OR_BOTTOM`` offset the children by the size of what was
+built, which for a window is not the size of the list. The component has to be defined by a
+function, because moving the window rebuilds it.
+
+The window is recomputed in ``STAGE_ACT``, which runs after the rebuild pass, so a new window
+reaches the screen one frame after the scroll that called for it. ``virtualOverscan`` lowers how
+often that happens; it cannot remove the lag.
+
+**Properties**
+
+- ``virtualItems`` – array of component descriptions. Used instead of ``children``. Unlike
+  ``children``, a null entry is not skipped: it keeps the height declared for it and leaves an
+  empty slot, since the heights are matched to the items by position. To drop a row, leave it out
+  of both this and ``virtualItemHeights``. A builder entry must return a description and never
+  ``null``: a null result lays out at nothing and loses the height declared for it.
+- ``virtualItemHeight`` – float. Size of one item along the flow axis.
+- ``virtualItemHeights`` – array of float, one per item. Overrides ``virtualItemHeight``.
+- ``virtualTail`` – array of component descriptions built after every item, whatever the window.
+  Their own size covers the end of the content, so their height need not be declared.
+- ``virtualOverscan`` – integer. Items kept built beyond the viewport (default: 3).
+- ``virtualInitialCount`` – integer. Window size before the first layout (default: 32).
 
 Movie
 -----

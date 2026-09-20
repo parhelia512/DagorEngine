@@ -373,6 +373,12 @@ public:
       objectTypeTreeItem->setExpandedRecursive(expand);
   }
 
+  void expandParents(OutlinerTreeItem &tree_item)
+  {
+    for (OutlinerTreeItem *parent = tree_item.getParent(); parent != &rootTreeItem; parent = parent->getParent())
+      parent->setExpanded(true);
+  }
+
   void loadOutlinerState(IOutliner &tree_interface, const DataBlock &state)
   {
     if (const DataBlock *expansionState = state.getBlockByName("expansion"))
@@ -877,6 +883,17 @@ public:
     }
 
     return objects;
+  }
+
+  ObjectTreeItem *getFirstSelectedObjectTreeItem() const
+  {
+    for (const ObjectTypeTreeItem *objectTypeTreeItem : filteredObjectTypes)
+      for (const LayerTreeItem *layerTreeItem : objectTypeTreeItem->filteredLayers)
+        for (ObjectTreeItem *objectTreeItem : layerTreeItem->filteredSortedObjects)
+          if (objectTreeItem->isSelected())
+            return objectTreeItem;
+
+    return nullptr;
   }
 
   OutlinerTreeItem *getSelectionHead() const { return (focusedTreeItem && focusedTreeItem->isSelected()) ? focusedTreeItem : nullptr; }

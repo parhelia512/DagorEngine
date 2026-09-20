@@ -5,6 +5,7 @@
 #include <math/dag_TMatrix.h>
 #include <math/dag_frustum.h>
 #include <math/integer/dag_IPoint2.h>
+#include <math/dag_adjpow2.h>
 #include <daECS/core/ecsQuery.h>
 #include <daECS/core/componentTypes.h>
 #include <daECS/core/entitySystem.h>
@@ -23,6 +24,9 @@
 #include <rendInst/riShaderConstBuffers.h>
 #include <rendInst/rendInstExtra.h>
 #include <rendInst/rendInstExtraAccess.h>
+#include <rendInst/rendInstGen.h>
+#include <startup/dag_globalSettings.h>
+#include <ioSys/dag_dataBlock.h>
 #include <perfMon/dag_statDrv.h>
 #include <3d/dag_lockSbuffer.h>
 #include <ecs/rendInst/riExtra.h>
@@ -97,7 +101,12 @@ namespace gpu_objects
   VAR(gpu_objects_bvh_counter)                         \
   VAR(gpu_objects_bvh_max_count)                       \
   VAR(gpu_objects_bvh_instances)                       \
-  VAR(gpu_objects_bvh_mappings)
+  VAR(gpu_objects_bvh_mappings)                        \
+  VAR(gpu_objects_sort_src)                            \
+  VAR(gpu_objects_sort_dst)                            \
+  VAR(gpu_objects_sort_pow2)                           \
+  VAR(gpu_objects_sort_block)                          \
+  VAR(gpu_objects_sort_stride)
 
 
 #define VAR(a) static int a##VarId = -1;
@@ -140,6 +149,14 @@ VolumePlacer::VolumePlacer()
   objectRemover.reset(new_compute_shader("gpu_objects_remove_objects_cs", true));
   decalMover.reset(new_compute_shader("gpu_objects_move_decals_into_placer_bbox_cs", true));
   matrixCopier.reset(new_compute_shader("gpu_objects_copy_matrices_cs", true));
+#if DAGOR_DBGLEVEL > 0
+  deterministicPlacement = dgs_get_settings()->getBlockByNameEx("debug")->getBool("volume_placer_deterministic_placement", false);
+  if (deterministicPlacement)
+  {
+    sortTriangles.reset(new_compute_shader("gpu_objects_sort_triangles_cs", true));
+    fillSortSentinels.reset(new_compute_shader("gpu_objects_fill_sort_sentinels_cs", true));
+  }
+#endif
   readbackPending = false;
 #define VAR(a) a##VarId = get_shader_variable_id(#a, true);
   GLOBAL_VARS_LIST
@@ -156,18 +173,29 @@ VolumePlacer::PrefixSumShaders::PrefixSumShaders()
 
 void VolumePlacer::PrefixSumShaders::calculate(Sbuffer *gathered_triangles)
 {
+  // the gather buffer is allocated only when a box really has static geometry
+  if (!gathered_triangles)
+    return;
+
   TIME_D3D_PROFILE(VolumePlacer_prefixSum)
   {
     STATE_GUARD_NULLPTR(d3d::set_rwbuffer(STAGE_CS, 0, VALUE), groupCountIndirect.getBuf());
     getGroupCount->dispatch(1, 1, 1);
+    d3d::resource_barrier({groupCountIndirect.getBuf(), RB_RO_INDIRECT_BUFFER});
   }
   STATE_GUARD_NULLPTR(d3d::set_rwbuffer(STAGE_CS, 0, VALUE), gathered_triangles);
   ShaderGlobal::set_int(gpu_objects_sum_area_stepVarId, 0);
   sumSteps->dispatch_indirect(groupCountIndirect.getBuf(), 0);
+  // step0 writes block-local prefix sums and block totals; step1 reads them.
+  d3d::resource_barrier({gathered_triangles, RB_FLUSH_UAV | RB_SOURCE_STAGE_COMPUTE | RB_STAGE_COMPUTE});
   ShaderGlobal::set_int(gpu_objects_sum_area_stepVarId, 1);
   sumSteps->dispatch(1, 1, 1);
+  // step1 writes the block-prefix scan; step2 reads it to propagate forward.
+  d3d::resource_barrier({gathered_triangles, RB_FLUSH_UAV | RB_SOURCE_STAGE_COMPUTE | RB_STAGE_COMPUTE});
   ShaderGlobal::set_int(gpu_objects_sum_area_stepVarId, 2);
   sumSteps->dispatch_indirect(groupCountIndirect.getBuf(), DISPATCH_INDIRECT_ARGS * sizeof(uint32_t));
+  // The placer reads the final cumulative array.
+  d3d::resource_barrier({gathered_triangles, RB_RO_SRV | RB_STAGE_COMPUTE});
 }
 
 template <class T>
@@ -562,6 +590,71 @@ void VolumePlacer::moveDecals(int count, int ri_idx, int buf_offset, const TMatr
   decalMover->dispatchThreads(count, 1, 1);
 }
 
+void VolumePlacer::sortGatheredTriangles()
+{
+#if DAGOR_DBGLEVEL > 0
+  if (!sortTriangles || !fillSortSentinels)
+    return;
+
+  // The gather buffer is allocated pow2-sized in dev builds, so the whole
+  // buffer is the sort range. The fill shader reads the live triangle count
+  // from the GPU counter, so this never depends on the (unavailable) CPU
+  // readback count.
+  const int pow2 = gatheredTrianglesBuffer ? gatheredTrianglesBuffer->getNumElements() : 0;
+  if (pow2 < 2)
+    return;
+  G_ASSERTF(is_pow_of2(pow2),
+    "Gathered triangles buffer size %d is not a power of 2. It is mandatory for the bitonic sort and deterministic placement!", pow2);
+
+  if (sortTrianglesBufSize < pow2)
+  {
+    sortTrianglesBuf.close();
+    sortTrianglesBuf = dag::buffers::create_ua_sr_structured(sizeof(GeometryTriangle), pow2, "gpu_objects_sort_triangles",
+      d3d::buffers::Init::No, RESTAG_GPUOBJ);
+    sortTrianglesBufSize = pow2;
+  }
+
+  TIME_D3D_PROFILE(VolumePlacer_sortGatheredTriangles);
+
+  // Flush the gather's counter writes before the sort (which reads the live
+  // triangle count from the counter as SRV) and the terrain count shader.
+  d3d::resource_barrier({counterBuffer.getBuf(), RB_RO_SRV | RB_SOURCE_STAGE_COMPUTE | RB_STAGE_COMPUTE});
+
+  Sbuffer *gathered = gatheredTrianglesBuffer.getBuf();
+  ShaderGlobal::set_int(gpu_objects_sort_pow2VarId, pow2);
+
+  // Fill [count, pow2) with sentinel triangles (vertex data = 0xFFFFFFFF, area = +inf).
+  ShaderGlobal::set_buffer(gpu_objects_sort_dstVarId, gathered);
+  fillSortSentinels->dispatchThreads(pow2, 1, 1);
+
+  // Ping-pong bitonic sort
+  Sbuffer *srcBuf = gathered;
+  Sbuffer *dstBuf = sortTrianglesBuf.getBuf();
+  for (int block = 2; block <= pow2; block <<= 1)
+    for (int stride = block >> 1; stride >= 1; stride >>= 1)
+    {
+      ShaderGlobal::set_int(gpu_objects_sort_blockVarId, block);
+      ShaderGlobal::set_int(gpu_objects_sort_strideVarId, stride);
+      ShaderGlobal::set_buffer(gpu_objects_sort_srcVarId, srcBuf);
+      ShaderGlobal::set_buffer(gpu_objects_sort_dstVarId, dstBuf);
+      d3d::resource_barrier({dstBuf, RB_FLUSH_UAV | RB_SOURCE_STAGE_COMPUTE | RB_STAGE_COMPUTE});
+      d3d::resource_barrier({srcBuf, RB_RO_SRV | RB_SOURCE_STAGE_COMPUTE | RB_STAGE_COMPUTE});
+      sortTriangles->dispatchThreads(pow2 / 2, 1, 1);
+      eastl::swap(srcBuf, dstBuf);
+    }
+
+  if (srcBuf != gathered)
+  {
+    d3d::resource_barrier({srcBuf, RB_RO_COPY_SOURCE | RB_SOURCE_STAGE_COMPUTE});
+    srcBuf->copyTo(gathered, 0, 0, pow2 * (int)sizeof(GeometryTriangle));
+  }
+  else
+  {
+    d3d::resource_barrier({gathered, RB_FLUSH_UAV | RB_SOURCE_STAGE_COMPUTE | RB_STAGE_COMPUTE});
+  }
+#endif
+}
+
 bool VolumePlacer::placeInBox(int count, int ri_idx, int buf_offset, const TMatrix &transform, const Point2 &scale_range,
   const Point4 &up_vector_threshold, const Point2 &distance_based_scale, float min_scale_radius, bool on_geometry,
   float min_triangle_size, float triangle_edge_length_ratio_cutoff, int on_rendinst_geometry_count, int on_terrain_geometry_count,
@@ -683,8 +776,6 @@ bool VolumePlacer::gatherGeometryInBox(const TMatrix &transform, float min_trian
     int numFaces;
     int baseVertex;
     int stride;
-    int materialId;
-    BBox3 bbox; // only for extreme parameter check
   };
   dag::Vector<MeshInfo, framemem_allocator> geometryMeshes;
   if (!out_handles.empty())
@@ -720,11 +811,26 @@ bool VolumePlacer::gatherGeometryInBox(const TMatrix &transform, float min_trian
 
     numFaces = min(numFaces, MAX_GATHERED_TRIANGLES);
 
+    // Deterministic placement requires a pow2-sized gather buffer.
+    // The behavior for rel build and dev without deterministic placement is to expand the buffer to fit the numFaces.
+    // The behavior for dev with deterministic placement is to expand the buffer to the next pow2 size.
+    // gatheredTrianglesBufferSize always equals to the maximum numFaces by design.
     if (gatheredTrianglesBufferSize < numFaces)
     {
-      gatheredTrianglesBuffer.close();
-      gatheredTrianglesBuffer = dag::buffers::create_ua_sr_structured(sizeof(GeometryTriangle), numFaces,
-        "gpu_objects_gathered_triangles", d3d::buffers::Init::No, RESTAG_GPUOBJ);
+      int newGatheredTrianglesBufferElemCount = numFaces;
+#if DAGOR_DBGLEVEL > 0
+      int currentGatheredTrianglesBufferElemCount = gatheredTrianglesBuffer ? gatheredTrianglesBuffer->getNumElements() : 0;
+      if (deterministicPlacement)
+      {
+        newGatheredTrianglesBufferElemCount = get_bigger_pow2(numFaces);
+      }
+      if (currentGatheredTrianglesBufferElemCount < newGatheredTrianglesBufferElemCount)
+#endif
+      {
+        gatheredTrianglesBuffer.close();
+        gatheredTrianglesBuffer = dag::buffers::create_ua_sr_structured(sizeof(GeometryTriangle), newGatheredTrianglesBufferElemCount,
+          "gpu_objects_gathered_triangles", d3d::buffers::Init::No, RESTAG_GPUOBJ);
+      }
       gatheredTrianglesBufferSize = numFaces;
     }
     if (geometryMeshesBufferSize < geometryMeshes.size() || !geometryMeshesBuffer)
@@ -765,7 +871,6 @@ bool VolumePlacer::gatherGeometryInBox(const TMatrix &transform, float min_trian
   }
 
   d3d::zero_rwbufi(counterBuffer.getBuf());
-  STATE_GUARD_NULLPTR(d3d::set_rwbuffer(STAGE_CS, 1, VALUE), counterBuffer.getBuf());
 
   ShaderGlobal::set_float(gpu_objects_min_gathered_triangle_sizeVarId, min_triangle_size);
   ShaderGlobal::set_float(gpu_objects_cutoff_ratioVarId, triangle_edge_length_ratio_cutoff);
@@ -775,6 +880,9 @@ bool VolumePlacer::gatherGeometryInBox(const TMatrix &transform, float min_trian
   if (!geometryMeshes.empty())
   {
     STATE_GUARD_NULLPTR(d3d::set_rwbuffer(STAGE_CS, 0, VALUE), gatheredTrianglesBuffer.getBuf());
+    // counter is bound as UAV (reg 1) only for the gather, then released so the
+    // dev sort can read it as SRV without an SRV/UAV overlap.
+    STATE_GUARD_NULLPTR(d3d::set_rwbuffer(STAGE_CS, 1, VALUE), counterBuffer.getBuf());
     ShaderGlobal::set_int(gpu_objects_max_trianglesVarId, gatheredTrianglesBufferSize);
 
     TIME_D3D_PROFILE(VolumePlacer_gatherTriangles)
@@ -792,9 +900,18 @@ bool VolumePlacer::gatherGeometryInBox(const TMatrix &transform, float min_trian
     d3d::resource_barrier({gatheredTrianglesBuffer.getBuf(), RB_FLUSH_UAV | RB_SOURCE_STAGE_COMPUTE | RB_STAGE_COMPUTE});
   }
 
-  d3d::resource_barrier({counterBuffer.getBuf(), RB_FLUSH_UAV | RB_SOURCE_STAGE_COMPUTE | RB_STAGE_COMPUTE});
+#if DAGOR_DBGLEVEL > 0
+  // Sort the gathered triangles by a stable vertex key right after the gather, before the count shader and the readback.
+  if (deterministicPlacement && !geometryMeshes.empty())
+  {
+    sortGatheredTriangles();
+  }
+  else
+#endif
+    d3d::resource_barrier({counterBuffer.getBuf(), RB_FLUSH_UAV | RB_SOURCE_STAGE_COMPUTE | RB_STAGE_COMPUTE});
 
   {
+    STATE_GUARD_NULLPTR(d3d::set_rwbuffer(STAGE_CS, 1, VALUE), counterBuffer.getBuf());
     TIME_D3D_PROFILE(VolumePlacer_terrainCount)
     int maxTerrainObjectsCount = getMaxTerrainObjectsCount(transform, density);
     ShaderGlobal::set_int(gpu_objects_max_on_terrain_instance_countVarId, maxTerrainObjectsCount);
@@ -1009,11 +1126,15 @@ void VolumePlacer::RingBuffer::invalidate()
   {
     gpu_object_placer_invalidate_ecs_query(*g_entity_mgr,
       [&](bool &gpu_object_placer__filled, int &gpu_object_placer__buffer_offset, int &gpu_object_placer__distance_emitter_buffer_size,
-        int &gpu_object_placer__decal_buffer_size) {
+        int &gpu_object_placer__decal_buffer_size, int &gpu_object_placer__buffer_size,
+        int &gpu_object_placer__on_rendinst_geometry_count, int &gpu_object_placer__on_terrain_geometry_count) {
         gpu_object_placer__filled = false;
         gpu_object_placer__buffer_offset = -1;
-        gpu_object_placer__distance_emitter_buffer_size = 0;
         gpu_object_placer__decal_buffer_size = 0;
+        gpu_object_placer__distance_emitter_buffer_size = 0;
+        gpu_object_placer__buffer_size = -1;
+        gpu_object_placer__on_rendinst_geometry_count = 0;
+        gpu_object_placer__on_terrain_geometry_count = 0;
       });
     releasedBufferRecords.clear();
   }
@@ -1327,6 +1448,12 @@ static bool volume_placer_console_handler(const char *argv[], int argc)
     tm.setcol(3, box.center());
 
     gpu_objects::get_volume_placer_mgr()->addEraseBox(boxmin, boxmax, tm);
+  }
+  CONSOLE_CHECK_NAME_EX("volume_placer", "regatherGeometry", 1, 1, "Regathers geometry for volume placers", "")
+  {
+    // Invalidate the matrices buffer and makes all volume placers ready to regather geometry on the next frame.
+    if (auto mgr = gpu_objects::get_volume_placer_mgr())
+      mgr->matricesBuffer.invalidate();
   }
   return found;
 }

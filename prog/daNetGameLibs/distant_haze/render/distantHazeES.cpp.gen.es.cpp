@@ -26,7 +26,7 @@ static ecs::EntitySystemDesc init_distant_haze_manager_es_event_handler_es_desc
   empty_span(),
   empty_span(),
   empty_span(),
-  ecs::EventSetBuilder<OnLevelLoaded>::build(),
+  ecs::EventSetBuilder<EventRenderSceneLoaded>::build(),
   0
 ,"render");
 static constexpr ecs::ComponentDesc distant_haze_settings_tracking_es_comps[] =

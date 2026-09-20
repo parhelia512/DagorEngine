@@ -5,7 +5,7 @@
 #include <render/resourceSlot/nodeHandleWithSlotsAccess.h>
 #include <shaders/dag_postFxRenderer.h>
 #include <math/integer/dag_IPoint2.h>
-#include <render/world/cameraParams.h>
+#include <render/cameraParams.h>
 #include <render/daFrameGraph/nodeHandle.h>
 
 class DeepLearningSuperSampling : public AntiAliasing

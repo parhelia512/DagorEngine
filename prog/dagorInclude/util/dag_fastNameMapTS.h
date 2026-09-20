@@ -7,10 +7,11 @@
 #include <util/dag_oaHashNameMap.h>
 #include <osApiWrappers/dag_rwLock.h>
 #include <osApiWrappers/dag_atomic.h>
+#include <util/dag_compilerDefs.h>
 
 // thread safe FastNameMap (with read-write lock)
 template <bool case_insensitive = false, typename RWLockMutexClass = OSReadWriteLock>
-struct FastNameMapTS : protected OAHashNameMap<case_insensitive>
+struct DAGOR_WARN_IF_UNUSED FastNameMapTS : protected OAHashNameMap<case_insensitive>
 {
 protected:
   uint32_t namesCount = 0;

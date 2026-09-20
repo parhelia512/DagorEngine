@@ -25,6 +25,8 @@ public:
 
   void setEnabled(bool enabled) override { controlEnabled = enabled; }
 
+  const char *getImguiTypeName() const override { return "RadioButton"; }
+
   void updateImgui() override
   {
     ScopedImguiBeginDisabled scopedDisabled(!controlEnabled);
@@ -32,6 +34,7 @@ public:
     setFocusToNextImGuiControlIfRequested();
 
     const bool clicked = ImGui::RadioButton(controlCaption, checked);
+    setImguiTestItemInfo();
     const bool doubleClicked = ImGui::IsItemHovered() && ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left);
 
     setPreviousImguiControlTooltip();

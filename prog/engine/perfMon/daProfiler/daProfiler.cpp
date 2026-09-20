@@ -71,7 +71,14 @@ __forceinline void ProfilerData::addLeafEvent(uint32_t description, uint64_t sta
   if (DAGOR_UNLIKELY(!storage))
     return;
 
-  storage->events.push_back(EventData{start, end, description, more_safe_get(storage->depth)});
+  const uint32_t depth = more_safe_get(storage->depth);
+  storage->events.push_back(EventData{start, end, description, depth});
+  if (DAGOR_LIKELY(depth != 0)) // a scoped event is open, so endEvent will free for us
+    return;
+  // A thread emitting only leaf events never reaches endEvent, so this is its one chance to free.
+  const uint64_t freeTick = safe_first_needed_tick();
+  if (DAGOR_UNLIKELY(storage->nextFreeEventTick < freeTick))
+    storage->freeEventChunks(freeTick, end);
 }
 
 __forceinline EventData *ProfilerData::startEvent(uint32_t description, ThreadStorage *&storage)

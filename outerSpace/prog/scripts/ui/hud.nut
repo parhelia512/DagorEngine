@@ -1,12 +1,12 @@
+import "dng.behaviors" as DngBhv
+from "net" import get_sync_time
 from "%darg/ui_imports.nut" import *
 from "math" import min
 from "string" import format
 
-let DngBhv = require("dng.behaviors")
-let {mkActionText, getControlsByGroupTag} = require("%scripts/ui/input_hints.nut")
-let {dtext, textBtn } = require("%scripts/ui/widgets/simpleComponents.nut")
-let {mkChatUi} = require("%scripts/ui/chat.nut")
-let {get_sync_time} = require("net")
+let { mkActionText, getControlsByGroupTag } = require("%scripts/ui/input_hints.nut")
+let { dtext, textBtn } = require("%scripts/ui/widgets/simpleComponents.nut")
+let { mkChatUi } = require("%scripts/ui/chat.nut")
 let ecs = require("%dngscripts/ecs.nut")
 let { exit_game, sessionResult, levelLoaded, isDisableMenu } = require("%scripts/ui/app_state.nut")
 let { sound_play } = require("%dngscripts/sound_system.nut")

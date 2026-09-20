@@ -84,6 +84,10 @@
   uint3 or(uint3 a, uint3 b) { return a || b; }
   uint4 or(uint4 a, uint4 b) { return a || b; }
 
+  bool2 select(bool2 a, bool2 b, bool2 c) { return a ? b : c; }
+  bool3 select(bool3 a, bool3 b, bool3 c) { return a ? b : c; }
+  bool4 select(bool4 a, bool4 b, bool4 c) { return a ? b : c; }
+
   #ifndef NBS_PS_DEFINED
     bool2 and(bool2 a, bool2 b) { return a && b; }
     bool3 and(bool3 a, bool3 b) { return a && b; }

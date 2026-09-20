@@ -30,6 +30,6 @@ public:
   void start(const ToroidalStaticShadows &static_shadows);
   void reset();
 
-  const char *getJobName(bool &) const override { return "ri_shadow_cull_bboxes_loader"; }
+  const char *getJobName(bool &) const override { return DAPROFILER_STRING("ri_shadow_cull_bboxes_loader"); }
   virtual void doJob() override;
 };

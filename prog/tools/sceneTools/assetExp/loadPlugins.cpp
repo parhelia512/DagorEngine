@@ -33,7 +33,8 @@ static IDaBuildPlugin *loadSingleExporterPlugin(get_dabuild_plugin_t get_plugin,
   IDaBuildPlugin *p = get_plugin();
   if (!p)
     return nullptr;
-  if (!p->init(appblk))
+
+  if (!dabuild_plugin_init(*p, appblk))
   {
     p->destroy();
     return nullptr;

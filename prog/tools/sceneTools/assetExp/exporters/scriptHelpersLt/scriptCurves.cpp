@@ -5,7 +5,15 @@
 #include "tunedParams.h"
 #include <math/dag_curveParams.h>
 #include <math/dag_Point2.h>
+// This lib normally carries its own copy of the propPanel curve math for
+// exporter builds that do not link propPanel. When the final binary links the
+// real propPanel too (embedded dabuild in a game with propPanel UI), the copy
+// would clash at link time, so take only the header then.
+#if SCRIPT_HELPERS_EXTERN_CURVE_MATH
+#include "../../../../libTools/propPanel/commonWindow/w_curve_math.h"
+#else
 #include "../../../../libTools/propPanel/commonWindow/w_curve_math.cpp"
+#endif
 
 #include <debug/dag_debug.h>
 

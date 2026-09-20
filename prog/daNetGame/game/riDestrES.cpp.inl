@@ -133,7 +133,7 @@ static void on_ridestr_changed_server(
 
 // A restored tree can be destroyed again, which would add a second entry with the same
 // key to unsynced_destr_data; drop the stale unsent destruction to keep entries unique.
-static void on_ridestr_restored_server(const rendinst::RendInstDesc &restorable_desc)
+static void on_ridestr_restored_server(const rendinst::RendInstDesc &restorable_desc, const TMatrix &)
 {
   G_ASSERT(is_server());
   if (sceneload::unload_in_progress || unsynced_destr_data.empty())
@@ -244,7 +244,7 @@ static void destroy_entities_in_box(const bbox3f &bbox)
 }
 
 
-static void on_ri_destroyed_net_client_cb(rendinst::riex_handle_t riex_handle, const TMatrix &tm, const BBox3 &box)
+static void on_ri_destroyed_net_client_cb(rendinst::riex_handle_t riex_handle, const TMatrix &tm, const BBox3 &box, const BBox3 &)
 {
   G_ASSERT(!is_server());
   if (sceneload::unload_in_progress)
@@ -258,7 +258,7 @@ static void on_ri_destroyed_net_client_cb(rendinst::riex_handle_t riex_handle, c
   g_entity_mgr->broadcastEvent(EventRendinstDestroyed(riex_handle, tm, box));
 }
 
-static void on_ri_destroyed_server_cb(rendinst::riex_handle_t riex_handle, const TMatrix &tm, const BBox3 &box)
+static void on_ri_destroyed_server_cb(rendinst::riex_handle_t riex_handle, const TMatrix &tm, const BBox3 &box, const BBox3 &)
 {
   // Only server have authority to destroy entities that have replication component,
   // set another callback if you need client code to be executed on rendinst destruction
@@ -298,20 +298,32 @@ static void on_ri_destroyed_server_cb(rendinst::riex_handle_t riex_handle, const
   g_entity_mgr->broadcastEventImmediate(EventRendinstDestroyed(riex_handle, tm, box));
 }
 
-static void on_ri_destroyed_render_cb(rendinst::riex_handle_t, const TMatrix &tm, const BBox3 &box)
+// visual invalidates during scene unload would touch a renderer being torn down
+static IRenderWorld *renderer_unless_unloading()
 {
   IRenderWorld *renderer = get_world_renderer();
-  if (renderer && !sceneload::unload_in_progress)
+  return sceneload::unload_in_progress ? nullptr : renderer;
+}
+
+static void on_ri_destroyed_render_cb(rendinst::riex_handle_t, const TMatrix &tm, const BBox3 &, const BBox3 &full_bbox)
+{
+  if (IRenderWorld *renderer = renderer_unless_unloading())
   {
-    mat44f mat;
-    v_mat44_make_from_43cu_unsafe(mat, tm.array);
-    bbox3f vFullBBox;
-    v_bbox3_init(vFullBBox, mat, v_ldu_bbox3(box));
-    BBox3 fullBBox;
-    v_stu_bbox3(fullBBox, vFullBBox);
-    renderer->shadowsInvalidate(fullBBox);
-    renderer->invalidateGI(box, tm, fullBBox);
+    const BBox3 worldBBox = tm * full_bbox;
+    renderer->shadowsInvalidate(worldBBox);
+    renderer->invalidateGI(worldBBox);
   }
+}
+
+static void on_ridestr_restored(const rendinst::RendInstDesc &restorable_desc, const TMatrix &tm)
+{
+  if (is_server())
+    on_ridestr_restored_server(restorable_desc, tm);
+  // GI media density is refill owned and the type is long baked, so a restored tree gets its
+  // crown density back only through an explicit invalidate. the saved tm names the spot: the
+  // desc's riex idx is stale after the restore, the pool res box is not
+  if (IRenderWorld *renderer = renderer_unless_unloading())
+    renderer->invalidateGI(tm * rendinst::getRIGenFullBBox(restorable_desc));
 }
 
 
@@ -327,7 +339,7 @@ static void on_sweep_rendinst_server_cb(const rendinst::RendInstDesc &desc)
   const BBox3 box = rendinst::getRIGenBBox(desc);
   if (desc.isRiExtra())
   {
-    rendinstdestr::call_on_rendinst_destroyed_cb(desc.getRiExtraHandle(), tm, box);
+    rendinstdestr::call_on_rendinst_destroyed_cb(desc.getRiExtraHandle(), tm, box, rendinst::getRIGenFullBBox(desc));
     return;
   }
 
@@ -410,11 +422,11 @@ void init(bool have_render)
   if (is_server())
   {
     rendinstdestr::set_on_rendinst_destroyed_cb(on_ri_destroyed_server_cb);
-    rendinstdestr::set_on_ri_restored_cb(&on_ridestr_restored_server);
     rendinst::sweep_rendinst_cb = on_sweep_rendinst_server_cb;
   }
   else
     rendinstdestr::set_on_rendinst_destroyed_cb(on_ri_destroyed_net_client_cb);
+  rendinstdestr::set_on_ri_restored_cb(&on_ridestr_restored); // server bookkeeping + render GI, each side no-ops without its role
 
   rendinst::registerRiExtraDestructionCb([](rendinst::riex_handle_t handle, bool /*is_dynamic*/, bool /*create_destr_effects*/,
                                            int32_t user_data, const Point3 & /*impulse*/, const Point3 & /*impulse_pos*/) {

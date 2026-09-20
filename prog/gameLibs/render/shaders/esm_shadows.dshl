@@ -43,11 +43,18 @@ shader esm_blur
   }
   if (gauss_direction == horizontal)
   {
-    (ps) { esm_blur_src@smpArray = esm_blur_src; }
+    (ps) { esm_blur_src@texArray = esm_blur_src; }
   }
   else
   {
-    (ps) { esm_blur_src@smp2d = esm_blur_src; }
+    (ps) { esm_blur_src@tex2d = esm_blur_src; }
+  }
+  if (!maybe(global_frame_has_linear_clamp_sampler))
+  {
+    INIT_GLOBAL_LINEAR_CLAMP_SAMPLER(ps)
+  }
+  hlsl(ps) {
+    #define esm_blur_src_samplerstate global_linear_clamp_sampler
   }
 
   hlsl(ps)

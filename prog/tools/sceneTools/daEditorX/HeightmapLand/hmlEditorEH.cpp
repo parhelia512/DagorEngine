@@ -44,7 +44,18 @@ static Ptr<SplinePointObject> startPt = NULL, dispPt = NULL;
 static SplineObject *refSpline = NULL, *splPoly = NULL;
 static int pointsCnt = 0;
 static bool splittingPolyFirstPoint = true;
-static int splittingFirstPointId, splittingSecondPointId;
+// held between two clicks: fillet reconciliation reshuffles points[] on any rebuild in between, so an index would go stale
+static Ptr<SplinePointObject> splittingFirstPoint = nullptr;
+
+// neighbours in source points: generated ones sit between them and would make two adjacent corners look far apart
+static bool split_pts_too_close(int ord_a, int ord_b, int src_cnt)
+{
+  if (ord_a < 0 || ord_b < 0)
+    return true;
+
+  const int d = abs(ord_a - ord_b);
+  return d <= 1 || d == src_cnt - 1; // same, next or previous around the loop
+}
 
 inline bool is_creating_entity_mode(int m) { return m == CM_CREATE_ENTITY; }
 
@@ -279,8 +290,13 @@ bool HmapLandObjectEditor::handleMouseMove(IGenViewportWnd *wnd, int x, int y, b
         if (!splines[i]->points.size() || splines[i]->isPoly() || splines[i]->isClosed())
           continue;
 
+        if (isObjectLocked(*splines[i]))
+          continue;
+
         for (int j = 0; j < splines[i]->points.size(); j++)
         {
+          if (splines[i]->points[j]->isFilletGen) // split() refuses these, so do not offer them
+            continue;
           if (splines[i]->points[j]->arrId <= 0 || splines[i]->points[j]->arrId + 1 >= splines[i]->points.size())
             continue;
 
@@ -310,7 +326,7 @@ bool HmapLandObjectEditor::handleMouseMove(IGenViewportWnd *wnd, int x, int y, b
       bool is = false;
       for (int i = 0; i < splines.size(); i++)
       {
-        if (EditLayerProps::layerProps[splines[i]->getEditLayerIdx()].isLayerOrTypeLocked())
+        if (isObjectLocked(*splines[i]))
           continue;
 
         Point3 p;
@@ -349,29 +365,18 @@ bool HmapLandObjectEditor::handleMouseMove(IGenViewportWnd *wnd, int x, int y, b
         if (!splines[i]->points.size() || !splines[i]->isPoly())
           continue;
 
-        for (int j = 0; j < splines[i]->points.size(); j++)
+        if (isObjectLocked(*splines[i]))
+          continue;
+
+        if (SplinePointObject *cand = splitPolyCandidate(*splines[i], wnd, x, y))
         {
-          if (!splittingPolyFirstPoint)
-          {
-            int nextIdx = (splittingFirstPointId + 1) % splines[i]->points.size();
-            int prevIdx = (splittingFirstPointId == 0 ? splines[i]->points.size() - 1 : splittingFirstPointId - 1);
-            if (j == splittingFirstPointId || j == nextIdx || j == prevIdx)
-              continue;
-          }
-
-          real dist = screenDistBetweenCursorAndPoint(wnd, x, y, splines[i]->points[j]);
-          if (dist > 0 && dist <= 20)
-          {
-            Point3 p = splines[i]->points[j]->getPt();
-            curPt->visible = true;
-            splPoly = splines[i];
-            curPt->setPos(p);
-            if (!splittingPolyFirstPoint && debugP2)
-              *debugP2 = p;
-            is = true;
-
-            break;
-          }
+          Point3 p = cand->getPt();
+          curPt->visible = true;
+          splPoly = splines[i];
+          curPt->setPos(p);
+          if (!splittingPolyFirstPoint && debugP2)
+            *debugP2 = p;
+          is = true;
         }
 
         if (is)
@@ -468,6 +473,60 @@ bool HmapLandObjectEditor::usesRendinstPlacement() const
   return true;
 }
 
+// a first pick that outlived its mode would leave the mode waiting for a second point the user has forgotten,
+// or for one that no longer exists once the picked point is deleted
+void HmapLandObjectEditor::stopPolySplitting()
+{
+  splittingPolyFirstPoint = true;
+  splittingFirstPoint = nullptr;
+  del_it(debugP1);
+  del_it(debugP2);
+}
+
+SplinePointObject *HmapLandObjectEditor::splitPolyCandidate(SplineObject &poly, IGenViewportWnd *wnd, int x, int y)
+{
+  // the cut runs inside one polygon, so once the first point is picked only its own polygon can offer the second one
+  if (!splittingPolyFirstPoint && (!splittingFirstPoint || splittingFirstPoint->spline != &poly))
+    return nullptr;
+
+  const int firstOrd = splittingPolyFirstPoint ? -1 : poly.sourcePointOrdinal(splittingFirstPoint);
+  const int srcCnt = firstOrd < 0 ? 0 : poly.sourcePointCount();
+
+  int ord = -1;
+  for (int j = 0; j < poly.points.size(); j++)
+  {
+    if (poly.points[j]->isFilletGen)
+      continue; // derived points cannot be split at
+    ord++;
+    if (firstOrd >= 0 && split_pts_too_close(firstOrd, ord, srcCnt))
+      continue;
+
+    real dist = screenDistBetweenCursorAndPoint(wnd, x, y, poly.points[j]);
+    if (dist > 0 && dist <= 20)
+      return poly.points[j];
+  }
+  return nullptr;
+}
+
+void HmapLandObjectEditor::dropHoverState()
+{
+  if (curPt)
+    curPt->visible = false;
+  refSpline = splPoly = NULL;
+  if (debugP1 && debugP2)
+    *debugP2 = *debugP1; // the rubber line collapses until the next mouse move gives it an end again
+}
+
+void HmapLandObjectEditor::stopPolySplittingIfPickGone()
+{
+  if (splittingPolyFirstPoint)
+    return;
+  if (splittingFirstPoint && splittingFirstPoint->spline && splittingFirstPoint->spline->sourcePointOrdinal(splittingFirstPoint) >= 0)
+    return;
+
+  stopPolySplitting();
+}
+
 bool HmapLandObjectEditor::handleMouseLBPress(IGenViewportWnd *wnd, int x, int y, bool inside, int buttons, int key_modif)
 {
   if (objCreator)
@@ -544,7 +603,7 @@ bool HmapLandObjectEditor::handleMouseLBPress(IGenViewportWnd *wnd, int x, int y
 
         if (curSpline)
         {
-          getUndoSystem()->begin();
+          getUndoSystem()->begin(true);
 
           if (needReverse)
           {
@@ -554,7 +613,7 @@ bool HmapLandObjectEditor::handleMouseLBPress(IGenViewportWnd *wnd, int x, int y
             spls.resize(1);
             spls[0] = curSpline;
 
-            getUndoSystem()->put(new UndoReverse(spls));
+            getUndoSystem()->put<UndoReverse>(spls);
           }
 
           if (!curSplineAsset.empty())
@@ -594,15 +653,20 @@ bool HmapLandObjectEditor::handleMouseLBPress(IGenViewportWnd *wnd, int x, int y
                 spls.resize(1);
                 spls[0] = att;
 
-                getUndoSystem()->put(new UndoReverse(spls));
+                getUndoSystem()->put<UndoReverse>(spls);
               }
 
               pointsCnt += att->points.size();
-              int pt_idx = curSpline->points.size() - 2;
-              att->attachTo(curSpline, curSpline->points.size() - 1);
+              // attachTo strips derived points, and points[] holds the only reference to them:
+              // walk back to a source point, which survives the strip and is the one the smoothing window needs anyway
+              int catmulIdx = curSpline->points.size() - 2;
+              while (catmulIdx > 0 && curSpline->points[catmulIdx]->isFilletGen)
+                catmulIdx--;
+              SplinePointObject *catmulPt = curSpline->points[catmulIdx];
+              att->attachTo(curSpline, SplineObject::ATTACH_BEFORE_LAST);
 
               memset(catmul, 0, sizeof(catmul));
-              prepareCatmul(curSpline->points[pt_idx], curPt);
+              prepareCatmul(catmulPt, curPt);
 
               curSpline->pointChanged(-1);
               curSpline->getSpline();
@@ -683,56 +747,47 @@ bool HmapLandObjectEditor::handleMouseLBPress(IGenViewportWnd *wnd, int x, int y
     }
     else if (getEditMode() == CM_REFINE_SPLINE)
     {
-      if (curPt->visible && refSpline && !EditLayerProps::layerProps[refSpline->getEditLayerIdx()].isLayerOrTypeLocked())
+      if (curPt->visible && refSpline && !isObjectLocked(*refSpline))
       {
         real refT;
         int segId;
         Point3 p;
         refSpline->getPosOnSpline(wnd, x, y, 4, &segId, &refT, &p);
 
-        refSpline->refine(segId, refT, p);
+        // baking the fillet of the segment can reshape points[] and skip the insert; the corner is real knots now,
+        // so the same click lands on the rebuilt curve
+        if (!refSpline->refine(segId, refT, p))
+          if (refSpline->getPosOnSpline(wnd, x, y, 4, &segId, &refT, &p))
+            refSpline->refine(segId, refT, p);
       }
     }
     else if (getEditMode() == CM_SPLIT_POLY)
     {
       if (curPt->visible && splPoly)
       {
-        for (int j = 0; j < splPoly->points.size(); j++)
+        // the same rule that offered the point under the cursor
+        if (SplinePointObject *cand = splitPolyCandidate(*splPoly, wnd, x, y))
         {
-          real dist = screenDistBetweenCursorAndPoint(wnd, x, y, splPoly->points[j]);
-          if (dist > 0 && dist <= 20)
+          if (splittingPolyFirstPoint)
           {
-            if (splittingPolyFirstPoint)
-            {
-              splittingPolyFirstPoint = false;
+            splittingPolyFirstPoint = false;
 
-              debugP1 = new Point3;
-              debugP2 = new Point3;
+            debugP1 = new Point3;
+            debugP2 = new Point3;
 
-              splittingFirstPointId = j;
+            splittingFirstPoint = cand;
+            *debugP1 = *debugP2 = cand->getPt();
+          }
+          else
+          {
+            splPoly->splitOnTwoPolys(splittingFirstPoint->arrId, cand->arrId);
 
-              *debugP1 = splPoly->points[splittingFirstPointId]->getPt();
-              *debugP2 = splPoly->points[splittingFirstPointId]->getPt();
-            }
-            else
-            {
-              splittingSecondPointId = j;
+            splittingPolyFirstPoint = true;
+            splittingFirstPoint = nullptr;
+            setEditMode(CM_OBJED_MODE_SELECT);
 
-              int nextIdx = (j + 1) % splPoly->points.size();
-              int prevIdx = (j == 0 ? splPoly->points.size() - 1 : j - 1);
-
-              if (splittingFirstPointId != splittingSecondPointId && splittingFirstPointId != nextIdx &&
-                  splittingFirstPointId != prevIdx)
-              {
-                splPoly->splitOnTwoPolys(splittingFirstPointId, splittingSecondPointId);
-
-                splittingPolyFirstPoint = true;
-                setEditMode(CM_OBJED_MODE_SELECT);
-
-                del_it(debugP1);
-                del_it(debugP2);
-              }
-            }
+            del_it(debugP1);
+            del_it(debugP2);
           }
         }
       }
@@ -838,6 +893,7 @@ bool HmapLandObjectEditor::handleMouseRBPress(IGenViewportWnd *wnd, int x, int y
     if (!splittingPolyFirstPoint)
     {
       splittingPolyFirstPoint = true;
+      splittingFirstPoint = nullptr;
       setEditMode(CM_OBJED_MODE_SELECT);
     }
   }
@@ -1145,7 +1201,7 @@ void HmapLandObjectEditor::onClick(int pcb_id, PropPanel::ContainerPropertyContr
       for (int i = 0; i < spl.size(); i++)
         spl[i]->reverse();
 
-      getUndoSystem()->put(new UndoReverse(spl));
+      getUndoSystem()->put<UndoReverse>(spl);
       getUndoSystem()->accept("Reverse spline(s)");
     }
     break;
@@ -1641,7 +1697,7 @@ void HmapLandObjectEditor::autoAttachSplines()
             Tab<SplineObject *> spls(tmpmem);
             spls.resize(1);
             spls[0] = splines[i];
-            getUndoSystem()->put(new UndoReverse(spls));
+            getUndoSystem()->put<UndoReverse>(spls);
 
             removeObject(splines[i]->points[splines[i]->points.size() - 1]);
             splines[j]->attachTo(splines[i]);
@@ -1656,7 +1712,7 @@ void HmapLandObjectEditor::autoAttachSplines()
               Tab<SplineObject *> spls(tmpmem);
               spls.resize(1);
               spls[0] = splines[j];
-              getUndoSystem()->put(new UndoReverse(spls));
+              getUndoSystem()->put<UndoReverse>(spls);
 
               removeObject(splines[i]->points[splines[i]->points.size() - 1]);
               splines[j]->attachTo(splines[i]);

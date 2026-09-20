@@ -4,14 +4,9 @@ float4 sun_color_0 = (0.8, 0.75, 0.7, 0);
 
 float4 tree_wind_anim_fade_params = (0, 1, 0, 0);
 
-block(global_const) global_const_block
-{
-  (vs) {
+macro GLOBAL_CONSTS(stage)
+  (stage) {
     from_sun_direction@f3 = from_sun_direction;
     sun_color_0@f3 = sun_color_0;
   }
-  (ps) {
-    from_sun_direction@f3 = from_sun_direction;
-    sun_color_0@f3 = sun_color_0;
-  }
-}
+endmacro

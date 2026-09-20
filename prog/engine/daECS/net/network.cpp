@@ -1,7 +1,6 @@
 // Copyright (C) Gaijin Games KFT.  All rights reserved.
 
 #include <daECS/net/network.h>
-#include <daECS/net/topologyLock.h>
 #include <daECS/core/entityManager.h>
 #include <daECS/core/template.h>
 #include <daECS/net/connection.h>
@@ -314,10 +313,10 @@ void CNetwork::updateConnections(int cur_time)
   if (isServer())
   {
     for (auto &conn : clientConnections)
-      if (conn && conn->connected)
+      if (conn && !conn->hasAnyFlags(CF_DISCONNECTING))
         conn->update(cur_time);
   }
-  else if (serverConnection && serverConnection->connected)
+  else if (serverConnection && !serverConnection->hasAnyFlags(CF_DISCONNECTING))
     serverConnection->update(cur_time);
 }
 
@@ -348,7 +347,7 @@ void CNetwork::syncStateUpdates(int cur_time, uint8_t replication_channel)
 
   for (auto &conn : clientConnections)
   {
-    if (!conn || !conn->connected || !conn->isResponsive())
+    if (!conn || conn->hasAnyFlags(CF_DISCONNECTING) || !conn->isResponsive())
       continue;
 
     int pwrRes = conn->prepareWritePackets();
@@ -541,7 +540,9 @@ void CNetwork::setScopeQueryCb(scope_query_cb_t &&sqcb)
   {                                                                                         \
     logwarn("net: packet of size %d bytes from unkwnown connection #%d", pkt->length, idx); \
     break;                                                                                  \
-  }
+  }                                                                                         \
+  if (conn->hasAnyFlags(CF_DISCONNECTING))                                                  \
+    break;
 
 void CNetwork::onPacket(const Packet *pkt, int cur_time_ms, uint8_t replication_channel, int &numEntitiesDestroyed)
 {
@@ -867,7 +868,6 @@ void CNetwork::addConnection(Connection *conn, unsigned idx)
 {
   G_ASSERT(conn);
   G_ASSERTF(&conn->getEntityManager() == &mgr, "conn #%d bound to different EntityManager", (int)conn->getId());
-  net::TopologyLock::WriteScope topoWrite(mgr);
   auto ctrlIface = static_cast<DaNetPeerInterface *>(drv->getControlIface());
   if (auto ectx = encryptionCtx.get())
   {
@@ -911,7 +911,6 @@ void CNetwork::addConnection(Connection *conn, unsigned idx)
 
 void CNetwork::destroyConnection(unsigned idx, DisconnectionCause cause)
 {
-  net::TopologyLock::WriteScope topoWrite(mgr);
   Connection *conn = getConnection(idx);
   if (isServer())
   {

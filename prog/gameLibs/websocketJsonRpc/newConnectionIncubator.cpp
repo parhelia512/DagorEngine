@@ -29,7 +29,7 @@ NewConnectionIncubator::NewConnectionIncubator(ConnectionFactory &&connection_fa
 
   if (previousFailedConnection)
   {
-    G_ASSERT(previousFailedConnection->isClosed());
+    // It may still be open: a server that announced its shutdown is left behind while it still serves requests.
     previousFailedConnectionIsNew = true;
   }
 }

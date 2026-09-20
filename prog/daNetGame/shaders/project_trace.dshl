@@ -13,7 +13,7 @@ macro PROJECT_TRACE(code, supports_raygen)
   bool dagi_project_use_raygen = dagi_project_use_rt && use_hw_rt_gi == raygen && supports_raygen && hardware.dx12;
   if (dagi_project_use_rt)
   {
-    supports global_const_block;
+    GLOBAL_CONSTS(code)
     INIT_MAIN_BVH(code, 0, false)
     USE_MAIN_BVH(code, 1, 1, 0, 1, 1, 0, 0, 0)
     INIT_RT_SURFACE_PARAMS(code)

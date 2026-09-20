@@ -168,7 +168,7 @@ void IndexProcessor::process(Sbuffer *source, BVHGeometryBufferWithOffset &proce
   set_offset(processed_buffer, true);
   ShaderGlobal::set_int(bvh_process_dynrend_indices_startVarId, index_start);
   ShaderGlobal::set_int(bvh_process_dynrend_indices_start_alignedVarId, ((index_start * 2) & 3) ? 0 : 1);
-  ShaderGlobal::set_int(bvh_process_dynrend_indices_countVarId, dwordCount);
+  ShaderGlobal::set_int(bvh_process_dynrend_indices_countVarId, index_count);
   ShaderGlobal::set_int(bvh_process_dynrend_indices_vertex_baseVarId, start_vertex);
   ShaderGlobal::set_int(bvh_process_dynrend_indices_sizeVarId, index_format);
   G_ASSERT(shader);
@@ -316,15 +316,15 @@ bool SkinnedVertexProcessorBatched::process(ContextId context_id, Sbuffer *sourc
 
   if (!skip_processing)
   {
-    VariantKey variantKey = packVariants(args.skin.isClothWind);
-    auto &dispatchData = dispatchDataMapping[variantKey][processed_buffer.get()];
-
-    dispatchData.maxVertexCount = max(args.vertexCount, dispatchData.maxVertexCount);
-
     // TODO Callback was made for non-batched variant, so it doesn't have a return value
     // So as a workaround it sets to a global variable, and then we copy it
     args.setTransformsFn();
     uint32_t instanceOffset = lastInstanceOffset;
+
+    VariantKey variantKey = packVariants(args.skin.isClothWind, args.skin.faceMorph.atlasTexBindless != MeshMeta::INVALID_TEXTURE);
+    auto &dispatchData = dispatchDataMapping[variantKey][DispatchKey{processed_buffer.get(), lastInstanceDataBufferId}];
+
+    dispatchData.maxVertexCount = max(args.vertexCount, dispatchData.maxVertexCount);
 
     BvhSkinnedInstanceData &params = dispatchData.instanceData.push_back();
     params.inv_wtm = args.invWorldTm;
@@ -344,12 +344,19 @@ bool SkinnedVertexProcessorBatched::process(ContextId context_id, Sbuffer *sourc
     params.instance_offset = instanceOffset;
     params.source_slot = source_buffer_bindless;
     params.pos_format_half = args.positionFormat == VSDT_SHORT4N ? 1 : 0;
+    params.pos_mul = args.posMul;
+    params.pos_ofs = args.posAdd;
+    params.node_data_dword = lastInstanceDataDwords[0];
+    params.instance_data_dword = lastInstanceDataDwords[1];
     float invNoiseScaleY = safeinv(args.skin.clothWind.noiseScaleY);
     params.cloth_wind__noise_time_scale = float4(args.skin.clothWind.noiseScaleX, args.skin.clothWind.noiseScaleY,
       args.skin.clothWind.timeScaleMin * invNoiseScaleY, args.skin.clothWind.timeScaleMax * invNoiseScaleY);
     params.cloth_noise_combined_tex_slot = args.skin.clothWind.clothNoiseCombinedTexBindless;
     params.cloth_wind__noise_amp = args.skin.clothWind.noiseAmp;
     params.cloth_wind__ambient_influence = args.skin.clothWind.ambientInfluence;
+    params.morph_atlas_tex_slot = args.skin.faceMorph.atlasTexBindless;
+    params.morph_uv_offset = args.skin.faceMorph.uvOffset;
+    params.morph_uv_size = args.skin.faceMorph.uvSize;
   }
 
   args.vertexStride = vertexSize;
@@ -375,12 +382,19 @@ bool SkinnedVertexProcessorBatched::process(ContextId context_id, Sbuffer *sourc
   return !skip_processing;
 }
 
-SkinnedVertexProcessorBatched::VariantKey SkinnedVertexProcessorBatched::packVariants(bool is_cloth_wind)
+static constexpr SkinnedVertexProcessorBatched::VariantKey clothWindVariantBit = 1 << 0;
+static constexpr SkinnedVertexProcessorBatched::VariantKey faceMorphVariantBit = 1 << 1;
+
+SkinnedVertexProcessorBatched::VariantKey SkinnedVertexProcessorBatched::packVariants(bool is_cloth_wind, bool is_face_morph)
 {
-  return static_cast<VariantKey>(is_cloth_wind);
+  return (is_cloth_wind ? clothWindVariantBit : 0) | (is_face_morph ? faceMorphVariantBit : 0);
 }
 
-void SkinnedVertexProcessorBatched::unpackVariants(VariantKey key, bool &is_cloth_wind) { is_cloth_wind = static_cast<bool>(key); }
+void SkinnedVertexProcessorBatched::unpackVariants(VariantKey key, bool &is_cloth_wind, bool &is_face_morph)
+{
+  is_cloth_wind = (key & clothWindVariantBit) != 0;
+  is_face_morph = (key & faceMorphVariantBit) != 0;
+}
 
 void SkinnedVertexProcessorBatched::begin() const {}
 
@@ -389,12 +403,15 @@ void SkinnedVertexProcessorBatched::end(bool is_protype_building) const
 #define GLOBAL_VARS_LIST                                  \
   VAR(bvh_process_skinned_vertices_params_buf)            \
   VAR(bvh_process_skinned_vertices_is_building_prototype) \
-  VAR(bvh_process_skinned_vertices_cloth)
+  VAR(bvh_process_skinned_vertices_cloth)                 \
+  VAR(bvh_process_skinned_vertices_morph)
 
-#define VAR(a) static int a##VarId = get_shader_variable_id(#a);
+#define VAR(a) static int a##VarId = get_shader_variable_id(#a, true);
   GLOBAL_VARS_LIST
 #undef VAR
 #undef GLOBAL_VARS_LIST
+
+  static int instance_data_bufferVarId = get_shader_variable_id("instance_data_buffer", true);
 
   static int output_uav_no = ShaderGlobal::get_slot_by_name("bvh_process_skinned_vertices_output_uav_no");
 
@@ -414,17 +431,20 @@ void SkinnedVertexProcessorBatched::end(bool is_protype_building) const
     ShaderGlobal::set_int(bvh_process_skinned_vertices_is_building_prototypeVarId, is_protype_building);
     for (auto &[variantKey, mapping] : dispatchDataMapping)
     {
-      bool isClothWind;
-      unpackVariants(variantKey, isClothWind);
+      bool isClothWind, isFaceMorph;
+      unpackVariants(variantKey, isClothWind, isFaceMorph);
       ShaderGlobal::set_int(bvh_process_skinned_vertices_clothVarId, isClothWind);
+      ShaderGlobal::set_int(bvh_process_skinned_vertices_morphVarId, isFaceMorph);
 
-      for (auto &[targetBuffer, dispatchData] : mapping)
+      for (auto &[dispatchKey, dispatchData] : mapping)
       {
         if (dispatchData.instanceData.empty())
           continue;
         G_ASSERT(dispatchData.maxVertexCount > 0);
 
-        d3d::set_rwbuffer(STAGE_CS, output_uav_no, targetBuffer);
+        if (dispatchKey.instanceDataBuffer != BAD_D3DRESID)
+          ShaderGlobal::set_buffer(instance_data_bufferVarId, dispatchKey.instanceDataBuffer);
+        d3d::set_rwbuffer(STAGE_CS, output_uav_no, dispatchKey.targetBuffer);
         uint32_t immediateConst[] = {(uint32_t)instances, (uint32_t)dispatchData.instanceData.size()};
         d3d::set_immediate_const(STAGE_CS, immediateConst, 2);
 

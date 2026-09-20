@@ -39,7 +39,7 @@ DECL_RESMGR_PRIVATE_DATA(texDesc);
 DECL_RESMGR_PRIVATE_DATA(pairedBaseTexId);
 DECL_RESMGR_PRIVATE_DATA(texBaseData);
 DECL_RESMGR_PRIVATE_DATA(texUsedSz);
-DECL_RESMGR_PRIVATE_DATA(maxReqLevelPrev);
+DECL_RESMGR_PRIVATE_DATA(texAllocLev);
 DECL_RESMGR_PRIVATE_DATA(texImportance);
 DECL_RESMGR_PRIVATE_DATA(texSamplers);
 DECL_RESMGR_PRIVATE_DATA(texSamplerInfo);
@@ -85,7 +85,7 @@ void texmgr_internal::D3dResMgrDataFinal::init(int max_res_entry_count)
   ALLOC_DATA_V(pairedBaseTexId, BAD_TEXTUREID);
   ALLOC_DATA_Z(texBaseData);
   ALLOC_DATA_Z(texUsedSz);
-  ALLOC_DATA_Z(maxReqLevelPrev);
+  ALLOC_DATA_Z(texAllocLev);
   ALLOC_DATA_Z(texImportance);
   ALLOC_DATA_V(texSamplers, d3d::INVALID_SAMPLER_HANDLE);
   ALLOC_DATA_V(texSamplerInfo, d3d::SamplerInfo{});
@@ -138,7 +138,7 @@ void texmgr_internal::D3dResMgrDataFinal::term()
   RELEASE_DATA(pairedBaseTexId);
   RELEASE_DATA(texBaseData);
   RELEASE_DATA(texUsedSz);
-  RELEASE_DATA(maxReqLevelPrev);
+  RELEASE_DATA(texAllocLev);
   RELEASE_DATA(texImportance);
   RELEASE_DATA(texSamplers);
   RELEASE_DATA(texSamplerInfo);
@@ -221,7 +221,7 @@ static struct RmgrTerminator
   ~RmgrTerminator() { RMGR.term(); }
 } rmgrTerminator;
 CritSecStorage crit_sec;
-WinCritSec rec_lock;
+TexRecLock rec_lock;
 int (*drv3d_cmd)(Drv3dCommand command, void *par1, void *par2, void *par3) = NULL;
 }; // namespace texmgr_internal
 
@@ -257,9 +257,9 @@ static const char *return_tex_info(TEXTUREID texId, bool /*verbose*/, String &tm
     return "";
 
   int idx = texId.index();
-  tmp_stor.printf(0, "  LFU=%d req=%X/%X  desc=0x%04X ld=%X rd=%X max=%X(%X/%X) rc=%d bt.rc=%d ql=%d(%d) gpu=%dK(+%dK) bd=%dK",
-    RMGR.getResLFU(idx), RMGR.resQS[idx].getMaxReqLev(), RMGR.maxReqLevelPrev[idx], RMGR.levDesc[idx], RMGR.resQS[idx].getLdLev(),
-    RMGR.resQS[idx].getRdLev(), RMGR.texDesc[idx].dim.maxLev, RMGR.resQS[idx].getQLev(), RMGR.resQS[idx].getMaxLev(),
+  tmp_stor.printf(0, "  LFU=%d req=%X  desc=0x%04X ld=%X rd=%X alloc=%X max=%X(%X/%X) rc=%d bt.rc=%d ql=%d(%d) gpu=%dK(+%dK) bd=%dK",
+    RMGR.getResLFU(idx), RMGR.resQS[idx].getMaxReqLev(), RMGR.levDesc[idx], RMGR.resQS[idx].getLdLev(), RMGR.resQS[idx].getRdLev(),
+    RMGR.getTexAllocLev(idx), RMGR.texDesc[idx].dim.maxLev, RMGR.resQS[idx].getQLev(), RMGR.resQS[idx].getMaxLev(),
     RMGR.getRefCount(idx), RMGR.getBaseTexUsedCount(idx), RMGR.resQS[idx].getCurQL(), RMGR.resQS[idx].getMaxQL(),
     RMGR.getTexMemSize4K(idx) * 4, RMGR.getTexAddMemSizeNeeded4K(idx) * 4, RMGR.getTexBaseDataSize(idx) >> 10);
   return tmp_stor;

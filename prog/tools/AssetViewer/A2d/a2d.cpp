@@ -388,7 +388,7 @@ void A2dPlugin::RefDynmodel::reset()
     ctrl->setSkeletonForRender(nullptr);
   destroy_it(entity);
   entity = nullptr;
-  tree = GeomNodeTree();
+  tree.clear();
   ctrl = nullptr;
   origTree = nullptr;
 }
@@ -418,7 +418,7 @@ void A2dPlugin::RefDynmodel::reload(const SimpleString &model_name, DagorAsset *
   origTree = ctrl->getSkeleton();
   if (!origTree)
     return;
-  tree = *origTree;
+  tree.replaceContentFrom(*origTree);
   ctrl->setSkeletonForRender(&tree);
 }
 
@@ -602,7 +602,7 @@ void A2dPlugin::selectAnimNode(const Point3 &p, const Point3 &dir)
 
   BBox3 bbox;
   bbox.setempty();
-  ref.tree.calcWorldBox(bbox);
+  ref.tree.calcWorldBoxFromImportantNodes(bbox);
   float radius = getMinPoint(bbox.width(), 0.5f) * 0.05f;
 
   for (int i = 0; i < animNodes.size(); ++i)

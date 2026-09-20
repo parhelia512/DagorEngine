@@ -1,5 +1,6 @@
 // Copyright (C) Gaijin Games KFT.  All rights reserved.
 
+#include <EASTL/fixed_function.h>
 #include <generic/dag_enumerate.h>
 #include <daECS/core/entityManager.h>
 #include <daECS/core/entitySystem.h>
@@ -9,19 +10,19 @@
 #include <daECS/core/coreEvents.h>
 #include <rendInst/rendInstExtra.h>
 #include <rendInst/rendInstExtraAccess.h>
+#include <rendInst/ccExtra.h>
 #include <rendInst/rendInstCollision.h>
 #include <rendInst/rendInstAccess.h>
 #include <ecs/rendInst/riExtra.h>
 #include <shaders/dag_rendInstRes.h>
 #include <util/dag_convar.h>
 #include <debug/dag_debug3d.h>
+#include <perfMon/dag_statDrv.h>
 #include <render/renderEvent.h>
 #include "../riexProcessor.h"
 #include "../globalManager.h"
 #include "../../shaders/dagdp_heightmap.hlsli"
 #include "volume.h"
-
-constexpr float MIN_GEOMETRY_SIZE = 1.0f;
 
 ECS_REGISTER_BOXED_TYPE(dagdp::VolumeManager, nullptr);
 
@@ -67,6 +68,62 @@ static inline void local_volume_cylinder_ecs_query(ecs::EntityManager &manager, 
 
 template <typename Callable>
 static inline void local_volume_sphere_ecs_query(ecs::EntityManager &manager, const ecs::EntityId, Callable);
+
+// A placer with a cascade limit is skipped in the deeper CSM cascades.
+static bool cascade_excluded(int csm_cascade_count, int viewport_cascade)
+{
+  return csm_cascade_count >= 0 && viewport_cascade >= csm_cascade_count;
+}
+
+static const VolumeMappingItem *placer_gather_variant(
+  const VolumeMapping &mapping, ecs::EntityId eid, int csm_cascade_count, int viewport_cascade)
+{
+  if (cascade_excluded(csm_cascade_count, viewport_cascade))
+    return nullptr;
+  const auto iter = mapping.find(eid);
+  return iter == mapping.end() ? nullptr : &iter->second;
+}
+
+// The job records one entry per placer per viewport in ECS query order, and the FG node walks the same
+// queries in the same order, so the records line up by sequence. Checked in release too, not asserted:
+// these records index the job's pools.
+template <typename T>
+static const T *next_placer_record(const Tab<T> &records, size_t &index, ecs::EntityId eid)
+{
+  if (index >= records.size())
+    return nullptr;
+  const T &rec = records[index++];
+  if (rec.eid != eid)
+    return nullptr;
+  return &rec;
+}
+
+// The three world volume shapes in one iteration order, shared by the job and the FG node so that both
+// always consider the same volumes. Not a template: the generated queries must be instantiated from a
+// non-dependent context, otherwise clang reports them as undefined internal.
+using WorldVolumeCallback = eastl::fixed_function<4 * sizeof(void *), void(ecs::EntityId, const TMatrix &, float, int)>;
+
+static void for_each_world_volume(const WorldVolumeCallback &on_volume)
+{
+  volume_boxes_ecs_query(*g_entity_mgr,
+    [&](ECS_REQUIRE(ecs::Tag dagdp_volume_box) const ecs::EntityId dagdp_internal__volume_placer_eid, const TMatrix &transform) {
+      on_volume(dagdp_internal__volume_placer_eid, transform, 0.5f, VOLUME_TYPE_BOX);
+    });
+
+  volume_cylinders_ecs_query(*g_entity_mgr,
+    [&](ECS_REQUIRE(ecs::Tag dagdp_volume_cylinder) const ecs::EntityId dagdp_internal__volume_placer_eid, const TMatrix &transform) {
+      on_volume(dagdp_internal__volume_placer_eid, transform, 0.5f, VOLUME_TYPE_CYLINDER);
+    });
+
+  volume_spheres_ecs_query(*g_entity_mgr,
+    [&](ECS_REQUIRE(ecs::Tag dagdp_volume_sphere) const ecs::EntityId dagdp_internal__volume_placer_eid, const TMatrix &transform,
+      float sphere_zone__radius) {
+      if (sphere_zone__radius <= FLT_EPSILON)
+        return;
+
+      on_volume(dagdp_internal__volume_placer_eid, transform, sphere_zone__radius, VOLUME_TYPE_ELLIPSOID);
+    });
+}
 
 static int totalMissingRendInst, totalUsedRendInst;
 
@@ -131,9 +188,11 @@ static inline void volume_view_process_es(
         return;
       }
 
+      const float density = dagdp__density * GlobalManager::clampedGlobalDensityMul();
+
       VolumeMappingItem item;
       item.variantIndex = builder.variants.size();
-      item.density = dagdp__density;
+      item.density = density;
       item.maxDrawDistance = 0;
       item.targetMeshLod = dagdp__target_mesh_lod;
       item.axis = dagdp__volume_axis;
@@ -141,7 +200,7 @@ static inline void volume_view_process_es(
       item.csmCascadeCount = dagdp__csm_cascade_count;
 
       auto &variant = builder.variants.push_back();
-      variant.density = dagdp__density;
+      variant.density = density;
       variant.minTriangleArea = dagdp__volume_min_triangle_area;
       variant.axisAbs = dagdp__volume_axis_abs;
       variant.distBasedScale = dagdp__distance_based_scale;
@@ -156,7 +215,7 @@ static inline void volume_view_process_es(
           continue;
 
         auto &objectGroup = variant.objectGroups.push_back();
-        objectGroup.effectiveDensity = dagdp__density;
+        objectGroup.effectiveDensity = density;
         objectGroup.info = &iter->second;
         item.maxDrawDistance = max(item.maxDrawDistance, iter->second.maxDrawDistance);
       }
@@ -187,10 +246,11 @@ static inline void dagdp_volume_before_draw_es(const BeforeDraw &evt, ecs::Entit
   start_gather_before_draw_volumes(manager, evt.camPos, evt.frustum);
 }
 
-static bbox3f compute_around_ri_fbox(bbox3f_cref frustum_box,
-  const ecs::EidList &volume_box_eids,
+// Returns the largest local volume radius, for the frustum box the sources are searched in.
+static float collect_local_volumes(const ecs::EidList &volume_box_eids,
   const ecs::EidList &volume_cylinder_eids,
-  const ecs::EidList &volume_sphere_eids)
+  const ecs::EidList &volume_sphere_eids,
+  LocalVolumeSnapshots &out_volumes)
 {
   float maxLocalRad = 0;
   for (auto volume_eid : volume_box_eids)
@@ -198,6 +258,7 @@ static bbox3f compute_around_ri_fbox(bbox3f_cref frustum_box,
       float r = sqrtf(transform.col[0].lengthSq() + transform.col[1].lengthSq() + transform.col[2].lengthSq()) * 0.5f;
       r += transform.col[3].length();
       maxLocalRad = max(maxLocalRad, r);
+      out_volumes.push_back({transform, 0.5f, VOLUME_TYPE_BOX});
     });
   for (auto volume_eid : volume_cylinder_eids)
     local_volume_cylinder_ecs_query(*g_entity_mgr, volume_eid,
@@ -205,6 +266,7 @@ static bbox3f compute_around_ri_fbox(bbox3f_cref frustum_box,
         float r = sqrtf(max(transform.col[0].lengthSq(), transform.col[2].lengthSq()) + transform.col[1].lengthSq()) * 0.5f;
         r += transform.col[3].length();
         maxLocalRad = max(maxLocalRad, r);
+        out_volumes.push_back({transform, 0.5f, VOLUME_TYPE_CYLINDER});
       });
   for (auto volume_eid : volume_sphere_eids)
     local_volume_sphere_ecs_query(*g_entity_mgr, volume_eid,
@@ -213,11 +275,35 @@ static bbox3f compute_around_ri_fbox(bbox3f_cref frustum_box,
           sqrtf(max(max(transform.col[0].lengthSq(), transform.col[1].lengthSq()), transform.col[2].lengthSq())) * sphere_zone__radius;
         r += transform.col[3].length();
         maxLocalRad = max(maxLocalRad, r);
+        out_volumes.push_back({transform, sphere_zone__radius, VOLUME_TYPE_ELLIPSOID});
       });
+  return maxLocalRad;
+}
 
+// RIGen sources have no riex handle to fetch later, so only their transforms are collected.
+template <typename Container>
+static void gather_rigen_source_tms(bbox3f_cref fbox, const ecs::IntList &resource_ids, Container &out_tms)
+{
+  eastl::fixed_vector<int16_t, 32> riGenPools;
+  for (auto id : resource_ids)
+    if (int pool = rendinst::getRIExtraPoolRef(id); pool >= 0)
+      riGenPools.push_back(pool);
+  if (riGenPools.empty())
+    return;
+
+  BBox3 box;
+  v_stu_bbox3(box, fbox);
+  rendinst::getRIGenTMsInBox(box, make_span_const(riGenPools),
+    [&out_tms](const rendinst::RendInstDesc & /* desc */, const mat44f &m44) {
+      v_mat_43cu_from_mat44(out_tms.push_back().array, m44);
+    });
+}
+
+static bbox3f extend_around_ri_fbox(bbox3f_cref frustum_box, float max_local_rad)
+{
   bbox3f fbox = frustum_box;
   const float RAD_SCALE_FACTOR = 1.5f;
-  v_bbox3_extend(fbox, v_splats(maxLocalRad * RAD_SCALE_FACTOR));
+  v_bbox3_extend(fbox, v_splats(max_local_rad * RAD_SCALE_FACTOR));
   return fbox;
 }
 
@@ -234,6 +320,7 @@ void gather_start(DagdpRiexGatherJob &job,
   const VolumeMapping &volume_mapping,
   const ViewInfo &view_info,
   const ViewPerFrameData &view_per_frame,
+  float max_bounding_radius,
   GatherMode mode)
 {
   if (job.launched)
@@ -243,16 +330,22 @@ void gather_start(DagdpRiexGatherJob &job,
   if (view_per_frame.viewports.empty())
     return;
 
+  TIME_PROFILE(dagdp_volume_gather_start);
+
   job.reset();
+  job.rangeScale = get_global_range_scale();
+  job.maxBoundingRadius = max_bounding_radius;
+  job.gridGathered = is_volume_early_grid_gather_enabled();
 
   for (uint32_t viewportIndex = 0; viewportIndex < view_per_frame.viewports.size(); ++viewportIndex)
   {
     const auto &viewport = view_per_frame.viewports[viewportIndex];
     auto &viewportData = job.addViewport();
+    viewportData.worldPos = v_make_vec3f(viewport.worldPos.x, viewport.worldPos.y, viewport.worldPos.z);
 
     Frustum frustum = viewport.frustum;
     Point4 worldPos(viewport.worldPos.x, viewport.worldPos.y, viewport.worldPos.z, 0.0f);
-    auto range = v_splats(min(view_info.maxDrawDistance, viewport.maxDrawDistance) * get_global_range_scale());
+    auto range = v_splats(min(view_info.maxDrawDistance, viewport.maxDrawDistance) * job.rangeScale);
     shrink_frustum_zfar(frustum, v_ldu(&worldPos.x), range);
     const bbox3f frustumBox = calc_frustum_box(frustum, viewport.worldPos, range);
 
@@ -264,17 +357,12 @@ void gather_start(DagdpRiexGatherJob &job,
 
     on_ri_placers_ecs_query(*g_entity_mgr, [&](ECS_REQUIRE(ecs::Tag dagdp_placer_on_ri) ecs::EntityId eid,
                                              const ecs::IntList &dagdp__resource_ids, int dagdp__csm_cascade_count) {
-      if (dagdp__csm_cascade_count >= 0 && viewport.csmCascade >= dagdp__csm_cascade_count)
-        return;
-      if (volume_mapping.find(eid) == volume_mapping.end())
+      if (!placer_gather_variant(volume_mapping, eid, dagdp__csm_cascade_count, viewport.csmCascade))
         return;
 
-      DagdpRiexGatherJob::PerViewportData::PlacerData rec;
+      DagdpRiexGatherJob::PlacerData rec;
       rec.eid = eid;
-      rec.firstEntry = job.entryCount;
-      for (auto resIdx : dagdp__resource_ids)
-        job.addEntry(resIdx, frustumBox);
-      rec.entryCount = job.entryCount - rec.firstEntry;
+      job.addEntries(rec, dagdp__resource_ids, frustumBox);
       viewportData.onRi.push_back(rec);
     });
 
@@ -282,21 +370,67 @@ void gather_start(DagdpRiexGatherJob &job,
       [&](ECS_REQUIRE(ecs::Tag dagdp_placer_around_ri) ecs::EntityId eid, const ecs::IntList &dagdp__resource_ids,
         const ecs::EidList &dagdp__volume_box_eids, const ecs::EidList &dagdp__volume_cylinder_eids,
         const ecs::EidList &dagdp__volume_sphere_eids, int dagdp__csm_cascade_count) {
-        if (dagdp__csm_cascade_count >= 0 && viewport.csmCascade >= dagdp__csm_cascade_count)
+        const auto *variant = placer_gather_variant(volume_mapping, eid, dagdp__csm_cascade_count, viewport.csmCascade);
+        if (!variant)
           return;
 
-        const bbox3f fbox =
-          compute_around_ri_fbox(frustumBox, dagdp__volume_box_eids, dagdp__volume_cylinder_eids, dagdp__volume_sphere_eids);
-
-        DagdpRiexGatherJob::PerViewportData::PlacerData rec;
+        DagdpRiexGatherJob::AroundRiPlacerData rec;
         rec.eid = eid;
-        rec.firstEntry = job.entryCount;
-        for (auto resIdx : dagdp__resource_ids)
-          job.addEntry(resIdx, fbox);
-        rec.entryCount = job.entryCount - rec.firstEntry;
+        rec.drawRadius = variant->maxDrawDistance * job.rangeScale;
+        rec.firstLocalVolume = job.localVolumeCount;
+        LocalVolumeSnapshots localVolumes;
+        const float maxLocalRad =
+          collect_local_volumes(dagdp__volume_box_eids, dagdp__volume_cylinder_eids, dagdp__volume_sphere_eids, localVolumes);
+        if (job.gridGathered)
+          for (const auto &local : localVolumes)
+            job.addLocalVolume() = local;
+        rec.localVolumeCount = job.localVolumeCount - rec.firstLocalVolume;
+        rec.fbox = extend_around_ri_fbox(frustumBox, maxLocalRad);
+        job.addEntries(rec, dagdp__resource_ids, rec.fbox);
+        if (job.gridGathered)
+        {
+          rec.firstRiGenSource = job.riGenSourcePool.size();
+          gather_rigen_source_tms(rec.fbox, dagdp__resource_ids, job.riGenSourcePool);
+          rec.riGenSourceCount = job.riGenSourcePool.size() - rec.firstRiGenSource;
+        }
         viewportData.aroundRi.push_back(rec);
       });
   }
+
+  const auto addWorldVolume = [&](ecs::EntityId placer_eid, const TMatrix &transform, float scale, int volume_type) {
+    const auto iter = volume_mapping.find(placer_eid);
+    if (iter == volume_mapping.end())
+      return;
+    const auto &variant = iter->second;
+
+    mat44f tm44;
+    v_mat44_make_from_43cu_unsafe(tm44, transform.array);
+    const vec4f extent2 = volume_cull_extent2(tm44, scale, max_bounding_radius);
+    const float drawRadius = variant.maxDrawDistance * job.rangeScale;
+
+    // Only whether any viewport wants it: gather_process re-culls per viewport on the same inputs.
+    bool anyViewport = false;
+    for (size_t v = 0; v < job.viewportCount && !anyViewport; ++v)
+    {
+      const auto &perViewport = job.viewportDataPool[v];
+      anyViewport = perViewport.valid && !cascade_excluded(variant.csmCascadeCount, view_per_frame.viewports[v].csmCascade) &&
+                    volume_in_draw_range(tm44, extent2, perViewport.worldPos, drawRadius);
+    }
+    if (!anyViewport)
+      return;
+
+    job.addVolumeEntry(placer_eid, transform, tm44, scale, volume_type);
+  };
+
+  if (job.gridGathered)
+  {
+    for_each_world_volume(addWorldVolume);
+
+    job.worldVolumeCount = job.volumeCount;
+  }
+
+  DA_PROFILE_TAG(dagdp_volume_gather_start, "viewports=%d riex_entries=%d", (int)job.viewportCount, (int)job.entryCount);
+  DA_PROFILE_TAG(dagdp_volume_gather_start_volumes, "world=%d local=%d", (int)job.worldVolumeCount, (int)job.localVolumeCount);
 
   job.start(mode);
 }
@@ -313,11 +447,13 @@ void gather_process(DagdpRiexGatherJob &job,
   RelevantTiles &out_tiles,
   RelevantVolumes &out_volumes)
 {
-  const auto processMeshes = [&](const rendinst::riex_collidable_t &out_handles, uint32_t volume_index, int mesh_lod,
+  TIME_PROFILE(dagdp_volume_gather_process);
+
+  const auto processMeshes = [&](dag::ConstSpan<rendinst::riex_handle_t> handles, uint32_t volume_index, int mesh_lod,
                                bbox3f *volume_bbox) {
     if (volume_placer_no_meshes)
       return;
-    for (const auto handle : out_handles)
+    for (const auto handle : handles)
     {
       const uint32_t resIndex = rendinst::handle_to_ri_type(handle);
       if (rendinst::isRIGenExtraDynamic(resIndex))
@@ -386,21 +522,40 @@ void gather_process(DagdpRiexGatherJob &job,
     }
   };
 
-  const bool asyncPath = is_volume_early_riex_gather_enabled();
+  // Keep this outside any rendinst lock scope: the job's read locks queue behind writers.
+  // Unconditional, so a job still in flight is drained even after the convar goes off.
+  job.waitDone();
+
+  bool gridAsync = false;
+  float rangeScale = get_global_range_scale();
+  vec4f cullViewPos = v_make_vec3f(viewport.worldPos.x, viewport.worldPos.y, viewport.worldPos.z);
+
+  // Non-null exactly on the async path, so it alone says which gather this viewport reads from.
+  const DagdpRiexGatherJob::PerViewportData *viewportData = nullptr;
+  if (is_volume_early_riex_gather_enabled())
+  {
+    G_ASSERT(viewport_index < job.viewportCount);
+    const auto &vd = job.viewportDataPool[viewport_index];
+    if (!vd.valid)
+      return;
+    viewportData = &vd;
+
+    gridAsync = job.gridGathered;
+    if (gridAsync)
+    {
+      rangeScale = job.rangeScale;
+      cullViewPos = vd.worldPos;
+    }
+  }
 
   Frustum frustum = viewport.frustum;
   Point4 worldPos(viewport.worldPos.x, viewport.worldPos.y, viewport.worldPos.z, 0.0f);
-  auto range = v_splats(min(viewInfo.maxDrawDistance, viewport.maxDrawDistance) * get_global_range_scale());
+  auto range = v_splats(min(viewInfo.maxDrawDistance, viewport.maxDrawDistance) * rangeScale);
   shrink_frustum_zfar(frustum, v_ldu(&worldPos.x), range);
 
   bbox3f frustumBox;
-  if (asyncPath)
-  {
-    G_ASSERT(viewport_index < job.viewportCount);
-    if (!job.viewportDataPool[viewport_index].valid)
-      return;
-    frustumBox = job.viewportDataPool[viewport_index].frustumBox;
-  }
+  if (viewportData)
+    frustumBox = viewportData->frustumBox;
   else
   {
     frustumBox = calc_frustum_box(frustum, viewport.worldPos, range);
@@ -409,13 +564,13 @@ void gather_process(DagdpRiexGatherJob &job,
   }
 
   const auto addVolume = [&](const ecs::EntityId dagdp_internal__volume_placer_eid, const TMatrix &transform, float scale,
-                           int volume_type) {
+                           int volume_type, const dag::ConstSpan<rendinst::riex_handle_t> *pre_handles) {
     const auto iter = volume_mapping.find(dagdp_internal__volume_placer_eid);
     if (iter == volume_mapping.end())
       return;
     const auto &variant = iter->second;
 
-    if (variant.csmCascadeCount >= 0 && viewport.csmCascade >= variant.csmCascadeCount)
+    if (cascade_excluded(variant.csmCascadeCount, viewport.csmCascade))
       return;
 
     // Reference: volumePlacerES.cpp.inl, VolumePlacer::updateVisibility
@@ -428,18 +583,11 @@ void gather_process(DagdpRiexGatherJob &job,
     mat43f itm43;
     v_mat44_transpose_to_mat43(itm43, itm44);
 
-    const vec4f extent2 = v_add(v_mul(v_add(v_abs(tm44.col0), v_add(v_abs(tm44.col1), v_abs(tm44.col2))), v_splats(2.0f * scale)),
-      v_splats(2.0f * max_bounding_radius));
+    const vec4f extent2 = volume_cull_extent2(tm44, scale, max_bounding_radius);
     const vec4f center2 = v_add(tm44.col3, tm44.col3);
 
-    bbox3f volBox;
-    v_bbox3_init_by_bsph(volBox, tm44.col3, v_mul(extent2, V_C_HALF));
-
     // cull by placeables draw range first
-    bbox3f drawBox;
-    v_bbox3_init_by_bsph(drawBox, v_make_vec3f(viewport.worldPos.x, viewport.worldPos.y, viewport.worldPos.z),
-      v_splats(variant.maxDrawDistance * get_global_range_scale()));
-    if (!v_bbox3_test_box_intersect(drawBox, volBox))
+    if (!volume_in_draw_range(tm44, extent2, cullViewPos, variant.maxDrawDistance * rangeScale))
       return;
 
     // TODO: Performance: can cull more with more precise checks (original box/ellipsoid instead of bbox).
@@ -463,10 +611,16 @@ void gather_process(DagdpRiexGatherJob &job,
     volume.variantIndex = variant.variantIndex;
 
     // Reference: volumePlacerES.cpp.inl, VolumePlacer::gatherGeometryInBox
-    bbox3f bbox;
-    v_bbox3_init(bbox, tm44, {v_splats(-scale), v_splats(scale)});
-    rendinst::riex_collidable_t out_handles;
-    rendinst::gatherRIGenExtraCollidableMin(out_handles, bbox, MIN_GEOMETRY_SIZE);
+    bbox3f bbox = volume_local_box(tm44, scale);
+    rendinst::riex_collidable_t gatheredHandles;
+    dag::ConstSpan<rendinst::riex_handle_t> handles;
+    if (pre_handles)
+      handles = *pre_handles;
+    else
+    {
+      rendinst::gatherRIGenExtraCollidableMin(gatheredHandles, bbox, MIN_GEOMETRY_SIZE);
+      handles = make_span_const(gatheredHandles);
+    }
 
     if (!volume_placer_no_tiles)
     {
@@ -491,56 +645,42 @@ void gather_process(DagdpRiexGatherJob &job,
         }
     }
 
-    processMeshes(out_handles, volumeIndex, variant.targetMeshLod, &bbox);
+    processMeshes(handles, volumeIndex, variant.targetMeshLod, &bbox);
   };
 
-  volume_boxes_ecs_query(*g_entity_mgr,
-    [&](ECS_REQUIRE(ecs::Tag dagdp_volume_box) const ecs::EntityId dagdp_internal__volume_placer_eid, const TMatrix &transform) {
-      addVolume(dagdp_internal__volume_placer_eid, transform, 0.5f, VOLUME_TYPE_BOX);
-    });
+  const auto addPreGatheredVolume = [&](const DagdpRiexGatherJob::VolumeEntry &e) {
+    const auto handles = job.volumeHandles(e);
+    addVolume(e.placerEid, e.tm, e.scale, e.volumeType, &handles);
+  };
 
-  volume_cylinders_ecs_query(*g_entity_mgr,
-    [&](ECS_REQUIRE(ecs::Tag dagdp_volume_cylinder) const ecs::EntityId dagdp_internal__volume_placer_eid, const TMatrix &transform) {
-      addVolume(dagdp_internal__volume_placer_eid, transform, 0.5f, VOLUME_TYPE_CYLINDER);
-    });
+  {
+    TIME_PROFILE(dagdp_volume_process_world_volumes);
+    if (gridAsync)
+      for (size_t i = 0; i < job.worldVolumeCount; ++i)
+        addPreGatheredVolume(job.volumePool[i]);
+    else
+      for_each_world_volume([&](ecs::EntityId placer_eid, const TMatrix &transform, float scale, int volume_type) {
+        addVolume(placer_eid, transform, scale, volume_type, nullptr);
+      });
+  }
 
-  volume_spheres_ecs_query(*g_entity_mgr,
-    [&](ECS_REQUIRE(ecs::Tag dagdp_volume_sphere) const ecs::EntityId dagdp_internal__volume_placer_eid, const TMatrix &transform,
-      float sphere_zone__radius) {
-      if (sphere_zone__radius <= FLT_EPSILON)
-        return;
-
-      addVolume(dagdp_internal__volume_placer_eid, transform, sphere_zone__radius, VOLUME_TYPE_ELLIPSOID);
-    });
-
-  const DagdpRiexGatherJob::PerViewportData *viewportData = nullptr;
   size_t onRiIdx = 0;
   size_t aroundRiIdx = 0;
-  if (asyncPath)
-  {
-    job.waitDone();
-    viewportData = &job.viewportDataPool[viewport_index];
-  }
 
   on_ri_placers_ecs_query(*g_entity_mgr, [&](ECS_REQUIRE(ecs::Tag dagdp_placer_on_ri) ecs::EntityId eid,
                                            const ecs::IntList &dagdp__resource_ids, int dagdp__csm_cascade_count) {
-    if (dagdp__csm_cascade_count >= 0 && viewport.csmCascade >= dagdp__csm_cascade_count)
+    const auto *variantPtr = placer_gather_variant(volume_mapping, eid, dagdp__csm_cascade_count, viewport.csmCascade);
+    if (!variantPtr)
       return;
-
-    const auto iter = volume_mapping.find(eid);
-    if (iter == volume_mapping.end())
-      return;
-    const auto &variant = iter->second;
+    const auto &variant = *variantPtr;
 
     rendinst::riex_collidable_t out_handles;
-    if (asyncPath)
+    const auto *rec = viewportData ? next_placer_record(viewportData->onRi, onRiIdx, eid) : nullptr;
+    if (rec)
     {
-      G_ASSERT(onRiIdx < viewportData->onRi.size());
-      const auto &rec = viewportData->onRi[onRiIdx++];
-      G_ASSERT(rec.eid == eid);
-      for (size_t i = 0; i < rec.entryCount; ++i)
+      for (size_t i = 0; i < rec->entryCount; ++i)
       {
-        const auto &h = job.entryPool[rec.firstEntry + i].handles;
+        const auto &h = job.entryPool[rec->firstEntry + i].handles;
         out_handles.insert(out_handles.end(), h.begin(), h.end());
       }
     }
@@ -567,91 +707,72 @@ void gather_process(DagdpRiexGatherJob &job,
     volume.volumeType = VOLUME_TYPE_FULL;
     volume.variantIndex = variant.variantIndex;
 
-    processMeshes(out_handles, volumeIndex, variant.targetMeshLod, nullptr);
+    processMeshes(make_span_const(out_handles), volumeIndex, variant.targetMeshLod, nullptr);
   });
 
   around_ri_placers_ecs_query(*g_entity_mgr,
     [&](ECS_REQUIRE(ecs::Tag dagdp_placer_around_ri) ecs::EntityId eid, const ecs::IntList &dagdp__resource_ids,
       const ecs::EidList &dagdp__volume_box_eids, const ecs::EidList &dagdp__volume_cylinder_eids,
       const ecs::EidList &dagdp__volume_sphere_eids, int dagdp__csm_cascade_count) {
-      if (dagdp__csm_cascade_count >= 0 && viewport.csmCascade >= dagdp__csm_cascade_count)
+      if (!placer_gather_variant(volume_mapping, eid, dagdp__csm_cascade_count, viewport.csmCascade))
         return;
 
-      const bbox3f fbox =
-        compute_around_ri_fbox(frustumBox, dagdp__volume_box_eids, dagdp__volume_cylinder_eids, dagdp__volume_sphere_eids);
+      const auto *rec = viewportData ? next_placer_record(viewportData->aroundRi, aroundRiIdx, eid) : nullptr;
 
-      eastl::fixed_vector<int16_t, 32> riGenPools;
-      for (auto id : dagdp__resource_ids)
-        if (int pool = rendinst::getRIExtraPoolRef(id); pool >= 0)
-          riGenPools.push_back(pool);
-
-      BBox3 box;
-      v_stu_bbox3(box, fbox);
-
-      dag::Vector<mat44f, framemem_allocator> sources;
-      rendinst::getRIGenTMsInBox(box, make_span_const(riGenPools),
-        [&sources](const rendinst::RendInstDesc & /* desc */, const mat44f &m44) { sources.push_back(m44); });
-
-      if (asyncPath)
+      // Without a matching record the pool indices mean nothing: gather this placer synchronously.
+      if (gridAsync && rec != nullptr)
       {
-        G_ASSERT(aroundRiIdx < viewportData->aroundRi.size());
-        const auto &rec = viewportData->aroundRi[aroundRiIdx++];
-        G_ASSERT(rec.eid == eid);
-        for (size_t i = 0; i < rec.entryCount; ++i)
-        {
-          const auto &h = job.entryPool[rec.firstEntry + i].handles;
-          for (auto handle : h)
-            rendinst::getRIGenExtra44(handle, sources.push_back());
-        }
+        for (size_t localIndex = 0; localIndex < rec->localVolumeCount; ++localIndex)
+          for (const auto &e : job.localVolumeSources(job.localVolumePool[rec->firstLocalVolume + localIndex]))
+            addPreGatheredVolume(e);
+        return;
       }
+
+      LocalVolumeSnapshots localVolumes;
+      const float maxLocalRad =
+        collect_local_volumes(dagdp__volume_box_eids, dagdp__volume_cylinder_eids, dagdp__volume_sphere_eids, localVolumes);
+      const bbox3f fbox = extend_around_ri_fbox(frustumBox, maxLocalRad);
+
+      dag::Vector<TMatrix, framemem_allocator> sources;
+      gather_rigen_source_tms(fbox, dagdp__resource_ids, sources);
+
+      const auto appendSourceTms = [&sources](dag::ConstSpan<rendinst::riex_handle_t> handles) {
+        rendinst::ScopedRIExtraReadLock rd;
+        for (auto handle : handles)
+        {
+          mat44f m44;
+          rendinst::getRIGenExtra44NoLock(handle, m44);
+          v_mat_43cu_from_mat44(sources.push_back().array, m44);
+        }
+      };
+
+      if (rec)
+        for (size_t i = 0; i < rec->entryCount; ++i)
+          appendSourceTms(make_span_const(job.entryPool[rec->firstEntry + i].handles));
       else
       {
         Tab<rendinst::riex_handle_t> ri_handles;
         for (auto resIdx : dagdp__resource_ids)
         {
           rendinst::getRiGenExtraInstances(ri_handles, resIdx, fbox);
-          for (auto h : ri_handles)
-            rendinst::getRIGenExtra44(h, sources.push_back());
-          ri_handles.clear(); // just to make sure, getRiGenExtraInstances() clears anyway
+          appendSourceTms(make_span_const(ri_handles));
         }
       }
 
-      if (sources.empty())
-        return;
-
-      const auto addLocalVolume = [&, eid](const TMatrix &transform, float scale, int volume_type) {
-        DECL_ALIGN16(TMatrix, tm);
-        for (const auto &m44 : sources)
-        {
-          v_mat_43ca_from_mat44(&tm[0][0], m44);
-          addVolume(eid, tm * transform, scale, volume_type);
-        }
-      };
-
-      for (auto volume_eid : dagdp__volume_box_eids)
-        local_volume_box_ecs_query(*g_entity_mgr, volume_eid,
-          [&](ECS_REQUIRE(ecs::Tag dagdp_local_volume_box) const TMatrix &transform) {
-            addLocalVolume(transform, 0.5f, VOLUME_TYPE_BOX);
-          });
-
-      for (auto volume_eid : dagdp__volume_cylinder_eids)
-        local_volume_cylinder_ecs_query(*g_entity_mgr, volume_eid,
-          [&](ECS_REQUIRE(ecs::Tag dagdp_local_volume_cylinder) const TMatrix &transform) {
-            addLocalVolume(transform, 0.5f, VOLUME_TYPE_CYLINDER);
-          });
-
-      for (auto volume_eid : dagdp__volume_sphere_eids)
-        local_volume_sphere_ecs_query(*g_entity_mgr, volume_eid,
-          [&](ECS_REQUIRE(ecs::Tag dagdp_local_volume_sphere) const TMatrix &transform, float sphere_zone__radius) {
-            addLocalVolume(transform, sphere_zone__radius, VOLUME_TYPE_ELLIPSOID);
-          });
+      for (const auto &local : localVolumes)
+        for (const TMatrix &sourceTm : sources)
+          addVolume(eid, sourceTm * local.transform, local.scale, local.volumeType, nullptr);
     });
 
-  if (asyncPath)
+  if (viewportData)
   {
     G_ASSERT(onRiIdx == viewportData->onRi.size());
     G_ASSERT(aroundRiIdx == viewportData->aroundRi.size());
   }
+
+  // out_result holds this viewport's meshes; the other two accumulate over the view's viewports.
+  DA_PROFILE_TAG(dagdp_volume_gather_process, "meshes=%d volumes_total=%d tiles_total=%d", (int)out_result.size(),
+    (int)out_volumes.size(), (int)out_tiles.size());
 }
 
 template <typename Callable>

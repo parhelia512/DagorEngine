@@ -29,6 +29,11 @@ struct PitchPreset
 };
 struct PrecomputedWeaponPositions //-V730 no init for some members
 {
+  PrecomputedWeaponPositions() = default;
+  // no copies: the preset data is big, shared via ECS and filled once by a job
+  PrecomputedWeaponPositions(const PrecomputedWeaponPositions &) = delete;
+  PrecomputedWeaponPositions &operator=(const PrecomputedWeaponPositions &) = delete;
+
   bool isLoaded = false;
   carray<PitchPreset, 7> tpvPitchPresets;
   carray<PitchPreset, 7> fpvPitchPresets;

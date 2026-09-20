@@ -19,6 +19,9 @@
 
 #include "drv_assert_defs.h"
 #include "drv_log_defs.h"
+#include "renderPassValidation.h"
+
+#include <drv/shadersMetaData/renderPassLowering.h>
 
 
 namespace rp_impl
@@ -44,19 +47,19 @@ inline DepthAccess depthAccess = DepthAccess::RW;
 
 } // namespace rp_impl
 
-namespace d3d
+namespace d3d _MULTI_INTERFACE
 {
 void clear_render_pass(const RenderPassTarget &target, const RenderPassArea &area, const RenderPassBind &bind);
+} // namespace d3d _MULTI_INTERFACE
 
-namespace render_pass_generic
+namespace d3d::render_pass_generic _MULTI_INTERFACE
 {
 struct RenderPass
 {
   dag::RelocatableFixedVector<RenderPassBind, 32> actions;
   dag::RelocatableFixedVector<uint32_t, 32> sequence;
-  int32_t subpassCnt;
-  int32_t targetCnt;
-  int32_t bindingOffset;
+  int32_t subpassCnt = 0;
+  int32_t targetCnt = 0;
 
   void addSubpassToList(const RenderPassDesc &rp_desc, int32_t subpass);
   void execute(uint32_t idx);
@@ -82,6 +85,21 @@ static void apply_render_targets()
 {
   set_render_target(rp_impl::depthTarget, rp_impl::depthAccess,
     dag::ConstSpan<RenderTarget>(rp_impl::colorTargets.data(), rp_impl::colorTargetCount));
+}
+
+// Nothing else unbinds these SRVs. A target read in one subpass and written as a color in the next
+// would otherwise be bound as SRV and render target at once.
+static void unbind_subpass_reads()
+{
+  if (rp_impl::subpass == 0)
+    return;
+  const auto &seq = activeRP->sequence;
+  for (int i = seq[rp_impl::subpass - 1], e = seq[rp_impl::subpass]; i < e; ++i)
+  {
+    const RenderPassBind &bind = activeRP->actions[i];
+    if ((bind.action & RP_TA_SUBPASS_READ) && bind.slot != RenderPassExtraIndexes::RP_SLOT_DEPTH_STENCIL)
+      set_tex(STAGE_PS, subpass_read_register(RP_GENERIC_MAX_T_REGISTERS, bind.slot), nullptr);
+  }
 }
 
 static void reset_render_targets()
@@ -125,7 +143,7 @@ void RenderPass::execute(uint32_t idx)
     {
       if (target.resource.tex)
         target.resource.tex->texmiplevel(target.resource.mip_level, target.resource.mip_level);
-      set_tex(STAGE_PS, activeRP->bindingOffset + bind.slot, target.resource.tex);
+      set_tex(STAGE_PS, subpass_read_register(RP_GENERIC_MAX_T_REGISTERS, bind.slot), target.resource.tex);
     }
     else
     {
@@ -151,12 +169,16 @@ void RenderPass::execute(uint32_t idx)
   }
   else if (bind.action & RP_TA_SUBPASS_RESOLVE)
   {
-    uint32_t srcIndex = 0;
+    // The resolve source is the attachment bound through the same slot in the same subpass: the one
+    // written there, or the read-only depth on the depth-stencil slot. The first match is the source,
+    // the way creation validates it: a second pair into one destination would overwrite the first.
     for (const auto &srcBind : actions)
-    {
-      if ((srcBind.slot == bind.slot) && (srcBind.subpass == bind.subpass) && (srcIndex++ != idx))
+      if (srcBind.slot == bind.slot && srcBind.subpass == bind.subpass &&
+          (srcBind.action & render_pass_validation::resolve_source_actions(bind.slot)))
+      {
         rp_impl::msaaResolves.push_back({srcBind.target, bind.target});
-    }
+        break;
+      }
   }
   else if (bind.action & RP_TA_SUBPASS_VRS_READ)
   {
@@ -183,38 +205,19 @@ void RenderPass::resolveMSAATargets()
 }
 
 
-static bool validate_renderpass_action(RenderPassTargetAction action, const char *what)
+static bool validate_read_slots(const RenderPassDesc &rp_desc)
 {
-  G_UNUSED(action);
-  G_UNUSED(what);
-
-  bool noErrors = true;
-
-  D3D_CONTRACT_ASSERTF_AND_DO(__popcount(action & RP_TA_SUBPASS_MASK) <= 1, noErrors &= false,
-    "'%s' action consists of multiple subpass operations", what);
-  const int stencilLoadMask = (RP_TA_LOAD_STENCIL_CLEAR | RP_TA_LOAD_STENCIL_READ | RP_TA_LOAD_STENCIL_NO_CARE);
-  const int targetLoadMask = RP_TA_LOAD_MASK & ~stencilLoadMask;
-  D3D_CONTRACT_ASSERTF_AND_DO(__popcount(action & targetLoadMask) <= 1, noErrors &= false,
-    "'%s' action consists of multiple target load operations", what);
-  D3D_CONTRACT_ASSERTF_AND_DO(__popcount(action & stencilLoadMask) <= 1, noErrors &= false,
-    "'%s' action consists of multiple stencil load operations", what);
-  D3D_CONTRACT_ASSERTF_AND_DO(__popcount(action & RP_TA_STORE_MASK) <= 1, noErrors &= false,
-    "'%s' action consists of multiple store operations", what);
-
-  return noErrors;
-}
-
-static bool validate_renderpass_desc(const RenderPassDesc &rp_desc)
-{
-  G_UNUSED(rp_desc);
-
+  const char *name = rp_desc.debugName ? rp_desc.debugName : "<unnamed>";
+  G_UNUSED(name);
   bool noErrors = true;
 
   for (uint32_t i = 0; i < rp_desc.bindCount; ++i)
   {
-    noErrors &= validate_renderpass_action(rp_desc.binds[i].action, rp_desc.debugName);
-    D3D_CONTRACT_ASSERTF_AND_DO(rp_desc.binds[i].target < rp_desc.targetCount, noErrors &= false,
-      "target index is out of bounds in bind %u of render pass '%s'", i, rp_desc.debugName);
+    const RenderPassBind &bind = rp_desc.binds[i];
+    if ((bind.action & RP_TA_SUBPASS_READ) == 0 || bind.slot == RenderPassExtraIndexes::RP_SLOT_DEPTH_STENCIL)
+      continue;
+    D3D_CONTRACT_ASSERTF_AND_DO(subpass_read_fits_window(RP_GENERIC_MAX_T_REGISTERS, bind.slot), noErrors = false,
+      "subpass read slot %d is out of the T register window in bind %u of render pass '%s'", bind.slot, i, name);
   }
 
   return noErrors;
@@ -222,8 +225,9 @@ static bool validate_renderpass_desc(const RenderPassDesc &rp_desc)
 
 RenderPass *create_render_pass(const RenderPassDesc &rp_desc)
 {
-  D3D_CONTRACT_ASSERTF_RETURN(rp_desc.bindCount > 0, nullptr, "render pass '%s' bindCount is 0", rp_desc.debugName);
-  if (!validate_renderpass_desc(rp_desc))
+  bool descOk = validate_render_pass_desc(rp_desc);
+  descOk &= validate_read_slots(rp_desc);
+  if (!descOk)
     return nullptr;
 
   auto ret = new RenderPass{};
@@ -232,21 +236,11 @@ RenderPass *create_render_pass(const RenderPassDesc &rp_desc)
   ret->sequence.push_back(0);
   ret->subpassCnt = -1;
   ret->targetCnt = rp_desc.targetCount;
-  ret->bindingOffset = rp_desc.subpassBindingOffset;
 
   for (auto &bind : eastl::span{rp_desc.binds, rp_desc.bindCount})
-  {
     if (bind.subpass > ret->subpassCnt)
       ret->subpassCnt = bind.subpass;
-  }
   ++ret->subpassCnt;
-  D3D_CONTRACT_ASSERTF_AND_DO(
-    ret->subpassCnt > 0,
-    {
-      delete ret;
-      return nullptr;
-    },
-    "render pass '%s' description lacking subpassCnt", rp_desc.debugName);
 
   for (uint32_t i = 0; i < ret->subpassCnt; ++i)
     ret->addSubpassToList(rp_desc, i);
@@ -282,6 +276,7 @@ void next_subpass()
   D3D_CONTRACT_ASSERTF(rp_impl::subpass + 1 < seq.size(), "trying to run non existent subpass %u of rp %s", rp_impl::subpass,
     activeRP->getDebugName());
 
+  unbind_subpass_reads();
   reset_render_targets();
   reset_vrs_texture();
 
@@ -347,6 +342,7 @@ void end_render_pass()
 
   if (rp_impl::subpass + 1 < activeRP->sequence.size())
     next_subpass();
+  unbind_subpass_reads();
 
   rp_impl::targets.clear();
   rp_impl::subpass = 0;
@@ -356,17 +352,19 @@ void end_render_pass()
   //! after render pass ends, render targets are reset to backbuffer
   set_render_target();
 }
-} // namespace render_pass_generic
+} // namespace d3d::render_pass_generic_MULTI_INTERFACE
 
-NO_UBSAN RenderPass *create_render_pass(const RenderPassDesc &rp_desc)
+namespace d3d _MULTI_INTERFACE
+{
+RenderPass *create_render_pass(const RenderPassDesc &rp_desc)
 {
   return reinterpret_cast<RenderPass *>(render_pass_generic::create_render_pass(rp_desc));
 }
-NO_UBSAN void delete_render_pass(RenderPass *rp)
+void delete_render_pass(RenderPass *rp)
 {
   render_pass_generic::delete_render_pass(reinterpret_cast<render_pass_generic::RenderPass *>(rp));
 }
-NO_UBSAN void begin_render_pass(RenderPass *rp, const RenderPassArea area, dag::ConstSpan<RenderPassTarget> targets)
+void begin_render_pass(RenderPass *rp, const RenderPassArea area, dag::ConstSpan<RenderPassTarget> targets)
 {
   render_pass_generic::begin_render_pass(reinterpret_cast<render_pass_generic::RenderPass *>(rp), area, targets);
 }
@@ -377,4 +375,4 @@ void end_render_pass() { render_pass_generic::end_render_pass(); }
 void allow_render_pass_target_load() {}
 #endif
 
-} // namespace d3d
+} // namespace d3d _MULTI_INTERFACE

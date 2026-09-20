@@ -415,7 +415,8 @@ TextureTilingInfo d3d::get_texture_tiling_info(BaseTexture *tex, size_t subresou
     sreqs.imageMipTailOffset, tileSize, sreqs.imageMipTailOffset % tileSize);
 
   // per layer mip tail may live in different places, but single mip tail can be checked for correctness
-  G_ASSERTF((mipChainStrideInTiles * img->getArrayLayers() * tileSize == sreqs.imageMipTailOffset) || !singleMiptail,
+  G_ASSERTF(
+    (mipChainStrideInTiles * img->getArrayLayers() * tileSize == sreqs.imageMipTailOffset) || !singleMiptail || mipTailSize == 0,
     "vulkan: mip tail not after mip tiles %u %u %u", mipChainStrideInTiles, tileSize, sreqs.imageMipTailOffset);
 
   TextureTilingInfo ret{};
@@ -457,11 +458,13 @@ void drv3d_vulkan::free_buffer(GenericBufferInterface *buffer) { Globals::Res::b
 
 Vbuffer *d3d::create_vb(int size, int flg, const char *name, ResourceTagType)
 {
+  D3D_CONTRACT_ASSERT(((flg & SBCF_BIND_MASK) & ~(SBCF_BIND_VERTEX | SBCF_BIND_SHADER_RES)) == 0);
   return allocate_buffer(1, size, flg | SBCF_BIND_VERTEX, FormatStore(), true /*managed*/, name);
 }
 
 Ibuffer *d3d::create_ib(int size, int flg, const char *stat_name, ResourceTagType)
 {
+  D3D_CONTRACT_ASSERT(((flg & SBCF_BIND_MASK) & ~(SBCF_BIND_INDEX | SBCF_BIND_SHADER_RES)) == 0);
   return allocate_buffer(1, size, flg | SBCF_BIND_INDEX, FormatStore(), true /*managed*/, stat_name);
 }
 
@@ -519,7 +522,7 @@ inline SamplerState translate_d3d_samplerinfo_to_vulkan_samplerstate(const d3d::
   return result;
 }
 
-NO_UBSAN d3d::SamplerHandle d3d::request_sampler(const d3d::SamplerInfo &sampler_info)
+d3d::SamplerHandle d3d::request_sampler(const d3d::SamplerInfo &sampler_info)
 {
   SamplerState state = translate_d3d_samplerinfo_to_vulkan_samplerstate(sampler_info);
   SamplerResource *ret = Globals::samplers.getResource(state);

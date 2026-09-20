@@ -777,8 +777,16 @@ SQRESULT sq_setnativeclosuredocstring(HSQUIRRELVM v,SQInteger idx,const char *do
     assert(docstring);
     SQObject o = stack_get(v, idx);
     if(sq_isnativeclosure(o)) {
-        SQObjectPtr docValue(SQString::Create(_ss(v), docstring));
-        _table(_ss(v)->doc_objects)->NewSlot(sq_docstring_key(_nativeclosure(o)), docValue);
+#if SQ_STORE_DOC_OBJECTS
+        SQNativeClosure *nc = _nativeclosure(o);
+        SQString *decl = _ss(v)->GetNativeDeclString(nc->_docstring_id);
+        SQDocStringId id = _ss(v)->AddNativeStrings(docstring, decl ? decl->_val : NULL);
+        if (id == 0)
+            return sq_throwerror(v, "too many docstrings in the shared state");
+        nc->_docstring_id = id;
+#else
+        (void)docstring;
+#endif
         return SQ_OK;
     }
     return sq_throwerror(v,"the object is not a nativeclosure");
@@ -788,16 +796,30 @@ SQRESULT sq_setobjectdocstring(HSQUIRRELVM v, const HSQOBJECT *obj, const char *
 {
     assert(obj);
     assert(docstring);
-    if (sq_isclass(*obj) || sq_istable(*obj) || sq_isnativeclosure(*obj) || sq_isclosure(*obj)) {
-        SQObjectPtr docValue(SQString::Create(_ss(v), docstring));
-        const void *docKey =
-            sq_isclass(*obj) || sq_istable(*obj) ? (const void *)_userpointer(*obj) :
-            sq_isnativeclosure(*obj) ? (const void *)_nativeclosure(*obj) :
-            sq_isclosure(*obj) ? (const void *)_closure(*obj)->_function : NULL;
-        _table(_ss(v)->doc_objects)->NewSlot(sq_docstring_key(docKey), docValue);
+    if (sq_isclass(*obj) || sq_isnativeclosure(*obj) || sq_isclosure(*obj)) {
+#if SQ_STORE_DOC_OBJECTS
+        SQDocStringId id;
+        if (sq_isnativeclosure(*obj)) {
+            SQNativeClosure *nc = _nativeclosure(*obj);
+            SQString *decl = _ss(v)->GetNativeDeclString(nc->_docstring_id);
+            id = _ss(v)->AddNativeStrings(docstring, decl ? decl->_val : NULL);
+        }
+        else
+            id = _ss(v)->AddDocString(docstring);
+        if (id == 0)
+            return sq_throwerror(v, "too many docstrings in the shared state");
+        if (sq_isclass(*obj))
+            _class(*obj)->_docstring_id = id;
+        else if (sq_isnativeclosure(*obj))
+            _nativeclosure(*obj)->_docstring_id = id;
+        else
+            _closure(*obj)->_function->_docstring_id = id;
+#else
+        (void)docstring;
+#endif
         return SQ_OK;
     }
-    return sq_throwerror(v,"the object is not a table, class or function");
+    return sq_throwerror(v,"the object is not a class or function");
 }
 
 SQRESULT sq_setparamscheck(HSQUIRRELVM v,SQInteger nparamscheck,const char *typemask)
@@ -874,15 +896,10 @@ SQRESULT sq_new_closure_slot_from_decl_string(HSQUIRRELVM v, SQFUNCTION func, SQ
     nc->_result_type_mask = ft.returnTypeMask;
 
 #if SQ_STORE_DOC_OBJECTS
-    if (docstring) {
-        SQObjectPtr docValue(SQString::Create(_ss(v), docstring));
-        _table(_ss(v)->doc_objects)->NewSlot(sq_docstring_key(nc), docValue);
-    }
-
-    {
-        SQObjectPtr declValue(SQString::Create(_ss(v), function_decl));
-        _table(_ss(v)->doc_objects)->NewSlot(sq_declstring_key(nc), declValue);
-    }
+    SQDocStringId id = _ss(v)->AddNativeStrings(docstring, function_decl);
+    if (id == 0)
+        return sq_throwerror(v, "too many docstrings in the shared state");
+    nc->_docstring_id = id;
 #else
     (void)(docstring);
 #endif
@@ -1981,9 +1998,9 @@ SQRESULT sq_next(HSQUIRRELVM v,SQInteger idx)
         return sq_throwerror(v,"cannot iterate a generator");
     }
     int faketojump;
-    if(!v->FOREACH_OP(o,realkey,val,refpos,666,faketojump))
+    if(!v->FOREACH_OP(o,realkey,val,refpos,SQVM::FOREACH_NO_MORE_ELEMENTS,faketojump))
         return SQ_ERROR;
-    if(faketojump != 666) {
+    if(faketojump != SQVM::FOREACH_NO_MORE_ELEMENTS) {
         v->Push(realkey);
         v->Push(val);
         return SQ_OK;

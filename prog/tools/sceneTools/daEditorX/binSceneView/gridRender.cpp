@@ -69,12 +69,15 @@ bool GridRender::init(const char *shader_name, float ht, int subdiv, const Point
   for (int y = 0; y < subdiv - 1; ++y)
     for (int x = 0; x < subdiv - 1; ++x, indices += 6)
     {
-      indices[0] = y * subdiv + x;
-      indices[1] = indices[0] + 1;
-      indices[2] = indices[0] + subdiv;
-      indices[3] = indices[1];
-      indices[4] = indices[2];
-      indices[5] = indices[2] + 1;
+      const uint16_t topLeft = y * subdiv + x;
+      const uint16_t topRight = topLeft + 1;
+      const uint16_t bottomLeft = topLeft + subdiv;
+      indices[0] = topLeft;
+      indices[1] = topRight;
+      indices[2] = bottomLeft;
+      indices[3] = topRight;
+      indices[4] = bottomLeft;
+      indices[5] = bottomLeft + 1;
     }
 
   gridIb->unlock();

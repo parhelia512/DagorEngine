@@ -285,7 +285,7 @@ void postfx_bind_additional_textures_from_registry(dafg::Registry &registry)
 {
   postfx_bind_additional_textures_from_registry_ecs_query(*g_entity_mgr,
     [&registry](const ecs::StringList &postfx__additional_bind_textures) {
-      for (const ecs::string texName : postfx__additional_bind_textures)
+      for (const ecs::string &texName : postfx__additional_bind_textures)
         registry.readTexture(texName.c_str()).atStage(dafg::Stage::PS).bindToShaderVar(texName.c_str()).optional();
     });
 }
@@ -296,7 +296,7 @@ void postfx_bind_additional_textures_from_namespace(dafg::NameSpaceRequest &ns)
 {
   postfx_bind_additional_textures_from_namespace_ecs_query(*g_entity_mgr,
     [&ns](const ecs::StringList &postfx__additional_bind_textures) {
-      for (const ecs::string texName : postfx__additional_bind_textures)
+      for (const ecs::string &texName : postfx__additional_bind_textures)
         ns.readTexture(texName.c_str()).atStage(dafg::Stage::POST_RASTER).bindToShaderVar(texName.c_str()).optional();
     });
 }
@@ -307,7 +307,7 @@ void postfx_read_additional_textures_from_registry(dafg::Registry &registry)
 {
   postfx_read_additional_textures_from_registry_ecs_query(*g_entity_mgr,
     [&registry](const ecs::StringList &postfx__additional_read_textures) {
-      for (const ecs::string texName : postfx__additional_read_textures)
+      for (const ecs::string &texName : postfx__additional_read_textures)
         registry.readTexture(texName.c_str()).atStage(dafg::Stage::POST_RASTER).useAs(dafg::Usage::SHADER_RESOURCE).optional();
     });
 }

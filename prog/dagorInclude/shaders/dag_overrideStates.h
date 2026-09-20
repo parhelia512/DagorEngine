@@ -21,9 +21,9 @@ struct OverrideState
   /**
    * \brief Bit flags that describe which parameters are overridden.
    */
-  enum StateBits
+  enum StateBits : uint32_t
   {
-    Z_TEST_DISABLE = 1 << 0,       ///< Disable depth test.
+    Z_TEST_DISABLE = 1 << 0,       ///< Disable depth test. Can't be used with \ref StateBits::Z_TEST_ENABLE "Z_TEST_ENABLE".
     Z_WRITE_DISABLE = 1 << 1,      ///< Disable depth write. Can't be used with \ref StateBits::Z_WRITE_ENABLE "Z_WRITE_ENABLE".
     Z_BOUNDS_ENABLED = 1 << 2,     ///< Enable depth bounds test. Check \p hasDepthBoundsTest driver cap to see if it is supported.
     Z_CLAMP_ENABLED = 1 << 3,      ///< Enable depth clamp.
@@ -45,6 +45,8 @@ struct OverrideState
     SCISSOR_ENABLED = 1 << 15,   ///< Enable scissor test.
     ALPHA_TO_COVERAGE = 1 << 16, ///< Enable alpha-to-coverage.
     Z_WRITE_ENABLE = 1 << 17, ///< Enable depth write. Can't be used with \ref StateBits::Z_WRITE_DISABLE "Z_WRITE_DISABLE". It doesn't
+                              ///< have any effect if \ref StateBits::FORCED_SAMPLE_COUNT "FORCED_SAMPLE_COUNT" is enabled.
+    Z_TEST_ENABLE = 1 << 18,  ///< Enable depth test. Can't be used with \ref StateBits::Z_TEST_DISABLE "Z_TEST_DISABLE". It doesn't
                               ///< have any effect if \ref StateBits::FORCED_SAMPLE_COUNT "FORCED_SAMPLE_COUNT" is enabled.
   };
   uint32_t bits = 0;             ///< Bit flags that describe which parameters are overridden.

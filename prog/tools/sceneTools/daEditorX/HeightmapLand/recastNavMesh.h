@@ -1,16 +1,7 @@
 // Copyright (C) Gaijin Games KFT.  All rights reserved.
 #pragma once
 
-enum class NavmeshExportType : uint8_t
-{
-  WATER = 0,
-  SPLINES,
-  HEIGHT_FROM_ABOVE,
-  GEOMETRY,
-  WATER_AND_GEOMETRY,
-  INVALID,
-  COUNT
-};
+#include <recastTools/navmeshExportType.h>
 
 enum NavmeshAreaType
 {

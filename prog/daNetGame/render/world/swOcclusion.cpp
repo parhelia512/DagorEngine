@@ -7,7 +7,7 @@
 #include <math/integer/dag_IPoint2.h>
 #include <perfMon/dag_statDrv.h>
 #include <render/world/occlusionLandMeshManager.h>
-#include <render/world/cameraInCamera.h>
+#include <render/cameraInCamera/cameraInCamera.h>
 #include <render/world/wrDispatcher.h>
 #include <rendInst/rendInstExtra.h>
 #include <rendInst/rendInstGen.h>

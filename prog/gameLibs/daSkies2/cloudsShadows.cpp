@@ -96,6 +96,7 @@ bool CloudsShadows::updateTemporal()
 
 void CloudsShadows::init()
 {
+  bsmEnabled = !ShaderGlobal::is_var_assumed(clouds_use_bsmVarId) || ShaderGlobal::get_interval_assumed_value(clouds_use_bsmVarId) > 0;
   initTemporal();
   genCloudShadowsVolume.init("gen_cloud_shadows_volume_cs", "gen_cloud_shadows_volume_ps");
   int fmt = (VoltexRenderer::is_compute_supported() && d3d::get_driver_desc().issues.hasBrokenComputeFormattedOutput) ? TEXFMT_G32R32F
@@ -122,7 +123,7 @@ bool CloudsShadows::isConverged() const
 {
   if (temporalStep != temporalStepFinal || resetGen == 0)
     return false;
-  if (!use_bsm.get())
+  if (!use_bsm.get() || !bsmEnabled)
     return true;
   return bsmLiveValid && !bsmNeedFull && bsmCycleFrame == 0 && !bsmPendingValid;
 }
@@ -409,7 +410,7 @@ void CloudsShadows::ensureBSMWindow(const Point2 &camera_xz, const Point3 &light
 
 void CloudsShadows::updateBSM(const Point2 &camera_xz, const Point3 &light_dir)
 {
-  if (!use_bsm.get())
+  if (!use_bsm.get() || !bsmEnabled)
   {
     closeBSM();
     return;

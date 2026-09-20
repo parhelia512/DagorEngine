@@ -2,7 +2,6 @@
 #pragma once
 
 #include <3d/dag_resPtr.h>
-#include <3d/dag_textureIDHolder.h>
 #include <dag/dag_vector.h>
 #include <de3_pixelPerfectSelectionService.h>
 #include <EASTL/unique_ptr.h>
@@ -25,7 +24,7 @@ private:
   static TMatrix4 makeProjectionMatrixForViewRegion(int viewWidth, int viewHeight, float fov, float zNear, float zFar, int regionLeft,
     int regionTop, int regionWidth, int regionHeight);
 
-  TextureIDHolderWithVar depthRt;
+  UniqueTex depthRt;
   eastl::unique_ptr<Sbuffer, DestroyDeleter<Sbuffer>> rendinstMatrixBuffer;
 
   static int global_frame_block_id;

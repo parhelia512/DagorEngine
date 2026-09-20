@@ -13,9 +13,9 @@ class Sub(Future) {
 
 let s = Sub()
 
-try { s.getState() }    catch (e) { print("getState: " + e + "\n") }
-try { s.resolve(1) }    catch (e) { print("resolve: " + e + "\n") }
+try { s.getState() }    catch (e) { println($"getState: {e}") }
+try { s.resolve(1) }    catch (e) { println($"resolve: {e}") }
 
 // A plain Future still works.
 let p = Future()
-print("plain: " + p.getState() + "\n")
+println($"plain: {p.getState()}")

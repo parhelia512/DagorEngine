@@ -1,0 +1,289 @@
+// the media volume injection: samples the baked bricks for a media scene refill.
+// a project declares its PROJECT_DAGI_MEDIA_VOLS_AMBIENT override in the include below,
+// so that must come before the default here; it also pulls in the envi sph the default
+// reads. the finalize cs takes dagi_media_volumes_inc.dshl alone and none of this
+include "project_light_point.dshl"
+include "dagi_media_volumes_inc.dshl"
+
+// opacity retention per octave of sampling footprint over a brick texel (applied once
+// even at texel scale: a full voxel is a leaf cloud, not a solid). a coarse voxel
+// averages away the gap correlation of a clumpy canopy - rays thread the resolved gaps,
+// the mean charges every ray - and that loss compounds per octave of aggregation.
+// sampling side on purpose - one var tunes the whole chain live, a bake scale needs a rebake
+float dagi_media_vols_opacity = 0.85;
+
+// lit color of a media voxel. the default is sun free (the mean sky through the canopy):
+// the full sun version needs the project light point chain, and a project whose gi media
+// hook already pulls that chain (clouds shadow vars) would declare its vars twice in the
+// refill cs. a project overrides this next to its SUN_SKY_LIGHT_POINT_TRACE_HIT, with
+// dagi_media_vols_atten as the canopy self occlusion term. the gbuf pass refreshes the
+// radiance later
+define_macro_if_not_defined PROJECT_DAGI_MEDIA_VOLS_AMBIENT(code)
+  (code) {
+    dagi_media_vols_sky_mean@f3 = (enviSPH0.w, enviSPH1.w, enviSPH2.w, 0);
+  }
+  hlsl(code) {
+    float3 dagi_media_vols_ambient(float3 world_pos, float3 world_normal, float3 albedo, float3 translucency_color,
+      float voxel_size)
+    {
+      return (albedo + translucency_color)*(dagi_media_vols_sky_mean*dagi_media_vols_atten(world_pos, voxel_size));
+    }
+  }
+endmacro
+
+macro DAGI_MEDIA_VOLUMES(code)
+  (code) {
+    dagi_media_vols_opacity@f1 = dagi_media_vols_opacity;
+  }
+  hlsl(code) {
+    // the lighting sample step of a media voxel: one meter plus its own cascade voxel, so
+    // the sun shadow and the canopy loss read past the voxel's own crown slab, not through it
+    float dagi_media_vols_light_step(float voxel_size) { return 1 + voxel_size; }
+    // the opacity knob compounds per octave of brick footprint, see its declaration; the one
+    // formula for the injection and the debug tracer (its texel read is octave zero)
+    float dagi_media_vols_opacity_scale(float octaves) { return pow(dagi_media_vols_opacity, 1 + octaves); }
+    // the ambient lost to the canopy above: one voxel of the coarser media cascade when
+    // the caller can read the media scene (DAGI_MEDIA_VOLS_ATTEN_FROM_SCENE, the refill cs),
+    // a flat guess otherwise
+    float dagi_media_vols_atten(float3 world_pos, float voxel_size)
+    {
+      // the coarser texel is two voxels tall: the sun step (one voxel) leaves the bottom
+      // voxel of each pair inside its own coarse texel, reading its own crown
+      world_pos.y += 1 + 2*voxel_size;
+      #if DAGI_MEDIA_VOLS_ATTEN_FROM_SCENE
+        uint clipAbove = uint(dagi_media_scene_update_lt_coord.w) + 1;
+        if (clipAbove < dagi_media_scene_get_clip_count())
+        {
+          int4 lt = sample_dagi_media_scene_clipmap_lt_coord(clipAbove);
+          float voxelAbove = asfloat(lt.w);
+          int3 absCoord = int3(floor(world_pos.xzy/voxelAbove));
+          if (all(uint3(absCoord - lt.xyz) < uint3(dagi_media_scene_get_clip_size().xxy)))
+          {
+            uint3 wr = dagi_media_scene_wrapped_coord_from_abs_coord(absCoord);
+            wr.z += 1 + clipAbove*dagi_media_scene_get_clip_size_with_border();
+            return exp2(-texture3DAt(dagi_media_scene, wr).w*voxelAbove);
+          }
+        }
+      #endif
+      return 0.5;
+    }
+  }
+  PROJECT_DAGI_MEDIA_VOLS_AMBIENT(code)
+  (code) {
+    dagi_media_vol_grid_lt_sz@i4 = dagi_media_vol_grid_lt_sz;
+    dagi_media_vol_grid_cell@f3 = dagi_media_vol_grid_cell;
+    dagi_media_vol_atlas_grid@i4 = dagi_media_vol_atlas_grid;
+    dagi_media_vol_atlas@smp3d = dagi_media_vol_atlas;
+    dagi_media_vol_instances@buf = dagi_media_vol_instances hlsl { ByteAddressBuffer dagi_media_vol_instances@buf; };
+    dagi_media_vol_grid@buf = dagi_media_vol_grid hlsl { ByteAddressBuffer dagi_media_vol_grid@buf; };
+    dagi_media_vol_grid_ix@buf = dagi_media_vol_grid_ix hlsl { ByteAddressBuffer dagi_media_vol_grid_ix@buf; };
+    dagi_media_vol_types@buf = dagi_media_vol_types hlsl { StructuredBuffer<float4> dagi_media_vol_types@buf; };
+    dagi_media_vol_albedo@buf = dagi_media_vol_albedo hlsl { ByteAddressBuffer dagi_media_vol_albedo@buf; };
+  }
+  hlsl(code) {
+    #include "dagi_media_volumes.hlsli"
+    // the packed record written by pack_vol_instance (voxelizedMedia.cpp)
+    #define DAGI_MEDIA_VOL_IDENTITY_QUAT 0xFF808080u // the identity rotation encodes exactly to this
+    void dagi_media_vol_load_inst(ByteAddressBuffer buf, uint at, out float3 pos, out float3 inv_scale, out uint type,
+      out uint packed_quat)
+    {
+      uint4 d0 = loadBuffer4(buf, at*DAGI_MEDIA_VOL_INST_SIZE);
+      uint2 d1 = loadBuffer2(buf, at*DAGI_MEDIA_VOL_INST_SIZE + 16);
+      pos = asfloat(d0.xyz);
+      inv_scale = rcp(max(float3(f16tof32(d0.w), f16tof32(d0.w >> 16), f16tof32(d1.x)), 1e-3));
+      type = d1.x >> 16;
+      packed_quat = d1.y;
+    }
+    // world directions of the volume local axes = columns of the rotation
+    void dagi_media_vol_quat_axes(uint packed_quat, out float3 ax0, out float3 ax1, out float3 ax2)
+    {
+      float4 q = (float4(uint4(packed_quat, packed_quat >> 8, packed_quat >> 16, packed_quat >> 24) & 255) - 128)*(1./127.5);
+      q *= rsqrt(max(dot(q, q), 1e-6));
+      float3 qs = q.xyz*q.xyz, qc = q.xyz*q.xyz.yzx, qw = q.xyz*q.w;
+      ax0 = float3(1 - 2*(qs.y + qs.z), 2*(qc.x + qw.z), 2*(q.x*q.z - qw.y));
+      ax1 = float3(2*(qc.x - qw.z), 1 - 2*(qs.x + qs.z), 2*(qc.y + qw.x));
+      ax2 = float3(2*(q.x*q.z + qw.y), 2*(qc.y - qw.x), 1 - 2*(qs.x + qs.y));
+    }
+    // world to volume local of a world aligned media voxel: project on the axes, then unscale.
+    // the rotation spreads the voxel extent over the local axes (local aabb of the voxel cube)
+    void dagi_media_vol_local_voxel(float3 ax0, float3 ax1, float3 ax2, float3 inv_scale, float3 rel, float voxel_size,
+      out float3 lpos, out float3 hl)
+    {
+      lpos = float3(dot(ax0, rel), dot(ax1, rel), dot(ax2, rel))*inv_scale;
+      float3 one = float3(1, 1, 1);
+      float3 axisSpread = float3(dot(abs(ax0), one), dot(abs(ax1), one), dot(abs(ax2), one));
+      hl = (0.5*voxel_size)*axisSpread*inv_scale;
+    }
+    // the density contract, shared with the debug tracer so it can not describe a different
+    // injector. one brick voxel of this instance measured in log2 extinction per world meter:
+    // the brick collapses to one isotropic rate on purpose (see dagi_media_volumes below)
+    float dagi_media_vol_inv_vox_world(float3 inv_size, float3 inv_scale)
+    {
+      float3 invVox = inv_size*inv_scale;
+      return (DAGI_MEDIA_VOL_BRICK/3.)*(invVox.x + invVox.y + invVox.z);
+    }
+    // brick opacity over a path: an overlap fraction for the injector, world meters for a march
+    float dagi_media_vol_sigma(float opacity, float inv_vox_world, float path)
+    {
+      return -log2(max(1 - opacity, 1./64.))*inv_vox_world*path;
+    }
+    float dagi_media_vol_max_sigma(float inv_vox_world) { return 6*inv_vox_world; } // one fully opaque volume
+    float3 dagi_media_vol_albedo_of(uint type)
+    {
+      uint a8 = loadBuffer(dagi_media_vol_albedo, type*4);
+      return float3(uint3(a8, a8 >> 8, a8 >> 16) & 255)*(1./255.);
+    }
+    // one media voxel against one instance brick. the whole sample path lives here so the
+    // debug tracer cannot drift from what the refill injects: a mode 2 mismatch then means
+    // the brick, never the sampling. the gradient fields serve the refill only
+    struct DagiMediaVolSample
+    {
+      float sigma;
+      float invVoxWorld;
+      float opacity;  // brick voxel value at the sample
+      float inset;    // half texel of the sampled mip, in brick space
+      float3 uv;      // atlas uv of the sample
+      float3 c;       // brick space coord, clamped into the inset
+      float3 invSize; // 1 / volume box extent
+      uint mip;
+    };
+    // false = the media voxel misses the volume, or the brick voxel is empty
+    bool dagi_media_vol_sample_instance(uint type, float3 lpos, float3 hl, float3 inv_scale, out DagiMediaVolSample o)
+    {
+      o = (DagiMediaVolSample)0;
+      float3 boxLt = structuredBufferAt(dagi_media_vol_types, type*2).xyz;
+      o.invSize = structuredBufferAt(dagi_media_vol_types, type*2 + 1).xyz;
+      // overlap of this media voxel with the volume box, in brick space
+      float3 mn = max((lpos - hl - boxLt)*o.invSize, 0);
+      float3 mx = min((lpos + hl - boxLt)*o.invSize, 1);
+      float3 ext = mx - mn;
+      if (!all(ext > 0)) // negated so a nan ext also skips, it must not ride sigmaSum
+        return false;
+      float3 rel = ext/max((2*hl)*o.invSize, 1e-12);//per axis: the whole product can underflow
+      float overlap = rel.x*rel.y*rel.z;
+      // mean opacity over the exact [mn,mx] window: one mip finer than the footprint, eight
+      // stratified trilinear taps tiling the window. a single ceil-mip center tap read a
+      // texel grid aligned box up to 2x wider, and the coarse mip inset clamp pulled edge
+      // voxels toward the brick center: convex crowns fattened and densened on coarse cascades
+      float maxExt = max(max(ext.x, ext.y), ext.z);
+      o.mip = uint(clamp(ceil(log2(max(maxExt*DAGI_MEDIA_VOL_BRICK, 1))) - 1, 0, DAGI_MEDIA_VOL_MIPS - 1));
+      o.inset = 0.5/float(uint(DAGI_MEDIA_VOL_BRICK) >> o.mip);
+      o.c = clamp(0.5*(mn + mx), o.inset, 1 - o.inset);
+      uint3 cellC = dagi_media_vol_atlas_cell(type, dagi_media_vol_atlas_grid);
+      float3 cellBase = float3(cellC);
+      float3 invGrid = rcp(float3(dagi_media_vol_atlas_grid.xyz));
+      o.uv = (cellBase + o.c)*invGrid;
+      float opacity = 0;
+      UNROLL
+      for (uint i = 0; i < 8; ++i)
+      {
+        float3 p = 0.5*(mn + mx) + ext*((float3(uint3(i, i >> 1, i >> 2) & 1u) - 0.5)*0.5);
+        opacity += tex3Dlod(dagi_media_vol_atlas, float4((cellBase + clamp(p, o.inset, 1 - o.inset))*invGrid, o.mip)).x;
+      }
+      float octaves = max(0., log2(maxExt*float(DAGI_MEDIA_VOL_BRICK)));
+      o.opacity = opacity*(1./8.)*dagi_media_vols_opacity_scale(octaves);
+      // brick voxel opacity -> log2 extinction per world meter. the media voxel stores one
+      // isotropic extinction, so an anisotropic brick collapses to a scalar on purpose: the
+      // axis mean rate. a flat volume then injects aspect scaled density (denser across its
+      // wide axes), accepted for a single scalar sigma
+      o.invVoxWorld = dagi_media_vol_inv_vox_world(o.invSize, inv_scale);
+      o.sigma = dagi_media_vol_sigma(o.opacity, o.invVoxWorld, overlap);
+      return o.sigma > 0; // an empty (or nan) brick voxel adds nothing, and must not raise the cap
+    }
+    float4 dagi_media_volumes(float3 worldPos, float voxelSize)
+    {
+      int4 grid = dagi_media_vol_grid_lt_sz;
+      BRANCH
+      if (grid.z <= 0)
+        return 0;
+      // the grid bins every instance whose volume can touch the cell (reach + half voxel
+      // margin, see uploadInstances), so one cell lookup replaces a neighborhood search
+      int2 cc = int2(floor(worldPos.xz*dagi_media_vol_grid_cell.xy));
+      if (any(cc < grid.xy) || any(cc >= grid.xy + grid.zw))
+        return 0;
+      uint cell = loadBuffer(dagi_media_vol_grid, ((cc.y - grid.y)*grid.z + cc.x - grid.x)*4);
+      uint s = cell & ((1u << DAGI_MEDIA_VOL_GRID_OFS_BITS) - 1), e = s + (cell >> DAGI_MEDIA_VOL_GRID_OFS_BITS);
+      float sigmaSum = 0, maxSingleSigma = 0;
+      float3 albedoSum = 0, gradSum = 0;
+      LOOP
+      for (; s < e; ++s)
+      {
+        uint iw = loadBuffer(dagi_media_vol_grid_ix, (s >> 1)*4); // u16 slot indices
+        uint i = (s & 1) ? (iw >> 16) : (iw & 0xFFFF);
+        float3 pos, invScale;
+        uint type, packedQuat;
+        dagi_media_vol_load_inst(dagi_media_vol_instances, i, pos, invScale, type, packedQuat);
+        float3 v = worldPos - pos;
+        float3 lpos, hl;
+        float3 ax0 = float3(1, 0, 0), ax1 = float3(0, 1, 0), ax2 = float3(0, 0, 1);
+        BRANCH
+        if (packedQuat == DAGI_MEDIA_VOL_IDENTITY_QUAT) // the identity keeps the axes, no spread to compute
+        {
+          lpos = v*invScale;
+          hl = (0.5*voxelSize)*invScale;
+        }
+        else
+        {
+          dagi_media_vol_quat_axes(packedQuat, ax0, ax1, ax2);
+          dagi_media_vol_local_voxel(ax0, ax1, ax2, invScale, v, voxelSize, lpos, hl);
+        }
+        DagiMediaVolSample smp;
+        if (!dagi_media_vol_sample_instance(type, lpos, hl, invScale, smp))
+          continue;
+        float3 atlasGridF = float3(dagi_media_vol_atlas_grid.xyz);
+        maxSingleSigma = max(maxSingleSigma, dagi_media_vol_max_sigma(smp.invVoxWorld));
+        sigmaSum += smp.sigma;
+        albedoSum += smp.sigma*dagi_media_vol_albedo_of(type);
+        // density gradient of this instance around the sample, for the lighting normal.
+        // centered differences: a one sided tap skews the direction toward the + corner and
+        // reads a confident slope out of a near flat interior. taps clamp to the brick inset
+        // so they never read the neighbor brick, and the slope divides by the step actually
+        // taken, or the outer texel shell reads flat
+        float texel = 1.0/float(uint(DAGI_MEDIA_VOL_BRICK) >> smp.mip);
+        float3 stepF = min(smp.c + texel, 1 - smp.inset) - smp.c;
+        float3 stepB = smp.c - max(smp.c - texel, smp.inset);
+        float3 g;
+        g.x = tex3Dlod(dagi_media_vol_atlas, float4(smp.uv + float3(stepF.x, 0, 0)/atlasGridF, smp.mip)).x -
+              tex3Dlod(dagi_media_vol_atlas, float4(smp.uv - float3(stepB.x, 0, 0)/atlasGridF, smp.mip)).x;
+        g.y = tex3Dlod(dagi_media_vol_atlas, float4(smp.uv + float3(0, stepF.y, 0)/atlasGridF, smp.mip)).x -
+              tex3Dlod(dagi_media_vol_atlas, float4(smp.uv - float3(0, stepB.y, 0)/atlasGridF, smp.mip)).x;
+        g.z = tex3Dlod(dagi_media_vol_atlas, float4(smp.uv + float3(0, 0, stepF.z)/atlasGridF, smp.mip)).x -
+              tex3Dlod(dagi_media_vol_atlas, float4(smp.uv - float3(0, 0, stepB.z)/atlasGridF, smp.mip)).x;
+        // world gradient: the tap distance is step*boxWorld*scale meters, so brick space to
+        // local is invSize/step, and a density normal picks the inverse scale per axis.
+        // without the step divide the multi instance blend weights each instance by its own mip.
+        // the sum is at least one texel: the mip stays below the one texel brick
+        g *= smp.invSize*invScale/(stepF + stepB);
+        gradSum += (ax0*g.x + ax1*g.y + ax2*g.z)*smp.sigma;
+      }
+      if (!(sigmaSum > 0))
+        return 0;
+      // overlapping volumes add up linearly, and stay additive on purpose: two half dense
+      // crowns are denser than one. the cap is one FULLY opaque volume at the scale of the
+      // densest instance sampled here, which only bounds a pile of overlapping fat boxes
+      // the media voxel saturates to opaque at ~2^-12 transmittance: a higher sigma looks the
+      // same and only overflows the fp16 scene when multiplied by the lit color below
+      float sigma = min(min(sigmaSum, maxSingleSigma), 12.f/voxelSize);
+      float3 albedoMean = albedoSum*rcp(sigmaSum);
+      // the back light passes what the voxel does not absorb (density integrated over the
+      // voxel), damped to 0.75 of it so thin voxels are not lit twice: the march already
+      // attenuates by this voxel, and a full damping of the source too would double count
+      float transFactor = 0.75*exp2(-sigma*voxelSize);
+      float3 transColor = albedoMean*transFactor;
+      // the direction is trusted by its strength: a boundary voxel (a full opacity swing per
+      // media voxel) is lit by its gradient, a near flat interior as if facing the sky -
+      // normalizing a weak gradient turns noise into a confident normal the sun NoL then kills.
+      // the lit results blend, not the normals: their lerp passes through zero on an underside
+      float gLen = length(gradSum);
+      float trust = gLen > 1e-9 ? saturate(gLen*voxelSize*rcp(max(sigmaSum, 1e-6))) : 0;
+      float3 lit = 0;
+      BRANCH
+      if (trust < 1)
+        lit = (1 - trust)*dagi_media_vols_ambient(worldPos, float3(0, 1, 0), albedoMean, transColor, voxelSize);
+      BRANCH
+      if (trust > 0)
+        lit += trust*dagi_media_vols_ambient(worldPos, -gradSum/gLen, albedoMean, transColor, voxelSize);
+      return float4(lit*sigma, sigma);
+    }
+  }
+endmacro

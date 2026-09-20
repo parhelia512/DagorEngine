@@ -19,6 +19,7 @@
 #include "main/app.h"
 #include "net/replay.h" // load_replay_meta_info
 #include "ui/userUi.h"
+#include "ui/uiShared.h"
 #include <main/circuit.h>
 #include "main/gameLoad.h"
 #include "net/net.h" // net::ConnectParams
@@ -233,6 +234,7 @@ SQ_DEF_AUTO_BINDING_MODULE_EX(bind_app, "app", sq::VM_ALL)
     .Func("exit_game", script_exit_game)
     .Func("is_app_terminating", dng_is_app_terminating)
     .Func("is_user_game_mod", sceneload::is_user_game_mod)
+    .Func("set_visuallog_logerrs", uishared::set_visuallog_logerrs)
     .SquirrelFunc("get_circuit_conf", get_circuit_conf, 1)
     .SetValue("circuit_name", circuit::get_name().data())
     .Func("get_circuit", []() { return circuit::get_name().data(); })

@@ -8,7 +8,7 @@
 #include <render/daFrameGraph/daFG.h>
 #include <3d/dag_render.h>
 #include <EASTL/fixed_vector.h>
-#include <render/world/cameraParams.h>
+#include <render/cameraParams.h>
 #include <render/world/shadowsManager.h>
 #include <render/lights/clusteredLights.h>
 #include <drv/3d/dag_matricesAndPerspective.h>
@@ -82,10 +82,11 @@ static dafg::NodeHandle makeUpsampleDepthForDebugNode()
   });
 }
 
+static const char *depthTexNameForDebug() { return WRDispatcher::isUpsampling() ? "depth_for_debug" : "depth_for_postfx"; }
+
 static void setupTargetForDebug(dafg::Registry registry)
 {
-  const char *depthTexName = WRDispatcher::isUpsampling() ? "depth_for_debug" : "depth_for_postfx";
-  registry.requestRenderPass().color({"target_for_debug"}).depthReadTestOnly(depthTexName);
+  registry.requestRenderPass().color({"target_for_debug"}).depthReadTestOnly(depthTexNameForDebug());
 }
 
 void makeDebugVisualizationNodes(eastl::vector<dafg::NodeHandle> &fg_node_handles)
@@ -271,7 +272,8 @@ void makeDebugVisualizationNodes(eastl::vector<dafg::NodeHandle> &fg_node_handle
   // debug collision & GI node
   fg_node_handles.emplace_back(ns.registerNode("gi_node", DAFG_PP_NODE_SRC, [](dafg::Registry registry) {
     registry.orderMeAfter("collision_node");
-    setupTargetForDebug(registry);
+    // the GI debug shaders sample the depth they test against; daFG allows both only through this call
+    registry.requestRenderPass().color({"target_for_debug"}).depthReadTestAndSample(depthTexNameForDebug(), {"depth_gbuf"});
     registry.requestState().setFrameBlock("global_frame");
 
     auto prevNs = registry.root();
@@ -502,7 +504,7 @@ void makeDebugVisualizationNodes(eastl::vector<dafg::NodeHandle> &fg_node_handle
 
       const Point3 cameraPos = camera.viewItm.getcol(3);
       auto *wr = static_cast<WorldRenderer *>(get_world_renderer());
-      wr->renderStaticSceneOpaque(RENDER_MAIN, cameraPos, camera.viewItm, camera.noJitterFrustum);
+      wr->renderStaticSceneOpaque(RENDER_MAIN, cameraPos, camera.viewItm, camera.noJitterFrustum, nullptr);
       wr->renderDynamicOpaque(RENDER_MAIN, camera.viewItm, camera.viewTm, camera.jitterProjTm, cameraPos);
       if (auto *vis = wr->getMainCameraRiMainVisibility())
       {

@@ -5,10 +5,11 @@
 #pragma once
 
 #include <generic/dag_span.h>
+#include <drv/3d/dag_multi_interface.h>
 
 struct StreamOutputBufferSetup;
 
-namespace d3d
+namespace d3d _MULTI_INTERFACE
 {
 /**
  * \brief Sets the stream output buffer for the next draw calls.
@@ -21,7 +22,7 @@ namespace d3d
  */
 void set_stream_output_buffer(int slot, const StreamOutputBufferSetup &buffer);
 
-} // namespace d3d
+} // namespace d3d _MULTI_INTERFACE
 
 #if _TARGET_D3D_MULTI
 #include <drv/3d/dag_interface_table.h>

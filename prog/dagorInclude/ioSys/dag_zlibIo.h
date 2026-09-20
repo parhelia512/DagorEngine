@@ -75,7 +75,7 @@ protected:
   bool fatalErrors;
   IGenLoad *loadCb;
   int inBufLeft;
-  unsigned char strm[SIZE_OF_Z_STREAM]; // z_stream strm;
+  alignas(16) unsigned char strm[SIZE_OF_Z_STREAM]; // z_stream strm;
   unsigned char buffer[ZLIB_LOAD_BUFFER_SIZE];
 
   KRNLIMP void issueFatal();

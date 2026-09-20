@@ -2,6 +2,7 @@ let {Point2} = require("dagor.math")
 
 let TestInput = class {
   function mouseClick(button) { assert(type(button)=="integer") }
+  function mouseClickModifier(button, modifier) { assert(type(button)=="integer" && type(modifier)=="integer") }
   function mousePosition(at) { assert(at instanceof Point2, "at should be Point2") }
   function mouseMove(from, to, over_seconds) {
     assert(from instanceof Point2, "from should be Point2")
@@ -46,6 +47,10 @@ let TestRuntime = class {
   function queryItem(path) {
     assert(type(path)=="string")
     return {
+      label = "stub_label"
+      displayName = "stub_display_name"
+      controlType = "stub_control_type"
+      controlId = 1
       id = 1
       bb = {
         Min = Point2(2, 3)
@@ -53,6 +58,21 @@ let TestRuntime = class {
       }
       parentId = 0
     }
+  }
+  function queryChildren(path) {
+    assert(type(path)=="string")
+    return [{
+      label = "stub_child"
+      displayName = "stub_child_display_name"
+      controlType = "stub_control_type"
+      controlId = 2
+      id = 2
+      bb = {
+        Min = Point2(2, 3)
+        Max = Point2(4, 5)
+      }
+      parentId = 1
+    }]
   }
   input = @() TestInput()
 }

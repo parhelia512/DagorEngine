@@ -46,7 +46,7 @@ bool d3d::dispatch_indirect(Sbuffer *args, uint32_t byte_offset, GpuPipeline gpu
   checkComputeOutsideNativeRP();
 
   Frontend::GCB.flushCompute(Globals::ctx);
-  GenericBufferInterface *buffer = (GenericBufferInterface *)args;
+  GenericBufferInterface *buffer = static_cast<GenericBufferInterface *>(args);
   Globals::ctx.dispatchPipeline<CmdDispatchIndirect>({buffer->getBufferRef(), byte_offset}, "dispatchIndirect");
   return true;
 }

@@ -548,8 +548,8 @@ RendInstGenData::RtData::GlobalShadowRet RendInstGenData::RtData::renderGlobalSh
           g_shadow_storage.mips, g_shadow_storage.cpuEncodeMode, 1, "converttmp");
         int destBaseMip = task.rotationId * g_shadow_storage.mips;
         for (int i = 0; i < g_shadow_storage.mips; i++)
-          pool.rendinstGlobalShadowTex->updateSubRegion(tex, i, 0, 0, 0, rendinstGlobalShadowTexSize >> i,
-            rendinstGlobalShadowTexSize >> i, 1, destBaseMip + i, 0, 0, 0);
+          d3d::update_sub_region(tex, i, 0, 0, 0, rendinstGlobalShadowTexSize >> i, rendinstGlobalShadowTexSize >> i, 1,
+            pool.rendinstGlobalShadowTex.getBaseTex(), destBaseMip + i, 0, 0, 0);
         tex->destroy();
       }
     }
@@ -684,6 +684,7 @@ bool rendinst::render::renderRIGenGlobalShadowsToTextures(const Point3 &sunDir0,
       return false;
 
     {
+      d3d::GpuAutoLock gpu_lock; // GPU first to avoid inversion with the rendering thread
       ScopedLockRead lock(rgl->rtData->riRwCs);
 
       if (force_update)
@@ -694,7 +695,6 @@ bool rendinst::render::renderRIGenGlobalShadowsToTextures(const Point3 &sunDir0,
 
       if (rgl->rtData->shouldRenderGlobalShadows())
       {
-        d3d::GpuAutoLock gpu_lock;
         TIME_D3D_PROFILE(render_ri_global_shadows);
 
         init_impostor_shadow_temp_tex(use_compression);

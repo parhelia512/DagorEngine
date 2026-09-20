@@ -1,0 +1,51 @@
+include "dynamic_masked_chrome_inc.dshl"
+
+shader dynamic_cloth_sim_proxy
+{
+  DYNAMIC_BLOCK()
+  channel float3 pos=pos;
+
+  channel color8 tc[4] = extra[0];
+  channel color8 tc[5] = extra[1];
+  // R = inverse mass, G = max distance, B = backstop distance; R or G exactly 0 marks a kinematic vertex.
+  // Must be consistent with CLOTH_SIM_WEIGHT_EXTRA_CHANNEL (dag_clothSimChannels.h).
+  channel color8 vcol[0] = extra[54];
+
+  blend_src = sa;  blend_dst = isa;
+  hlsl {
+    struct VsOutput
+    {
+      VS_OUT_POSITION(pos)
+    };
+  }
+  hlsl(vs) {
+    struct VsInput
+    {
+      float3 pos : POSITION;
+      float4 packedBoneIndices    : TEXCOORD4;
+      float4 boneWeights          : TEXCOORD5;
+      float4 simWeights           : COLOR0; // read on the CPU (gather_cloth_mesh_es), never here
+    };
+  }
+
+  USE_FLOAT_POS_PACKING()
+  hlsl(vs) {
+    VsOutput dynamic_cloth_sim_proxy_vs(VsInput input)
+    {
+      VsOutput output;
+      // w = 0 clips every triangle: the cage is CPU-side data, it must never draw even in a rendered lod.
+      output.pos = float4(unpack_pos(input.pos), 0);
+      return output;
+    }
+  }
+  compile("target_vs", "dynamic_cloth_sim_proxy_vs");
+
+  hlsl (ps) {
+    float4 dynamic_cloth_sim_proxy_ps(VsOutput input HW_USE_SCREEN_POS) : SV_Target
+    {
+      float4 color = float4(0,0,0,1);
+      return color;
+    }
+  }
+  compile("target_ps", "dynamic_cloth_sim_proxy_ps");
+}

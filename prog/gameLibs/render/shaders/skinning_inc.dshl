@@ -1,6 +1,11 @@
 
 buffer context_gpu_data always_referenced;
 
+// Must match the writer: add_animchar() writes collapser bits before the bones, add() doesn't.
+int dynmodel_node_collapser_data = 1 always_referenced;
+interval dynmodel_node_collapser_data : no < 1, yes;
+assume_if_not_assumed dynmodel_node_collapser_data = yes;
+
 macro INIT_WORLD_LOCAL_BASE(code)
 (code) {
   context_gpu_data@cbuf = context_gpu_data hlsl {
@@ -27,26 +32,48 @@ endmacro
 
 macro USE_WORLD_LOCAL_BASE(code)
 hlsl(code) {
+  // Must match the writer: contexts with set_prev_matrices(false) upload neither the previous
+  // node tm nor the previous bone rows. Only vertex variants define this per pass, the cs readers
+  // keep the full layout, which set_instance_data_buffer asserts.
+  #ifndef DYNREND_HAS_PREV_MATRICES
+  #define DYNREND_HAS_PREV_MATRICES 1
+  #endif
+
+  #if DYNREND_HAS_PREV_MATRICES
+    #define DYNREND_NODE_CHUNK_VECS 9
+    #define SKIN_BONE_ROWS 6
+    #define DYNREND_LOAD_PREV_GLOBTM(base)                                                                                 \
+      float4 prev_globtm_0 = loadBuffer(INSTANCE_DATA_BUFFER, base + 4);                                                   \
+      float4 prev_globtm_1 = loadBuffer(INSTANCE_DATA_BUFFER, base + 5);                                                   \
+      float4 prev_globtm_2 = loadBuffer(INSTANCE_DATA_BUFFER, base + 6);                                                   \
+      float4 prev_globtm_3 = loadBuffer(INSTANCE_DATA_BUFFER, base + 7);
+  #else
+    #define DYNREND_NODE_CHUNK_VECS 5
+    #define SKIN_BONE_ROWS 3
+    #define DYNREND_LOAD_PREV_GLOBTM(base)
+  #endif
+
+  #ifndef NODE_CHUNK_SIZE_GETTER
+    #define NODE_CHUNK_SIZE_GETTER (get_immediate_dword_0() & 0xFF)
+  #endif
+
   #define SETUP_RENDER_VARS(rigid_index)                                                                                   \
     uint offsetToNodeChunk = max((int)OFFSET_TO_NODE_DATA(rigid_index), 0);                                                \
     float4 globtm_0 = loadBuffer(INSTANCE_DATA_BUFFER, offsetToNodeChunk + 0);                                             \
     float4 globtm_1 = loadBuffer(INSTANCE_DATA_BUFFER, offsetToNodeChunk + 1);                                             \
     float4 globtm_2 = loadBuffer(INSTANCE_DATA_BUFFER, offsetToNodeChunk + 2);                                             \
     float4 globtm_3 = loadBuffer(INSTANCE_DATA_BUFFER, offsetToNodeChunk + 3);                                             \
-    float4 prev_globtm_0 = loadBuffer(INSTANCE_DATA_BUFFER, offsetToNodeChunk + 4);                                        \
-    float4 prev_globtm_1 = loadBuffer(INSTANCE_DATA_BUFFER, offsetToNodeChunk + 5);                                        \
-    float4 prev_globtm_2 = loadBuffer(INSTANCE_DATA_BUFFER, offsetToNodeChunk + 6);                                        \
-    float4 prev_globtm_3 = loadBuffer(INSTANCE_DATA_BUFFER, offsetToNodeChunk + 7);                                        \
-    float4 opacity__unused__extra = loadBuffer(INSTANCE_DATA_BUFFER, offsetToNodeChunk + 8);                               \
+    DYNREND_LOAD_PREV_GLOBTM(offsetToNodeChunk)                                                                            \
+    float4 opacity__unused__extra = loadBuffer(INSTANCE_DATA_BUFFER, offsetToNodeChunk + DYNREND_NODE_CHUNK_VECS - 1);     \
     float2 opacity__unused = opacity__unused__extra.xy; /*.y is unused after addition of OFFSET_TO_INSTANCE_DATA */        \
     float2 node_extra_data = opacity__unused__extra.zw;                                                                    \
     float node_opacity = opacity__unused.x;                                                                                \
     float4 node_tm_0, node_tm_1, node_tm_2;                                                                                \
-    if ( (get_immediate_dword_0() & 0xFF) > 9)                                                                             \
+    if ( NODE_CHUNK_SIZE_GETTER > DYNREND_NODE_CHUNK_VECS)                                                                                       \
     {                                                                                                                      \
-      node_tm_0 = loadBuffer(INSTANCE_DATA_BUFFER, offsetToNodeChunk + 9);                                                 \
-      node_tm_1 = loadBuffer(INSTANCE_DATA_BUFFER, offsetToNodeChunk + 10);                                                \
-      node_tm_2 = loadBuffer(INSTANCE_DATA_BUFFER, offsetToNodeChunk + 11);                                                \
+      node_tm_0 = loadBuffer(INSTANCE_DATA_BUFFER, offsetToNodeChunk + DYNREND_NODE_CHUNK_VECS + 0);                       \
+      node_tm_1 = loadBuffer(INSTANCE_DATA_BUFFER, offsetToNodeChunk + DYNREND_NODE_CHUNK_VECS + 1);                       \
+      node_tm_2 = loadBuffer(INSTANCE_DATA_BUFFER, offsetToNodeChunk + DYNREND_NODE_CHUNK_VECS + 2);                       \
     }                                                                                                                      \
     else                                                                                                                   \
     {                                                                                                                      \
@@ -60,7 +87,11 @@ hlsl(code) {
     float3 unpack_pos_ofs = pos_ofs__cnt.xyz;                                                                              \
     float2 dynrend_params_offset_count = float2(offsetToInstanceChunk + 2.5, pos_ofs__cnt.w);
 
-  #define BONES_START 11
+  ##if dynmodel_node_collapser_data == yes
+    #define BONES_START (DYNREND_NODE_CHUNK_VECS + 2)
+  ##else
+    #define BONES_START DYNREND_NODE_CHUNK_VECS
+  ##endif
 
   struct bone_t { float4 r0, r1, r2; };
 
@@ -73,20 +104,23 @@ hlsl(code) {
   bone_t get_bone(int bone_index)
   {
     bone_t bone;
-    bone.r0 = get_bone_row(bone_index * 6 + 0);
-    bone.r1 = get_bone_row(bone_index * 6 + 1);
-    bone.r2 = get_bone_row(bone_index * 6 + 2);
+    bone.r0 = get_bone_row(bone_index * SKIN_BONE_ROWS + 0);
+    bone.r1 = get_bone_row(bone_index * SKIN_BONE_ROWS + 1);
+    bone.r2 = get_bone_row(bone_index * SKIN_BONE_ROWS + 2);
     return bone;
   }
 
+  // Left undefined without previous matrices, so that reading them is a compile error
+  #if DYNREND_HAS_PREV_MATRICES
   bone_t get_prev_bone(int bone_index)
   {
     bone_t bone;
-    bone.r0 = get_bone_row(bone_index * 6 + 3);
-    bone.r1 = get_bone_row(bone_index * 6 + 4);
-    bone.r2 = get_bone_row(bone_index * 6 + 5);
+    bone.r0 = get_bone_row(bone_index * SKIN_BONE_ROWS + 3);
+    bone.r1 = get_bone_row(bone_index * SKIN_BONE_ROWS + 4);
+    bone.r2 = get_bone_row(bone_index * SKIN_BONE_ROWS + 5);
     return bone;
   }
+  #endif
 
   #define GET_DYNREND_PARAM(param_no) ((int)param_no < (int)dynrend_params_offset_count.y ? \
     loadBuffer(INSTANCE_DATA_BUFFER, max(dynrend_params_offset_count.x + param_no, 0)) : float4(0, 0, 0, 0))

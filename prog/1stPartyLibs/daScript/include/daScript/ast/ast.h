@@ -961,7 +961,6 @@ namespace das
         union {
             struct {
                 bool    macroFunction : 1;
-                bool    needStringCast : 1;
                 bool    aotHashDeppendsOnArguments : 1;
                 bool    lateInit : 1;
                 bool    requestJit : 1;
@@ -1004,6 +1003,7 @@ namespace das
                 bool    localFunction : 1;           // @@{} local function body - generated, but the block is verbatim user code
                 bool    tempStringResult : 1;        // [temp_string_result] - result is always a fresh string allocation (or null), never a passthrough of an input, never retained by the callee
                 bool    mayQueueTempString : 1;      // executing the BODY may hit a temp-string queue site (builder or wrappable call, transitively) - a caller must not hold a parked temp across a call to this
+                bool    nttp : 1;                    // extern bound via addExternInline - per-function NTTP interpreter node, callee eligible to inline into the call site
             };
             uint32_t moreFlags2 = 0;
         };

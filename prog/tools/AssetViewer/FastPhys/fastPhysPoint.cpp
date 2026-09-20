@@ -148,13 +148,13 @@ void FPObjectPoint::onChange(int pcb_id, PropPanel::ContainerPropertyControl *pa
   }
   */
 
-#define CHANGE_VAL(type, pname, getfunc)                                 \
-  {                                                                      \
-    type val = panel->getfunc(pcb_id);                                   \
-    mFPEditor.getUndoSystem()->begin();                                  \
-    mFPEditor.getUndoSystem()->put(new FastPhysUndoEdPointParams(this)); \
-    mFPEditor.getUndoSystem()->accept("PointChange");                    \
-    pointObject->pname = val;                                            \
+#define CHANGE_VAL(type, pname, getfunc)                             \
+  {                                                                  \
+    type val = panel->getfunc(pcb_id);                               \
+    mFPEditor.getUndoSystem()->begin();                              \
+    mFPEditor.getUndoSystem()->put<FastPhysUndoEdPointParams>(this); \
+    mFPEditor.getUndoSystem()->accept("PointChange");                \
+    pointObject->pname = val;                                        \
   }
 
   if (pcb_id == PID_GROUPID)

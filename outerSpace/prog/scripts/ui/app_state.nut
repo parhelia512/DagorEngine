@@ -1,13 +1,12 @@
+import "app" as app
+import "%dngscripts/ecs.nut" as ecs
+from "net" import has_network, DC_CONNECTION_CLOSED, EventOnNetworkDestroyed, EventOnConnectedToServer, EventOnDisconnectedFromServer
+from "dagor.system" import get_arg_value_by_name, dgs_get_settings
 from "%darg/ui_imports.nut" import *
 from "%scripts/ui/widgets/msgbox.nut" import showWarning, showMsgbox
-import "%dngscripts/ecs.nut" as ecs
-
-let { has_network, DC_CONNECTION_CLOSED, EventOnNetworkDestroyed, EventOnConnectedToServer, EventOnDisconnectedFromServer} = require("net")
+from "%scripts/ui/login.nut" import userUid
+from "%sqstd/globalState.nut" import hardPersistWatched
 let { EventGameSessionFinished = 0, EventGameSessionStarted = 1, EventSessionFinishedOnTimeout = 2, EventSessionFinishedOnWin = 3} = require_optional("dasevents")
-let { get_arg_value_by_name, dgs_get_settings} = require("dagor.system")
-let { userUid } = require("%scripts/ui/login.nut")
-let { hardPersistWatched } = require("%sqstd/globalState.nut")
-let app = require("app")
 let { exit_game= @() println("exit")} = app
 
 let isDisableMenu = dgs_get_settings()?["disableMenu"] || get_arg_value_by_name("connect")!=null

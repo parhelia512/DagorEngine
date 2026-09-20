@@ -596,8 +596,7 @@ void RenderPassResource::fillAttachmentDescription(const RenderPassDesc &rp_desc
       else if (bind.subpass == lastSubpass)
         lastSubpassDS |= isDS;
 
-      if ((bind.subpass > lastSubpassWithAccess) &&
-          (bind.action & (RP_TA_SUBPASS_READ | RP_TA_SUBPASS_WRITE | RP_TA_SUBPASS_RESOLVE | RP_TA_SUBPASS_VRS_READ)))
+      if ((bind.subpass > lastSubpassWithAccess) && (bind.action & RP_TA_SUBPASS_ACCESS_MASK))
       {
         lastSubpassWithAccess = bind.subpass;
         lastSubpassWithAccessAction = bind.action;
@@ -629,9 +628,6 @@ void RenderPassResource::fillAttachmentDescription(const RenderPassDesc &rp_desc
           else if (bind.action & RP_TA_LOAD_STENCIL_NO_CARE)
             desc.stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
         }
-        else
-          D3D_CONTRACT_ASSERTF((bind.action & (RP_TA_LOAD_STENCIL_CLEAR | RP_TA_LOAD_STENCIL_READ | RP_TA_LOAD_STENCIL_NO_CARE)) == 0,
-            "vulkan: trying to use stencil only load action on non DS target %u of render pass <%s>", i, rp_desc.debugName);
 
         if (bind.action & RP_TA_SUBPASS_WRITE)
           desc.initialLayout = isDS ? VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL : VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;

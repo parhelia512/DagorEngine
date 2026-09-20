@@ -29,6 +29,11 @@ public:
   const String &getStartWorkspace() const { return startWsp; }
   int getWorkspaceIndex(const char *name) const;
 
+  // Returns the result of the last workspace load attempt.
+  // The return value is false when the load failed (for example because the workspace's application.blk cannot be read)
+  // and it is also false before any attempt.
+  bool isSelectedWorkspaceValid() const { return selectedWorkspaceValid; }
+
   // DialogWindow interface
 
   bool onOk() override;
@@ -51,7 +56,7 @@ protected:
   // IDelayedCallbackHandler
   void onImguiDelayedCallback(void *user_data) override;
 
-  void updateImguiDialog() override;
+  void updateImguiDialog(const PropPanel::DialogWindow::DialogFrameSizing &sizing) override;
 
   virtual void createCustom() {}
 

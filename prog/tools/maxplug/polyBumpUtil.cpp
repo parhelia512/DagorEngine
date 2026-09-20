@@ -413,11 +413,11 @@ void PolyBumpUtil::update_poly_vars()
   expanddist = _ttoi(get_window_text(GetDlgItem(hPolyPanel, IDC_EXPAND)).c_str());
 
   const std::wstring space_name = get_window_text(GetDlgItem(hPolyPanel, IDC_SPACE));
-  if (_tcsnicmp(space_name.c_str(), _T("tangent"), _tcslen(_T("tangent"))) == 0)
+  if (istarts_with(space_name, L"tangent"))
   {
     space = TANGENT_SPACE;
   }
-  else if (_tcsnicmp(space_name.c_str(), _T("object"), _tcslen(_T("object"))) == 0)
+  else if (istarts_with(space_name, L"object"))
   {
     space = OBJECT_SPACE;
   }

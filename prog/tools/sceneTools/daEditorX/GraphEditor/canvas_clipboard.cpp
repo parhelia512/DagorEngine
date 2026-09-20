@@ -12,12 +12,7 @@
 
 namespace ne = ax::NodeEditor;
 
-namespace
-{
-int extractNodeIdFromNeNodeId(uint64_t ne_node_id) { return static_cast<int>(ne_node_id) - 1; }
-} // namespace
-
-void CanvasClipboard::captureSelection(const GraphPanel &panel, const GraphData &graph)
+void CanvasClipboard::captureSelection(const GraphPanel &panel, const GraphData &graph, bool with_input_edges)
 {
   const int objCount = ne::GetSelectedObjectCount();
   if (objCount == 0)
@@ -34,14 +29,19 @@ void CanvasClipboard::captureSelection(const GraphPanel &panel, const GraphData 
     return;
   }
 
+  // Only ids that resolve: pasteShifted reads an id absent from the remap as an outside node and
+  // keeps it, so a stale selection entry would be written into a pasted edge verbatim.
   eastl::hash_set<int> ids;
   for (ne::NodeId ne_id : selected)
   {
-    const int node_id = extractNodeIdFromNeNodeId(ne_id.Get());
+    const int node_id = decode_node_id(ne_id.Get());
+    const GraphData::Node *const node = find_node_by_id(graph, node_id);
+    if (!node)
+    {
+      continue;
+    }
     ids.insert(node_id);
-    const auto it =
-      eastl::find_if(graph.nodes.begin(), graph.nodes.end(), [node_id](const GraphData::Node &nd) { return nd.id == node_id; });
-    if (it != graph.nodes.end() && it->descName == "block")
+    if (node->descName == "block")
     {
       eastl::vector<int> children;
       panel.collectNodesInsideBlock(node_id, children);
@@ -63,20 +63,50 @@ void CanvasClipboard::captureSelection(const GraphPanel &panel, const GraphData 
   }
   for (const GraphData::Edge &e : graph.edges)
   {
-    if (ids.find(e.elemA) != ids.end() && ids.find(e.elemB) != ids.end())
+    const bool aCaptured = ids.find(e.elemA) != ids.end();
+    const bool bCaptured = ids.find(e.elemB) != ids.end();
+    if (aCaptured && bCaptured)
+    {
+      edges.push_back(e);
+      continue;
+    }
+    if (!with_input_edges || (!aCaptured && !bCaptured))
+    {
+      continue;
+    }
+
+    // Crossing the selection boundary. Stored edges are not oriented out->in, so ask which end
+    // produces rather than assume A.
+    int srcNode = 0;
+    int srcPin = 0;
+    if (!edge_source_pin(graph, e, srcNode, srcPin) || ids.find(srcNode) != ids.end())
+    {
+      continue; // no producer at all, or the captured end is it -- an outgoing edge, which is dropped
+    }
+    int dstNode = 0;
+    int dstPin = 0;
+    if (!edge_opposite_end(e, srcNode, srcPin, dstNode, dstPin))
+    {
+      continue;
+    }
+    // The consumer role is not implied: an out-to-out edge would answer the producer question with
+    // the outside end and otherwise pass. A single-connect producer takes no second consumer.
+    const GraphData::Pin *const consumer = find_pin(graph, dstNode, dstPin);
+    const GraphData::Pin *const producer = find_pin(graph, srcNode, srcPin);
+    if (consumer && consumer->role == PinRole::In && producer && !producer->singleConnect)
     {
       edges.push_back(e);
     }
   }
 }
 
-void CanvasClipboard::paste(GraphPanel &panel, const ImVec2 &paste_origin_canvas, eastl::vector<GraphData::Node> &out_nodes,
-  eastl::vector<GraphData::Edge> &out_edges) const
+void CanvasClipboard::paste(GraphPanel &panel, const GraphData &graph, const ImVec2 &paste_origin_canvas,
+  eastl::vector<GraphData::Node> &out_nodes, eastl::vector<GraphData::Edge> &out_edges) const
 {
-  out_nodes.clear();
-  out_edges.clear();
   if (nodes.empty())
   {
+    out_nodes.clear();
+    out_edges.clear();
     return;
   }
 
@@ -87,15 +117,28 @@ void CanvasClipboard::paste(GraphPanel &panel, const ImVec2 &paste_origin_canvas
     minX = eastl::min(minX, nd.x);
     minY = eastl::min(minY, nd.y);
   }
-  const float dx = paste_origin_canvas.x - minX;
-  const float dy = paste_origin_canvas.y - minY;
+  pasteShifted(panel, graph, ImVec2(paste_origin_canvas.x - minX, paste_origin_canvas.y - minY), out_nodes, out_edges);
+}
+
+void CanvasClipboard::pasteShifted(GraphPanel &panel, const GraphData &graph, const ImVec2 &delta,
+  eastl::vector<GraphData::Node> &out_nodes, eastl::vector<GraphData::Edge> &out_edges) const
+{
+  out_nodes.clear();
+  out_edges.clear();
+  if (nodes.empty())
+  {
+    return;
+  }
+
+  const float dx = delta.x;
+  const float dy = delta.y;
 
   // One consecutive id block for the whole paste batch -- allocateNodeId returns
   // max(existing) + 1 once; we increment locally for each subsequent node.
   const int baseId = panel.allocateNodeId();
   eastl::hash_map<int, int> idRemap;
   idRemap.reserve(nodes.size());
-  for (int i = 0; i < (int)nodes.size(); ++i)
+  for (int i = 0; i < static_cast<int>(nodes.size()); ++i)
   {
     idRemap[nodes[i].id] = baseId + i;
   }
@@ -113,20 +156,26 @@ void CanvasClipboard::paste(GraphPanel &panel, const ImVec2 &paste_origin_canvas
     panel.addNode(eastl::move(copy)); // also pushes the new id into pendingPositionIds
   }
 
-  const int edgeBase = panel.allocateEdgeId();
-  for (int i = 0; i < (int)edges.size(); ++i)
+  // An id the remap does not know belongs to a node that already exists -- the producer of an input
+  // edge, which only a same-graph capture carries. captureSelection puts every captured id in the
+  // remap, so an unknown id is never one of them.
+  const auto remapEnd = [&idRemap](int node_id) {
+    const auto it = idRemap.find(node_id);
+    return it != idRemap.end() ? it->second : node_id;
+  };
+
+  int edgeId = next_edge_id(graph);
+  for (const GraphData::Edge &original : edges)
   {
-    GraphData::Edge copy = edges[i];
-    copy.id = edgeBase + i;
-    copy.elemA = idRemap[copy.elemA];
-    copy.elemB = idRemap[copy.elemB];
+    GraphData::Edge copy = original;
+    copy.id = edgeId++;
+    copy.elemA = remapEnd(copy.elemA);
+    copy.elemB = remapEnd(copy.elemB);
     out_edges.push_back(copy); // snapshot for the paste undo entry
     panel.addEdge(eastl::move(copy));
   }
 
-  ne::ClearSelection();
-  for (int id : pasted)
-  {
-    ne::SelectNode(ne::NodeId(GraphPanel::makeNodeId(id)), /*append=*/true);
-  }
+  GraphSelection justPasted;
+  justPasted.nodes = eastl::move(pasted);
+  panel.setPendingSelection(justPasted);
 }

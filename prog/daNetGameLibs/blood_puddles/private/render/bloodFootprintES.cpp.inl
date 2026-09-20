@@ -28,8 +28,8 @@ struct BloodFootprintEmitter
     const AnimV20::AnimcharBaseComponent &animChar = mgr.get<AnimV20::AnimcharBaseComponent>(eid, ECS_HASH("animchar"));
     const GeomNodeTree &tree = animChar.getNodeTree();
 
-    const ecs::string leftFootNode = mgr.get<ecs::string>(eid, ECS_HASH("blood_footprint_emitter__left_foot_node"));
-    const ecs::string rightFootNode = mgr.get<ecs::string>(eid, ECS_HASH("blood_footprint_emitter__right_foot_node"));
+    const ecs::string &leftFootNode = mgr.get<ecs::string>(eid, ECS_HASH("blood_footprint_emitter__left_foot_node"));
+    const ecs::string &rightFootNode = mgr.get<ecs::string>(eid, ECS_HASH("blood_footprint_emitter__right_foot_node"));
     leftNodeBloodiness = eastl::make_pair<dag::Index16, FootBloodiness>(tree.findNodeIndex(leftFootNode.c_str()), {});
     G_ASSERTF(leftNodeBloodiness.first, "Cannot find node '%s' in node tree", leftFootNode.c_str());
     rightNodeBloodiness = eastl::make_pair<dag::Index16, FootBloodiness>(tree.findNodeIndex(rightFootNode.c_str()), {});

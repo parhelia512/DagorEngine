@@ -3,6 +3,7 @@
 #include "program_database.h"
 #include "shader.h"
 #include "device_context.h"
+#include "global_const_buffer.h"
 #include "frontend.h"
 
 using namespace drv3d_vulkan;
@@ -51,7 +52,7 @@ ShaderID ShaderProgramDatabase::newShader(DeviceContext &ctx, const ShaderModule
 }
 
 ShaderID ShaderProgramDatabase::newShader(DeviceContext &ctx, VkShaderStageFlagBits stage, Tab<spirv::ChunkHeader> &chunks,
-  Tab<uint8_t> &chunk_data, const ShaderSource &source)
+  Tab<uint8_t> &chunk_data, const ShaderSourceExt &source)
 {
   ShaderModuleHeader header;
   ShaderModuleBlob blob;
@@ -63,7 +64,7 @@ ShaderID ShaderProgramDatabase::newShader(DeviceContext &ctx, VkShaderStageFlagB
   auto newShaderId = newShader(ctx, header, blob);
 
 #if VULKAN_LOAD_SHADER_EXTENDED_DEBUG_DATA
-  attachDebugInfo(newShaderId, spirv_extractor::getDebugInfo(chunks, chunk_data, 0));
+  attachDebugInfo(newShaderId, spirv_extractor::getDebugInfo(chunks, chunk_data, 0), source);
 #endif
 
   return newShaderId;
@@ -71,7 +72,7 @@ ShaderID ShaderProgramDatabase::newShader(DeviceContext &ctx, VkShaderStageFlagB
 
 ShaderID ShaderProgramDatabase::newShader(DeviceContext &ctx, dag::Vector<VkShaderStageFlagBits> stage,
   dag::Vector<Tab<spirv::ChunkHeader>> chunks, dag::Vector<Tab<uint8_t>> chunk_data, dag::Vector<ShaderProgramData> bytecode,
-  const ShaderSource &source)
+  const ShaderSourceExt &source)
 {
   // find and setup vertex shader stuff
   int vsIndex = -1;
@@ -133,13 +134,13 @@ ShaderID ShaderProgramDatabase::newShader(DeviceContext &ctx, dag::Vector<VkShad
   auto newShaderId = shaders.add(ctx, *creationInfo);
 
 #if VULKAN_LOAD_SHADER_EXTENDED_DEBUG_DATA
-  attachDebugInfo(newShaderId, modules);
+  attachDebugInfo(newShaderId, modules, source);
 #endif
   return newShaderId;
 }
 
 bool ShaderProgramDatabase::extractShaderModules(const VkShaderStageFlagBits stage, const Tab<spirv::ChunkHeader> &chunk_header,
-  const Tab<uint8_t> &chunk_data, const ShaderSource &source, const ShaderProgramData &bytecode, ShaderModuleHeader &shader_header,
+  const Tab<uint8_t> &chunk_data, const ShaderSourceExt &source, const ShaderProgramData &bytecode, ShaderModuleHeader &shader_header,
   ShaderModuleBlob &shader_blob)
 {
   auto header = spirv_extractor::getHeader(stage, chunk_header, chunk_data, 0);
@@ -150,18 +151,23 @@ bool ShaderProgramDatabase::extractShaderModules(const VkShaderStageFlagBits sta
   }
   shader_header = *header;
 
-  shader_blob = spirv_extractor::getBlob(shader_header, source, bytecode, chunk_header, chunk_data, 0);
+  shader_blob = spirv_extractor::getBlob(shader_header, source, bytecode);
   if (shader_blob.source.compressedData.empty())
   {
     DAG_FATAL("missing shader byte code chunk");
     return false;
   }
 
+#if VULKAN_LOAD_SHADER_EXTENDED_DEBUG_DATA
+  if (auto debugName = source.getDebugName(); !debugName.empty())
+    shader_blob.name = String(debugName.data(), debugName.length());
+#endif
+
   return true;
 }
 
 eastl::optional<ShaderInfo::CreationInfo> ShaderProgramDatabase::getShaderCreationInfo(DeviceContext &ctx,
-  const CombinedChunkModules &modules, const ShaderSource &source)
+  const CombinedChunkModules &modules, const ShaderSourceExt &source)
 {
   struct CreationInfoFillData
   {
@@ -246,17 +252,30 @@ void ShaderProgramDatabase::afterDeviceReset()
 {
   // set debug prog to states, unset shader is an error
   Frontend::State::pipe.set<StateFieldGraphicsProgram, ProgramID, FrontGraphicsState>(debugProgId);
+  uint32_t vsRegs, fsRegs;
+  ShaderProgramDatabase::getGraphicsProgImplicitCbufRegCounts(debugProgId, vsRegs, fsRegs);
+  Frontend::GCB.setRegCount(STAGE_VS, vsRegs);
+  Frontend::GCB.setRegCount(STAGE_PS, fsRegs);
 }
 
 #if VULKAN_LOAD_SHADER_EXTENDED_DEBUG_DATA
-void ShaderProgramDatabase::attachDebugInfo(ShaderID shader, const CombinedChunkModules &modules)
+static void attach_debug_name_from_source(ShaderDebugInfo &di, const ShaderSourceExt &source)
+{
+  if (auto debugName = source.getDebugName(); !debugName.empty())
+    di.name = di.debugName = String(debugName.data(), debugName.length());
+}
+
+void ShaderProgramDatabase::attachDebugInfo(ShaderID shader, const CombinedChunkModules &modules, const ShaderSourceExt &source)
 {
   ShaderInfo &sh = *shaders.get(shader);
   auto getDebugInfo = [&](const CombinedChunkModules::Pair &m) {
+    ShaderDebugInfo di{};
     if (m.data && m.headers)
-      return spirv_extractor::getDebugInfo(*m.headers, *m.data, 0);
-    else
-      return ShaderDebugInfo{};
+    {
+      di = spirv_extractor::getDebugInfo(*m.headers, *m.data, 0);
+      attach_debug_name_from_source(di, source);
+    }
+    return di;
   };
 
   sh.debugInfo = getDebugInfo(modules.vs);
@@ -271,10 +290,11 @@ void ShaderProgramDatabase::attachDebugInfo(ShaderID shader, const CombinedChunk
     sh.evaluationShader->debugInfo = getDebugInfo(modules.te);
 }
 
-void ShaderProgramDatabase::attachDebugInfo(ShaderID shader, const ShaderDebugInfo &debugInfo)
+void ShaderProgramDatabase::attachDebugInfo(ShaderID shader, const ShaderDebugInfo &debugInfo, const ShaderSourceExt &source)
 {
   ShaderInfo &sh = *shaders.get(shader);
   sh.debugInfo = debugInfo;
+  attach_debug_name_from_source(sh.debugInfo, source);
 }
 
 #endif

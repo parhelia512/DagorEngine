@@ -214,17 +214,19 @@ void TAA_gather_current(Texture2D<float4> sceneTex, SamplerState sceneTex_sample
   #endif
 
 
-  const float2 uvOffsets[TAP_COUNT_NEIGHBORHOOD_FULL] =
+  const float2 cloudsUV = screenUV*clouds_uv_scale();
+  const float2 cloudsStep = screenSizeInverse*clouds_uv_scale();
+  const float2 cloudsUvOffsets[TAP_COUNT_NEIGHBORHOOD_FULL] =
   {
-    screenUV,
-    screenUV + float2(-screenSizeInverse.x,  0.0),
-    screenUV + float2( 0.0,       -screenSizeInverse.y),
-    screenUV + float2( screenSizeInverse.x,  0.0),
-    screenUV + float2( 0.0,        screenSizeInverse.y),
-    screenUV + float2(-screenSizeInverse.x, -screenSizeInverse.y),//todo: remove this mul, use indexed CB
-    screenUV + float2( screenSizeInverse.x, -screenSizeInverse.y),
-    screenUV + float2(-screenSizeInverse.x,  screenSizeInverse.y),
-    screenUV + float2( screenSizeInverse.x,  screenSizeInverse.y)
+    cloudsUV,
+    cloudsUV + float2(-cloudsStep.x,  0.0),
+    cloudsUV + float2( 0.0,       -cloudsStep.y),
+    cloudsUV + float2( cloudsStep.x,  0.0),
+    cloudsUV + float2( 0.0,        cloudsStep.y),
+    cloudsUV + float2(-cloudsStep.x, -cloudsStep.y),//todo: remove this mul, use indexed CB
+    cloudsUV + float2( cloudsStep.x, -cloudsStep.y),
+    cloudsUV + float2(-cloudsStep.x,  cloudsStep.y),
+    cloudsUV + float2( cloudsStep.x,  cloudsStep.y)
   };
 
   #if TAA_CHECKER_MODE
@@ -258,7 +260,7 @@ void TAA_gather_current(Texture2D<float4> sceneTex, SamplerState sceneTex_sample
     #if TAA_CHECKER_MODE
       color_type color = (color_type)sceneTex.Load(int3(clamp(checkerOwnK + checkerTapOfs[i], int2(0, 0), checkerPackedResM1), 0));
     #else
-      color_type color = tex2Dlod(sceneTex, float4(uvOffsets[i],0,0));
+      color_type color = tex2Dlod(sceneTex, float4(clamp_clouds_uv(cloudsUvOffsets[i]),0,0));
     #endif
     #if !ALREADY_TONEMAPPED_SCENE
       color = PackToYCoCgAlpha(color) . color_attr;
@@ -301,13 +303,13 @@ void TAA_gather_current(Texture2D<float4> sceneTex, SamplerState sceneTex_sample
     #if SUPPORT_TEXTURE_GATHER && !TAA_BETTER_MOTION_VECTOR
     {
       //this cost around 10% of all clouds TAA, but reduces ghosting, as we cover whole 3x3 area instead of just X
-      float4 cloudsDepth4 = cloudsDepthTex.GatherRed(cloudsDepthTex_samplerstate, screenUV-0.5*screenSizeInverse);
+      float4 cloudsDepth4 = cloudsDepthTex.GatherRed(cloudsDepthTex_samplerstate, clamp_clouds_uv(cloudsUV-0.5*cloudsStep));
       float4 cloudsDepth4Max = cloudsDepth4, cloudsDepth4Min = cloudsDepth4;
-      cloudsDepth4 = cloudsDepthTex.GatherRed(cloudsDepthTex_samplerstate, screenUV+float2(+0.5*screenSizeInverse.x, -0.5*screenSizeInverse.y));
+      cloudsDepth4 = cloudsDepthTex.GatherRed(cloudsDepthTex_samplerstate, clamp_clouds_uv(cloudsUV+float2(+0.5*cloudsStep.x, -0.5*cloudsStep.y)));
       cloudsDepth4Min = min(cloudsDepth4, cloudsDepth4Min); cloudsDepth4Max = max(cloudsDepth4, cloudsDepth4Max);
-      cloudsDepth4 = cloudsDepthTex.GatherRed(cloudsDepthTex_samplerstate, screenUV+float2(-0.5*screenSizeInverse.x, +0.5*screenSizeInverse.y));
+      cloudsDepth4 = cloudsDepthTex.GatherRed(cloudsDepthTex_samplerstate, clamp_clouds_uv(cloudsUV+float2(-0.5*cloudsStep.x, +0.5*cloudsStep.y)));
       cloudsDepth4Min = min(cloudsDepth4, cloudsDepth4Min); cloudsDepth4Max = max(cloudsDepth4, cloudsDepth4Max);
-      cloudsDepth4 = cloudsDepthTex.GatherRed(cloudsDepthTex_samplerstate, screenUV+float2(+0.5*screenSizeInverse.x, +0.5*screenSizeInverse.y));
+      cloudsDepth4 = cloudsDepthTex.GatherRed(cloudsDepthTex_samplerstate, clamp_clouds_uv(cloudsUV+float2(+0.5*cloudsStep.x, +0.5*cloudsStep.y)));
       cloudsDepth4Min = min(cloudsDepth4, cloudsDepth4Min); cloudsDepth4Max = max(cloudsDepth4, cloudsDepth4Max);
       current.nearestDepth = min(min(cloudsDepth4Min.x, cloudsDepth4Min.y), min(cloudsDepth4Min.z, cloudsDepth4Min.w));
       current.farDepth = max(max(cloudsDepth4Max.x, cloudsDepth4Max.y), max(cloudsDepth4Max.z, cloudsDepth4Max.w));
@@ -316,11 +318,11 @@ void TAA_gather_current(Texture2D<float4> sceneTex, SamplerState sceneTex_sample
       const int TAP_COUNT_CROSS = 5;
       float depthCross[TAP_COUNT_CROSS] =
       {
-        tex2Dlod(cloudsDepthTex, float4(screenUV,0,0)).x,
-        tex2Dlod(cloudsDepthTex, float4(uvOffsets[5],0,0)).x,
-        tex2Dlod(cloudsDepthTex, float4(uvOffsets[6],0,0)).x,
-        tex2Dlod(cloudsDepthTex, float4(uvOffsets[7],0,0)).x,
-        tex2Dlod(cloudsDepthTex, float4(uvOffsets[8],0,0)).x,
+        tex2Dlod(cloudsDepthTex, float4(clamp_clouds_uv(cloudsUV),0,0)).x,
+        tex2Dlod(cloudsDepthTex, float4(clamp_clouds_uv(cloudsUvOffsets[5]),0,0)).x,
+        tex2Dlod(cloudsDepthTex, float4(clamp_clouds_uv(cloudsUvOffsets[6]),0,0)).x,
+        tex2Dlod(cloudsDepthTex, float4(clamp_clouds_uv(cloudsUvOffsets[7]),0,0)).x,
+        tex2Dlod(cloudsDepthTex, float4(clamp_clouds_uv(cloudsUvOffsets[8]),0,0)).x,
       };
 
       //current.cloudDepth =
@@ -334,7 +336,7 @@ void TAA_gather_current(Texture2D<float4> sceneTex, SamplerState sceneTex_sample
         current.farDepth = max(depthCross[i], current.farDepth);
         #if TAA_BETTER_MOTION_VECTOR
           if (depthCross[i] < current.nearestDepth)
-              current.motionVectorUV = uvOffsets[i];
+              current.motionVectorUV = cloudsUvOffsets[i]/clouds_uv_scale();//motion vectors are screen space
         #endif
       }
       #endif
@@ -406,12 +408,11 @@ struct TAAHistory
 
 //historyTex_samplerstate HAS to be linear
 void TAA_gather_history(Texture2D<float4> historyTex, SamplerState historyTex_samplerstate,
-                      float2 screenUV, float2 screenSize, float2 screenSizeInverse, half exposure, out TAAHistory history,
-                      bool use_bilinear)
+                      float2 screenUV, half exposure, out TAAHistory history, bool use_bilinear)
 {
   if (use_bilinear)
   {
-    float4 c = PackToYCoCgAlpha(tex2Dlod(historyTex, float4(screenUV,0,0)));
+    float4 c = PackToYCoCgAlpha(tex2Dlod(historyTex, float4(screen_to_clouds_history_uv(screenUV),0,0)));
     #if TAA_IN_HDR_SPACE
     c.rgb *= simple_luma_tonemap(c.x, exposure);
     #endif
@@ -419,13 +420,14 @@ void TAA_gather_history(Texture2D<float4> historyTex, SamplerState historyTex_sa
     return;
   }
   BicubicSharpenWeights weights;
-  compute_bicubic_sharpen_weights(screenUV, screenSize, screenSizeInverse, TAA_SHARPENING_FACTOR, weights);
+  compute_bicubic_sharpen_weights(screenUV, clouds_color_prev_dimensions.xy, clouds_color_prev_dimensions.zw,
+                                  TAA_SHARPENING_FACTOR, weights);
 
-  float4 c10 = PackToYCoCgAlpha(tex2Dlod(historyTex, float4(weights.uv0,0,0)));
-  float4 c01 = PackToYCoCgAlpha(tex2Dlod(historyTex, float4(weights.uv1,0,0)));
-  float4 c11 = PackToYCoCgAlpha(tex2Dlod(historyTex, float4(weights.uv2,0,0)));
-  float4 c21 = PackToYCoCgAlpha(tex2Dlod(historyTex, float4(weights.uv3,0,0)));
-  float4 c12 = PackToYCoCgAlpha(tex2Dlod(historyTex, float4(weights.uv4,0,0)));
+  float4 c10 = PackToYCoCgAlpha(tex2Dlod(historyTex, float4(screen_to_clouds_history_uv(weights.uv0),0,0)));
+  float4 c01 = PackToYCoCgAlpha(tex2Dlod(historyTex, float4(screen_to_clouds_history_uv(weights.uv1),0,0)));
+  float4 c11 = PackToYCoCgAlpha(tex2Dlod(historyTex, float4(screen_to_clouds_history_uv(weights.uv2),0,0)));
+  float4 c21 = PackToYCoCgAlpha(tex2Dlod(historyTex, float4(screen_to_clouds_history_uv(weights.uv3),0,0)));
+  float4 c12 = PackToYCoCgAlpha(tex2Dlod(historyTex, float4(screen_to_clouds_history_uv(weights.uv4),0,0)));
 
   #if TAA_IN_HDR_SPACE
     c10.rgb *= simple_luma_tonemap(c10.x, exposure);
@@ -456,9 +458,9 @@ void TAA(out float4 result_color, out float taaWeight,
          #endif
          )
 {
-  //the scene depth pair is not clouds-sized: under dynamic resolution it follows
-  //the current scale (and prev differs from current right after a step), with
-  //fullres clouds it is half size. All texel snapping below must use the real
+  //the scene depth pair follows the dynamic resolution, and so does the clouds
+  //grid locked to it, but prev differs from current right after a step and with
+  //fullres clouds the depth is half size. All texel snapping below must use the real
   //size of the texture it touches, or the cage inspects (and snaps history to)
   //positions between texels. The unfed (0) fallback is the old clouds-res
   //assumption, for an exe older than the dump
@@ -494,9 +496,7 @@ void TAA(out float4 result_color, out float taaWeight,
   #endif
 
   // Reproject uv value to motion from previous frame.
-  //the sub-pixel motion tolerance is measured in the FIXED clouds-derived unit
-  //(the pre-dynres value), not the scaled depth size: a dynres-following unit
-  //would silently widen history acceptance as the scale drops
+  //the sub-pixel motion tolerance is measured in depth grid texels
   half motionVectorPixelLengthTolerance;
   #if TAA_BETTER_MOTION_VECTOR
     float2 motionVector = TAAGetReprojectedMotionVector(reprojectionDepth, current.motionVectorUV, fallbackDepthSize, motionVectorPixelLengthTolerance);//, reprojectionMatrix
@@ -621,7 +621,7 @@ void TAA(out float4 result_color, out float taaWeight,
 
   #if TAA_DEBUG_SIMPLE_TAA
   {
-    float3 hist = PackToYCoCg(tex2Dlod(historyTex, float4(historyUV,0,0)));
+    float3 hist = PackToYCoCg(tex2Dlod(historyTex, float4(screen_to_clouds_history_uv(historyUV),0,0)));
     hist.rgb *= simple_luma_tonemap(hist.x, exposure);
     result_color = lerp(current.color, hist.rgb, bOffscreen ? 1 : TAA_NEW_FRAME_WEIGHT);
     result_color *= simple_luma_tonemap_inv(result_color.x, exposure);
@@ -634,7 +634,7 @@ void TAA(out float4 result_color, out float taaWeight,
   // Gather the previous frame neighborhood information.
   //
   TAAHistory history;
-  TAA_gather_history(historyTex, historyTex_samplerstate, historyUV, screenSize, screenSizeInverse, exposure, history, bilinear);
+  TAA_gather_history(historyTex, historyTex_samplerstate, historyUV, exposure, history, bilinear);
 
   //
   // Compute temporal blend weight.
@@ -759,10 +759,10 @@ void TAA(out float4 result_color, out float taaWeight,
     //lets the steady weight sit low enough to out-average wind-swept march residue;
     //age steps per retrace. Tap ages interpolate bilinearly after decode;
     //floor() rounds boundary mixtures DOWN = toward a faster blend of valid data
-    float2 wtc = historyUV*screenSize - 0.5;
+    float2 wtc = historyUV*clouds_color_prev_dimensions.xy - 0.5;
     float2 wf = frac(wtc);
     int2 wb = (int2)floor(wtc);
-    int2 wmax = (int2)screenSize - 1;
+    int2 wmax = (int2)clouds_color_prev_dimensions.xy - 1;
     #define AGE_AT(ox, oy) (float)checker_age_decode_age(taaPrevWeight.Load(int3(clamp(wb + int2(ox, oy), int2(0, 0), wmax), 0)).x)
     float a00 = AGE_AT(0, 0), a10 = AGE_AT(1, 0), a01 = AGE_AT(0, 1), a11 = AGE_AT(1, 1);
     #undef AGE_AT
@@ -869,7 +869,8 @@ void TAA(out float4 result_color, out float taaWeight,
       //three floored propagates per cycle outweigh the single +1 retrace and ages
       //stall in the anneal band, running its elevated weights forever. The phase
       //field keeps this texel's own last fresh-write slot (never from neighbors)
-      uint ownPhase = checker_age_decode_phase(taaPrevWeight.Load(int3(texel, 0)).x);
+      uint ownPhase = checker_age_decode_phase(
+        taaPrevWeight.Load(int3(clamp(int2(screenUV*clouds_color_prev_dimensions.xy), int2(0, 0), wmax), 0)).x);
       taaWeight = checker_age_encode(min((uint)round(cstateBilin), CHECKER_AGE_CONVERGED), ownPhase);
     }
     //numeric safety, not a content clamp: at mild weights the tonemap round trip
@@ -893,7 +894,7 @@ void TAA(out float4 result_color, out float taaWeight,
   // Temporal restart path
   // Perform clamp and integrate.
   half4 historyClamped = TAA_clip_history(history.color.color_attr, current.color, current.colorMin, current.colorMax, motionVectorPixelLengthTolerance);
-  float clampEventFrame = tex2Dlod(taaPrevWeight, float4(historyUV, 0,0)).x;//1./255
+  float clampEventFrame = tex2Dlod(taaPrevWeight, float4(screen_to_clouds_history_uv(historyUV), 0,0)).x;//1./255
   clampEventFrame = clampEventFrame > TAA_CLOUDS_FRAMES/255. ? 255.0 : ceil(255*clampEventFrame);//actually, as soon as clampEventFrame*255 >= frameOver, we should assume it is 1. as all frames has been taken into account
   half newFrameWeight = bOffscreen ? 1.0 : max(TAA_NEW_FRAME_WEIGHT, rcp(2+clampEventFrame));//since the formula is 1/(1+frames_since_event), and we read frames_since_event-1 from texture (we write 0 when event happen, not 0)
   newFrameWeight = max(clouds_taa_min_new_frame_weight, newFrameWeight);

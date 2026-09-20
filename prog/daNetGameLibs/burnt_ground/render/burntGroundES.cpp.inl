@@ -39,7 +39,7 @@ template <typename Callable>
 static void init_static_burnt_ground_decals_ecs_query(ecs::EntityManager &manager, Callable c);
 
 ECS_TAG(render)
-ECS_ON_EVENT(on_appear, OnLevelLoaded)
+ECS_ON_EVENT(on_appear, EventRenderSceneLoaded)
 static void burnt_ground_renderer_on_appear_es(const ecs::Event &,
   ecs::EntityManager &manager,
   dafg::NodeHandle &burnt_ground_renderer__prepare_decals_node,
@@ -104,7 +104,7 @@ static void burnt_ground_renderer_on_appear_es(const ecs::Event &,
 }
 
 ECS_TAG(render)
-ECS_ON_EVENT(on_appear, OnLevelLoaded)
+ECS_ON_EVENT(on_appear, EventRenderSceneLoaded)
 ECS_TRACK(*)
 static void burnt_ground_renderer_on_change_es(const ecs::Event &,
   const Point4 &burnt_ground_renderer__selfillum_color,

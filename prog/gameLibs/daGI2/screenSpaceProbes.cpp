@@ -480,7 +480,6 @@ void ScreenSpaceProbes::trace_probe_radiance(float quality, bool angle_filtering
   d3d::set_rwtex(STAGE_CS, 0, dest.getTex2D(), 0, 0);
   d3d::set_rwtex(STAGE_CS, 1, nullptr, 0, 0);
   d3d::set_rwtex(STAGE_CS, 2, nullptr, 0, 0);
-  d3d::set_cs_constbuffer_register_count(256);
   const bool useSelected = sp_use_selected_probes && validHistory && currentTemporality < 1;
   auto dispatch = [&](auto &shader, uint32_t indirectOffset) {
     auto threadGroupSizes = shader->getThreadGroupSizes();
@@ -494,7 +493,6 @@ void ScreenSpaceProbes::trace_probe_radiance(float quality, bool angle_filtering
     dispatch(calc_screenspace_selected_radiance_cs, SP_TRACE_SELECTED_OFS);
   else
     dispatch(calc_screenspace_radiance_cs, SP_TRACE_INDIRECT_OFFSET);
-  d3d::set_cs_constbuffer_register_count(0);
   d3d::set_rwtex(STAGE_CS, 0, nullptr, 0, 0);
   d3d::set_rwtex(STAGE_CS, 1, nullptr, 0, 0);
   d3d::set_rwtex(STAGE_CS, 2, nullptr, 0, 0);

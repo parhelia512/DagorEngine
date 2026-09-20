@@ -15,13 +15,26 @@ AddIncludes =
 ;
 
 Sources =
-  base_nodes_panel.cpp
   canvas_clipboard.cpp
+  canvas_text.cpp
+  curve_preview_control.cpp
+  graph_add_node_popup.cpp
+  graph_canvas_cull.cpp
   graph_compile.cpp
+  graph_context_menu.cpp
+  graph_curve_value.cpp
   graph_dead_paths.cpp
+  graph_document.cpp
+  graph_drag_collision.cpp
   graph_edge_reconnect.cpp
+  graph_edge_render.cpp
+  graph_gradient_value.cpp
   graph_hotkeys_bar.cpp
+  graph_node_render.cpp
   graph_panel.cpp
+  graph_pin_colors.cpp
+  graph_pin_jump_menu.cpp
+  graph_row_list.cpp
   graph_shortcuts_panel.cpp
   graph_status_bar.cpp
   graph_undo.cpp
@@ -30,6 +43,8 @@ Sources =
   landscape_preview_panel.cpp
   landscape_preview_scene.cpp
   main.cpp
+  node_drag_overlay.cpp
+  node_library_panel.cpp
   plugin.cpp
   properties_panel.cpp
   texture_preview_panel.cpp

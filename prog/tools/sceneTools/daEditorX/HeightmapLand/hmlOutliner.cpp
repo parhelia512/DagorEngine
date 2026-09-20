@@ -425,11 +425,100 @@ const char *HeightmapLandOutlinerInterface::getObjectUnselectabilityReason(Rende
 {
   if (const char *reason = getLayerUnselectabilityReason(type, per_type_layer_index))
     return reason;
+  if (object.isHidden())
+    return "This cannot be selected because the object is hidden.";
+  if (object.isLocked())
+    return "This cannot be selected because the object is locked.";
   if (!objectEditor.checkObjSelFilter(object))
     return "This cannot be selected because its name does not match the name filter on the toolbar.";
   if (!canSelectObject(object))
     return "This cannot be selected.";
   return nullptr;
+}
+
+bool HeightmapLandOutlinerInterface::isLayerOrTypeHidden(RenderableEditableObject &object)
+{
+  int type, layerPropsIndex;
+  if (getObjectTypeAndLayerPropsIndex(object, type, layerPropsIndex))
+    return EditLayerProps::layerProps[layerPropsIndex].isLayerOrTypeHidden();
+
+  G_ASSERT(false);
+  return false;
+}
+
+bool HeightmapLandOutlinerInterface::isLayerOrTypeLocked(RenderableEditableObject &object)
+{
+  int type, layerPropsIndex;
+  if (getObjectTypeAndLayerPropsIndex(object, type, layerPropsIndex))
+    return EditLayerProps::layerProps[layerPropsIndex].isLayerOrTypeLocked();
+
+  G_ASSERT(false);
+  return false;
+}
+
+bool HeightmapLandOutlinerInterface::isObjectVisible(RenderableEditableObject &object)
+{
+  return !object.isHidden() && !isLayerOrTypeHidden(object);
+}
+
+bool HeightmapLandOutlinerInterface::canChangeObjectVisibility(RenderableEditableObject &object)
+{
+  return HmapLandObjectEditor::doesObjectSupportHiding(object) && !isLayerOrTypeHidden(object);
+}
+
+bool HeightmapLandOutlinerInterface::isObjectLocked(RenderableEditableObject &object)
+{
+  return object.isLocked() || isLayerOrTypeLocked(object);
+}
+
+bool HeightmapLandOutlinerInterface::canChangeObjectLock(RenderableEditableObject &object)
+{
+  return HmapLandObjectEditor::doesObjectSupportLocking(object) && !isLayerOrTypeLocked(object);
+}
+
+void HeightmapLandOutlinerInterface::toggleObjectVisibility(RenderableEditableObject &object)
+{
+  if (!canChangeObjectVisibility(object))
+    return;
+
+  const bool hide = !object.isHidden();
+
+  objectEditor.getUndoSystem()->begin();
+
+  if (hide)
+    if (SplineObject *spline = RTTI_cast<SplineObject>(&object))
+      for (SplinePointObject *splinePoint : spline->points)
+        splinePoint->selectObject(false);
+
+  object.hideObject(hide);
+
+  objectEditor.updateGizmo();
+  objectEditor.getUndoSystem()->accept(hide ? "Hide object" : "Show object");
+}
+
+void HeightmapLandOutlinerInterface::toggleObjectLock(RenderableEditableObject &object)
+{
+  if (!canChangeObjectLock(object))
+    return;
+
+  const bool lock = !object.isLocked();
+
+  objectEditor.getUndoSystem()->begin();
+
+  // Unlike hideObject(), lockObject() keeps the selection, but a locked object must not stay selected.
+  if (lock)
+  {
+    object.selectObject(false);
+
+    if (SplineObject *spline = RTTI_cast<SplineObject>(&object))
+      for (SplinePointObject *splinePoint : spline->points)
+        splinePoint->selectObject(false);
+  }
+
+  object.lockObject(lock);
+
+  objectEditor.updateGizmo();
+  objectEditor.getUndoSystem()->accept(lock ? "Lock object" : "Unlock object");
 }
 
 void HeightmapLandOutlinerInterface::startObjectSelection() { objectEditor.getUndoSystem()->begin(); }

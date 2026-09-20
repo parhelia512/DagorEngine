@@ -77,7 +77,7 @@ public:
   void show() override;
   void onChange(int pcb_id, ContainerPropertyControl *panel) override;
   void onClick(int pcb_id, ContainerPropertyControl *panel) override;
-  void updateImguiDialog() override;
+  void updateImguiDialog(const PropPanel::DialogWindow::DialogFrameSizing &sizing) override;
 
   void fillPanel(ContainerPropertyControl *panel);
   E3DCOLOR getColor() const { return mColor; }

@@ -1,0 +1,18 @@
+Root    ?= ../../../.. ;
+StrictCompile = yes ;
+include $(Root)/prog/_jBuild/defaults.jam ;
+
+Location = prog/gameLibs/render/specialVision ;
+
+TargetType  = lib ;
+Target      = gameLibs/render/specialVision.lib ;
+
+AddIncludes =
+  $(Root)/prog/gameLibs/publicInclude
+;
+
+Sources =
+  nightVisionPostFx.cpp
+;
+
+include $(Root)/prog/_jBuild/build.jam ;

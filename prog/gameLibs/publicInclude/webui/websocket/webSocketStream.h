@@ -6,7 +6,7 @@
 
 #include <generic/dag_carray.h>
 #include <util/dag_string.h>
-#include <util/dag_simpleString.h>
+#include <EASTL/string.h>
 #include <ioSys/dag_dataBlock.h>
 #include <math/dag_Point2.h>
 #include <math/dag_Point3.h>
@@ -32,7 +32,7 @@ public:
   virtual void onMessage(const DataBlock & /*blk*/) {}
 
 protected:
-  typedef eastl::hash_map<SimpleString, Method, eastl::string_hash<SimpleString>> CommandMap;
+  typedef eastl::hash_map<eastl::string, Method, eastl::string_hash<eastl::string>> CommandMap;
   CommandMap commands;
 };
 

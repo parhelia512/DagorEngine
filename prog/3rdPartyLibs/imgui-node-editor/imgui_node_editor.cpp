@@ -101,7 +101,8 @@ namespace ed = ax::NodeEditor::Detail;
 
 
 //------------------------------------------------------------------------------
-static const int c_BackgroundChannelCount = 1;
+// MODIFICATION BY GAIJIN: a second background channel, see c_BackgroundChannel_SelectionRectTop.
+static const int c_BackgroundChannelCount = 2;
 static const int c_LinkChannelCount       = 4;
 static const int c_UserLayersCount        = 5;
 
@@ -111,6 +112,8 @@ static const int c_LinkStartChannel       = c_BackgroundChannelStart + c_Backgro
 static const int c_NodeStartChannel       = c_LinkStartChannel       + c_LinkChannelCount;
 
 static const int c_BackgroundChannel_SelectionRect = c_BackgroundChannelStart + 0;
+// MODIFICATION BY GAIJIN: EditorContext::End lifts this one above the node and link channels.
+static const int c_BackgroundChannel_SelectionRectTop = c_BackgroundChannelStart + 1;
 
 static const int c_UserChannel_Content         = c_UserLayerChannelStart + 1;
 static const int c_UserChannel_Grid            = c_UserLayerChannelStart + 2;
@@ -1623,14 +1626,17 @@ void ed::EditorContext::End()
         m_DrawList->ChannelsSetCurrent(0);
 
         auto channelCount = m_DrawList->_Splitter._Count;
-        ImDrawList_ChannelsGrow(m_DrawList, channelCount + 3);
-        ImDrawList_SwapChannels(m_DrawList, c_UserChannel_HintsBackground, channelCount + 0);
-        ImDrawList_SwapChannels(m_DrawList, c_UserChannel_Hints,           channelCount + 1);
-        ImDrawList_SwapChannels(m_DrawList, c_UserChannel_Content,         channelCount + 2);
+        ImDrawList_ChannelsGrow(m_DrawList, channelCount + 4);
+        // MODIFICATION BY GAIJIN: the selection rect is submitted in canvas space, so it keeps its
+        // own clip rect and takes no preTransformClipRect; it only has to leave the background.
+        ImDrawList_SwapChannels(m_DrawList, c_BackgroundChannel_SelectionRectTop, channelCount + 0);
+        ImDrawList_SwapChannels(m_DrawList, c_UserChannel_HintsBackground, channelCount + 1);
+        ImDrawList_SwapChannels(m_DrawList, c_UserChannel_Hints,           channelCount + 2);
+        ImDrawList_SwapChannels(m_DrawList, c_UserChannel_Content,         channelCount + 3);
 
-        preTransformClipRect(channelCount + 0);
         preTransformClipRect(channelCount + 1);
         preTransformClipRect(channelCount + 2);
+        preTransformClipRect(channelCount + 3);
     }
 # endif
 
@@ -4304,7 +4310,10 @@ void ed::SelectAction::Draw(ImDrawList* drawList)
     const auto fillColor    = Editor->GetColor(m_SelectLinkMode ? StyleColor_LinkSelRect       : StyleColor_NodeSelRect, alpha);
     const auto outlineColor = Editor->GetColor(m_SelectLinkMode ? StyleColor_LinkSelRectBorder : StyleColor_NodeSelRectBorder, alpha);
 
-    drawList->ChannelsSetCurrent(c_BackgroundChannel_SelectionRect);
+    // MODIFICATION BY GAIJIN: see Config::DrawSelectionRectOnTop.
+    drawList->ChannelsSetCurrent(Editor->GetConfig().DrawSelectionRectOnTop
+        ? c_BackgroundChannel_SelectionRectTop
+        : c_BackgroundChannel_SelectionRect);
 
     auto min  = ImVec2(std::min(m_StartPoint.x, m_EndPoint.x), std::min(m_StartPoint.y, m_EndPoint.y));
     auto max  = ImVec2(ImMax(m_StartPoint.x, m_EndPoint.x), ImMax(m_StartPoint.y, m_EndPoint.y));

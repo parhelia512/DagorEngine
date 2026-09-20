@@ -521,8 +521,8 @@ shader rendinst_clipmap, rendinst_landclass
     {
       INIT_TOROIDAL_HEIGHTMAP(vs)
       USE_TOROIDAL_HEIGHTMAP(vs)
+      INIT_HEIGHTMAP_DISPLACEMENT_IN_EDITOR(vs)
     }
-    INIT_HEIGHTMAP_DISPLACEMENT(vs)
 
     (vs)
     {

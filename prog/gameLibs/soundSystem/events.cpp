@@ -600,6 +600,12 @@ bool has_event(const char *name, const char *path)
   return FMOD_OK == get_studio_system()->getEvent(fullPath.c_str(), &eventDescription);
 }
 
+bool is_valid_event_banks(const char *name, const char *path)
+{
+  SNDSYS_IF_NOT_INITED_RETURN_(false);
+  return banks::is_valid_event(make_path(name, path).c_str());
+}
+
 int get_num_event_instances(const char *name, const char *path)
 {
   SNDSYS_IF_NOT_INITED_RETURN_(0);

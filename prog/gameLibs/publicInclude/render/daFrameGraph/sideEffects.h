@@ -15,7 +15,9 @@ enum class SideEffects : uint8_t
   /// Default: node only accesses daFG state and may be culled away.
   Internal,
   /// Node has side effects outside daFG and will never be culled away.
-  External
+  External,
+
+  MAX_VAL = External,
 };
 
 } // namespace dafg

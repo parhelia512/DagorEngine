@@ -12,14 +12,14 @@ async function main() {
     let inner = Future(); inner.resolve(7)
     let outer = Future(); outer.resolve(inner)   // stored verbatim
     let got = await outer
-    print("got is inner: " + (got == inner) + "\n")   // true
-    print("got.getValue: " + got.getValue() + "\n")   // 7
-    print("deep: " + (await got) + "\n")              // 7
+    println($"got is inner: {got == inner}")          // true
+    println($"got.getValue: {got.getValue()}")        // 7
+    println($"deep: {await got}")                     // 7
 
     let a = await returnsFuture()                     // a is the inner Future
-    print("a.getState: " + a.getState() + "\n")       // fulfilled
-    print("a deep: " + (await a) + "\n")              // 9
-    print("return await: " + (await returnsValue()) + "\n")  // 9
+    println($"a.getState: {a.getState()}")            // fulfilled
+    println($"a deep: {await a}")                     // 9
+    println($"return await: {await returnsValue()}")         // 9
 }
 main()
 print("script done\n")

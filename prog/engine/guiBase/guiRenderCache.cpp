@@ -495,17 +495,12 @@ void BufferedRenderer::renderChunk(int chunk_id, int targetW, int targetH, int p
     {
       const GuiViewportRect &vp = viewports[de.view];
       oldvp = &vp;
-      float l = (tp.screenOrig.x + vp.l * tp.screenScale.x) / screenPixelAR;
-      float t = tp.screenOrig.y + vp.t * tp.screenScale.y;
-      float w = vp.w * tp.screenScale.x / screenPixelAR;
-      float h = vp.h * tp.screenScale.y;
-      switch (pre_rotation)
-      {
-        case 90: d3d::setview(int(targetW - t - h), int(l), int(h), int(w), 0, 1); break;
-        case 180: d3d::setview(int(targetW - l - w), int(targetH - t - h), int(w), int(h), 0, 1); break;
-        case 270: d3d::setview(int(t), int(targetH - l - w), int(h), int(w), 0, 1); break;
-        default: d3d::setview(int(l), int(t), int(w), int(h), 0, 1); break;
-      }
+      int l = int((tp.screenOrig.x + vp.l * tp.screenScale.x) / screenPixelAR);
+      int t = int(tp.screenOrig.y + vp.t * tp.screenScale.y);
+      int w = int(vp.w * tp.screenScale.x / screenPixelAR);
+      int h = int(vp.h * tp.screenScale.y);
+      prerotation::rotate_rect(pre_rotation, targetW, targetH, l, t, w, h);
+      d3d::setview(l, t, w, h, 0, 1);
     }
 
     DrawElem::Command command = de.command;

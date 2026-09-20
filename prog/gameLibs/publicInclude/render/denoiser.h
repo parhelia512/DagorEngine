@@ -388,6 +388,9 @@ struct ReflectionDenoiser
   };
 };
 
+void set_shadow_maps_bindless(Texture *csm_texture, d3d::SamplerHandle csm_sampler, Texture *vsm_texture,
+  d3d::SamplerHandle vsm_sampler);
+void set_shadow_output_bindless(Texture *shadow_texture, bool translucent = false);
 void denoise_shadow(const ShadowDenoiser &params);
 void denoise_ao(const AODenoiser &params);
 void denoise_gi(const GIDenoiser &params);

@@ -4,18 +4,22 @@
 //
 #pragma once
 
+#include <drv/3d/dag_multi_interface.h>
 #include <util/dag_stdint.h>
 
 class BaseTexture;
 
 namespace d3d
 {
-
 /**
  * @brief Opaque type representing a buffer used for updating resources with content,
  * such as streaming in texture data.
  */
 class ResUpdateBuffer;
+} // namespace d3d
+
+namespace d3d _MULTI_INTERFACE
+{
 
 /**
  * @brief Allocates a update buffer to update the subregion described by
@@ -101,7 +105,7 @@ size_t get_update_buffer_slice_pitch(ResUpdateBuffer *rub);
  */
 bool update_texture_and_release_update_buffer(ResUpdateBuffer *&src_rub);
 
-} // namespace d3d
+} // namespace d3d _MULTI_INTERFACE
 
 #if _TARGET_D3D_MULTI
 #include <drv/3d/dag_interface_table.h>

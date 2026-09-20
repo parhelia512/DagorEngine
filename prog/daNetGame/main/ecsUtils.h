@@ -13,8 +13,10 @@ class TMatrix;
 void load_ecs_templates(ecs::EntityManager &mgr, const char *user_game_mode_import_fn = nullptr);
 ecs::EntityId create_simple_entity(
   ecs::EntityManager &mgr, const char *templ_name, ecs::ComponentsInitializer &&amap = ecs::ComponentsInitializer());
-void ecs_set_global_tags_context(ecs::EntityManager &mgr, const char *user_game_mode_es_order_fn = nullptr);
-Tab<const char *> ecs_get_global_tags_context();
-
+// Compute per-EM tags, then setFilterTags + setEsTags. Callers finish with their own ES order step
+// (resetEsOrder, or load_es_order + setEsOrder).
+void ecs_apply_global_tags(ecs::EntityManager &mgr, Tab<const char *> &out_tags);
+void ecs_reset_global_tags_and_load_es_order(ecs::EntityManager &mgr, const char *user_game_mode_es_order_fn = nullptr);
+Tab<const char *> ecs_get_global_tags_context(ecs::EntityManager &mgr);
 
 bool reload_ecs_templates(ecs::EntityManager &mgr, eastl::function<void(const char *, ecs::EntityManager::UpdateTemplateResult)> cb);

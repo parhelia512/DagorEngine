@@ -6,27 +6,29 @@ from "%scripts/ui/widgets/msgbox.nut" import msgboxComponent, hasMsgBoxes
 import "console" as console
 from "frp" import warn_on_deprecated_methods
 from "dagor.system" import DBGLEVEL
+from "screencap" import take_screenshot_nogui, take_screenshot
+import "%darg/helpers/inspector.nut" as inspectorToggle
 
 //set_subscriber_validation( DBGLEVEL>0)
 warn_on_deprecated_methods( DBGLEVEL>0)
 
 let ecs = require_optional("ecs")
+// ES registered by a module loaded before this wipe would be deleted by it,
+// so app_state.nut and everything reaching it must stay a body-level require
 ecs?.clear_vm_entity_systems()
 
 require("%scripts/ui/ui_config.nut")
 require("%scripts/ui/settings/graphics_options.nut").graphicsPresetApply()
-let { mainMenu, background} = require("%scripts/ui/main_menu.nut")
+let { mainMenu, background } = require("%scripts/ui/main_menu.nut")
+let { showControlsMenu, controlsMenuUi } = require("%scripts/ui/settings/input_settings.nut")
 let { showGameMenu, mkHud, mkDebriefing} = require("%scripts/ui/hud.nut")
 let { sessionResult, isInMainMenu, isLoadingState } = require("%scripts/ui/app_state.nut")
 let { editor, showUIinEditor, editorIsActive} = require("%scripts/ui/editor.nut")
-let { take_screenshot_nogui, take_screenshot} = require("screencap")
-let { showControlsMenu, controlsMenuUi } = require("%scripts/ui/settings/input_settings.nut")
 let { showSettingsMenu, settingsMenuUi } = require("%scripts/ui/settings/main_settings.nut")
 let { showLicense, licenseUi } = require("%scripts/ui/licenseTxt.nut")
-let inspectorToggle = require("%darg/helpers/inspector.nut")
 
 
-let eventHandlers = {
+const eventHandlers = {
   ["Global.Screenshot"] = @(...) take_screenshot(),
   ["Global.ScreenshotNoGUI"] = @(...) take_screenshot_nogui()
 }
@@ -67,5 +69,5 @@ return function(){
     size = flex()
     children
     eventHandlers
-  }.__update( showCursor ? {cursor = normalCursor} : {})
+  }.__update( showCursor ? (const {cursor = normalCursor}) : {})
 }

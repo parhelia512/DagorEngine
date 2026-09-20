@@ -328,6 +328,8 @@ public:
         panoramic ? PreparedSkiesParams::Panoramic::ON : PreparedSkiesParams::Panoramic::OFF,
         panoramic ? PreparedSkiesParams::Reprojection::OFF : PreparedSkiesParams::Reprojection::ON});
   }
+  // the ALLOCATED clouds resolution; under dynamic resolution the clouds render into a sub-rect
+  // of it, see the render_resolution argument of changeSkiesData
   IPoint2 getCloudsResolution(const SkiesData *data);
   void skiesDataScatteringVolumeBarriers(SkiesData *data);
 
@@ -337,7 +339,7 @@ public:
   // if sky_quality_div>1, additional textures required
   void changeSkiesData(int sky_detail_level, int clouds_detail_level, bool fly_through_clouds, int targetW, int targetH,
     SkiesData *data, CloudsResolution clouds_resolution = CloudsResolution::Default, bool use_blurred_clouds = false,
-    bool ignore_panorama_state = false);
+    bool ignore_panorama_state = false, const IPoint2 &render_resolution = IPoint2::ZERO);
   void initSky(int clouds_fog_resolution = 32, uint32_t skyfmt = 0xFFFFFFFF, bool useHole = true);
   void closeSky();
   void updateCloudsOrigin();

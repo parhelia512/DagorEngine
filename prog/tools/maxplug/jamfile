@@ -21,7 +21,6 @@ Sources =
   debug.cpp
   dllmain.cpp
   dummy.cpp
-  expanim2.cpp
   expUtil.cpp
   font.cpp
   freecam.cpp
@@ -41,7 +40,6 @@ Sources =
   rbDummy.cpp
   rolluppanel.cpp
   ta.cpp
-  Timer.cpp
   util.cpp
   util2.cpp
   vpconv.cpp

@@ -4,6 +4,7 @@
 #include <shaders/dag_shAssert.h>
 #include <3d/dag_resPtr.h>
 #include <3d/dag_ringCPUQueryLock.h>
+#include <generic/dag_functionRef.h>
 #include <EASTL/vector.h>
 #include <EASTL/vector_set.h>
 #include <EASTL/array.h>
@@ -31,19 +32,22 @@ struct AssertionContext
   static constexpr uint32_t MAX_STACK_SIZE = 64;
   using stack_t = eastl::array<void *, MAX_STACK_SIZE>;
   using stacks_on_frame_t = eastl::vector<stack_t>;
+  using debug_names_on_frame_t = eastl::vector<eastl::string>;
+  using debug_name_lazy_getter_t = dag::FunctionRef<eastl::string_view()>;
 
   UniqueBuf assertionBuffer;
   UniqueBuf assertionInfoBuffer;
   RingCPUBufferLock assertionRingBuffer;
   eastl::vector_set<int> failedByClass;
   eastl::array<stacks_on_frame_t, RING_BUFFER_SIZE> stacksOnFrames;
+  eastl::array<debug_names_on_frame_t, RING_BUFFER_SIZE> debugNamesOnFrames;
   uint32_t currentFrame = 0;
 
   void init(ScriptedShadersBinDumpOwner const &dump_owner);
   void close();
   void reset(ScriptedShadersBinDumpOwner const &dump_owner);
   void readback(ScriptedShadersBinDumpOwner const &dump_owner);
-  void bind(int shader_class_id, ScriptedShadersBinDumpOwner const &dump_owner);
+  void bind(int shader_class_id, ScriptedShadersBinDumpOwner const &dump_owner, debug_name_lazy_getter_t &&get_debug_variant_name);
 
   bool active() const { return bool(assertionBuffer); }
 

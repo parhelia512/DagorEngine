@@ -5,7 +5,7 @@ endmacro
 macro USE_GBUF_TO_TEMPERATURE_BASE()
   hlsl {
     #define THERMAL_SHADING_NORMAL 0
-    #define THERMAL_SHADING_LANDSCAPE 1
+    #define THERMAL_SHADING_SUBSURFACE 1
     #define THERMAL_SHADING_FOLIAGE 2
     #define THERMAL_SHADING_SELFILLUM 3
   }
@@ -35,7 +35,7 @@ macro USE_GBUF_TO_TEMPERATURE_BASE()
         gbufTemp *= (1 - 0.7*saturate(max(max(gbuffer.specularColor.r, gbuffer.specularColor.g), gbuffer.specularColor.b)));
         gbufTemp *= shadow;
       }
-      else if (material == THERMAL_SHADING_NORMAL)
+      else if (material == THERMAL_SHADING_NORMAL || material == THERMAL_SHADING_SUBSURFACE)
       {
         gbufTemp += gbuffer_temperature_base.x*baseColorDot;
         gbufTemp += 1.5*gbuffer_temperature_add.x*gbuffer.linearRoughness;

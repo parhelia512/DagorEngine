@@ -21,7 +21,7 @@ public:
   const ScreenshotConfig &getScreenshotCfg() const { return screenshotCfg; }
   const ScreenshotConfig &getCubeScreenshotCfg() const { return cubeScreenshotCfg; }
 
-  void updateImguiDialog() override;
+  void updateImguiDialog(const PropPanel::DialogWindow::DialogFrameSizing &sizing) override;
 
 private:
   void onChange(int pcb_id, PropPanel::ContainerPropertyControl *panel) override;

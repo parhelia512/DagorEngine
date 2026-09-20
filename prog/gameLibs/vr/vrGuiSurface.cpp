@@ -194,11 +194,13 @@ static void fill_buffers()
     for (unsigned int gridY = 0; gridY < VRGUI_GRID_SIZE; gridY++)
       for (unsigned int gridX = 0; gridX < VRGUI_GRID_SIZE; gridX++)
       {
+        const unsigned short topRight = gridX + gridY * (VRGUI_GRID_SIZE + 1) + 1;
+        const unsigned short bottomLeft = gridX + (gridY + 1) * (VRGUI_GRID_SIZE + 1);
         indices[0] = gridX + gridY * (VRGUI_GRID_SIZE + 1);
-        indices[1] = gridX + gridY * (VRGUI_GRID_SIZE + 1) + 1;
-        indices[2] = gridX + (gridY + 1) * (VRGUI_GRID_SIZE + 1);
-        indices[3] = indices[2];
-        indices[4] = indices[1];
+        indices[1] = topRight;
+        indices[2] = bottomLeft;
+        indices[3] = bottomLeft;
+        indices[4] = topRight;
         indices[5] = gridX + (gridY + 1) * (VRGUI_GRID_SIZE + 1) + 1;
 
         indices += 6;

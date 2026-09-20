@@ -2,11 +2,12 @@
 
 #include <render/daFrameGraph/daFG.h>
 
-#include <render/screenSpaceReflections.h>
+#include <screenSpaceReflectionNodes_api.h>
 
 #include "frameGraphNodes.h"
 
-#include "render/world/cameraParams.h"
+#include <render/cameraParams.h>
+#include <render/cameraInCamera/cameraInCamera.h>
 
 #include <daECS/core/componentTypes.h>
 #include <daECS/core/entitySystem.h>
@@ -16,7 +17,6 @@
 #include <render/world/frameGraphHelpers.h>
 #include <frustumCulling/frustumPlanes.h>
 #include <shaders/dag_shaders.h>
-#include <shaders/dag_computeShaders.h>
 
 #define INSIDE_RENDERER 1
 #include "../private_worldRenderer.h"
@@ -25,24 +25,24 @@ ECS_REGISTER_RELOCATABLE_TYPE(SsrNodesConfig, nullptr)
 
 extern uint32_t get_gi_history_frames();
 
-static ShaderVariableInfo ssr_denoiser_typeVarId("ssr_denoiser_type", true);
 static ShaderVariableInfo ssr_denoiser_tileVarId("ssr_denoiser_tile", true);
 static ShaderVariableInfo filter_high_luminance_changes("filter_high_luminance_changes", true);
 
+// Both counters are in frames: only ssr_history_state_node updates them, and it is not multiplexed.
 int invalidate_ssr_history_frames = 0;
 int luminance_filter_frames = 0;
-static bool is_history_valid = false;
 
 void invalidate_ssr_history(int frames) { invalidate_ssr_history_frames = ::max(invalidate_ssr_history_frames, frames); }
 
-static inline void update_is_history_valid()
+static inline bool update_is_history_valid()
 {
   if (get_gi_history_frames() == 1)
     invalidate_ssr_history(1);
 
-  is_history_valid = invalidate_ssr_history_frames == 0;
+  const bool valid = invalidate_ssr_history_frames == 0;
   if (invalidate_ssr_history_frames > 0)
     --invalidate_ssr_history_frames;
+  return valid;
 }
 
 void luminance_filter_ssr_history(int frames) { luminance_filter_frames = ::max(luminance_filter_frames, frames); }
@@ -53,21 +53,29 @@ static inline void update_is_luminance_filter_required()
     luminance_filter_frames--;
 }
 
-static const char *ssr_normals_tex_name(bool is_fullres) { return is_fullres ? "downsampled_normals" : "downsampled_far_normals"; }
-
 static SsrNodesConfig resolve_ssr_config(SsrNodesConfig cfg)
 {
   ScreenSpaceReflections::getRealQualityAndFmt(cfg.fmt, cfg.quality);
   if (cfg.quality != SSRQuality::Compute)
     cfg.fmt |= TEXCF_RTARGET;
 
-  if (!cfg.isFullres)
-  {
-    cfg.w /= 2;
-    cfg.h /= 2;
-  }
-
   return cfg;
+}
+
+static render::ssr::TargetDesc ssr_target_desc(const SsrNodesConfig &cfg)
+{
+  return {.fmt = cfg.fmt, .quality = cfg.quality, .isFullres = cfg.isFullres};
+}
+
+static render::ssr::ResourceNames dng_ssr_resource_names()
+{
+  return {
+    .closeDepthResName = "close_depth",
+    .closeDepthSamplerResName = "close_depth_sampler",
+    .normalsSamplerResName = "downsampled_normals_sampler",
+    .motionVectorsSamplerResName = "downsampled_motion_vectors_tex_sampler",
+    .gbufSamplerResName = "gbuf_sampler",
+  };
 }
 
 ECS_TAG(render)
@@ -79,94 +87,44 @@ static void create_ssr_camera_nodes_es(const OnCameraMainViewNodeConstruction &e
 
   const SsrNodesConfig cfg = resolve_ssr_config(dng_ssr_camera_nodes__config);
 
-  evt.nodes->push_back(dafg::register_node("ssr_node_camera_res_provider", DAFG_PP_NODE_SRC,
-    [fmt = cfg.fmt, is_fullres = cfg.isFullres, ssr_quality = cfg.quality](dafg::Registry registry) {
-      registry.create("ssr_target_before_denoise")
-        .texture({fmt, registry.getResolution<2>("main_view", is_fullres ? 1.0f : 0.5f),
-          (uint32_t)ScreenSpaceReflections::getMipCount(ssr_quality)});
+  evt.nodes->push_back(
+    render::ssr::make_resource_provider_node(dafg::root(), {
+                                                             .target = ssr_target_desc(cfg),
+                                                             .samplerAddressMode = d3d::AddressMode::Clamp,
+                                                             .samplerBorderColor = d3d::BorderColor::Color::TransparentBlack,
+                                                           }));
 
-      {
-        d3d::SamplerInfo smpInfo;
-        smpInfo.address_mode_u = smpInfo.address_mode_v = smpInfo.address_mode_w = d3d::AddressMode::Clamp;
-        smpInfo.border_color = d3d::BorderColor::Color::TransparentBlack;
-        registry.create("ssr_target_sampler").blob<d3d::SamplerHandle>(d3d::request_sampler(smpInfo));
-      }
+  evt.nodes->push_back(dafg::register_node("ssr_history_state_node", DAFG_PP_NODE_SRC, [](dafg::Registry registry) {
+    registry.multiplex(dafg::multiplexing::Mode::None);
+    registry.executionHas(dafg::SideEffects::External);
+    auto historyValidHndl = registry.createBlob<bool>("ssr_history_valid").handle();
+    return [historyValidHndl]() {
+      historyValidHndl.ref() = update_is_history_valid();
+      update_is_luminance_filter_required();
+    };
+  }));
 
-      auto historyValidHndl = registry.createBlob<bool>("ssr_history_valid").handle();
-      return [historyValidHndl](const dafg::multiplexing::Index &multiplexing_index) {
-        if (multiplexing_index == dafg::multiplexing::Index{})
-          update_is_history_valid();
-        update_is_luminance_filter_required();
-        historyValidHndl.ref() = is_history_valid;
-      };
-    }));
-
-  if (cfg.denoiserType == SSR_DENOISER_NONE)
-  {
-    // for LQ ssr
-    evt.nodes->push_back(dafg::register_node("ssr_publish_node", DAFG_PP_NODE_SRC, [](dafg::Registry registry) {
-      registry.renameTexture("ssr_target_before_denoise", "ssr_target").withHistory(dafg::History::ClearZeroOnFirstFrame);
-      return [] {};
-    }));
-  }
-
-  if (cfg.denoiserType == SSR_DENOISER_SIMPLE)
-  {
-    evt.nodes->push_back(dafg::register_node("ssr_temporal_denoiser_node", DAFG_PP_NODE_SRC,
-      [fmt = cfg.fmt, w = cfg.w, h = cfg.h, is_fullres = cfg.isFullres](dafg::Registry registry) {
-        auto bindShaderVar = [&registry](const char *shader_var_name, const char *tex_name) {
-          return registry.read(tex_name).texture().atStage(dafg::Stage::PS_OR_CS).bindToShaderVar(shader_var_name);
-        };
-
-        auto bindHistoryShaderVar = [&registry](const char *shader_var_name, const char *tex_name) {
-          return registry.historyFor(tex_name).texture().atStage(dafg::Stage::PS_OR_CS).bindToShaderVar(shader_var_name);
-        };
-
-        bindShaderVar("downsampled_close_depth_tex", "close_depth");
-        bindHistoryShaderVar("prev_downsampled_close_depth_tex", "close_depth");
-        registry.read("close_depth_sampler")
-          .blob<d3d::SamplerHandle>()
-          .bindToShaderVar("prev_downsampled_close_depth_tex_samplerstate");
-        registry.read("close_depth_sampler").blob<d3d::SamplerHandle>().bindToShaderVar("downsampled_close_depth_tex_samplerstate");
-
-        const char *ssrNormalsTex = ssr_normals_tex_name(is_fullres);
-        bindShaderVar("downsampled_normals", ssrNormalsTex);
-        registry.read("downsampled_normals_sampler").blob<d3d::SamplerHandle>().bindToShaderVar("downsampled_normals_samplerstate");
-        bindHistoryShaderVar("prev_downsampled_normals", ssrNormalsTex);
-
-        if (is_fullres)
-        {
-          read_gbuffer(registry, dafg::Stage::PS_OR_CS, readgbuffer::NORMAL);
-          read_gbuffer_depth(registry, dafg::Stage::PS_OR_CS);
-        }
-
-        // Only used when available
-        bindShaderVar("downsampled_motion_vectors_tex", "downsampled_motion_vectors_tex").optional();
-        registry.read("downsampled_motion_vectors_tex_sampler")
-          .blob<d3d::SamplerHandle>()
-          .bindToShaderVar("downsampled_motion_vectors_tex_samplerstate")
-          .optional();
-
-        registry.create("ssr_target")
-          .texture({fmt, registry.getResolution<2>("main_view", is_fullres ? 1.0f : 0.5f), 1})
-          .withHistory(dafg::History::ClearZeroOnFirstFrame)
-          .atStage(dafg::Stage::PS_OR_CS)
-          .bindToShaderVar("ssr_target");
-        registry.read("ssr_target_sampler").blob<d3d::SamplerHandle>().bindToShaderVar("ssr_prev_target_samplerstate");
-
-        bindHistoryShaderVar("ssr_prev_target", "ssr_target");
-        bindShaderVar("ssr_target_before_denoise", "ssr_target_before_denoise");
-        read_gbuffer_material_only(registry);
-
-        use_jitter_frustum_plane_shader_vars(registry);
-
-        return
-          [w, h, ssr_temporal_denoise_cs = eastl::unique_ptr<ComputeShaderElement>(new_compute_shader("ssr_temporal_denoise_cs"))]() {
-            ssr_temporal_denoise_cs->dispatchThreads(w, h, 1);
-          };
-      }));
-  }
+  evt.nodes->push_back(render::ssr::make_denoiser_node(dafg::root(), {
+                                                                       .resourceNames = dng_ssr_resource_names(),
+                                                                       .traceViewNsName = "view0",
+                                                                       .target = ssr_target_desc(cfg),
+                                                                       .useSimpleDenoiser = cfg.denoiserType == SSR_DENOISER_SIMPLE,
+                                                                       .readMaterialGbuf = true,
+                                                                     }));
 }
+
+// Project specific RAII context.
+struct SsrTraceContext
+{
+  SsrTraceContext(const CameraParams &camera, const render::ssr::FrameParams &, bool is_main_view) : camcam{is_main_view, camera}
+  {
+    auto &wr = *static_cast<WorldRenderer *>(get_world_renderer());
+    if (wr.hasSSRAlternateReflections())
+      wr.setGILightsToShader(false /*allow_frustum_lights*/);
+  }
+
+  camera_in_camera::ApplyPostfxState camcam;
+};
 
 ECS_TAG(render)
 ECS_ON_EVENT(OnCameraPerViewNodeConstruction)
@@ -179,90 +137,33 @@ static void create_ssr_camera_view_nodes_es(const OnCameraPerViewNodeConstructio
   const SsrNodesConfig cfg = resolve_ssr_config(dng_ssr_camera_nodes__config);
 
   auto ns = dafg::root() / evt.viewNsName;
-  evt.nodes->push_back(ns.registerNode("ssr_node", DAFG_PP_NODE_SRC,
-    [fmt = cfg.fmt, ssr_quality = cfg.quality, w = cfg.w, h = cfg.h, is_fullres = cfg.isFullres, denoiser_type = cfg.denoiserType,
-      view_ns = evt.viewNsName, is_main_view = evt.isMainView](dafg::Registry registry) {
-      registry.createBlob<OrderingToken>("after_ssr_node_token");
-      registry.readBlob("after_prepare_lights_node_token");
 
-      registry.readTextureHistory("prev_frame_tex").atStage(dafg::Stage::PS_OR_CS).bindToShaderVar("prev_frame_tex");
-      registry.read("prev_frame_sampler").blob<d3d::SamplerHandle>().bindToShaderVar("prev_frame_tex_samplerstate");
+  evt.nodes->push_back(ns.registerNode("ssr_params_node", DAFG_PP_NODE_SRC, [view_ns = evt.viewNsName](dafg::Registry registry) {
+    registry.readBlob("after_prepare_lights_node_token");
+    auto cameraHndl = read_camera_view(registry, view_ns).handle();
+    auto historyValidHndl = registry.readBlob<bool>("ssr_history_valid").handle();
+    auto paramsHndl = registry.createBlob<render::ssr::FrameParams>(render::ssr::frame_params_blob_name).handle();
+    return [cameraHndl, historyValidHndl, paramsHndl]() {
+      const auto &camera = cameraHndl.ref();
+      render::ssr::FrameParams params;
+      params.shouldRender = true;
+      params.viewTm = camera.viewTm;
+      params.projTm = camera.jitterProjTm;
+      params.worldPos = camera.cameraWorldPos;
+      params.historyValid = historyValidHndl.ref();
 
-      auto bindShaderVar = [&registry](const char *shader_var_name, const char *tex_name) {
-        return registry.read(tex_name).texture().atStage(dafg::Stage::PS_OR_CS).bindToShaderVar(shader_var_name);
-      };
+      paramsHndl.ref() = params;
+    };
+  }));
 
-      auto bindHistoryShaderVar = [&registry](const char *shader_var_name, const char *tex_name) {
-        return registry.historyFor(tex_name).texture().atStage(dafg::Stage::PS_OR_CS).bindToShaderVar(shader_var_name);
-      };
-
-      const dafg::Usage createdResUsage = dafg::Usage::SHADER_RESOURCE;
-
-      bindShaderVar("downsampled_close_depth_tex", "close_depth");
-      bindHistoryShaderVar("prev_downsampled_close_depth_tex", "close_depth");
-      registry.read("close_depth_sampler").blob<d3d::SamplerHandle>().bindToShaderVar("prev_downsampled_close_depth_tex_samplerstate");
-      registry.read("close_depth_sampler").blob<d3d::SamplerHandle>().bindToShaderVar("downsampled_close_depth_tex_samplerstate");
-
-      const char *ssrNormalsTex = ssr_normals_tex_name(is_fullres);
-      bindShaderVar("downsampled_normals", ssrNormalsTex);
-      registry.read("downsampled_normals_sampler").blob<d3d::SamplerHandle>().bindToShaderVar("downsampled_normals_samplerstate");
-      bindHistoryShaderVar("prev_downsampled_normals", ssrNormalsTex);
-
-      if (is_fullres)
-      {
-        read_gbuffer(registry, dafg::Stage::PS_OR_CS, readgbuffer::NORMAL);
-        read_gbuffer_depth(registry, dafg::Stage::PS_OR_CS);
-      }
-
-      // Only used when available
-      bindShaderVar("downsampled_motion_vectors_tex", "downsampled_motion_vectors_tex").optional();
-      registry.read("downsampled_motion_vectors_tex_sampler")
-        .blob<d3d::SamplerHandle>()
-        .bindToShaderVar("downsampled_motion_vectors_tex_samplerstate")
-        .bindToShaderVar("prev_downsampled_motion_vectors_tex_samplerstate")
-        .optional();
-
-      auto ssrTargetHndl =
-        registry.modifyTexture("ssr_target_before_denoise").atStage(dafg::Stage::PS_OR_CS).useAs(createdResUsage).handle();
-      auto ssrTargetHistHndl =
-        registry.historyFor("ssr_target").texture().atStage(dafg::Stage::PS_OR_CS).useAs(dafg::Usage::SHADER_RESOURCE).handle();
-
-      auto historyValidHndl = registry.readBlob<bool>("ssr_history_valid").handle();
-      auto cameraHndl = read_camera_view(registry, view_ns).handle();
-      auto subFrameSampleHndl = registry.readBlob<SubFrameSample>("sub_frame_sample").handle();
-
-      read_gbuffer_material_only(registry);
-
-      use_camera_view_jitter_frustum_plane_shader_vars(registry, view_ns);
-
-      return [ssrTargetHndl, ssrTargetHistHndl, cameraHndl, subFrameSampleHndl, historyValidHndl, denoiser_type, is_main_view,
-               ssr = eastl::make_shared<ScreenSpaceReflections>(w, h, 1, fmt, ssr_quality, SSRFlag::None)](
-               const dafg::multiplexing::Index &multiplexing_index) {
-        camera_in_camera::ApplyPostfxState camcam{is_main_view, cameraHndl.ref()};
-        const auto &camera = cameraHndl.ref();
-        auto &wr = *static_cast<WorldRenderer *>(get_world_renderer());
-
-        SubFrameSample subFrameSample = subFrameSampleHndl.ref();
-        ShaderGlobal::set_int(ssr_denoiser_typeVarId, denoiser_type == SSR_DENOISER_SIMPLE ? 1 : 0);
-        BaseTexture *ssrTex = ssrTargetHndl.get();
-
-        TextureInfo info;
-        ssrTex->getinfo(info);
-        // Copmute version of SSR requires explicit resolution change, because dispatch size depends on it.
-        // Pixel version worked well without this resolution change, but let it be here for all versions for safety.
-        ssr->changeDynamicResolution(info.w, info.h);
-
-        BaseTexture *prevSsrTex = ssrTargetHistHndl.get();
-        int callId = ::dagor_frame_no() + multiplexing_index.viewport + multiplexing_index.subSample + multiplexing_index.superSample;
-
-        ssr->setHistoryValid(historyValidHndl.ref());
-
-        if (wr.hasSSRAlternateReflections())
-          wr.setGILightsToShader(false /*allow_frustum_lights*/);
-
-        ssr->render(camera.viewTm, camera.jitterProjTm, camera.cameraWorldPos, subFrameSample, ssrTex, prevSsrTex, ssrTex, callId);
-      };
-    }));
+  evt.nodes->push_back(
+    render::ssr::make_trace_node<SsrTraceContext, OrderingToken>(ns, {
+                                                                       .resourceNames = dng_ssr_resource_names(),
+                                                                       .target = ssr_target_desc(cfg),
+                                                                       .useSimpleDenoiser = cfg.denoiserType == SSR_DENOISER_SIMPLE,
+                                                                       .readMaterialGbuf = true,
+                                                                       .isMainView = evt.isMainView,
+                                                                     }));
 }
 
 ECS_TAG(render)

@@ -415,17 +415,18 @@ bool DeviceContext::updateBindlessResource(uint32_t index, D3dResource *res)
   auto resType = res->getType();
   if (D3DResourceType::SBUF != resType)
   {
-    auto tex = (BaseTex *)res;
+    auto tex = static_cast<BaseTex *>(res);
     tex = tex->getForBindless();
     const ImageViewState &viewState = tex->getViewInfo();
 
     VULKAN_LOCK_FRONT();
-    Frontend::replay->bindlessTexUpdates.push_back(BindlessTexUpdateInfo(index, tex->image, (BaseTex *)res, viewState));
+    Frontend::replay->bindlessTexUpdates.push_back(BindlessTexUpdateInfo(index, tex->image, static_cast<BaseTex *>(res), viewState));
   }
   else
   {
     VULKAN_LOCK_FRONT();
-    Frontend::replay->bindlessBufUpdates.push_back(BindlessBufUpdateInfo(index, ((GenericBufferInterface *)res)->getBufferRef()));
+    Frontend::replay->bindlessBufUpdates.push_back(
+      BindlessBufUpdateInfo(index, static_cast<GenericBufferInterface *>(res)->getBufferRef()));
   }
 
   return true;
@@ -443,7 +444,7 @@ void DeviceContext::updateBindlessResourceRange(D3DResourceType type, uint32_t i
     {
       if (resource)
       {
-        auto buf = (GenericBufferInterface *)resource;
+        auto buf = static_cast<GenericBufferInterface *>(resource);
         src.emplace_back(index++, buf->getBufferRef());
       }
       else
@@ -463,7 +464,7 @@ void DeviceContext::updateBindlessResourceRange(D3DResourceType type, uint32_t i
     {
       if (resource)
       {
-        auto owner = (BaseTex *)resource;
+        auto owner = static_cast<BaseTex *>(resource);
         auto tex = owner->getForBindless();
         src.emplace_back(index++, tex->image, owner, tex->getViewInfo());
       }

@@ -24,11 +24,19 @@
 #include <heightmap/simpleHeightmapRenderer.h>
 #include "lodGridVertexDataPool.h"
 
+namespace convar
+{
 // for NV 551 workaround
 CONSOLE_BOOL_VAL("hmap", nvidia_551_workaround, true);
 CONSOLE_INT_VAL("hmap", metrics_maxCalcLevel, 14, 2, 128);
 CONSOLE_INT_VAL("hmap", metrics_minCalcLevel, 2, 0, 8);
 CONSOLE_INT_VAL("hmap", metrics_dim, 3, 3, 5);
+} // namespace convar
+
+static inline int resolve_metrics_level(int level_value, const ConVarI &cvar)
+{
+  return level_value >= 0 ? clamp(level_value, cvar.getMin(), cvar.getMax()) : cvar.get();
+}
 
 // Used for dynamic terraforms
 #define ENABLE_RENDER_HMAP_MODIFICATION    1
@@ -41,7 +49,8 @@ CONSOLE_INT_VAL("hmap", metrics_dim, 3, 3, 5);
   VAR(tex_hmap_low)              \
   VAR(world_to_hmap_low)         \
   VAR(heightmap_scale)           \
-  VAR(tex_hmap_inv_sizes)
+  VAR(tex_hmap_inv_sizes)        \
+  VAR(hmap_max_gradient)
 
 #define VAR(a) static ShaderVariableInfo a##VarId(#a, true);
 GLOBAL_VARS_LIST
@@ -79,23 +88,20 @@ void HeightmapHandler::setVars() const
   ShaderGlobal::set_texture(hmapMainVarId, renderData->heightmap);
   ShaderGlobal::set_texture(tex_hmap_lowVarId, renderData->heightmap);
   ShaderGlobal::set_sampler(tex_hmap_low_samplerstateVarId, renderData->heightmapSampler);
+  ShaderGlobal::set_float(hmap_max_gradientVarId, maxGradient);
 }
 
-void HeightmapHandler::initRender(bool clamp, float water_level, float shore_error_meters)
+void HeightmapHandler::initRender(bool clamp, float water_level, float shore_error_meters, int metrics_min_calc_level,
+  int metrics_max_calc_level)
 {
-  mirror = !clamp;
   renderData.reset(new HeightmapRenderData);
+
+  setMirroring(!clamp);
 
   const int levelCount = get_mip_levels(hmapWidth) - 1; // Last mip is 2x2.
   renderData->texFMT = select_hmap_tex_fmt();
   renderData->heightmap = dag::create_tex(NULL, hmapWidth.x, hmapWidth.y, renderData->texFMT | TEXCF_UPDATE_DESTINATION, levelCount,
     "hmapMain", RESTAG_LAND);
-  {
-    d3d::SamplerInfo smpInfo;
-    smpInfo.address_mode_u = smpInfo.address_mode_v = smpInfo.address_mode_w =
-      clamp ? d3d::AddressMode::Clamp : d3d::AddressMode::Mirror;
-    renderData->heightmapSampler = d3d::request_sampler(smpInfo);
-  }
   d3d_err(renderData->heightmap.getTex2D());
 
   fillHmapTexturesNeeded = true;
@@ -105,24 +111,34 @@ void HeightmapHandler::initRender(bool clamp, float water_level, float shore_err
   lastRegionUpdated_NVworkaround = -1;
   setVars();
 
-  initMetrics(water_level, shore_error_meters);
+  initMetrics(water_level, shore_error_meters, metrics_min_calc_level, metrics_max_calc_level);
 }
 
-void HeightmapHandler::initMetrics(float water_level, float shore_error_meters)
+void HeightmapHandler::initMetrics(float water_level, float shore_error_meters, int metrics_min_calc_level, int metrics_max_calc_level)
 {
   del_it(metrics);
   del_it(metricsRenderer);
   shoreErrorMeters = shore_error_meters;
+  metricsMinCalcLevel = metrics_min_calc_level;
+  metricsMaxCalcLevel = metrics_max_calc_level;
+  if (metricsMinCalcLevel >= 0 && metricsMaxCalcLevel >= 0 && metricsMinCalcLevel > metricsMaxCalcLevel)
+  {
+    logerr("hmap: level asks for metrics calc levels %d..%d, min is above max; using %d for both", metricsMinCalcLevel,
+      metricsMaxCalcLevel, metricsMaxCalcLevel);
+    metricsMinCalcLevel = metricsMaxCalcLevel;
+  }
   metrics = new MetricsErrors();
-  const int dimBits = metrics_dim;
-  metrics->calc_lod_errors(*this, metrics_minCalcLevel, metrics_maxCalcLevel, 1 << dimBits, water_level, shoreErrorMeters);
+  const int dimBits = convar::metrics_dim;
+  metrics->calc_lod_errors(*this, resolve_metrics_level(metricsMinCalcLevel, convar::metrics_minCalcLevel),
+    resolve_metrics_level(metricsMaxCalcLevel, convar::metrics_maxCalcLevel), 1 << dimBits, water_level, shoreErrorMeters);
 
   metricsRenderer = new SimpleHeightmapRenderer;
   metricsRenderer->init("heightmap", true, dimBits);
   debug("hmap: initialized with metrics and %f water level, shore error=%f", water_level, shoreErrorMeters);
 }
 
-bool HeightmapHandler::loadDump(IGenLoad &loadCb, bool load_render_data, float water_level, float shore_error_meters)
+bool HeightmapHandler::loadDump(IGenLoad &loadCb, bool load_render_data, float water_level, float shore_error_meters,
+  int metrics_min_calc_level, int metrics_max_calc_level)
 {
   const int skip_mips = clamp(::dgs_get_settings()->getBlockByNameEx("debug")->getInt("skip_hmap_levels", 0), 0, 3);
 
@@ -130,7 +146,7 @@ bool HeightmapHandler::loadDump(IGenLoad &loadCb, bool load_render_data, float w
     return false;
 
   if (load_render_data)
-    initRender(!mirror, water_level, shore_error_meters);
+    initRender(!mirror, water_level, shore_error_meters, metrics_min_calc_level, metrics_max_calc_level);
   return true;
 }
 
@@ -301,11 +317,46 @@ void HeightmapHandler::fillHmapRegionDetailed(IPoint2 region_pivot, IPoint2 regi
     auto [w, h] = region_width >> l;
     IPoint2 regionMipPivot = region_pivot >> l;
     IPoint2 regionFlatMipPivot = getFlatMipPivot(l, region_width);
-    renderData->heightmap->updateSubRegion(upload_tex, 0, regionFlatMipPivot.x, regionFlatMipPivot.y, 0, w, h, 1, l, regionMipPivot.x,
-      regionMipPivot.y, 0);
+    d3d::update_sub_region(upload_tex, 0, regionFlatMipPivot.x, regionFlatMipPivot.y, 0, w, h, 1, renderData->heightmap.getBaseTex(),
+      l, regionMipPivot.x, regionMipPivot.y, 0);
   }
 
   terrainStateVersion++;
+}
+
+void HeightmapHandler::updateMaxGradientDirty()
+{
+  if (maxGradientDirty.isEmpty())
+    return;
+  IBBox2 box = maxGradientDirty;
+  maxGradientDirty.setEmpty();
+  if (!compressed || hmapCellSize <= 0)
+    return;
+  // the pairs the edits moved, over both values a cell can render: the live
+  // overlay now, the compressed value once the overlay clears; a pair delta
+  // between them bounds either. Grown left/up by one so the pairs into the
+  // box are seen; right/down pairs read past the box
+  box[0].x = max(box[0].x - 1, 0);
+  box[0].y = max(box[0].y - 1, 0);
+  box[1].x = min(box[1].x, hmapWidth.x - 1);
+  box[1].y = min(box[1].y, hmapWidth.y - 1);
+  auto range = [&](int x, int y) {
+    const int c = compressed.decodePixelUnsafe(x, y);
+    auto it = visualHeights.find(x + y * hmapWidth.x);
+    return it != visualHeights.end() ? IPoint2(min(int(it->second), c), max(int(it->second), c)) : IPoint2(c, c);
+  };
+  auto delta = [](const IPoint2 &a, const IPoint2 &b) { return max(a.y - b.x, b.y - a.x); };
+  int mx = 0;
+  for (int y = box[0].y; y <= box[1].y; ++y)
+    for (int x = box[0].x; x <= box[1].x; ++x)
+    {
+      const IPoint2 r = range(x, y);
+      if (x + 1 < hmapWidth.x)
+        mx = max(mx, delta(r, range(x + 1, y)));
+      if (y + 1 < hmapWidth.y)
+        mx = max(mx, delta(r, range(x, y + 1)));
+    }
+  maxGradient = max(maxGradient, mx * hScaleRaw / hmapCellSize);
 }
 
 void HeightmapHandler::close()
@@ -320,6 +371,8 @@ void HeightmapHandler::close()
   renderer.close();
   heightmapHeightCulling.reset();
   HeightmapPhysHandler::close();
+  // the base close reset the bound: publish the no cull default with it
+  ShaderGlobal::set_float(hmap_max_gradientVarId, maxGradient);
 }
 
 void HeightmapHandler::afterDeviceReset()
@@ -381,19 +434,23 @@ void HeightmapHandler::makeBookKeeping()
     fillHmapTexturesNeeded = false;
   }
   prepareHmapModificaton();
+  // the same bookkeeping point that applies the edits to the texture: the
+  // bound is folded before any frame renders the steeper terrain
+  updateMaxGradientDirty();
 #if DAGOR_DBGLEVEL > 0
   // dev-only: react to runtime changes of the tessellation console vars (metrics_dim / metrics_maxCalcLevel).
   // metrics/metricsRenderer are created by initRender; skip until then. This is once-per-frame bookkeeping.
   if (metricsRenderer)
   {
-    const int dimBits = metrics_dim;
+    const int dimBits = convar::metrics_dim;
     if (metricsRenderer->getDimBits() != dimBits)
     {
       del_it(metricsRenderer);
       metricsRenderer = new SimpleHeightmapRenderer();
       metricsRenderer->init("heightmap", true, dimBits);
     }
-    metrics->calc_lod_errors(*this, metrics_minCalcLevel, metrics_maxCalcLevel, 1 << dimBits, metrics->water_level, shoreErrorMeters);
+    metrics->calc_lod_errors(*this, resolve_metrics_level(metricsMinCalcLevel, convar::metrics_minCalcLevel),
+      resolve_metrics_level(metricsMaxCalcLevel, convar::metrics_maxCalcLevel), 1 << dimBits, metrics->water_level, shoreErrorMeters);
   }
 #endif
 }
@@ -419,7 +476,7 @@ void HeightmapHandler::prepareHmapModificaton()
 {
   G_ASSERTF_RETURN(!fillHmapTexturesNeeded, , "prepareHmapModificaton: Full fillHmapTextures is needed");
 #if ENABLE_RENDER_HMAP_MODIFICATION
-  const bool applyOnNextFrame = nvidia_551_workaround && d3d::get_driver_desc().issues.hasMultipleCopySubresourceBug;
+  const bool applyOnNextFrame = convar::nvidia_551_workaround && d3d::get_driver_desc().issues.hasMultipleCopySubresourceBug;
   if (applyOnNextFrame && lastRegionUpdated_NVworkaround != -1)
   {
     fillHmapRegion(lastRegionUpdated_NVworkaround, false);
@@ -482,6 +539,19 @@ void HeightmapHandler::renderOnePatch(const Frustum &frustum)
   const Point2 leftTop = Point2::xz(worldBox[0]), rightBottom = Point2::xz(worldBox[1]);
   G_ASSERT(fabsf((rightBottom.y - leftTop.y) - (rightBottom.x - leftTop.x)) < 0.00001f); // the single cell covers a square only
   renderer.renderOnePatch(leftTop, rightBottom.x - leftTop.x);
+}
+
+void HeightmapHandler::setMirroring(bool _mirror)
+{
+  mirror = _mirror;
+
+  if (renderData)
+  {
+    d3d::SamplerInfo smpInfo;
+    smpInfo.address_mode_u = smpInfo.address_mode_v = smpInfo.address_mode_w =
+      mirror ? d3d::AddressMode::Mirror : d3d::AddressMode::Clamp;
+    renderData->heightmapSampler = d3d::request_sampler(smpInfo);
+  }
 }
 
 void HeightmapHandler::setSampler(d3d::SamplerHandle &&s)

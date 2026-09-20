@@ -5,14 +5,8 @@ hlsl {
   #include "dagdp_common_placer.hlsli"
 }
 
-float dagdp__global_density_mul = 1;
-
 macro USE_DAGDP_COMMON_PLACER()
   READ_WORLD_SDF(cs)
-
-  (cs) {
-    dagdp__global_density_mul@f1#rb = dagdp__global_density_mul;
-  }
 
   hlsl(cs) {
     #define NO_GRADIENTS_IN_SHADER 1
@@ -34,7 +28,7 @@ macro USE_DAGDP_COMMON_PLACER()
       if (flags & SLOPE_PLACEMENT_IS_INVERTED_BIT)
         w = 1.0 - w;
 
-      return r <= w * dagdp__global_density_mul;
+      return r <= w;
     }
 
     bool checkOcclusion(float occlusionRange, float occlusionMin, float occlusionMax, float3 worldPos, float3 worldNorm, float r)
@@ -208,8 +202,10 @@ macro USE_DAGDP_COMMON_PLACER_THREADGROUP(threadgroup_size, g_storage, g_cond)
       #if WAVE_INTRINSICS
         bool waveCond = WaveAllBitOr(cond ? 1 : 0) != 0;
 
+        // due to branch above we have divergent groups that must be handled via first lanes
+        // instead of trivial zero line check
         BRANCH
-        if (WaveGetLaneIndex() == 0)
+        if (WaveIsFirstLane())
           InterlockedOr(g_cond, waveCond);
       #else
         InterlockedOr(g_cond, cond);

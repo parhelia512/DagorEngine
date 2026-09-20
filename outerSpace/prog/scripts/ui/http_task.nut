@@ -1,7 +1,6 @@
 from "%darg/ui_imports.nut" import *
 from "json" import parse_json
-
-let { httpRequest, HTTP_SUCCESS, HTTP_FAILED, HTTP_ABORTED } = require("dagor.http")
+from "dagor.http" import httpRequest, HTTP_SUCCESS, HTTP_FAILED, HTTP_ABORTED
 
 const ASSERT_MSG = "provided value should be Monad"
 

@@ -29,7 +29,7 @@
 #include <render/renderEvent.h>
 #include <render/daFrameGraph/ecs/frameGraphNode.h>
 #include <render/externalResourceWrapper/externalResourceWrapper.h>
-#include <render/world/cameraParams.h>
+#include <render/cameraParams.h>
 #include <render/world/frameGraphHelpers.h>
 #include <render/world/wrDispatcher.h>
 
@@ -233,7 +233,7 @@ static void build_aa_benchmark_nodes(dag::Vector<dafg::NodeHandle> &nodes)
         registry.readTexture(groundTruthTextureName).atStage(dafg::Stage::CS).bindToShaderVar("aa_benchmark_ref_tex");
         registry.readTexture("frame_after_aa").atStage(dafg::Stage::CS).bindToShaderVar("aa_benchmark_frame_tex");
         registry.modifyTexture("freq_level0").atStage(dafg::Stage::CS).bindToShaderVar("aa_benchmark_freq_dst");
-        return [cs = ComputeShader("aa_benchmark_freq_luma"), lr]() { cs.dispatchThreads(lr.x, lr.y, 1); };
+        registry.dispatchThreads("aa_benchmark_freq_luma").x(lr.x).y(lr.y).z(1);
       }));
   }
 
@@ -253,7 +253,7 @@ static void build_aa_benchmark_nodes(dag::Vector<dafg::NodeHandle> &nodes)
       snprintf(dstName, sizeof(dstName), "freq_level%d", k);
       registry.readTexture(srcName).atStage(dafg::Stage::CS).bindToShaderVar("aa_benchmark_freq_src");
       registry.modifyTexture(dstName).atStage(dafg::Stage::CS).bindToShaderVar("aa_benchmark_freq_dst");
-      return [cs = ComputeShader("aa_benchmark_freq_downsample"), lr]() { cs.dispatchThreads(lr.x, lr.y, 1); };
+      registry.dispatchThreads("aa_benchmark_freq_downsample").x(lr.x).y(lr.y).z(1);
     }));
   }
 
@@ -278,7 +278,7 @@ static void build_aa_benchmark_nodes(dag::Vector<dafg::NodeHandle> &nodes)
         registry.readTexture(fineName).atStage(dafg::Stage::CS).bindToShaderVar("aa_benchmark_freq_src");
         registry.readTexture(coarseName).atStage(dafg::Stage::CS).bindToShaderVar("aa_benchmark_freq_coarse");
         registry.modify(partialsName).buffer().atStage(dafg::Stage::CS).bindToShaderVar("aa_benchmark_freq_partials");
-        return [cs = ComputeShader("aa_benchmark_freq_band"), lr]() { cs.dispatchThreads(lr.x, lr.y, 1); };
+        registry.dispatchThreads("aa_benchmark_freq_band").x(lr.x).y(lr.y).z(1);
       }));
   }
 

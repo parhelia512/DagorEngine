@@ -10,14 +10,16 @@ shader dagi_media_scene_debug, dagi_media_scene_trace_debug
   supports global_frame;
   supports none;
   cull_mode = none;
+  z_write = false;
+  z_test = false;
   USE_AND_INIT_VIEW_VEC_VS()
-  POSTFX_VS_VIEWVEC(1, viewvec)
+  POSTFX_VS_TEXCOORD_VIEWVEC(1, texcoord, viewvec)
   (ps) {debug_world_view_pos@f3 = world_view_pos;}
 
+  INIT_AND_USE_GLOBTM(ps)
+  INIT_READ_DEPTH_GBUFFER()
+  USE_READ_DEPTH_GBUFFER()
   INIT_ZNZFAR()
-  USE_DECODE_DEPTH()
-  INIT_LOAD_DEPTH_GBUFFER()
-  USE_LOAD_DEPTH_GBUFFER()
   DAGI_MEDIA_SCENE_SAMPLE_ON(ps)
   INIT_HDR(ps)
   USE_HDR(ps)
@@ -103,9 +105,6 @@ shader dagi_media_scene_debug, dagi_media_scene_trace_debug
     }
 
 
-    #define MAX_DIST 200
-    //#define FIXED_LOOP_COUNT 1
-
     #include <pixelPacking/ColorSpaceUtility.hlsl>
     half4 lit_raycast_woo(float3 wpos, float3 wdir, float maxT, inout float t)
     {
@@ -121,13 +120,12 @@ shader dagi_media_scene_debug, dagi_media_scene_trace_debug
 
     float4 debug_rasterize_ps(VsOutput IN HW_USE_SCREEN_POS) : SV_Target
     {
+
       float3 viewDir = normalize(IN.viewvec);
       float t = 0;
-      float4 screenpos = GET_SCREEN_POS(IN.pos);
-      float maxT = linearize_z(loadGbufferDepth(screenpos.xy), zn_zfar.zw);
-      maxT = 200;
+      //march the whole clipmap up to the frame depth, each cascade bounded by its own box intersect
+      float maxT = linearize_z(readGbufferDepth(IN.texcoord), zn_zfar.zw);
       ##if shader == dagi_media_scene_trace_debug
-      //return dagi_trace_media_scene_short(debug_world_view_pos, viewDir, maxT);
       float4 r = dagi_trace_media_scene(debug_world_view_pos, viewDir, maxT);
       ##else
       float4 r = lit_raycast_woo(debug_world_view_pos, viewDir, maxT, t);

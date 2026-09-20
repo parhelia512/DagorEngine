@@ -45,7 +45,6 @@ local _DEF_C_CMDLINE =
   -fms-compatibility-version=$(_MSC_VER)
   -X -D_TARGET_PC=1 -D_TARGET_PC_WIN=1 -D_TARGET_SIMD_SSE=$(SSEVersion)
   -DWIN32_LEAN_AND_MEAN= -D_USE_MATH_DEFINES -DNOMINMAX -D_ALLOW_KEYWORD_MACROS=
-  -D_USING_V110_SDK71_
   -DDELAYIMP_INSECURE_WRITABLE_HOOKS
   /c /nologo /Zc:forScope /J /Zc:inline
   /Zc:dllexportInlines-
@@ -88,7 +87,7 @@ switch $(PlatformArch) {
   case x86_64 : _DEF_C_CMDLINE += -DWIN64 -D_TARGET_64BIT -D_TARGET_ARCH_X86_64 ;
   case arm64 :  _DEF_C_CMDLINE =  -DWIN64 -D_TARGET_64BIT -D_TARGET_ARCH_ARM64 --target=aarch64-pc-windows-msvc [ StripStrings $(_DEF_C_CMDLINE) : -D_TARGET_SIMD_SSE=$(SSEVersion) ] -D_TARGET_SIMD_NEON  -Wno-pointer-to-int-cast ;
 }
-if $(Analyze) = yes { _DEF_C_CMDLINE = [ StripStrings $(_DEF_C_CMDLINE) : -D_USING_V110_SDK71_ ] --analyze -Werror ; }
+if $(Analyze) = yes { _DEF_C_CMDLINE += --analyze -Werror ; }
 
 if $(Sanitize) != disabled {
   _DEF_C_CMDLINE += -fsanitize=$(Sanitize) ;
@@ -113,6 +112,8 @@ if $(VCMathOption) = -fp:fast && $(CLangVer) >= 18 { # Note: lex compare
   _DEF_C_CMDLINE += -Wno-nan-infinity-disabled ;
 }
 
+if $(StrictAliasing) = yes { _DEF_C_CMDLINE += /clang:-fstrict-aliasing ; }
+
 if $(PlatformArch) = arm64 {
 } else if $(SSEVersion) = 4  {
   _DEF_C_CMDLINE += -msse4.1 -mpopcnt -mcx16 ;
@@ -134,7 +135,8 @@ if $(UseLLDLink) != yes {
 _LIB  = $(_CLANG_DIR)/bin/lld-link.exe /lib ;
 LINK_RESPONSE_MARKER = @@@ ;
 
-_C_COMPILER = $(_CLANG_DIR)/bin/clang-cl.exe $(GDK_C_CMDLINE) $(_DEF_C_CMDLINE) ;
+# CI sets it to a compiler cache launcher (e.g. sccache) via `jam -sCompilerWrapper=sccache`; empty by default
+_C_COMPILER = $(CompilerWrapper) $(_CLANG_DIR)/bin/clang-cl.exe $(GDK_C_CMDLINE) $(_DEF_C_CMDLINE) ;
 _CPP_COMPILER = $(_C_COMPILER) /std:c++$(CPPStd) ;
 _DEP_COMPILER = $(Root)/prog/_jBuild/fastdep-g.exe --cVC80 -D_TARGET_PC=1 -D_TARGET_PC_WIN=1 ;
 _CVTRES_EXE   = $(_VC_DIR_BIN)/cvtres.exe /NOLOGO ;
@@ -163,7 +165,7 @@ switch $(PlatformArch) {
     _LIB  += /machine:arm64 ;
     _ASM_COMPILER  = $(_DEVTOOL)/nasm/nasm.exe -f arm64 ;
     _MASM_COMPILER = $(_VC_DIR)/bin/$(_VC_HOST_DIR)/arm64/ml64.exe -c -nologo ;
-    _GAS_COMPILER = $(_CLANG_DIR)/bin/clang.exe --target=aarch64-pc-windows-msvc -g -c ;
+    _GAS_COMPILER = $(CompilerWrapper) $(_CLANG_DIR)/bin/clang.exe --target=aarch64-pc-windows-msvc -g -c ;
     _DEP_COMPILER += -D_TARGET_ARCH_ARM64 -DWIN64 ;
     _CVTRES_EXE   += /MACHINE:arm64 ;
 }

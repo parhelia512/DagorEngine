@@ -211,7 +211,11 @@ D3dResource *PoolResourceAllocator::getD3dResource(int frame, intermediate::Reso
 {
   G_ASSERT(res_idx < resourceIndexInCollection[frame].size());
   const auto resIdxInCollection = resourceIndexInCollection[frame][res_idx];
-  G_ASSERT_RETURN(resIdxInCollection != UNSCHEDULED, {});
+  if (DAGOR_UNLIKELY(resIdxInCollection == UNSCHEDULED))
+  {
+    LOGERR_ONCE("daFG: resource '%s' was not scheduled for frame %d!", cachedIntermediateResourceNames[res_idx].c_str(), frame);
+    return {};
+  }
 
 #define USE(RES_TYPE) \
   case RES_TYPE: return ResourceCollection<RES_TYPE>::current()[resIdxInCollection].get();

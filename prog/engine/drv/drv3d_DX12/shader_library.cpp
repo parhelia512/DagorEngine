@@ -2,6 +2,7 @@
 
 #include "shader_library.h"
 #include "d3d12_error_handling.h"
+#include "debug/names.h"
 
 #include <perfMon/dag_autoFuncProf.h>
 
@@ -71,7 +72,11 @@ struct AutoLifetimeTimer
   AutoLifetimeTimer(T maker) : timingFormatString{maker()}, timingData{timingFormatString.c_str()}
   {}
 
-  void abbortTiming() { timingData.fmt = nullptr; }
+  void abbortTiming()
+  {
+    if constexpr (requires { timingData.fmt; })
+      timingData.fmt = nullptr;
+  }
 };
 
 class ShaderLibraryBuilder : AutoLifetimeTimer<AFP_MSEC>
@@ -181,6 +186,7 @@ public:
     {
       return onError("DX12: Unable to create shader library <%s>", libName);
     }
+    drv3d_dx12::debug::name_object(object.Get(), drv3d_dx12::debug::format_object_name("ShaderLibrary:%s", libName.c_str()));
 
     logdbg("DX12: ...completed, creating shader library object for <%s>...", libName);
 

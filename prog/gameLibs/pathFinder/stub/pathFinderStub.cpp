@@ -7,11 +7,13 @@ namespace pathfinder
 
 void clear(bool) {}
 bool loadNavMesh(IGenLoad &, NavMeshType, tile_check_cb_t, const char *) { return {}; }
+NavMeshType get_nav_mesh_type(int) { return NMT_SIMPLE; }
+TiledNavMeshBuildSettings get_tiled_navmesh_build_settings(int) { return {}; }
 void initWeights(const DataBlock *) {}
 bool isLoaded() { return {}; }
 FindPathResult findPath(Tab<Point3> &, FindRequest &, float, float, const CustomNav *) { return {}; }
-FindPathResult findPath(const Point3 &, const Point3 &, Tab<Point3> &, float, float, float, const CustomNav *,
-  const dag::Vector<Point2> &, int, int)
+FindPathResult findPath(const Point3 &, const Point3 &, Tab<Point3> &, float, float, float, const CustomNav *, dag::ConstSpan<Point2>,
+  int, int)
 {
   return {};
 }
@@ -105,7 +107,7 @@ void override_weights_ex(int, const DataBlock &) {}
 bool is_loaded_ex(int) { return {}; }
 FindPathResult find_path_ex(int, Tab<Point3> &, FindRequest &, float, float, const CustomNav *) { return {}; }
 FindPathResult find_path_ex(int, const Point3 &, const Point3 &, Tab<Point3> &, float, float, float, const CustomNav *,
-  const dag::Vector<Point2> &, int, int)
+  dag::ConstSpan<Point2>, int, int)
 {
   return {};
 }

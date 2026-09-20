@@ -476,8 +476,6 @@ void prepare_workers(Context &ctx, float dt, bool main_pass, int begin_sid, int 
 
     stat_inc(out_stats.activeInstances);
 
-    if (flags & SYS_RENDERABLE)
-      stat_add(out_stats.totalParticles, activeState.aliveCount);
     if (flags & SYS_CPU_SIMULATION_REQ)
       stat_add(out_stats.cpuElemTotalSimLods[simLod], simulationState.count);
     else if (flags & SYS_GPU_SIMULATION_REQ)
@@ -553,7 +551,6 @@ void commit_prepared_workers(Context &ctx, dag::ConstSpan<Workers> workers, dag:
     stat_min(ctx.stats.genVisibilityLod, st.genVisibilityLod);
     stat_add(ctx.stats.renderInstances, st.renderInstances);
     stat_add(ctx.stats.activeInstances, st.activeInstances);
-    stat_add(ctx.stats.totalParticles, st.totalParticles);
     stat_add(ctx.stats.cpuSimulationWorkers, st.cpuSimulationWorkers);
     stat_add(ctx.stats.cpuEmissionWorkers, st.cpuEmissionWorkers);
     stat_add(ctx.stats.allRenderWorkers, st.allRenderWorkers);
@@ -1135,18 +1132,6 @@ static void start_next_cpu_compute_threads(ContextId cid, int depth = 0, bool is
   threadpool::wake_up_all();
 }
 
-static void recompute_particle_count(ContextId cid)
-{
-  GET_CTX();
-  InstanceGroups &stream = ctx.instances.groups;
-  for (int i = 0, ie = stream.size(); i < ie; ++i)
-  {
-    const uint32_t flags = stream.get<INST_FLAGS>(i);
-    if ((flags & SYS_ENABLED) && (flags & SYS_RENDERABLE))
-      stat_add(ctx.stats.totalParticles, stream.get<INST_ACTIVE_STATE>(i).aliveCount);
-  }
-}
-
 void AsyncPrepareJob::doJob()
 {
   GET_CTX();
@@ -1284,6 +1269,8 @@ void start_update(ContextId cid, float dt, bool update_gpu, bool tp_wake_up)
   memset(&ctx.stats, 0, sizeof(Stats));
   memset(&ctx.asyncStats, 0, sizeof(AsyncStats));
   ctx.stats.queue[1] = queue; // populate before actual start_update
+  if constexpr (INST_RENDERABLE_TRIS >= 0)
+    ctx.statParticlesCounted.assign(ctx.instances.groups.size(), false);
 
   G_ASSERT_RETURN(!ctx.asyncPrepareJob.cid, );
   ctx.updateInProgress = true;
@@ -1292,7 +1279,6 @@ void start_update(ContextId cid, float dt, bool update_gpu, bool tp_wake_up)
   {
     ctx.simulationIsPaused = true;
     clear_culling_visibility_flags(ctx); // SYS_VISIBLE flag needs to be cleared manually in this case
-    recompute_particle_count(cid);
     return;
   }
 

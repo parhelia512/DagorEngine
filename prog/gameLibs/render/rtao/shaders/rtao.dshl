@@ -3,6 +3,7 @@ include "gbuffer.dshl"
 include "viewVecVS.dshl"
 include "bvh.dshl"
 include "blue_noise.dshl"
+include "white_noise.dshl"
 include "rtsm_sun_dir.dshl"
 include "bvh_common_includes.dshl"
 include "camera_in_camera.dshl"
@@ -19,6 +20,8 @@ interval rtao_res_mul: off<2, on;
 
 int rtao_checkerboard = 0;
 interval rtao_checkerboard: off<1, on;
+
+int ray_reconstruction_active = 0;
 
 shader rt_ao
 {
@@ -37,6 +40,7 @@ shader rt_ao
     inv_aligned_resolution@f2 = rtao_res_mul * screen_pos_to_texcoord.xy;
     hit_dist_params@f3 = rtao_hit_dist_params;
     rtao_checkerboard@i1 = rtao_checkerboard;
+    ray_reconstruction_active@u1 = ray_reconstruction_active;
     output@uav = rtao_target hlsl { RWTexture2D<float> output@uav; };
     impostor_shadow_offset@f1 = impostor_shadow_offset;
   }
@@ -76,12 +80,18 @@ shader rt_ao
 
   INIT_BLUE_NOISE(cs)
   USE_BLUE_NOISE(cs)
+  USE_WHITE_NOISE(cs)
 
   hlsl(cs)
   {
     float3 cosine_sample_hemisphere(float2 outputIndex, float3 n, float scale = 1)
     {
-      float2 u     = GetBlueNoise(outputIndex, rtao_checkerboard, 0);
+      float2 u;
+      BRANCH
+      if (ray_reconstruction_active)
+        u = GetWhiteNoise(outputIndex, frame_index);
+      else
+        u = GetBlueNoise(outputIndex, rtao_checkerboard, 0);
       float  r     = half(sqrt(u.x)) * scale;
       float  theta = half(2.0 * PI * u.y);
       float3 B     = normalize(cross(n, half3(0.0, 1.0, 1.0)));
@@ -188,7 +198,10 @@ shader rt_ao
 
       bool isHit = trace_ray(bvhMain, relPos, sampleDir, minT, aoDistance, w, groupMask, hitInfo);
       if (isHit)
+      {
+        bvh_voxel_activity_mark(hitInfo.position);
         texture2DAt(output, outputIndex.xy) = calc_output_value(hitInfo.t, w, roughness);
+      }
       else
         texture2DAt(output, outputIndex.xy) = calc_output_value(NRD_FP16_MAX, w, roughness);
     }

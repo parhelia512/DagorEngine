@@ -1,6 +1,7 @@
 // Copyright (C) Gaijin Games KFT.  All rights reserved.
 
 #include <cstring>
+#include <EASTL/algorithm.h>
 #include "levelProfilerUI.h"
 #include "levelProfilerRiTable.h"
 #include "riModule.h"
@@ -20,8 +21,7 @@ TextureProfilerUI::TextureProfilerUI(TextureModule *texture_module, RIModule *ri
   horizontalSplitter(LpSplitterDirection::HORIZONTAL, 0.6f),
   verticalSplitter(LpSplitterDirection::VERTICAL, 0.7f)
 {
-  // Connect RIModule to filters for texture usage filtering
-  filterManager.setRIModule(ri_module);
+  filterManager.setModules(texture_module, ri_module);
 
   textureTable = eastl::make_unique<LpTextureTable>(this);
   exporter.setTextureTable(textureTable.get());
@@ -31,15 +31,33 @@ TextureProfilerUI::~TextureProfilerUI() {}
 
 void TextureProfilerUI::init()
 {
-  // Reset filters if data exists, otherwise wait for data collection
-  if (textureModule->getTotalTextureCount() > 0)
-  {
-    filterManager.resetAllFilters();
-    filterManager.applyFilters();
-  }
-
   if (textureTable)
     textureTable->setCopyManager(getCopyManager());
+}
+
+void TextureProfilerUI::onDataCollected()
+{
+  if (textureModule->getTotalTextureCount() == 0)
+    return;
+
+  // Only the first collect seeds the defaults; later ones move the bounds onto the new data and
+  // keep what the user set, so a recollect does not throw away a filter setup.
+  if (filtersSeeded)
+    filterManager.rebindFiltersToData();
+  else
+  {
+    filterManager.resetAllFilters();
+    filtersSeeded = true;
+  }
+  filterManager.applyFilters();
+
+  // The selection is by name, so it survives a recollect as long as the texture is still there.
+  if (textureTable)
+  {
+    const ProfilerString &selected = textureTable->getSelectedTexture();
+    if (!selected.empty() && textureModule->getTextures().find(selected) == textureModule->getTextures().end())
+      textureTable->setSelectedTexture(ProfilerString());
+  }
 }
 
 void TextureProfilerUI::shutdown() {}
@@ -255,35 +273,51 @@ void RIProfilerUI::drawUI()
 {
   float tableRegionHeight = ImGui::GetContentRegionAvail().y - ImGui::GetTextLineHeightWithSpacing() * 2.5f;
 
-  ImGui::BeginChild("RiTableRegion", ImVec2(0, tableRegionHeight), ImGuiConstants::NO_BORDER);
+  ImGui::BeginChild("RiTableRegion", ImVec2(0.0f, tableRegionHeight), ImGuiConstants::NO_BORDER);
 
-  if (riTable && riModule)
+  bool hasModule = riTable && riModule;
+
+  if (hasModule)
   {
-    if (const auto &riData = riModule->getRiData(); !riData.empty())
+    const auto &riData = riModule->getRiData();
+    if (!riData.empty())
+    {
+      if (riModule->hasProvisionalRiData())
+      {
+        if (riModule->isCollecting())
+          ImGui::TextDisabled("Collecting RI data... values update live.");
+        else if (riModule->isPaused())
+          ImGui::TextDisabled("Collection paused. Rendinst counts are incomplete.");
+        else if (riModule->wasCollectCancelled())
+          ImGui::TextDisabled("Collection stopped: the level was unloaded. Counts are incomplete.");
+        else
+          ImGui::TextDisabled("RI data not finalized. Values remain provisional.");
+        ImGui::Spacing();
+      }
       riTable->draw();
+    }
     else
-      ImGui::Text("No RI assets found. Please collect data first.");
+    {
+      if (riModule->isCollecting())
+        ImGui::Text("Collecting RI data... preparing table.");
+      else
+        ImGui::Text("No RI assets found. Please collect data first.");
+    }
   }
   else
+  {
     ImGui::Text("No RI module available");
+  }
 
   ImGui::EndChild();
 
   ImGui::Separator();
 
-  if (riTable)
+  if (hasModule && !riModule->getRiData().empty())
+  {
     ImGui::Text("RI Assets: %u / %u", (unsigned)riTable->getFilteredRiCount(), (unsigned)riTable->getTotalRiCount());
+  }
 }
-
-void RIProfilerUI::collectAndDisplayData()
-{
-  if (!riModule)
-    return;
-
-  riModule->collect();
-}
-
-void RIProfilerUI::updateFilter() {}
 
 CopyResult RIProfilerUI::handleGlobalCopy() const
 {
@@ -361,6 +395,10 @@ LevelProfilerUI::LevelProfilerUI()
 
   textureProfilerUI = eastl::make_unique<TextureProfilerUI>(textureModule.get(), riModule.get());
   riProfilerUI = eastl::make_unique<RIProfilerUI>(riModule.get());
+
+  // RI first: the texture usage view is built from RI instance counts.
+  registerDataModule(riModule.get());
+  registerDataModule(textureModule.get());
 }
 
 
@@ -373,8 +411,8 @@ void LevelProfilerUI::initialize()
   globalCopyManager.registerProvider(textureProfilerUI.get(), "Texture pool");
   globalCopyManager.registerProvider(riProfilerUI.get(), "Lods statistic");
 
-  addTab("Texture pool", textureProfilerUI.get(), [](LevelProfilerUI *self) { self->collectTextureData(); });
-  addTab("Lods statistic", riProfilerUI.get(), [](LevelProfilerUI *self) { self->collectRiData(); });
+  addTab("Texture pool", textureProfilerUI.get());
+  addTab("Lods statistic", riProfilerUI.get());
 }
 
 LevelProfilerUI::~LevelProfilerUI()
@@ -386,8 +424,8 @@ LevelProfilerUI::~LevelProfilerUI()
 
 void LevelProfilerUI::init()
 {
-  textureModule->init();
-  riModule->init();
+  for (DataModuleEntry &entry : dataModules)
+    entry.module->init();
 
   for (auto &tab : tabs)
     tab.module->init();
@@ -399,8 +437,8 @@ void LevelProfilerUI::shutdown()
   for (auto &tab : tabs)
     tab.module->shutdown();
 
-  textureModule->shutdown();
-  riModule->shutdown();
+  for (DataModuleEntry &entry : dataModules)
+    entry.module->shutdown();
 }
 
 void LevelProfilerUI::drawUI()
@@ -409,11 +447,51 @@ void LevelProfilerUI::drawUI()
 
   globalCopyManager.update();
 
+  for (DataModuleEntry &entry : dataModules)
+    entry.collector->continueCollect();
+
+  const bool collectBusy = isAnyBusy();
+  if (collectWasBusy && !collectBusy)
+    notifyTabsDataCollected();
+  collectWasBusy = collectBusy;
+
   if (toastAdapter)
     toastAdapter->update();
 
-  if (ImGui::Button("Collect Data"))
-    collectData();
+  const bool collecting = isAnyCollecting();
+  const char *collectButtonLabel = "Collect Data";
+  if (collecting)
+    collectButtonLabel = "Pause Collecting";
+  else if (isAnyPaused())
+    collectButtonLabel = "Resume Collecting";
+
+  bool applyPauseStyle = collecting;
+  if (applyPauseStyle)
+  {
+    ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.14f, 0.11f, 0.02f, 1.0f));
+    ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.96f, 0.82f, 0.24f, 1.0f));
+    ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(1.0f, 0.88f, 0.34f, 1.0f));
+    ImGui::PushStyleColor(ImGuiCol_ButtonActive, ImVec4(0.90f, 0.75f, 0.22f, 1.0f));
+  }
+
+  if (ImGui::Button(collectButtonLabel))
+  {
+    if (collecting)
+    {
+      for (DataModuleEntry &entry : dataModules)
+        entry.collector->pauseCollection();
+    }
+    else if (isAnyPaused())
+    {
+      for (DataModuleEntry &entry : dataModules)
+        entry.collector->resumeCollection();
+    }
+    else
+      collectData();
+  }
+
+  if (applyPauseStyle)
+    ImGui::PopStyleColor(4);
 
   ImGui::SameLine();
 
@@ -442,8 +520,24 @@ void LevelProfilerUI::drawUI()
 
   ImGui::Separator();
 
+  float statusBarHeight = ImGui::GetTextLineHeightWithSpacing() * 2.5f;
+  ImVec2 contentAvail = ImGui::GetContentRegionAvail();
+  float tabAreaHeight = eastl::max(0.0f, contentAvail.y - statusBarHeight);
+
+  ImGui::BeginChild("TabArea", ImVec2(0.0f, tabAreaHeight), ImGuiConstants::NO_BORDER);
   drawTabBar();
+  ImGui::EndChild();
+
   drawRenamePopup();
+
+  ImGui::Separator();
+
+  ImGui::PushStyleColor(ImGuiCol_ChildBg, ImVec4(0.08f, 0.08f, 0.12f, 0.9f));
+  ImGui::BeginChild("StatusBar", ImVec2(0.0f, statusBarHeight), ImGuiConstants::WITH_BORDER,
+    ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse);
+  drawStatusBar();
+  ImGui::EndChild();
+  ImGui::PopStyleColor();
 
   ImGui::End();
 
@@ -451,60 +545,62 @@ void LevelProfilerUI::drawUI()
     toastAdapter->draw();
 }
 
+bool LevelProfilerUI::isAnyCollecting() const
+{
+  for (const DataModuleEntry &entry : dataModules)
+    if (entry.collector->isCollecting())
+      return true;
+  return false;
+}
+
+float LevelProfilerUI::collectProgress() const
+{
+  // Only the collectors that are still working: a synchronous one reports 1.0 and would otherwise
+  // drag the bar to the middle of its range for the whole walk.
+  float sum = 0.0f;
+  int count = 0;
+  for (const DataModuleEntry &entry : dataModules)
+    if (entry.collector->isCollecting() || entry.collector->isPaused())
+    {
+      sum += entry.collector->getCollectProgress();
+      count++;
+    }
+  return count ? sum / count : 1.0f;
+}
+
+bool LevelProfilerUI::isAnyPaused() const
+{
+  for (const DataModuleEntry &entry : dataModules)
+    if (entry.collector->isPaused())
+      return true;
+  return false;
+}
+
 void LevelProfilerUI::collectData()
 {
-  if (currentTabIndex < 0 || currentTabIndex >= (int)tabs.size())
-    return;
+  // The tabs read one level snapshot and depend on each other's data, so collection is one action
+  // over every collector rather than a per-tab one. An incremental collector keeps working after
+  // its collect() returns and is pumped from drawUI.
+  for (DataModuleEntry &entry : dataModules)
+    entry.collector->collect();
 
-  ProfilerTab &tab = tabs[currentTabIndex];
-  if (tab.collectFn)
-    tab.collectFn(this);
+  collectWasBusy = isAnyBusy();
+  notifyTabsDataCollected();
 }
 
-void LevelProfilerUI::collectTextureData()
+void LevelProfilerUI::notifyTabsDataCollected()
 {
-  if (!textureModule)
-    return;
-
-  if (riModule)
-  {
-    riModule->clear();
-    riModule->collect();
-    if (riProfilerUI)
-      riProfilerUI->init();
-  }
-
-  textureModule->clear();
-  textureModule->collect();
-  textureModule->initializeFilteredTextures();
-
   for (auto &tab : tabs)
-    if (tab.module == textureProfilerUI.get())
-      tab.module->init();
-}
-
-void LevelProfilerUI::collectRiData()
-{
-  if (!riModule)
-    return;
-
-  riModule->clear();
-  riModule->collect();
-
-  if (riProfilerUI)
-    riProfilerUI->init();
+    tab.module->onDataCollected();
 }
 
 void LevelProfilerUI::clearData()
 {
-  textureModule->clear();
-  riModule->clear();
+  for (DataModuleEntry &entry : dataModules)
+    entry.collector->clear();
 }
 
-void LevelProfilerUI::addTab(const char *name, IProfilerModule *module_ptr, void (*collectFn)(LevelProfilerUI *))
-{
-  tabs.push_back(ProfilerTab(name, module_ptr, collectFn));
-}
+void LevelProfilerUI::addTab(const char *name, IProfilerModule *module_ptr) { tabs.push_back(ProfilerTab(name, module_ptr)); }
 
 ProfilerTab *LevelProfilerUI::getTab(int index)
 {
@@ -593,6 +689,68 @@ void LevelProfilerUI::drawRenamePopup()
       ImGui::CloseCurrentPopup();
     ImGui::EndPopup();
   }
+}
+
+void LevelProfilerUI::drawStatusBar()
+{
+  if (!riModule)
+  {
+    ImGui::TextUnformatted("RI module unavailable.");
+    return;
+  }
+
+  if (isAnyCollecting())
+  {
+    // The status bar child has no scrollbar, so the message keeps its own line: chaining the
+    // indicators after it with SameLine pushes them past the clip rect in a narrow window.
+    ImGui::TextUnformatted("Counting rendinst objects on the level (table updates live). Closing the window pauses collection.");
+
+    float frameHeight = ImGui::GetFrameHeight();
+
+    ImGui::ProgressBar(collectProgress(), ImVec2(160.0f, frameHeight));
+
+    // The detail below is riGen specific. A second incremental collector would need this line
+    // split per collector, or reduced to the combined progress bar above.
+    ImGui::SameLine();
+    ImGui::AlignTextToFramePadding();
+    ImGui::Text("Layers %d/%d", riModule->getCollectCompletedLayers(), riModule->getCollectLayerCount());
+
+    ImGui::SameLine();
+    ImGui::AlignTextToFramePadding();
+    ImGui::Text("Cells %u/%u", static_cast<unsigned>(riModule->getCollectProcessedCells()),
+      static_cast<unsigned>(riModule->getCollectTotalCells()));
+
+    return;
+  }
+
+  if (riModule->wasCollectCancelled())
+  {
+    ImGui::AlignTextToFramePadding();
+    ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.96f, 0.82f, 0.24f, 1.0f));
+    ImGui::TextUnformatted("RI collection stopped: the level was unloaded. Press Collect Data to start over.");
+    ImGui::PopStyleColor();
+
+    return;
+  }
+
+  if (riModule->hasProvisionalRiData())
+  {
+    ImGui::AlignTextToFramePadding();
+    ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.96f, 0.82f, 0.24f, 1.0f));
+    ImGui::TextUnformatted("RI data incomplete. Rendinst counts may differ. Resume or recollect for accurate totals.");
+    ImGui::PopStyleColor();
+
+    return;
+  }
+
+  if (riModule->getRiData().empty())
+  {
+    ImGui::TextUnformatted("Press Collect Data to begin.");
+    return;
+  }
+
+  ImGui::AlignTextToFramePadding();
+  ImGui::TextUnformatted("Data collected.");
 }
 
 } // namespace levelprofiler

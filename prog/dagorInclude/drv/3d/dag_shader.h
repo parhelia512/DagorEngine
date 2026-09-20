@@ -5,12 +5,15 @@
 #pragma once
 
 #include <drv/3d/dag_consts.h>
+#include <drv/3d/dag_multi_interface.h>
 #include <util/dag_inttypes.h>
 #include <generic/dag_tab.h>
+#include <EASTL/string_view.h>
 
 /**
  * @brief Holds a direct pointer to a (compressed) shader data in bindump
  *        Supports both compressed (if dictionary not nullptr) and uncompressed data
+ *        The spans are guaranteed to be alive for the lifetime of the shaders bindump
  */
 struct ShaderSource
 {
@@ -28,7 +31,33 @@ struct ShaderSource
   const uint32_t *uncompress(Tab<uint8_t> &tmpbuf) const;
 };
 
-namespace d3d
+/**
+ * @brief Extends ShaderSource with an optional debug name pointer+len, must be null terminated
+ *        Unlike the base structure, the user only guarantees debugName to be valid during shader
+ *        creation call, so drivers may store only the spliced out base ShaderSource
+ *
+ */
+struct ShaderSourceExt : ShaderSource
+{
+  uint32_t debugNameLen = 0;
+  const char *debugName = nullptr;
+
+  /**
+   * @brief Get the string view of the debug name
+   *
+   * @return String view from debugName/debugNameLen.
+   *
+   * The user guarantees the debugName pointer to be alive only for the duration of the d3d:: call where the ShaderSource is passed
+   * The driver guarantees to copy the string if it needs it, and not retain the pointer
+   * The name is not stored as string_view initially to allow to put more data in the padding in the future
+   */
+  eastl::string_view getDebugName() const
+  {
+    return debugName ? eastl::string_view{debugName, static_cast<size_t>(debugNameLen)} : eastl::string_view{};
+  }
+};
+
+namespace d3d _MULTI_INTERFACE
 {
 /**
  * @brief Creates a program with a vertex shader, fragment shader, and vertex declaration.
@@ -52,7 +81,7 @@ PROGRAM create_program(VPROG vprog, FSHADER fsh, VDECL vdecl, unsigned *strides 
  * @param preloaded The preloaded data for the compute shader.
  * @return The created program.
  */
-PROGRAM create_program_cs(const ShaderSource &cs_native, CSPreloaded preloaded);
+PROGRAM create_program_cs(const ShaderSourceExt &cs_native, CSPreloaded preloaded);
 
 /**
  * @brief Sets the program as the current program, including the pixel shader, vertex shader, and vertex declaration.
@@ -77,7 +106,7 @@ void delete_program(PROGRAM program);
  * @param native_code The native code for the vertex shader.
  * @return The created vertex shader.
  */
-VPROG create_vertex_shader(const ShaderSource &native_code);
+VPROG create_vertex_shader(const ShaderSourceExt &native_code);
 
 /**
  * @brief Deletes a vertex shader.
@@ -92,7 +121,7 @@ void delete_vertex_shader(VPROG vs);
  * @param native_code The native code for the pixel shader.
  * @return The created pixel shader.
  */
-FSHADER create_pixel_shader(const ShaderSource &native_code);
+FSHADER create_pixel_shader(const ShaderSourceExt &native_code);
 
 /**
  * @brief Deletes a pixel shader.
@@ -110,7 +139,7 @@ void delete_pixel_shader(FSHADER ps);
  * @return The debug program.
  */
 PROGRAM get_debug_program();
-} // namespace d3d
+} // namespace d3d _MULTI_INTERFACE
 
 #if _TARGET_D3D_MULTI
 #include <drv/3d/dag_interface_table.h>
@@ -121,7 +150,7 @@ inline PROGRAM create_program(VPROG vprog, FSHADER fsh, VDECL vdecl, unsigned *s
   return d3di.create_program_0(vprog, fsh, vdecl, strides, streams);
 }
 
-inline PROGRAM create_program_cs(const ShaderSource &cs_native, CSPreloaded preloaded)
+inline PROGRAM create_program_cs(const ShaderSourceExt &cs_native, CSPreloaded preloaded)
 {
   return d3di.create_program_cs(cs_native, preloaded);
 }
@@ -130,11 +159,11 @@ inline bool set_program(PROGRAM p) { return d3di.set_program(p); }
 
 inline void delete_program(PROGRAM p) { return d3di.delete_program(p); }
 
-inline VPROG create_vertex_shader(const ShaderSource &native_code) { return d3di.create_vertex_shader(native_code); }
+inline VPROG create_vertex_shader(const ShaderSourceExt &native_code) { return d3di.create_vertex_shader(native_code); }
 
 inline void delete_vertex_shader(VPROG vs) { return d3di.delete_vertex_shader(vs); }
 
-inline FSHADER create_pixel_shader(const ShaderSource &native_code) { return d3di.create_pixel_shader(native_code); }
+inline FSHADER create_pixel_shader(const ShaderSourceExt &native_code) { return d3di.create_pixel_shader(native_code); }
 
 inline void delete_pixel_shader(FSHADER ps) { return d3di.delete_pixel_shader(ps); }
 

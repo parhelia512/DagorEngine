@@ -5,11 +5,20 @@
 
 #include <daECS/core/entityManager.h>
 #include <debug/dag_debug3d.h>
+#include <EditorCore/ec_cm.h>
+#include <propPanel/control/container.h>
 
 void ecs_editor_update_visual_entity_tm(ecs::EntityId eid, const TMatrix &tm);
 
 namespace
 {
+enum
+{
+  PID_PIVOT = 1,
+  PID_TRANSFORMABLE,
+  PID_SCENE_PARENT,
+};
+
 TMatrix getRootTransformWithPivot(const ecs::Scene::SceneRecord &scene_record)
 {
   TMatrix pivotTm = TMatrix::IDENT;
@@ -71,6 +80,31 @@ void renderBox(const BBox3 &box, bool isSelected, const TMatrix &wtm)
 #undef BOUND_BOX_INDENT_MUL
 }
 } // namespace
+
+void ECSSceneObject::UndoPropsChange::restore(bool save_redo)
+{
+  if (save_redo)
+  {
+    redoProps = obj->getProps();
+  }
+
+  obj->setProps(oldProps);
+  refillPanel();
+}
+
+void ECSSceneObject::UndoPropsChange::redo()
+{
+  obj->setProps(redoProps);
+  refillPanel();
+}
+
+void ECSSceneObject::UndoPropsChange::refillPanel()
+{
+  if (ObjectEditor *editor = obj->getObjEditor())
+  {
+    editor->invalidateObjectProps();
+  }
+}
 
 ECSSceneObject::ECSSceneObject(ecs::Scene::SceneId scene_id) : RenderableEditableObject(), sceneId(scene_id) { init(); }
 
@@ -138,6 +172,8 @@ bool ECSSceneObject::getWorldBox([[maybe_unused]] BBox3 &box) const
   box = ecs::g_scenes->getSceneWbb(sceneId);
   return true;
 }
+
+bool ECSSceneObject::canTransform() const { return canBeMoved(); }
 
 void ECSSceneObject::updateSceneTransform()
 {
@@ -295,6 +331,91 @@ bool ECSSceneObject::canBeMoved() const
          record->loadType == ecs::Scene::LoadType::IMPORT;
 }
 
+ECSSceneObject::Props ECSSceneObject::getProps() const
+{
+  Props props;
+  if (const ecs::Scene::SceneRecord *record = ecs::g_scenes->getActiveScene().getSceneRecordById(sceneId))
+  {
+    props.pivot = record->pivot;
+    props.transformable = record->transformable;
+    props.parent = record->parent;
+    props.order = ecs::g_scenes->getSceneOrder(sceneId);
+  }
+
+  return props;
+}
+
+void ECSSceneObject::setProps(const Props &p)
+{
+  const ecs::Scene::SceneRecord *record = ecs::g_scenes->getActiveScene().getSceneRecordById(sceneId);
+  if (!record)
+  {
+    return;
+  }
+
+  ecs::g_scenes->setScenePivot(sceneId, p.pivot);
+  ecs::g_scenes->setSceneTransformable(sceneId, p.transformable);
+
+  // A reparent appends the scene to the new parent, so the order has to be put back after it.
+  if (record->parent != p.parent)
+  {
+    ecs::g_scenes->setNewParent(sceneId, p.parent);
+  }
+
+  if (ecs::g_scenes->getSceneOrder(sceneId) != p.order)
+  {
+    ecs::g_scenes->setSceneOrder(sceneId, p.order);
+  }
+}
+
+bool ECSSceneObject::canEditSceneProps() const
+{
+  const ecs::Scene::SceneRecord *record = ecs::g_scenes->getActiveScene().getSceneRecordById(sceneId);
+  return record && record->loadType == ecs::Scene::LoadType::IMPORT && !isLocked();
+}
+
+// The root has nothing above it to move under, and a locked scene keeps its place in the hierarchy.
+bool ECSSceneObject::canChangeSceneParent() const
+{
+  const ecs::Scene::SceneRecord *record = ecs::g_scenes->getActiveScene().getSceneRecordById(sceneId);
+  return record && record->importDepth != 0 && record->loadType == ecs::Scene::LoadType::IMPORT && !isLocked();
+}
+
+bool ECSSceneObject::canChangeSceneParentTo(ecs::Scene::SceneId potential_parent) const
+{
+  if (!canChangeSceneParent() || potential_parent == sceneId)
+  {
+    return false;
+  }
+
+  const ecs::Scene &scene = ecs::g_scenes->getActiveScene();
+  const ecs::Scene::SceneRecord *parentRecord = scene.getSceneRecordById(potential_parent);
+  if (!parentRecord || parentRecord->loadType != ecs::Scene::LoadType::IMPORT)
+  {
+    return false;
+  }
+
+  const ECSObjectEditor *editor = static_cast<const ECSObjectEditor *>(getObjEditor());
+  const RenderableEditableObject *parentObject = editor ? editor->getObjectFromSceneId(potential_parent) : nullptr;
+  if (!parentObject || parentObject->isLocked())
+  {
+    return false;
+  }
+
+  // Meeting this scene on the way up from the wanted parent means the parent is one of its children.
+  while (parentRecord)
+  {
+    if (parentRecord->parent == sceneId)
+    {
+      return false;
+    }
+
+    parentRecord = scene.getSceneRecordById(parentRecord->parent);
+  }
+
+  return true;
+}
+
 void ECSSceneObject::init()
 {
   const ecs::Scene &scene = ecs::g_scenes->getActiveScene();
@@ -302,6 +423,96 @@ void ECSSceneObject::init()
   matrix = getRootTransformWithPivot(sceneRecord);
 }
 
-void ECSSceneObject::onPPChange([[maybe_unused]] int pid, [[maybe_unused]] bool edit_finished,
-  [[maybe_unused]] PropPanel::ContainerPropertyControl &panel, [[maybe_unused]] dag::ConstSpan<RenderableEditableObject *> objects)
-{}
+void ECSSceneObject::fillProps(PropPanel::ContainerPropertyControl &panel, [[maybe_unused]] DClassID for_class_id,
+  dag::ConstSpan<RenderableEditableObject *> objects)
+{
+  if (objects.size() != 1 || objects[0] != this)
+  {
+    return;
+  }
+
+  panel.createGroup(RenderableEditableObject::PID_TRANSFORM_GROUP, "transform");
+
+  ObjectEditor *editor = getObjEditor();
+  editor->createPanelTransform(CM_OBJED_MODE_MOVE, !canBeMoved());
+  editor->createPanelTransform(CM_OBJED_MODE_ROTATE, !canBeMoved());
+  editor->createPanelTransform(CM_OBJED_MODE_SCALE, !canBeMoved());
+
+  const bool editable = canEditSceneProps();
+  panel.createPoint3(PID_PIVOT, "Pivot", ecs::g_scenes->getScenePivot(sceneId), 2, editable);
+  panel.createCheckBox(PID_TRANSFORMABLE, "Transformable", ecs::g_scenes->isSceneTransformable(sceneId), editable);
+
+  createSceneParentControl(panel);
+}
+
+void ECSSceneObject::createSceneParentControl(PropPanel::ContainerPropertyControl &panel)
+{
+  const ecs::Scene::SceneRecord *record = ecs::g_scenes->getActiveScene().getSceneRecordById(sceneId);
+  const ecs::Scene::SceneId parentId = record ? record->parent : ecs::Scene::C_INVALID_SCENE_ID;
+
+  Tab<String> entries;
+  const char *currentParent = "";
+  for (const auto &[name, sid] : static_cast<ECSObjectEditor *>(getObjEditor())->getEcsScenes())
+  {
+    // The current parent stays listed even when it is not a legal target, so the combo shows the truth.
+    if (sid == parentId)
+    {
+      currentParent = name.c_str();
+    }
+    else if (!canChangeSceneParentTo(sid))
+    {
+      continue;
+    }
+
+    entries.push_back(String{name.c_str()});
+  }
+
+  panel.createCombo(PID_SCENE_PARENT, "Scene Parent", entries, currentParent, canChangeSceneParent());
+}
+
+void ECSSceneObject::onPPChange(int pid, [[maybe_unused]] bool edit_finished, PropPanel::ContainerPropertyControl &panel,
+  dag::ConstSpan<RenderableEditableObject *> objects)
+{
+  if (objects.size() != 1 || objects[0] != this)
+  {
+    return;
+  }
+
+  switch (pid)
+  {
+    case PID_PIVOT:
+    {
+      if (const Point3 pivot = panel.getPoint3(pid); pivot != ecs::g_scenes->getScenePivot(sceneId))
+      {
+        getObjEditor()->getUndoSystem()->put<UndoPropsChange>(this);
+        ecs::g_scenes->setScenePivot(sceneId, pivot);
+      }
+      break;
+    }
+    case PID_TRANSFORMABLE:
+    {
+      if (const bool transformable = panel.getBool(pid); transformable != ecs::g_scenes->isSceneTransformable(sceneId))
+      {
+        getObjEditor()->getUndoSystem()->put<UndoPropsChange>(this);
+        ecs::g_scenes->setSceneTransformable(sceneId, transformable);
+        getObjEditor()->invalidateObjectProps();
+      }
+      break;
+    }
+    case PID_SCENE_PARENT:
+    {
+      const ecs::Scene::SceneRecord *record = ecs::g_scenes->getActiveScene().getSceneRecordById(sceneId);
+      const ECSObjectEditor::SceneMap &scenes = static_cast<ECSObjectEditor *>(getObjEditor())->getEcsScenes();
+      const auto it = scenes.find(eastl::string{panel.getText(pid).c_str()});
+      if (record && it != scenes.cend() && it->second != record->parent && canChangeSceneParentTo(it->second))
+      {
+        getObjEditor()->getUndoSystem()->put<UndoPropsChange>(this);
+        ecs::g_scenes->setNewParent(sceneId, it->second);
+      }
+
+      // Entries go stale while the panel is open, so a pick that was not applied has to go back to the real parent.
+      getObjEditor()->invalidateObjectProps();
+      break;
+    }
+  }
+}

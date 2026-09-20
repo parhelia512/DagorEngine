@@ -170,10 +170,6 @@ void DialogManager::renderModalDialog(DialogWindow &dialog, int stack_index)
 {
   ImGui::PushID(&dialog);
 
-  // We always use auto sizing here.
-  bool useAutoSizeForTheCurrentFrame;
-  dialog.beforeUpdateImguiDialog(useAutoSizeForTheCurrentFrame);
-
   // Change the color of the modal dialog title and the close button for the daEditorX Classic style.
   PropPanel::pushModalWindowColorOverrides();
 
@@ -184,12 +180,18 @@ void DialogManager::renderModalDialog(DialogWindow &dialog, int stack_index)
   if (!dimModalBackground)
     ImGui::PushStyleColor(ImGuiCol_ModalWindowDimBg, IM_COL32(0, 0, 0, 0));
 
+  // The dialog's contents are drawn after the PopStyleVar() below, so they use this padding, not the modal dialog's.
+  const Point2 contentFramePadding(ImGui::GetStyle().FramePadding.x, ImGui::GetStyle().FramePadding.y);
+
   ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, hdpi::_pxS(PropPanel::Constants::MODAL_WINDOW_ROUNDING));
   const float padding = hdpi::_pxS(PropPanel::Constants::MODAL_WINDOW_PADDING);
   const float windowPadding = padding * 2.0f;
   ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(windowPadding, padding));
   ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(windowPadding, windowPadding));
   ImGui::PushStyleVar(ImGuiStyleVar_WindowBorderSize, hdpi::_pxS(1));
+
+  // We always use auto sizing here.
+  const DialogWindow::DialogFrameSizing sizing = dialog.beforeUpdateImguiDialog(contentFramePadding);
 
   ImGui::OpenPopup(dialog.getCaption());
   bool initiallyOpen = true;
@@ -211,7 +213,7 @@ void DialogManager::renderModalDialog(DialogWindow &dialog, int stack_index)
 
   if (isOpen)
   {
-    dialog.updateImguiDialog();
+    dialog.updateImguiDialog(sizing);
 
     if ((stack_index + 1) < dialogStack.size())
       renderDialog(stack_index + 1);
@@ -236,14 +238,14 @@ void DialogManager::renderModelessDialog(DialogWindow &dialog)
 {
   ImGui::PushID(&dialog);
 
-  bool useAutoSizeForTheCurrentFrame;
-  dialog.beforeUpdateImguiDialog(useAutoSizeForTheCurrentFrame);
+  const Point2 contentFramePadding(ImGui::GetStyle().FramePadding.x, ImGui::GetStyle().FramePadding.y);
+  const DialogWindow::DialogFrameSizing sizing = dialog.beforeUpdateImguiDialog(contentFramePadding);
 
   // Change the color of the dialog title and the close button for the daEditorX Classic style.
   PropPanel::pushDialogTitleBarColorOverrides();
 
   // This is hacky, but ImGui::SetNextWindowContentSize(ImVec2(0.0f, 0.0f)) did not work.
-  const ImGuiWindowFlags flags = useAutoSizeForTheCurrentFrame ? ImGuiWindowFlags_AlwaysAutoResize : ImGuiWindowFlags_None;
+  const ImGuiWindowFlags flags = sizing.autoSize ? ImGuiWindowFlags_AlwaysAutoResize : ImGuiWindowFlags_None;
 
   bool isOpen = true;
   const bool renderContents = ImGui::Begin(dialog.getCaption(), &isOpen, flags);
@@ -257,7 +259,7 @@ void DialogManager::renderModelessDialog(DialogWindow &dialog)
         !ImGui::IsAnyItemActive() && !ImGui::GetIO().WantTextInput)
       ImGui::FocusWindow(ImGui::GetCurrentWindow(), ImGuiFocusRequestFlags_RestoreFocusedChild);
 
-    dialog.updateImguiDialog();
+    dialog.updateImguiDialog(sizing);
   }
 
   ImGui::End();

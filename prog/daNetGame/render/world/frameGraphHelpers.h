@@ -7,8 +7,8 @@
 #include <render/debugGbuffer.h>
 #include <render/rendererFeatures.h>
 #include <render/world/bvh.h>
-#include <render/world/cameraParams.h>
-#include <render/world/cameraInCamera.h>
+#include <render/cameraParams.h>
+#include <render/cameraInCamera/cameraInCamera.h>
 #include <render/world/gbufferConsts.h>
 #include <render/world/wrDispatcher.h>
 #include <util/dag_convar.h>

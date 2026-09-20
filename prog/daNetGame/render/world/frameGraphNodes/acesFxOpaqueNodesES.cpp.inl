@@ -9,7 +9,7 @@
 #include <render/fx/fx.h>
 #include <render/fx/fxRenderTags.h>
 #include <render/world/defaultVrsSettings.h>
-#include <render/world/cameraParams.h>
+#include <render/cameraParams.h>
 #include <render/world/frameGraphHelpers.h>
 #include <render/world/cameraViewVisibilityManager.h>
 #include <shaders/dag_shaderBlock.h>

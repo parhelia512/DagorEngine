@@ -176,7 +176,7 @@ protected:
     FX_INSTANCING_SBUF = 1
   };
 
-  const char *getJobName(bool &) const override { return "tracer_manager_cull"; }
+  const char *getJobName(bool &) const override { return DAPROFILER_STRING("tracer_manager_cull"); }
   void doJob();
   void releaseJob() {}
 

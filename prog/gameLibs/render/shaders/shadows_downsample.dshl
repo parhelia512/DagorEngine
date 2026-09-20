@@ -14,7 +14,11 @@ shader downsample_shadows_depth_4x
   (ps) {
     //esm_resolve_dist@f4 = esm_resolve_dist;
     shadows_resolution@f2 = (4./pcf_lerp.z, 4./pcf_lerp.w, 0, 0);
-    shadow_tex@smp2d = shadow_cascade_depth_tex;
+    shadow_tex@tex2d = shadow_cascade_depth_tex;
+  }
+  INIT_GLOBAL_POINT_CLAMP_SAMPLER(ps)
+  hlsl(ps) {
+    #define shadow_tex_samplerstate global_point_clamp_sampler
   }
   hlsl(ps) {
     void downsample_ps(VsOutput IN HW_USE_SCREEN_POS, out float depth : SV_Depth)

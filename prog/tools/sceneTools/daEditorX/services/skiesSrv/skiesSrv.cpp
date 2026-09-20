@@ -424,15 +424,14 @@ public:
     d3d::gettm(TM_VIEW, viewTm);
     d3d::gettm(TM_PROJ, &projTm);
     d3d::getpersp(persp);
+    auto drSrv = EDITORCORE->queryEditorInterface<IDynRenderService>();
     if (targetDepthId == BAD_TEXTUREID)
       daSkies->renderEnvi(false, dpoint3(::grs_cur_view.pos), dpoint3(::grs_cur_view.itm.getcol(2)), 0xFF,
-        EDITORCORE->queryEditorInterface<IDynRenderService>()->getDownsampledFarDepth(),
-        EDITORCORE->queryEditorInterface<IDynRenderService>()->getDownsampledFarDepth(), nullptr, pov_data, viewTm, projTm, persp);
+        drSrv->getDownsampledFarDepth(), drSrv->getPrevDownsampledFarDepth(), nullptr, pov_data, viewTm, projTm, persp);
     else
     {
       daSkies->prepareSkyAndClouds(false, dpoint3(::grs_cur_view.pos), dpoint3(::grs_cur_view.itm.getcol(2)), 0xFF,
-        EDITORCORE->queryEditorInterface<IDynRenderService>()->getDownsampledFarDepth().getTex2D(),
-        EDITORCORE->queryEditorInterface<IDynRenderService>()->getDownsampledFarDepth().getTex2D(), pov_data, viewTm, projTm,
+        drSrv->getDownsampledFarDepth().getTex2D(), drSrv->getPrevDownsampledFarDepth().getTex2D(), pov_data, viewTm, projTm,
         UpdateSky::On, false);
       daSkies->renderSky(pov_data, viewTm, projTm, persp);
     }
@@ -463,6 +462,7 @@ public:
     d3d::setview(l, t, w, h, minZ, maxZ);
   }
   bool areCloudTexturesReady() override { return daSkies ? daSkies->isCloudsReady() : false; }
+  bool isLightingConverged() override { return daSkies ? daSkies->isLightingConverged() : false; }
   void afterD3DReset(bool /*full_reset*/) override
   {
     if (daSkies)

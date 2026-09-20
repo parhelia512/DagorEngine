@@ -14,6 +14,11 @@
   VAR(clouds2_dispatch_groups, false)                                                     \
   VAR(clouds2_resolution, true)                                                           \
   VAR(clouds2_far_res_last_texel_index, true)                                             \
+  VAR(clouds2_used_uv_far, true)                                                          \
+  VAR(clouds2_used_uv_far_prev, true)                                                     \
+  VAR(clouds2_used_uv_close, true)                                                        \
+  VAR(clouds2_close_allocated_resolution, true)                                           \
+  VAR(clouds2_prev_resolution, true)                                                      \
   VAR(clouds_ambient_desaturation, false)                                                 \
   VAR(clouds_average_weight, false)                                                       \
   VAR(clouds_back_eccentricity, false)                                                    \
@@ -89,6 +94,7 @@
   VAR(clouds_tiled_res, true)                                                             \
   VAR(clouds_turbulence_freq, false)                                                      \
   VAR(clouds_turbulence_scale, false)                                                     \
+  VAR(clouds_use_bsm, true)                                                               \
   VAR(clouds_weather_size, false)                                                         \
   VAR(clouds_wind_alt_gradient, true)                                                     \
   VAR(clouds_use_fullres, true)                                                           \

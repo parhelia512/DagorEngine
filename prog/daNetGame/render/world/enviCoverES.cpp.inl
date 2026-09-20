@@ -25,7 +25,7 @@ static void updateEnviCover(bool envi_cover)
 }
 
 ECS_TAG(render)
-ECS_ON_EVENT(OnLevelLoaded)
+ECS_ON_EVENT(EventRenderSceneLoaded)
 static void envi_cover_es(const ecs::Event &, bool envi_cover) { updateEnviCover(envi_cover); }
 
 ECS_TAG(render)
@@ -34,7 +34,7 @@ ECS_REQUIRE(bool envi_cover)
 static void envi_cover_unload_es(const ecs::Event &) { updateEnviCover(false); }
 
 ECS_TAG(render)
-ECS_ON_EVENT(OnLevelLoaded)
+ECS_ON_EVENT(EventRenderSceneLoaded)
 ECS_NO_ORDER
 static void set_envi_cover_params_es(const ecs::Event &,
   const Point4 &envi_cover_intensity_map_left_top_right_bottom,
@@ -69,7 +69,7 @@ ECS_REQUIRE(const ecs::string &envi_cover_intensity_map)
 static void envi_cover_intensity_map_unload_es(const ecs::Event &) { envi_cover_vars::unset_intensity_map(); }
 
 ECS_TAG(render)
-ECS_ON_EVENT(OnLevelLoaded)
+ECS_ON_EVENT(EventRenderSceneLoaded)
 static void envi_cover_rt_on_es(const ecs::Event &, bool envi_cover_rt) { ShaderGlobal::set_int(var::envi_cover_rt, envi_cover_rt); }
 
 ECS_TAG(render)

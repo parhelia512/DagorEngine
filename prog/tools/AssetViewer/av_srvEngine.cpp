@@ -224,7 +224,7 @@ public:
   unsigned getEntitySubTypeMask(int mask_type) override { return IObjEntityFilter::getSubTypeMask(mask_type); }
 
   void setEntitySubTypeMask(int mask_type, unsigned value) override { IObjEntityFilter::setSubTypeMask(mask_type, value); }
-  LayerHiddenMask getEntityLayerHiddenMask() override { return LayerHiddenMask(LayerHiddenMask::BIT_COUNT - 1, true); }
+  LayerHiddenMask getEntityLayerHiddenMask() override { return LayerHiddenMask(IObjEntity::LAYER_INDEX_ALWAYS_HIDDEN, true); }
   void setEntityLayerHiddenMask(LayerHiddenMask /*value*/) override {}
 
   dag::ConstSpan<int> getGenObjAssetTypes() const override
@@ -441,12 +441,15 @@ public:
     return false;
   }
 
-  void imguiBegin(const char *name, bool *open, unsigned window_flags) override { editor_core_imgui_begin(name, open, window_flags); }
+  bool imguiBegin(const char *name, bool *open, unsigned window_flags) override
+  {
+    return editor_core_imgui_begin(name, open, window_flags);
+  }
 
-  void imguiBegin(PropPanel::PanelWindowPropertyControl &panel_window, bool *open, unsigned window_flags) override
+  bool imguiBegin(PropPanel::PanelWindowPropertyControl &panel_window, bool *open, unsigned window_flags) override
   {
     panel_window.beforeImguiBegin();
-    imguiBegin(panel_window.getStringCaption(), open, window_flags);
+    return imguiBegin(panel_window.getStringCaption(), open, window_flags);
   }
 
   void imguiEnd() override { ImGui::End(); }
@@ -558,7 +561,7 @@ void IObjEntityFilter::setSubTypeMask(int mask_type, unsigned mask) { entSubType
 
 
 unsigned IObjEntityFilter::getSubTypeMask(int mask_type) { return entSubTypeMask[mask_type]; }
-LayerHiddenMask IObjEntityFilter::getLayerHiddenMask() { return LayerHiddenMask(LayerHiddenMask::BIT_COUNT - 1, true); }
+LayerHiddenMask IObjEntityFilter::getLayerHiddenMask() { return LayerHiddenMask(IObjEntity::LAYER_INDEX_ALWAYS_HIDDEN, true); }
 
 
 void IObjEntityFilter::setShowInvalidAsset(bool show) { showInvalidAssets = show; }
@@ -731,6 +734,7 @@ static struct DagorEdReset3DCallback : public IDrv3DResetCB
       DAEDITOR3.conNote("reloading textures...");
       ddsx::reload_active_textures(0);
     }
+    environment::after_d3d_reset(full_reset);
     DAEDITOR3.conNote("notifying services...");
     for (int i = 0; i < srvPlugins.size(); i++)
       srvPlugins[i]->catchEvent(HUID_AfterD3DReset, NULL);

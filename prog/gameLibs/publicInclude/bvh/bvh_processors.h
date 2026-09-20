@@ -131,6 +131,11 @@ struct SkinnedVertexProcessorBatched : public BufferProcessor
   mutable uint32_t counter = 0;
   mutable uint32_t lastInstanceOffset = 0;
   mutable uint32_t instanceDataBaseOffset = 0;
+  // WT dynmodel path: the two dwords the non-batched path passes as immediate
+  // consts, and the ring buffer they index. The ring buffer differs per dynrend
+  // context, so it is part of the dispatch key.
+  mutable uint32_t lastInstanceDataDwords[2] = {0, 0};
+  mutable D3DRESID lastInstanceDataBufferId = BAD_D3DRESID;
 
   using VariantKey = uint32_t;
   struct DispatchData
@@ -139,8 +144,24 @@ struct SkinnedVertexProcessorBatched : public BufferProcessor
     uint32_t maxVertexCount = 0;
     ~DispatchData();
   };
+  struct DispatchKey
+  {
+    Sbuffer *targetBuffer;
+    D3DRESID instanceDataBuffer;
+    bool operator==(const DispatchKey &o) const
+    {
+      return targetBuffer == o.targetBuffer && instanceDataBuffer == o.instanceDataBuffer;
+    }
+  };
+  struct DispatchKeyHash
+  {
+    size_t operator()(const DispatchKey &key) const
+    {
+      return eastl::hash<void *>()(key.targetBuffer) ^ (size_t(unsigned(key.instanceDataBuffer)) * 2654435761u);
+    }
+  };
 
-  mutable eastl::vector_map<VariantKey, eastl::unordered_map<Sbuffer *, DispatchData>> dispatchDataMapping;
+  mutable eastl::vector_map<VariantKey, eastl::unordered_map<DispatchKey, DispatchData, DispatchKeyHash>> dispatchDataMapping;
   mutable UniqueBuf instanceDataBuffer;
 
   SkinnedVertexProcessorBatched() : BufferProcessor("bvh_process_skinned_vertices_batched") {}
@@ -156,8 +177,8 @@ struct SkinnedVertexProcessorBatched : public BufferProcessor
 
 private:
   void updateData() const;
-  static VariantKey packVariants(bool is_cloth_wind);
-  static void unpackVariants(VariantKey key, bool &is_cloth_wind);
+  static VariantKey packVariants(bool is_cloth_wind, bool is_face_morph);
+  static void unpackVariants(VariantKey key, bool &is_cloth_wind, bool &is_face_morph);
 };
 
 struct TreeVertexProcessor : public BufferProcessor

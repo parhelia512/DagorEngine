@@ -12,6 +12,7 @@
 #include "tagged_handles.h"
 #include "ray_trace_pipeline.h"
 #include "variant_vector.h"
+#include "render_target_mask_util.h"
 
 #include <atomic>
 #include <perfMon/dag_cpuFreq.h>
@@ -790,8 +791,12 @@ struct MeshPipelineVariantCreateInfo
   PipelineLogSerializer toLog;
 };
 
+struct PipelineNameGetter;
+
 class PipelineVariant
 {
+  friend struct PipelineNameGetter;
+
   ComPtr<ID3D12PipelineState> pipeline;
   PipelineOptionalDynamicStateMask dynamicMask;
 #if _TARGET_PC_WIN
@@ -799,11 +804,11 @@ class PipelineVariant
   eastl::string name;
 #endif
 
-  bool calculateColorWriteMask(const eastl::string &pipeline_name, const BasePipeline &base,
+  bool calculateColorWriteMask(const PipelineNameGetter &pipeline_name, const BasePipeline &base,
     const RenderStateSystem::StaticState &static_state, const FramebufferLayout &fb_layout, uint32_t &color_write_mask,
     bool report_error_as_notice) const;
   // Generates description for color target formats, depth stencil format, blend modes, color masks and depth stencil modes.
-  bool generateOutputMergerDescriptions(const eastl::string &pipeline_name, const BasePipeline &base,
+  bool generateOutputMergerDescriptions(const PipelineNameGetter &pipeline_name, const BasePipeline &base,
     const RenderStateSystem::StaticState &static_state, const FramebufferLayout &fb_layout, GraphicsPipelineCreateInfoData &target,
     bool report_error_as_notice) const;
   bool generateInputLayoutDescription(const InputLayout &input_layout, GraphicsPipelineCreateInfoData &target,
@@ -824,7 +829,7 @@ class PipelineVariant
     PipelineCache &pipe_cache, backend::PipelineNameGenerator &name_generator, const MeshPipelineVariantCreateInfo &info);
 #endif
 
-  static bool validate_blend_desc(const eastl::string &pipeline_name, const D3D12_BLEND_DESC &blend_desc,
+  static bool validate_blend_desc(const PipelineNameGetter &pipeline_name, const D3D12_BLEND_DESC &blend_desc,
     const FramebufferLayout &fb_layout, uint32_t color_write_mask);
 
 public:
@@ -881,9 +886,7 @@ public:
 
 struct LoadVariantsStats
 {
-  static inline int64_t getDescUsec = 0, loadUsec = 0, maxLoadUsec = 0;
   static inline int64_t setupUsec = 0, cacheLoadUsec = 0, createPsoUsec = 0;
-  static inline uint32_t pipelines = 0, variants = 0, failed = 0;
   static inline uint32_t cacheHits = 0, cacheMisses = 0;
   static void reset();
 };
@@ -999,19 +1002,16 @@ class BasePipeline
   GraphicsPipelineBaseCacheId cacheId;
 
 public:
-  BasePipeline(GraphicsPipelineSignature &s, backend::VertexShaderModuleRefStore vsm, backend::PixelShaderModuleRefStore psm);
-
-  // returns false when when any build failed for some reason
-  bool loadVariantsFromCache(Device &device, PipelineCache &cache, backend::ShaderModuleManager &shader_bytecodes,
-    backend::StaticRenderStateManager &static_states, backend::InputLayoutManager &input_layouts,
-    FramebufferLayoutManager &framebuffer_layouts, RecoverablePipelineCompileBehavior on_error,
-    backend::PipelineNameGenerator &name_generator, PFN_D3D12_SERIALIZE_ROOT_SIGNATURE D3D12SerializeRootSignature,
-    bool use_const_buffer_descriptor_ranges);
+  BasePipeline(PipelineCache &cache, GraphicsPipelineSignature &s, backend::VertexShaderModuleRefStore vsm,
+    backend::PixelShaderModuleRefStore psm);
 
   PipelineVariant &getVariantFromConfiguration(InternalInputLayoutID input_layout_id, StaticRenderStateID static_state_id,
     FramebufferLayoutID framebuffer_layout_id, D3D12_PRIMITIVE_TOPOLOGY_TYPE top, bool is_wire_frame);
   PipelineVariant &getMeshVariantFromConfiguration(StaticRenderStateID static_state_id, FramebufferLayoutID framebuffer_layout_id,
     bool is_wire_frame);
+  bool hasVariantReady(InternalInputLayoutID input_layout_id, StaticRenderStateID static_state_id,
+    FramebufferLayoutID framebuffer_layout_id, D3D12_PRIMITIVE_TOPOLOGY_TYPE top, bool is_wire_frame);
+  bool hasMeshVariantReady(StaticRenderStateID static_state_id, FramebufferLayoutID framebuffer_layout_id, bool is_wire_frame);
   void unloadAll() { variants.clear(); }
   GraphicsPipelineSignature &getSignature() const { return signature; }
   bool hasTessellationStage() const { return vsModule.header.hasDsAndHs; }
@@ -1067,6 +1067,8 @@ public:
 
   const backend::PixelShaderModuleRefStore &pixelShaderModule() const { return psModule; }
 
+  uint32_t getRenderTargetMask() const { return color_channel_mask_to_render_target_mask(psModule.header.header.inOutSemanticMask); }
+
   template <typename T>
   void visitVariants(T &&clb)
   {
@@ -1081,10 +1083,7 @@ public:
   void onCacheInvalidated(PipelineCache &cache, backend::InputLayoutManager &input_layouts,
     backend::StaticRenderStateManager &static_states, FramebufferLayoutManager &framebuffer_layouts)
   {
-    PipelineCache::BasePipelineIdentifier cacheIdent = {};
-    cacheIdent.vs = vsModule.header.hash;
-    cacheIdent.ps = psModule.header.hash;
-    cacheId = cache.getGraphicsPipeline(cacheIdent);
+    cacheId = cache.getGraphicsPipeline(getIdentifier());
     // Also re-populate the cache with loaded pipelines
     if (isMesh())
     {
@@ -1178,6 +1177,8 @@ protected:
 
 class ComputePipeline
 {
+  friend struct PipelineNameGetter;
+
   ComputeShaderModule shaderModule;
   ComputePipelineSignature &signature;
   ComPtr<ID3D12PipelineState> computePipeline;
@@ -1532,20 +1533,30 @@ class PipelineManager : public backend::ShaderModuleManager,
 
   void setCompilePipelineSetQueueLength();
   void createBlitSignature(ID3D12Device *device);
+  void restoreBlitPipelinesFromCache(Device &device, PipelineCache &cache);
   void createClearSignature(ID3D12Device *device);
-  ID3D12PipelineState *createBlitPipeline(Device &device, DXGI_FORMAT out_fmt);
-  ID3D12PipelineState *createClearPipeline(Device &device, DXGI_FORMAT out_fmt);
-  GraphicsPipelineSignature *getGraphicsPipelineSignature(ID3D12Device *device, PipelineCache &cache,
-    dxil::GraphicsRootSignatureExtraProperties properties, const dxil::ShaderResourceUsageTable &vs_header,
-    const dxil::ShaderResourceUsageTable &ps_header, const dxil::ShaderResourceUsageTable *gs_header,
-    const dxil::ShaderResourceUsageTable *hs_header, const dxil::ShaderResourceUsageTable *ds_header);
+  void restoreClearPipelinesFromCache(Device &device, PipelineCache &cache);
+  enum class CreateMode
+  {
+    // Create must produce a pipeline or it is a fatal error as a "build in" operation can not be executed without it
+    OnUse,
+    // Create may produce a nullptr as this is during startup phase and if something in the system has changed and the
+    // format may no longer be supported, we can go along for now as the format may be never actually be needed.
+    OnPrebuild,
+  };
+  ID3D12PipelineState *createBlitPipeline(Device &device, PipelineCache &cache, CreateMode mode, DXGI_FORMAT out_fmt);
+  ID3D12PipelineState *createClearPipeline(Device &device, PipelineCache &cache, CreateMode mode, DXGI_FORMAT out_fmt);
+  GraphicsPipelineSignature *getGraphicsPipelineSignature(ID3D12Device *device, dxil::GraphicsRootSignatureExtraProperties properties,
+    const dxil::ShaderResourceUsageTable &vs_header, const dxil::ShaderResourceUsageTable &ps_header,
+    const dxil::ShaderResourceUsageTable *gs_header, const dxil::ShaderResourceUsageTable *hs_header,
+    const dxil::ShaderResourceUsageTable *ds_header);
 #if !_TARGET_XBOXONE
-  GraphicsPipelineSignature *getGraphicsMeshPipelineSignature(ID3D12Device *device, PipelineCache &cache,
+  GraphicsPipelineSignature *getGraphicsMeshPipelineSignature(ID3D12Device *device,
     dxil::GraphicsMeshRootSignatureExtraProperties properties, const dxil::ShaderResourceUsageTable &ms_header,
     const dxil::ShaderResourceUsageTable &ps_header, const dxil::ShaderResourceUsageTable *as_header);
 #endif
-  ComputePipelineSignature *getComputePipelineSignature(ID3D12Device *device, PipelineCache &cache,
-    dxil::ComputeRootSignatureExtraProperties properties, const dxil::ShaderResourceUsageTable &cs_header);
+  ComputePipelineSignature *getComputePipelineSignature(ID3D12Device *device, dxil::ComputeRootSignatureExtraProperties properties,
+    const dxil::ShaderResourceUsageTable &cs_header);
 
 public:
   PipelineManager() = default;
@@ -1569,7 +1580,7 @@ public:
 
   struct SetupParameters
   {
-    ID3D12Device *device;
+    Device *device;
     PFN_D3D12_SERIALIZE_ROOT_SIGNATURE serializeRootSignature;
     D3D_ROOT_SIGNATURE_VERSION rootSignatureVersion;
     PipelineCache *pipelineCache;
@@ -1588,12 +1599,10 @@ public:
     RecoverablePipelineCompileBehavior on_error, CSPreloaded preloaded, bool byte_code_cache_hit,
     PipelineBuildInitiator build_initiator);
 
-  void addGraphics(Device &device, PipelineCache &cache, FramebufferLayoutManager &fbs, GraphicsProgramID program, ShaderID vs,
-    ShaderID ps, RecoverablePipelineCompileBehavior on_error);
+  void addGraphics(Device &device, PipelineCache &cache, GraphicsProgramID program, ShaderID vs, ShaderID ps);
 
-  eastl::unique_ptr<BasePipeline> createGraphics(Device &device, PipelineCache &cache, FramebufferLayoutManager &fbs,
-    backend::VertexShaderModuleRefStore vertexShader, backend::PixelShaderModuleRefStore pixelShader,
-    RecoverablePipelineCompileBehavior on_error);
+  eastl::unique_ptr<BasePipeline> createGraphics(Device &device, PipelineCache &cache,
+    backend::VertexShaderModuleRefStore vertexShader, backend::PixelShaderModuleRefStore pixelShader);
 
   void unloadAll();
   // remove of a program is a 2 step process, first prepareForRemove needs to be called, this
@@ -1609,12 +1618,12 @@ public:
 
   ID3D12RootSignature *getBlitSignature() { return blitSignature.Get(); }
   ID3D12RootSignature *getClearSignature() { return clearSignature.Get(); }
-  ID3D12PipelineState *getBlitPipeline(Device &device, DXGI_FORMAT out_fmt);
+  ID3D12PipelineState *getBlitPipeline(Device &device, PipelineCache &cache, DXGI_FORMAT out_fmt);
 
-  ID3D12PipelineState *getClearPipeline(Device &device, DXGI_FORMAT out_fmt);
+  ID3D12PipelineState *getClearPipeline(Device &device, PipelineCache &cache, DXGI_FORMAT out_fmt);
 
   // tries to recover from a device remove error with a new device instance
-  bool recover(ID3D12Device2 *device, PipelineCache &cache);
+  bool recover(ID3D12Device2 *device);
 
   void preRecovery();
 
@@ -1648,7 +1657,6 @@ public:
     uint32_t computeShaderCount = 0;
     Device *device = nullptr;
     PipelineCache *pipelineCache = nullptr;
-    FramebufferLayoutManager *frameBufferLayoutManager = nullptr;
     bool deviceIsIll = false;
 
     // profiling accumulators
@@ -1908,8 +1916,28 @@ public:
 
   static shaderbindump::ShaderCode::ShRef evaluate_use(const ScriptedShadersBinDump &dump, const char *name, cacheBlk::UseCodes code);
 
-  BasePipeline *preloadGrahpicsBasePipeline(Device &device, PipelineCache &pipeline_cache, FramebufferLayoutManager &fbs,
+  enum class GraphicsPreloadFailReason
+  {
+    BuildFailed,
+    RequirementNotMet,
+  };
+
+  dag::Expected<BasePipeline *, GraphicsPreloadFailReason> preloadGrahpicsBasePipeline(Device &device, PipelineCache &pipeline_cache,
     ShaderID vs_id, ShaderID ps_id);
+
+  static uint32_t get_unsupported_blend_render_target_mask(const BasePipeline &pipeline, const RenderStateSystem::StaticState &rs,
+    const FramebufferLayout &fbl)
+  {
+    uint32_t mask = 0;
+    for (auto i : LsbVisitor{pipeline.getRenderTargetMask() & rs.getBlendUseMask(fbl.getColorWriteMask())})
+    {
+      if (!fbl.colorFormats[i].isSupportedBlendable())
+      {
+        mask |= 1u << i;
+      }
+    }
+    return mask;
+  }
 
   template <typename CancellationPredicate>
   bool prepareGraphicsPipeline2(Device &device, PipelineCache &pipeline_cache, FramebufferLayoutManager &fbs, uint32_t group,
@@ -1933,6 +1961,12 @@ public:
       D3D_ERROR("DX12: ...invalid state index, ignoring pipeline variant...");
       return true;
     }
+    auto &frameBufferLayout = pipelineSetCompilation2->framebufferLayouts[variant.frameBufferLayout];
+    if (!frameBufferLayout.layout.isSupported())
+    {
+      frameBufferLayout.layout.reportUnsupportedFormats();
+      return true;
+    }
     const auto classesSize = variant.classes.size();
     for (; class_idx < classesSize; ++class_idx)
     {
@@ -1951,7 +1985,7 @@ public:
         auto useRef = evaluate_use(*v1, shaderClass.name.c_str(), code);
         if (useRef.vprId == 0xFFFF)
         {
-          D3D_ERROR("DX12: ...failed to evaluate use <%s> %u | %u...", shaderClass.name, code.dynamicCode, code.staticCode);
+          // already logged by evaluate_use
           continue;
         }
 
@@ -1969,15 +2003,26 @@ public:
         }
         // TODO validate
 
-        auto base = preloadGrahpicsBasePipeline(device, pipeline_cache, fbs, vsID, psID);
-
+        auto base = preloadGrahpicsBasePipeline(device, pipeline_cache, vsID, psID)
+                      .transform_error([&](auto error_reason) {
+                        if (GraphicsPreloadFailReason::BuildFailed == error_reason)
+                        {
+                          D3D_ERROR("DX12: ...failed to create basic pipeline for <%s> %u | %u...", shaderClass.name, code.dynamicCode,
+                            code.staticCode);
+                        }
+                        else
+                        {
+                          logdbg("DX12: ...unable to create basic pipeline for <%s> %u | %u, requirements not met...",
+                            shaderClass.name, code.dynamicCode, code.staticCode);
+                        }
+                        return error_reason;
+                      })
+                      .value_or(nullptr);
         if (!base)
         {
-          D3D_ERROR("DX12: ...failed to create basic pipeline for <%s> %u | %u...", shaderClass.name, code.dynamicCode,
-            code.staticCode);
           continue;
         }
-        auto fbLayout = fbs.getLayoutID(pipelineSetCompilation2->framebufferLayouts[variant.frameBufferLayout].layout);
+        auto fbLayout = fbs.getLayoutID(frameBufferLayout.layout);
         // TODO restructure to early quit on mismatch
         StaticRenderStateID staticRenderStateID = StaticRenderStateID::Null();
         if (variant.staticRenderState < pipelineSetCompilation2->staticRenderStates.size())
@@ -1989,6 +2034,7 @@ public:
           staticRenderStateID =
             findOrAddStaticRenderState(RenderStateSystem::StaticState::fromRenderState(v1->renderStates[useRef.renderStateNo]));
         }
+
         auto inputLayout = InternalInputLayoutID::Null();
         if (base->isMesh())
         {
@@ -1998,8 +2044,7 @@ public:
               code.dynamicCode, code.staticCode);
             continue;
           }
-          const bool isReady = base->getMeshVariantFromConfiguration(staticRenderStateID, fbLayout, variant.isWireFrame).isReady();
-          if (isReady)
+          if (base->hasMeshVariantReady(staticRenderStateID, fbLayout, variant.isWireFrame))
           {
             continue;
           }
@@ -2014,15 +2059,30 @@ public:
           }
           inputLayout = InputLayoutManager::remapInputLayout(pipelineSetCompilation2->inputLayouts[variant.inputLayout].id,
             base->getVertexShaderInputMask());
-          const bool isReady = base
-                                 ->getVariantFromConfiguration(inputLayout, staticRenderStateID, fbLayout,
-                                   static_cast<D3D12_PRIMITIVE_TOPOLOGY_TYPE>(variant.topology), variant.isWireFrame)
-                                 .isReady();
-          if (isReady)
+
+          if (base->hasVariantReady(inputLayout, staticRenderStateID, fbLayout,
+                static_cast<D3D12_PRIMITIVE_TOPOLOGY_TYPE>(variant.topology), variant.isWireFrame))
           {
             continue;
           }
         }
+
+        // check if the requested blending enabled is compatible with the paired render target formats, if they are not we have to
+        // reject the variant
+        auto unsupportedBlendMask =
+          get_unsupported_blend_render_target_mask(*base, getStaticRenderState(staticRenderStateID), frameBufferLayout.layout);
+        if (unsupportedBlendMask)
+        {
+          for (auto i : LsbVisitor{unsupportedBlendMask})
+          {
+            logdbg("DX12: ...no blend support for render target %u with format %s...", i,
+              frameBufferLayout.layout.colorFormats[i].template getNameString<false>());
+          }
+          logdbg("DX12: ...unable to create pipeline variant for <%s> %u | %u, blend requirements not met...", shaderClass.name,
+            code.dynamicCode, code.staticCode);
+          continue;
+        }
+
         pipelineSetCompilation2->graphicsPipelineTasks.push_back({vsID, psID, inputLayout, staticRenderStateID, fbLayout,
           static_cast<D3D12_PRIMITIVE_TOPOLOGY_TYPE>(variant.topology), variant.isWireFrame});
       }
@@ -2033,8 +2093,8 @@ public:
   }
 
   template <typename CancellationPredicate>
-  bool prepareGraphicsPipelineNullOverride2(Device &device, PipelineCache &pipeline_cache, FramebufferLayoutManager &fbs,
-    uint32_t group, const ShaderClassFilter &filter, cacheBlk::SignatureMask signature_mask, ScriptedShadersBinDump *v1,
+  bool prepareGraphicsPipelineNullOverride2(Device &device, PipelineCache &cache, FramebufferLayoutManager &fbs, uint32_t group,
+    const ShaderClassFilter &filter, cacheBlk::SignatureMask signature_mask, ScriptedShadersBinDump *v1,
     cacheBlk::GraphicsVariantGroup &variant, uint32_t &class_idx, uint32_t &code_idx,
     const CancellationPredicate &cancellation_predicate)
   {
@@ -2054,6 +2114,12 @@ public:
       D3D_ERROR("DX12: ...invalid state index, ignoring pipeline variant...");
       return true;
     }
+    auto &frameBufferLayout = pipelineSetCompilation2->framebufferLayouts[variant.frameBufferLayout];
+    if (!frameBufferLayout.layout.isSupported())
+    {
+      frameBufferLayout.layout.reportUnsupportedFormats();
+      return true;
+    }
     const auto classesSize = variant.classes.size();
     for (; class_idx < classesSize; ++class_idx)
     {
@@ -2072,7 +2138,7 @@ public:
         auto useRef = evaluate_use(*v1, shaderClass.name.c_str(), code);
         if (useRef.vprId == 0xFFFF)
         {
-          D3D_ERROR("DX12: ...failed to evaluate use <%s> %u | %u...", shaderClass.name, code.dynamicCode, code.staticCode);
+          // already logged by evaluate_use
           continue;
         }
 
@@ -2080,15 +2146,27 @@ public:
         ShaderID psID = pipelineSetCompilation2->nullPixelShader;
         // TODO validate
 
-        auto base = preloadGrahpicsBasePipeline(device, pipeline_cache, fbs, vsID, psID);
+        auto base = preloadGrahpicsBasePipeline(device, cache, vsID, psID)
+                      .transform_error([&](auto error_reason) {
+                        if (GraphicsPreloadFailReason::BuildFailed == error_reason)
+                        {
+                          D3D_ERROR("DX12: ...failed to create basic pipeline for <%s> %u | %u...", shaderClass.name, code.dynamicCode,
+                            code.staticCode);
+                        }
+                        else
+                        {
+                          logdbg("DX12: ...unable to create basic pipeline for <%s> %u | %u, requirements not met...",
+                            shaderClass.name, code.dynamicCode, code.staticCode);
+                        }
+                        return error_reason;
+                      })
+                      .value_or(nullptr);
 
         if (!base)
         {
-          D3D_ERROR("DX12: ...failed to create basic pipeline for <%s> %u | %u...", shaderClass.name, code.dynamicCode,
-            code.staticCode);
           continue;
         }
-        auto fbLayout = fbs.getLayoutID(pipelineSetCompilation2->framebufferLayouts[variant.frameBufferLayout].layout);
+        auto fbLayout = fbs.getLayoutID(frameBufferLayout.layout);
         // TODO restructure to early quit on mismatch
         StaticRenderStateID staticRenderStateID = StaticRenderStateID::Null();
         if (variant.staticRenderState < pipelineSetCompilation2->staticRenderStates.size())
@@ -2100,6 +2178,7 @@ public:
           staticRenderStateID =
             findOrAddStaticRenderState(RenderStateSystem::StaticState::fromRenderState(v1->renderStates[useRef.renderStateNo]));
         }
+
         auto inputLayout = InternalInputLayoutID::Null();
         if (base->isMesh())
         {
@@ -2109,8 +2188,7 @@ public:
               code.dynamicCode, code.staticCode);
             continue;
           }
-          const bool isReady = base->getMeshVariantFromConfiguration(staticRenderStateID, fbLayout, variant.isWireFrame).isReady();
-          if (isReady)
+          if (base->hasMeshVariantReady(staticRenderStateID, fbLayout, variant.isWireFrame))
           {
             continue;
           }
@@ -2125,15 +2203,17 @@ public:
           }
           inputLayout = InputLayoutManager::remapInputLayout(pipelineSetCompilation2->inputLayouts[variant.inputLayout].id,
             base->getVertexShaderInputMask());
-          const bool isReady = base
-                                 ->getVariantFromConfiguration(inputLayout, staticRenderStateID, fbLayout,
-                                   static_cast<D3D12_PRIMITIVE_TOPOLOGY_TYPE>(variant.topology), variant.isWireFrame)
-                                 .isReady();
-          if (isReady)
+
+          if (base->hasVariantReady(inputLayout, staticRenderStateID, fbLayout,
+                static_cast<D3D12_PRIMITIVE_TOPOLOGY_TYPE>(variant.topology), variant.isWireFrame))
           {
             continue;
           }
         }
+
+        // no need to check blending here as null shader does not output color targets, as the computed channel mask for all render
+        // targets ends up being 0
+
         pipelineSetCompilation2->graphicsPipelineTasks.push_back({vsID, psID, inputLayout, staticRenderStateID, fbLayout,
           static_cast<D3D12_PRIMITIVE_TOPOLOGY_TYPE>(variant.topology), variant.isWireFrame});
       }
@@ -2144,7 +2224,7 @@ public:
   }
 
   template <typename CancellationPredicate>
-  bool prepareGraphicsPipelineSet2(Device &device, PipelineCache &pipeline_cache, FramebufferLayoutManager &fbs, uint32_t group,
+  bool prepareGraphicsPipelineSet2(Device &device, PipelineCache &cache, FramebufferLayoutManager &fbs, uint32_t group,
     const ShaderClassFilter &filter, cacheBlk::SignatureMask signature_mask, const CancellationPredicate &cancellation_predicate)
   {
     auto dump = getDump(group);
@@ -2162,7 +2242,7 @@ public:
     for (auto &graphicsIdx = pipelineSetCompilation2->graphicsPipelineSetCompilationIdx; graphicsIdx < graphicsSize;)
     {
       auto &variant = pipelineSetCompilation2->graphicsPipelines[graphicsIdx];
-      if (!prepareGraphicsPipeline2(device, pipeline_cache, fbs, group, filter, signature_mask, v1, variant,
+      if (!prepareGraphicsPipeline2(device, cache, fbs, group, filter, signature_mask, v1, variant,
             pipelineSetCompilation2->graphicsClassCompilationIdx, pipelineSetCompilation2->graphicsCodeCompilationIdx,
             cancellation_predicate))
       {
@@ -2182,7 +2262,7 @@ public:
          graphicsIdx < graphicsNullOverridesSize;)
     {
       auto &variant = pipelineSetCompilation2->graphicsPipelinesWithNullOverrides[graphicsIdx];
-      if (!prepareGraphicsPipelineNullOverride2(device, pipeline_cache, fbs, group, filter, signature_mask, v1, variant,
+      if (!prepareGraphicsPipelineNullOverride2(device, cache, fbs, group, filter, signature_mask, v1, variant,
             pipelineSetCompilation2->graphicsClassCompilationIdx, pipelineSetCompilation2->graphicsCodeCompilationIdx,
             cancellation_predicate))
       {
@@ -2244,7 +2324,7 @@ public:
         auto useRef = evaluate_use(*v1, shaderClass.name.c_str(), code);
         if (useRef.fshId == 0xFFFF && useRef.vprId == 0xFFFF)
         {
-          D3D_ERROR("DX12: ...failed to evaluate use <%s> %u | %u...", shaderClass.name, code.dynamicCode, code.staticCode);
+          // already logged by evaluate_use
           continue;
         }
         auto asCSIndex = useRef.fshId;
@@ -2283,7 +2363,7 @@ public:
   }
 
   template <typename CancellationPredicate, typename D>
-  bool preparePipelineSet2(D &device, PipelineCache &pipeline_cache, FramebufferLayoutManager &fbs,
+  bool preparePipelineSet2(D &device, PipelineCache &cache, FramebufferLayoutManager &fbs,
     const CancellationPredicate &cancellation_predicate)
   {
     for (uint32_t &groupIndex = pipelineSetCompilation2->groupIndex; groupIndex < max_scripted_shaders_bin_groups; ++groupIndex)
@@ -2316,8 +2396,8 @@ public:
       cacheBlk::SignatureMask signatureMask =
         1u << (eastl::distance(eastl::begin(pipelineSetCompilation2->scriptedShaderDumpSignature), groupSignature));
 
-      const bool isGraphicsFinished = prepareGraphicsPipelineSet2(device, pipeline_cache, fbs, groupIndex,
-        *pipelineSetCompilation2->filter, signatureMask, cancellation_predicate);
+      const bool isGraphicsFinished = prepareGraphicsPipelineSet2(device, cache, fbs, groupIndex, *pipelineSetCompilation2->filter,
+        signatureMask, cancellation_predicate);
       const bool isComputeFinished =
         prepareComputePipelineSet2(groupIndex, *pipelineSetCompilation2->filter, signatureMask, cancellation_predicate);
       if (!isGraphicsFinished || !isComputeFinished)
@@ -2356,7 +2436,21 @@ public:
       {
         continue;
       }
-      auto base = preloadGrahpicsBasePipeline(device, pipeline_cache, fbs, task.vs, task.ps);
+      auto base =
+        preloadGrahpicsBasePipeline(device, pipeline_cache, task.vs, task.ps)
+          .transform_error([&](auto error_reason) {
+            if (GraphicsPreloadFailReason::BuildFailed == error_reason)
+            {
+              D3D_ERROR("DX12: ...failed to create basic pipeline (%u + %u)...", task.vs.exportValue(), task.ps.exportValue());
+            }
+            else
+            {
+              logdbg("DX12: ...unable to create basic pipeline (%u + %u), requirements not met...", task.vs.exportValue(),
+                task.ps.exportValue());
+            }
+            return error_reason;
+          })
+          .value_or(nullptr);
       if (!base)
       {
         continue;
@@ -2670,11 +2764,11 @@ struct ResourceBindingTable
     ImageViewState imageView;
   };
   BufferResourceReferenceAndAddressRange constBuffers[8];
-  ReadResourceInfo readResources[32];
+  ReadResourceInfo readResources[32]{};
   D3D12_CPU_DESCRIPTOR_HANDLE readResourceViews[32]{};
   D3D12_CPU_DESCRIPTOR_HANDLE samplers[32]{};
   D3D12_CPU_DESCRIPTOR_HANDLE writeResourceViews[8]{};
-  WriteResourceInfo writeResources[8];
+  WriteResourceInfo writeResources[8]{};
   uint32_t contBufferCount = 0;
   uint32_t readCount = 0;
   uint32_t writeCount = 0;
@@ -2706,6 +2800,11 @@ struct RayDispatchIndirectParameters
   uint32_t argumentStrideInBytes = 0;
   uint32_t maxCount = 0;
 };
+#endif
+
+#if _TARGET_PC_WIN
+ShaderHashValue get_build_in_blit_shaders_hash();
+ShaderHashValue get_build_in_clear_shaders_hash();
 #endif
 } // namespace drv3d_dx12
 

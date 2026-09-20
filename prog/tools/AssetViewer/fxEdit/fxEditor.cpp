@@ -879,7 +879,7 @@ public:
     if (!applyingUndoOperation)
     {
       get_app().getUndoSystem()->begin();
-      get_app().getUndoSystem()->put(new ParamChangeUndoRedo<ValueType>(*panel, pid, this, old_value, newValue));
+      get_app().getUndoSystem()->put<ParamChangeUndoRedo<ValueType>>(*panel, pid, this, old_value, newValue);
       get_app().getUndoSystem()->accept("changeParam");
     }
     return newValue;
@@ -892,7 +892,7 @@ public:
     if (!applyingUndoOperation)
     {
       get_app().getUndoSystem()->begin();
-      get_app().getUndoSystem()->put(new ParamClickUndoRedo<ValueType>(*panel, pid, this, old_value, newValue));
+      get_app().getUndoSystem()->put<ParamClickUndoRedo<ValueType>>(*panel, pid, this, old_value, newValue);
       get_app().getUndoSystem()->accept("clickParam");
     }
     return newValue;

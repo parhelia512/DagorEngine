@@ -291,9 +291,11 @@ static void addPointProps(const splineclass::RoadData &road, PointProperties &pr
   SplinePointObject *p)
 {
   addInvariantPointProps(road, props, mat_mgr);
-  props.pos = p->getPt();
-  props.inHandle = p->getBezierIn();
-  props.outHandle = p->getBezierOut();
+  // knot accessors so filleted neighbors of a cross point connect on the blend,
+  // matching generateRoadSegments (raw values for non-filleted points)
+  props.pos = p->getKnotPos();
+  props.inHandle = p->getKnotBezierIn();
+  props.outHandle = p->getKnotBezierOut();
 
   //! upDir assumed to be computed before while generated straight segments!
   props.updir = p->tmpUpDir;
@@ -631,14 +633,14 @@ void SplineObject::generateRoadSegments(int start_idx, int end_idx, const spline
     link.pointId1 = 0;
     link.pointId2 = 1;
 
-    pts[0].pos = points[i]->getPt();
-    pts[0].inHandle = points[i]->getBezierIn();
-    pts[0].outHandle = points[i]->getBezierOut();
+    pts[0].pos = points[i]->getKnotPos();
+    pts[0].inHandle = points[i]->getKnotBezierIn();
+    pts[0].outHandle = points[i]->getKnotBezierOut();
     computePointUpDir(i == start_idx ? asset_prev : asset, asset, pts[0], points[i], seg_prev, seg_cur);
 
-    pts[1].pos = points[i + 1]->getPt();
-    pts[1].inHandle = points[i + 1]->getBezierIn();
-    pts[1].outHandle = points[i + 1]->getBezierOut();
+    pts[1].pos = points[i + 1]->getKnotPos();
+    pts[1].inHandle = points[i + 1]->getKnotBezierIn();
+    pts[1].outHandle = points[i + 1]->getKnotBezierOut();
     if (i + 1 == end_idx && asset_next)
     {
       pts[1].linesNumber = asset_next->linesCount;

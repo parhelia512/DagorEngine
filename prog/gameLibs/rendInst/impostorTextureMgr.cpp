@@ -28,6 +28,7 @@
 #include <startup/dag_globalSettings.h>
 #include <render/bcCompressor.h>
 #include <fx/dag_leavesWind.h>
+#include <rendInst/impostor.h>
 
 #include <rendInst/rendInstExtraRender.h>
 
@@ -142,6 +143,8 @@ ImpostorTextureManager::ImpostorTextureManager()
   state.zFunc = CMPF_GREATEREQUAL;
   state.set(shaders::OverrideState::SCISSOR_ENABLED);
   impostorShaderState = shaders::overrides::create(state);
+  state.set(shaders::OverrideState::CULL_NONE);
+  impostorVoxelShaderState = shaders::overrides::create(state);
 
   if (shader_exists("impostor_mask_shader"))
     impostorMaskShader.init("impostor_mask_shader");
@@ -327,6 +330,30 @@ Point3 ImpostorTextureManager::get_point_to_eye_octahedral(uint32_t h, uint32_t 
 
 void ImpostorTextureManager::buildRendinstElems() { rendinst::render::rebuildAllElems(); }
 
+// the per draw consts of one res drawn as one instance at the origin
+static void set_single_res_consts(const RenderableInstanceLodsResource *res)
+{
+  static const E3DCOLOR defaultColors[] = {E3DCOLOR(127, 127, 127, 127), E3DCOLOR(127, 127, 127, 127)};
+
+  // Set perDrawCB even in multidraw because we use this instead of the perDrawBuffer
+  // See fill_rendinst_matrix_buffer
+  rendinst::render::RiShaderConstBuffers cb;
+  cb.setOpacity(0, 1);
+  cb.setCrossDissolveRange(0);
+  const Point3 &sphereCenter = res->bsphCenter;
+  float sphereRadius = res->bsphRad + sqrtf(sphereCenter.x * sphereCenter.x + sphereCenter.z * sphereCenter.z);
+  // sphere radius is needed for ellipsoid normal
+  cb.setBoundingSphere(0, 0, sphereRadius, 1, 0);
+  cb.setRandomColors(defaultColors);
+  cb.setInstancing(0, 3, RI_CBUFFER_FLAGS__PER_DRAW_DATA_FROM_CONST_BUFFER, 0);
+  cb.flushPerDraw();
+
+  // We update rendinst::render::perDrawCB inside cb.flushPerDraw() if it's not null.
+  // It causes split of renderpass in Vulkan cause of stage change.
+  // Just have to accept it unless we allocate multiple buffers and update them in advance.
+  d3d::allow_render_pass_target_load();
+}
+
 void ImpostorTextureManager::render_slice_voxels(const TMatrix &view_to_world, float size_x, float size_y, float zn, float zf,
   RenderableInstanceLodsResource *res, rendinst::RenderPass render_pass, int block_id, int lod)
 {
@@ -337,15 +364,13 @@ void ImpostorTextureManager::render_slice_voxels(const TMatrix &view_to_world, f
 
   rendinst::gen::ScopedDisablePaletteRotation disableRotation;
 
-  static const E3DCOLOR defaultColors[] = {E3DCOLOR(127, 127, 127, 127), E3DCOLOR(127, 127, 127, 127)};
-
   res->lods[lod].scene->getMesh()->getMesh()->getMesh()->acquireTexRefs();
 
   TMatrix4 projTm = matrix_ortho_lh_reverse(size_x, size_y, zn, zf);
   d3d::settm(TM_PROJ, &projTm);
 
   TMatrix viewItm = view_to_world;
-  TMatrix viewTm = orthonormalized_inverse(view_to_world);
+  TMatrix viewTm = inverse(view_to_world); // not using orthonormalized_inverse() to allow shear TMs for debugging
   d3d::settm(TM_VIEW, viewTm);
   Point3_vec4 col[3];
   for (int i = 0; i < 3; ++i)
@@ -365,24 +390,7 @@ void ImpostorTextureManager::render_slice_voxels(const TMatrix &view_to_world, f
   const auto zeroLodCount = uint32_t(eastl::min(lod + 1, 8));
 
   SCENE_LAYER_GUARD(block_id);
-
-  // Set perDrawCB even in multidraw because we use this instead of the perDrawBuffer
-  // See fill_rendinst_matrix_buffer
-  rendinst::render::RiShaderConstBuffers cb;
-  cb.setOpacity(0, 1);
-  cb.setCrossDissolveRange(0);
-  const Point3 &sphereCenter = res->bsphCenter;
-  float sphereRadius = res->bsphRad + sqrtf(sphereCenter.x * sphereCenter.x + sphereCenter.z * sphereCenter.z);
-  // sphere radius is needed for ellipsoid normal
-  cb.setBoundingSphere(0, 0, sphereRadius, 1, 0);
-  cb.setRandomColors(defaultColors);
-  cb.setInstancing(0, 3, RI_CBUFFER_FLAGS__PER_DRAW_DATA_FROM_CONST_BUFFER, 0);
-  cb.flushPerDraw();
-
-  // We update rendinst::render::perDrawCB inside cb.flushPerDraw() if it's not null.
-  // It causes split of renderpass in Vulkan cause of stage change.
-  // Just have to accept it unless we allocate multiple buffers and update them in advance.
-  d3d::allow_render_pass_target_load();
+  set_single_res_consts(res);
 
   rendinst::render::renderRIGenExtraFromBuffer(rendinstMatrixBuf.getBuf(), dag::ConstSpan<IPoint2>(&offsAndCnt, 1),
     dag::ConstSpan<uint16_t>(&riIdx, 1), dag::ConstSpan<uint32_t>(zeroLodOffsets, zeroLodCount), render_pass,
@@ -463,26 +471,7 @@ void ImpostorTextureManager::render(const Point3 &point_to_eye, const TMatrix &v
     const auto zeroLodCount = uint32_t(std::min(lod + 1, 8));
 
     SCENE_LAYER_GUARD(block_id);
-
-    static const E3DCOLOR defaultColors[] = {E3DCOLOR(127, 127, 127, 127), E3DCOLOR(127, 127, 127, 127)};
-
-    // Set perDrawCB even in multidraw because we use this instead of the perDrawBuffer
-    // See fill_rendinst_matrix_buffer
-    rendinst::render::RiShaderConstBuffers cb;
-    cb.setOpacity(0, 1);
-    cb.setCrossDissolveRange(0);
-    const Point3 &sphereCenter = res->bsphCenter;
-    float sphereRadius = res->bsphRad + sqrtf(sphereCenter.x * sphereCenter.x + sphereCenter.z * sphereCenter.z);
-    // sphere radius is needed for ellipsoid normal
-    cb.setBoundingSphere(0, 0, sphereRadius, 1, 0);
-    cb.setRandomColors(defaultColors);
-    cb.setInstancing(0, 3, RI_CBUFFER_FLAGS__PER_DRAW_DATA_FROM_CONST_BUFFER, 0);
-    cb.flushPerDraw();
-
-    // We update rendinst::render::perDrawCB inside cb.flushPerDraw() if it's not null.
-    // It causes split of renderpass in Vulkan cause of stage change.
-    // Just have to accept it unless we allocate multiple buffers and update them in advance.
-    d3d::allow_render_pass_target_load();
+    set_single_res_consts(res);
 
     rendinst::render::renderRIGenExtraFromBuffer(rendinstMatrixBuf.getBuf(), dag::ConstSpan<IPoint2>(&offsAndCnt, 1),
       dag::ConstSpan<uint16_t>(&riIdx, 1), dag::ConstSpan<uint32_t>(zeroLodOffsets, zeroLodCount), render_pass,
@@ -496,11 +485,11 @@ void ImpostorTextureManager::render(const Point3 &point_to_eye, const TMatrix &v
 
 float ImpostorTextureManager::get_vertex_scaling(float cos_phi) { return 1 - cos_phi; }
 
-void ImpostorTextureManager::start_rendering_slices(DeferredRenderTarget *rt)
+void ImpostorTextureManager::start_rendering_slices(DeferredRenderTarget *rt, bool is_voxel)
 {
   G_ASSERT(rt && rt->getRt(0));
   G_ASSERT(VariableMap::isGlobVariablePresent(texture_sizeVarId));
-  shaders::overrides::set(impostorShaderState);
+  shaders::overrides::set(is_voxel ? impostorVoxelShaderState : impostorShaderState);
   ShaderGlobal::set_int(rendinst_render_passVarId, eastl::to_underlying(rendinst::RenderPass::ImpostorColor));
   ShaderGlobal::setBlock(rendinst::render::globalFrameBlockId, ShaderGlobal::LAYER_FRAME);
 

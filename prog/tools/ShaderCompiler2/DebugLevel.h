@@ -10,3 +10,10 @@ enum class DebugLevel : uint8_t
   FULL_DEBUG_INFO,
   AFTERMATH,
 };
+
+enum class DebugParts : uint8_t
+{
+  STRIP,
+  KEEP,
+  EMBED_SOURCE,
+};

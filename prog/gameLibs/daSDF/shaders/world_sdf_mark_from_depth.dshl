@@ -58,7 +58,7 @@ shader world_sdf_from_gbuf_cs
       int3 worldCoordBase = worldCoordI + sign*int3(inGroupId.y&3, (inGroupId.y>>2)&3, (inGroupId.y>>4)&3);
       int3 ltC = world_sdf_get_lt_coord(cascade);
       //if we went outside cascade, try opposite sign
-      worldCoordBase = (uint3(worldCoordBase - ltC) >= world_sdf_get_res()) ? worldCoordI - sign*int3(inGroupId.y&3, (inGroupId.y>>2)&3, (inGroupId.y>>4)&3) : worldCoordBase;
+      worldCoordBase = select(uint3(worldCoordBase - ltC) >= world_sdf_get_res(), worldCoordI - sign*int3(inGroupId.y&3, (inGroupId.y>>2)&3, (inGroupId.y>>4)&3), worldCoordBase);
 
       //we verify if it is still inside cascade
       if (any(uint3(worldCoordBase - ltC) >= world_sdf_get_res()))
@@ -281,7 +281,7 @@ shader world_sdf_from_gbuf_remove_cs
       {
         float voxelSize = world_sdf_voxel_size(cascade);
         float3 b0 = sample_world_sdf_lt(cascade).xyz+voxelSize*0.5, b1 = sample_world_sdf_lt(cascade).xyz + voxelSize*float3(world_sdf_res.xyx-0.5);
-        if (any(worldPos < b0 || worldPos > b1))
+        if (any(or(worldPos < b0, worldPos > b1)))
           continue;
         int3 worldCoordI = int3(floor(worldPos.xzy/voxelSize));
 

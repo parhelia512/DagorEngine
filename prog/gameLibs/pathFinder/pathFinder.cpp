@@ -16,7 +16,7 @@
 #include <ioSys/dag_dataBlock.h>
 #include <ioSys/dag_lzmaIo.h>
 #include <ioSys/dag_zstdIo.h>
-#include <gameMath/traceUtils.h>
+#include <rendInst/traceUtils.h>
 #include <gameMath/mathUtils.h>
 #include <rendInst/rendInstGen.h>
 #include <landMesh/lmeshManager.h>
@@ -78,6 +78,8 @@ struct NavMeshData
   eastl::unique_ptr<uint8_t[], DtFreer> navData;
 #endif
   int navDataSize = 0;
+  NavMeshType navMeshType = NMT_SIMPLE;
+  TiledNavMeshBuildSettings tiledBuildSettings;
 };
 
 static NavMeshData navMeshData[NMS_COUNT];
@@ -119,6 +121,13 @@ static NavMeshData &get_nav_mesh_data(int nav_mesh_idx)
 {
   G_ASSERT((unsigned int)(nav_mesh_idx) < NMS_COUNT);
   return navMeshData[nav_mesh_idx];
+}
+
+NavMeshType get_nav_mesh_type(int nav_mesh_idx) { return get_nav_mesh_data(nav_mesh_idx).navMeshType; }
+
+TiledNavMeshBuildSettings get_tiled_navmesh_build_settings(int nav_mesh_idx)
+{
+  return get_nav_mesh_data(nav_mesh_idx).tiledBuildSettings;
 }
 
 dtNavMesh *get_nav_mesh_ptr(int nav_mesh_idx) { return get_nav_mesh_data(nav_mesh_idx).navMesh; }
@@ -303,6 +312,8 @@ void clear_nav_mesh(int nav_mesh_idx, bool clear_nav_data)
     nmData.navData = decltype(nmData.navData)();
     nmData.navDataSize = 0;
     nmData.tcMeshProc.setLadders(nullptr);
+    nmData.navMeshType = NMT_SIMPLE;
+    nmData.tiledBuildSettings = TiledNavMeshBuildSettings();
   }
   if (nmData.navQuery)
     dtFreeNavMeshQuery(nmData.navQuery);
@@ -886,6 +897,8 @@ bool load_nav_mesh_ex(int nav_mesh_idx, const char *kind, IGenLoad &_crd, NavMes
 
   if (!create_nav_mesh(nav_mesh_idx))
     return false;
+  nmData.navMeshType = type;
+  nmData.tiledBuildSettings = TiledNavMeshBuildSettings();
 
   unsigned navDataSize = _crd.readInt();
   bool isBucketFormat = (type == NMT_TILECACHED) && (navDataSize == 0x80000000);
@@ -973,6 +986,7 @@ bool load_nav_mesh_ex(int nav_mesh_idx, const char *kind, IGenLoad &_crd, NavMes
   else if (type == NMT_TILED)
   {
     unsigned char *curPtr = &navDataLocal[0];
+    const unsigned char *endPtr = curPtr + navDataSize;
 #define INIT_BY_PTR(typ, name) \
   typ *name = (typ *)curPtr;   \
   curPtr += sizeof(typ);
@@ -1037,6 +1051,17 @@ bool load_nav_mesh_ex(int nav_mesh_idx, const char *kind, IGenLoad &_crd, NavMes
       }
       curPtr += *tileDataSize;
     }
+    if (endPtr - curPtr >= (intptr_t)sizeof(uint32_t))
+    {
+      uint32_t settingsSize = 0;
+      memcpy(&settingsSize, curPtr, sizeof(settingsSize));
+      if (settingsSize >= sizeof(uint32_t) && settingsSize <= (uint32_t)(endPtr - curPtr))
+      {
+        const size_t copySize = settingsSize < sizeof(nmData.tiledBuildSettings) ? settingsSize : sizeof(nmData.tiledBuildSettings);
+        memcpy(&nmData.tiledBuildSettings, curPtr, copySize);
+      }
+    }
+    nmData.tiledBuildSettings.size = sizeof(nmData.tiledBuildSettings);
     if (tile_check_cb) // Free whole data since we added only needed tiles `DT_TILE_FREE_DATA`
       navDataLocal = eastl::remove_cvref_t<decltype(navDataLocal)>{};
     nmData.navMesh->reconstructFreeList();
@@ -1281,7 +1306,7 @@ static Point3 get_poly_center(const dtMeshTile *tile, const dtPoly *poly);
 // req_first & req_second -- info via which polys_first & polys_second were calculated
 // req_first.end ougth to be equal req_second.start
 // resulting path is stored in polys_first
-inline FindPathResult smooth_concatenate_paths(dtNavMeshQuery *nav_query, FindRequest &req_first, FindRequest req_second,
+inline FindPathResult smooth_concatenate_paths(dtNavMeshQuery *nav_query, FindRequest &req_first, const FindRequest &req_second,
   const NavParams &nav_params, dtPolyRef *polys_first, const dtPolyRef *polys_second, int offset_first, int offset_second,
   const dtQueryFilter &filter, int max_path)
 {
@@ -1291,7 +1316,7 @@ inline FindPathResult smooth_concatenate_paths(dtNavMeshQuery *nav_query, FindRe
   {
     int numPolysTmp = req_first.numPolys - offset_first - 1;
     FindRequest auxReq = {Point3(), Point3(), req_first.includeFlags, req_first.excludeFlags, req_first.extents,
-      req_first.maxJumpUpHeight, 0, polys_first[numPolysTmp], polys_second[offset_second], req_first.areasCost};
+      req_first.maxJumpUpHeight, 0, polys_first[numPolysTmp], polys_second[offset_second]};
 
     const dtMeshTile *tile = nullptr;
     const dtPoly *poly = nullptr;
@@ -1350,22 +1375,13 @@ inline FindPathResult find_poly_path_curved(dtNavMeshQuery *nav_query, FindReque
   offset *= deflectionOffsetLen;
   const Point3 end = wishPos + offset;
 
+  // the segments below are only queried with the filter built above, their own area costs are never read
   FindRequest initialSegment = {
-    req.start,
-    start,
-    req.includeFlags,
-    req.excludeFlags,
-    req.extents,
-    req.maxJumpUpHeight,
-    0,
-    dtPolyRef(),
-    dtPolyRef(),
-    req.areasCost,
-  };
+    req.start, start, req.includeFlags, req.excludeFlags, req.extents, req.maxJumpUpHeight, 0, dtPolyRef(), dtPolyRef()};
   FindRequest movementSegment = {
-    start, end, req.includeFlags, req.excludeFlags, req.extents, req.maxJumpUpHeight, 0, dtPolyRef(), dtPolyRef(), req.areasCost};
+    start, end, req.includeFlags, req.excludeFlags, req.extents, req.maxJumpUpHeight, 0, dtPolyRef(), dtPolyRef()};
   FindRequest finalSegment = {
-    end, req.end, req.includeFlags, req.excludeFlags, req.extents, req.maxJumpUpHeight, 0, dtPolyRef(), dtPolyRef(), req.areasCost};
+    end, req.end, req.includeFlags, req.excludeFlags, req.extents, req.maxJumpUpHeight, 0, dtPolyRef(), dtPolyRef()};
 
   if (
     dtStatusFailed(nav_query->findNearestPoly(&initialSegment.start.x, &req.extents.x, &filter, &initialSegment.startPoly, nullptr)) ||
@@ -1571,10 +1587,11 @@ FindPathResult find_path_ex(int nav_mesh_idx, Tab<Point3> &path, FindRequest &re
 }
 
 FindPathResult find_path_ex(int nav_mesh_idx, const Point3 &start_pos, const Point3 &end_pos, Tab<Point3> &path, float dist_to_path,
-  float step_size, float slop, const CustomNav *custom_nav, const dag::Vector<Point2> &areasCost, int incl_flags, int excl_flags)
+  float step_size, float slop, const CustomNav *custom_nav, dag::ConstSpan<Point2> areasCost, int incl_flags, int excl_flags)
 {
   const Point3 extents(dist_to_path, FLT_MAX, dist_to_path);
-  FindRequest req = {start_pos, end_pos, incl_flags, excl_flags, extents, FLT_MAX, 0, dtPolyRef(), dtPolyRef(), areasCost};
+  FindRequest req = {start_pos, end_pos, incl_flags, excl_flags, extents, FLT_MAX, 0, dtPolyRef(), dtPolyRef()};
+  req.areasCost.assign(areasCost.begin(), areasCost.end());
   return find_path_ex(nav_mesh_idx, path, req, step_size, slop, custom_nav);
 }
 
@@ -1591,10 +1608,11 @@ FindPathResult findPath(Tab<Point3> &path, FindRequest &req, float step_size, fl
 }
 
 FindPathResult findPath(const Point3 &start_pos, const Point3 &end_pos, Tab<Point3> &path, float dist_to_path, float step_size,
-  float slop, const CustomNav *custom_nav, const dag::Vector<Point2> &areasCost, int incl_flags, int excl_flags)
+  float slop, const CustomNav *custom_nav, dag::ConstSpan<Point2> areasCost, int incl_flags, int excl_flags)
 {
   const Point3 extents(dist_to_path, FLT_MAX, dist_to_path);
-  FindRequest req = {start_pos, end_pos, incl_flags, excl_flags, extents, FLT_MAX, 0, dtPolyRef(), dtPolyRef(), areasCost};
+  FindRequest req = {start_pos, end_pos, incl_flags, excl_flags, extents, FLT_MAX, 0, dtPolyRef(), dtPolyRef()};
+  req.areasCost.assign(areasCost.begin(), areasCost.end());
   return findPath(path, req, step_size, slop, custom_nav);
 }
 
@@ -2277,12 +2295,13 @@ void init_path_corridor(dtPathCorridor &corridor) { corridor.init(max_path_size)
 
 inline NavQueryFilter init_request_filter(int nav_mesh_idx, const CorridorInput &inp, const CustomNav *custom_nav, FindRequest &req)
 {
-  req = {inp.start, inp.target, inp.includeFlags, inp.excludeFlags, inp.extents, inp.maxJumpUpHeight, 0, inp.startPoly, inp.targetPoly,
-    inp.areasCost};
+  // the costs are only needed by the filter, the request itself is queried through it
+  req = {
+    inp.start, inp.target, inp.includeFlags, inp.excludeFlags, inp.extents, inp.maxJumpUpHeight, 0, inp.startPoly, inp.targetPoly};
   NavQueryFilter filter(nav_mesh_idx, custom_nav, req.maxJumpUpHeight, false, inp.costAddition);
   filter.setIncludeFlags(req.includeFlags);
   filter.setExcludeFlags(req.excludeFlags);
-  filter.setAreasCost(req.areasCost);
+  filter.setAreasCost(inp.areasCost);
 
   return filter;
 }

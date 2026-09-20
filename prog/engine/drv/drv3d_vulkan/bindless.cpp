@@ -35,8 +35,11 @@ struct BindlessSetConfig
   VkDescriptorType type;
 };
 
+// descriptor types are the shader ABI (spirv::bindless), buffering is a driver-side choice
 BindlessSetConfig bindlessSetConfigs[spirv::bindless::MAX_SETS] = {
-  {true, VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE}, {false, VK_DESCRIPTOR_TYPE_SAMPLER}, {true, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER}};
+  {true, spirv::bindless::SET_DESCRIPTOR_TYPES[spirv::bindless::TEXTURE_DESCRIPTOR_SET_ACTUAL_INDEX]},
+  {false, spirv::bindless::SET_DESCRIPTOR_TYPES[spirv::bindless::SAMPLER_DESCRIPTOR_SET_ACTUAL_INDEX]},
+  {true, spirv::bindless::SET_DESCRIPTOR_TYPES[spirv::bindless::BUFFER_DESCRIPTOR_SET_ACTUAL_INDEX]}};
 
 } // namespace
 

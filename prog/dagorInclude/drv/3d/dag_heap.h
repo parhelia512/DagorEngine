@@ -10,6 +10,7 @@
 #include <drv/3d/dag_resource.h>
 #include <drv/3d/dag_d3dResource.h>
 #include <drv/3d/dag_resourceTag.h>
+#include <drv/3d/dag_multi_interface.h>
 
 class Sbuffer;
 class BaseTexture;
@@ -397,7 +398,7 @@ enum ResourceHeapCreateFlag
 /// A resource heap, is a memory heap for d3d resources, like textures and buffers.
 struct ResourceHeap;
 
-namespace d3d
+namespace d3d _MULTI_INTERFACE
 {
 /** \defgroup HeapD3D
  * @{
@@ -529,7 +530,7 @@ void deactivate_buffer(Sbuffer *buf, GpuPipeline gpu_pipeline = GpuPipeline::GRA
 void deactivate_texture(BaseTexture *tex, GpuPipeline gpu_pipeline = GpuPipeline::GRAPHICS);
 
 /** @}*/
-} // namespace d3d
+} // namespace d3d _MULTI_INTERFACE
 
 #if _TARGET_D3D_MULTI
 #include <drv/3d/dag_interface_table.h>

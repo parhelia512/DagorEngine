@@ -1,0 +1,17 @@
+Root    ?= ../../.. ;
+Module = voxelizedMedia ;
+Location = prog/gameLibs/$(Module) ;
+
+AddIncludes =
+  $(Root)/prog/gameLibs/publicInclude
+  $(Root)/$(Location)
+  $(Root)/$(Location)/shaders
+;
+
+UseProgLibs =
+  engine/lib3d
+;
+
+local AllSrcFolder_CPP = . ;
+
+include $(Root)/prog/gameLibs/build_module.jam ;

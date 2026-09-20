@@ -96,7 +96,9 @@ enum
 {
   VBLOCK_READONLY = 0x02,
   VBLOCK_WRITEONLY = 0x04,
-  VBLOCK_NOSYSLOCK = 0x08,  // for debugging
+  // hint to fail the lock instead of stalling while the GPU still uses the range; callers must handle a failed lock.
+  // It is only a hint: depending on the backend and on the resulting lock mode it is dropped and the lock stalls
+  VBLOCK_NOSYSLOCK = 0x08,
   VBLOCK_DISCARD = 0x10,    // discard buffer contents - they won't be read
   VBLOCK_NOOVERWRITE = 0x20 // no drawn vertexes will be overwritten
 };
@@ -134,11 +136,12 @@ enum
   CLEAR_TARGET = 1,
   CLEAR_ZBUFFER = 2,
   CLEAR_STENCIL = 4,
-  CLEAR_DISCARD_TARGET = 8, // Indicates the initial RT content will be completely overwritten and doesn't matter - optimization in
-                            // some APIs
-  CLEAR_DISCARD_ZBUFFER = 16,
-  CLEAR_DISCARD_STENCIL = 32,
-  CLEAR_DISCARD = CLEAR_DISCARD_TARGET | CLEAR_DISCARD_ZBUFFER | CLEAR_DISCARD_STENCIL
+
+  // Indicates the initial RT content will be completely overwritten and doesn't matter - optimization in some APIs
+  DISCARD_TARGET = 8,
+  DISCARD_ZBUFFER = 16,
+  DISCARD_STENCIL = 32,
+  DISCARD_ALL = DISCARD_TARGET | DISCARD_ZBUFFER | DISCARD_STENCIL
 };
 
 enum BLEND_FACTOR

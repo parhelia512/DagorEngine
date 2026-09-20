@@ -1,10 +1,15 @@
 // Copyright (C) Gaijin Games KFT.  All rights reserved.
 
+// TODO: if you see this code after 1 November 2026, remove it. The legacy GPU
+// path must not fire in production or anywhere else; it lives only until the
+// last mobile location is re-exported. Every hit reports, the forced-GPU
+// opt-in included: WTM ships that opt-in, so silence there hides the levels.
+
 // The GPU path: no CPU pixel work at all, the driver decodes each cell's
 // exported textures and land_weight_pack draws them into the atlas.
 // See lmeshWeightAtlasLegacy.h for why this file exists.
 
-#include <landMesh/lmeshWeightAtlas.h>
+#include "lmeshWeightAtlasInternal.h"
 #include <landMesh/lmeshManager.h>
 #include "lmeshWeightAtlasLegacy.h"
 #include <shaders/dag_postFxRenderer.h>
@@ -44,18 +49,13 @@ void LandWeightAtlas::setCellRecord(int index, const uint8_t *det_tex_ids, int n
 
 // renders the cell's pages from its legacy weight textures; the sampler clamp
 // extends the cell edge into the page border (no neighbor weights on this path)
-bool LandWeightAtlas::renderCell(int index, int num_tex, BaseTexture *tex1, BaseTexture *tex2, int src_size)
+bool LandWeightAtlas::renderCell(int index, int num_tex, BaseTexture *tex1, BaseTexture *tex2, int src_size, PostFxRenderer &pack)
 {
   if (!tex || !tex1 || uint32_t(index) >= uint32_t(cellsX * cellsY) || src_size <= 0)
     return false;
   const int srcSlot = land_weight_src_const_noVarId.get_int(), src2Slot = land_weight_src2_const_noVarId.get_int();
   if (srcSlot <= 0 || src2Slot <= 0)
-  {
-    logerr("land weight atlas: land_weight_pack is not in this shader dump, so the pages cannot be rendered");
     return false;
-  }
-  if (!packRenderer)
-    packRenderer = new PostFxRenderer("land_weight_pack");
 
   // cells with up to 4 landclasses ship no second texture; unbound reads as 0,
   // which is what those channels are worth. The sampler comes with the shader.
@@ -73,7 +73,7 @@ bool LandWeightAtlas::renderCell(int index, int num_tex, BaseTexture *tex1, Base
     const int firstCh = p * LAND_WEIGHT_CHANNELS_PER_PAGE;
     land_weight_pack_chVarId.set_float4(firstCh, firstCh + 1, firstCh + 2, 0);
     d3d::setview((page % pagesPerRow) * pageW, (page / pagesPerRow) * pageW, pageW, pageW, 0, 1);
-    packRenderer->render();
+    pack.render();
   }
   return true;
 }
@@ -81,8 +81,15 @@ bool LandWeightAtlas::renderCell(int index, int num_tex, BaseTexture *tex1, Base
 // pages are rendered from the legacy textures the driver decodes for us
 LandWeightAtlas *render_land_weight_atlas(dag::Span<Tab<uint8_t>> records, int cells_x, int cells_y, int tex_size, int elem_size)
 {
+  logerr("land weight atlas: legacy GPU path fired for %dx%d cells; it must not run anywhere, re-export the location", cells_x,
+    cells_y);
   static constexpr int HDR = LandMeshManager::DET_TEX_NUM + 8;
   int64_t reft = ref_time_ticks();
+  if (land_weight_src_const_noVarId.get_int() <= 0 || land_weight_src2_const_noVarId.get_int() <= 0)
+  {
+    logerr("land weight atlas: land_weight_pack is not in this shader dump, so the pages cannot be rendered");
+    return nullptr;
+  }
   eastl::unique_ptr<LandWeightAtlas> a(new LandWeightAtlas(cells_x, cells_y, elem_size, /*tex_cflg*/ 0));
   SmallTab<uint8_t, TmpmemAlloc> numTex;
   clear_and_resize(numTex, records.size());
@@ -97,6 +104,7 @@ LandWeightAtlas *render_land_weight_atlas(dag::Span<Tab<uint8_t>> records, int c
   if (!a->upload()) // sized to the pages the entries claimed, then rendered into
     return nullptr;
 
+  PostFxRenderer pack("land_weight_pack");
   d3d::GpuAutoLock gpuLock;
   SCOPE_RENDER_TARGET;
   SCOPE_VIEW_PROJ_MATRIX;
@@ -124,7 +132,7 @@ LandWeightAtlas *render_land_weight_atlas(dag::Span<Tab<uint8_t>> records, int c
       // The decision has to happen before del_d3dres(), which nulls what it frees.
       decoded &= bool(t2);
     }
-    const bool packed = decoded && a->renderCell(i, numTex[i], t1, t2, tex_size);
+    const bool packed = decoded && a->renderCell(i, numTex[i], t1, t2, tex_size, pack);
     del_d3dres(t1);
     del_d3dres(t2);
     if (!decoded)

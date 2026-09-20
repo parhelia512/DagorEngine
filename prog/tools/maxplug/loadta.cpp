@@ -4,6 +4,7 @@
 #include <stdio.h>
 #include <vector>
 #include <string>
+#include <format>
 #include <fstream>
 #include <filesystem>
 #include "loadta.h"
@@ -165,7 +166,7 @@ struct StopParser
 static const wchar_t *errmsg;
 static int errln, errcol;
 
-std::wstring TexAnimFile::getlasterr() { return format_str(L"(line %d, col %d): %s", errln, errcol, errmsg); }
+std::wstring TexAnimFile::getlasterr() { return std::format(L"(line {}, col {}): {}", errln, errcol, errmsg); }
 
 static void error(const wchar_t *msg)
 {

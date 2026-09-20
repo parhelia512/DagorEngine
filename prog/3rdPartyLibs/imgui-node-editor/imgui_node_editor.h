@@ -112,6 +112,11 @@ struct Config
     // group. Default false preserves the historic strict-contain behaviour for callers that
     // have not asked for the looser test.
     bool                    ContainGroupedNodesByCenter;
+    // MODIFICATION BY GAIJIN
+    // Opt-in: when true, the box selection rect is drawn above the node and link channels
+    // instead of just above the grid, so it reads as a marquee over the graph. Default false
+    // keeps the historic order for callers that have not asked for it.
+    bool                    DrawSelectionRectOnTop;
 
     Config()
         : SettingsFile("NodeEditor.json")
@@ -129,6 +134,7 @@ struct Config
         , NavigateButtonIndex(1)
         , ContextMenuButtonIndex(1)
         , ContainGroupedNodesByCenter(false)
+        , DrawSelectionRectOnTop(false)
     {
     }
 };

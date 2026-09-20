@@ -94,8 +94,9 @@ shader distant_fog_raymarch_cs
 {
   INIT_AND_USE_ON_TOP_CAMERA_IN_CAMERA(cs)
 
-  supports global_const_block;
   (cs) {
+    from_sun_direction@f3 = from_sun_direction;
+    sun_color_0@f3 = sun_color_0;
     inv_volfog_froxel_volume_res@f3 = (inv_volfog_froxel_volume_res.x,inv_volfog_froxel_volume_res.y,inv_volfog_froxel_volume_res.z,0)
     distant_fog_local_view_z@f3 = distant_fog_local_view_z;
     distant_fog_raymarch_resolution@f4 = distant_fog_raymarch_resolution;

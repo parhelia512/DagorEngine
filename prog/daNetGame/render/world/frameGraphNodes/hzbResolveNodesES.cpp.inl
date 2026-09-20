@@ -8,7 +8,7 @@
 #include <daECS/core/entityManager.h>
 #include <daECS/core/entitySystem.h>
 
-#include <render/world/cameraParams.h>
+#include <render/cameraParams.h>
 #include <render/world/frameGraphHelpers.h>
 #include <render/world/cameraViewVisibilityManager.h>
 #include <render/daFrameGraph/daFG.h>

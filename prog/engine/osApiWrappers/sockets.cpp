@@ -261,7 +261,7 @@ int os_socket_send(os_socket_t s, const char *buf, int len, int flags) { return 
 int os_socket_set_option(os_socket_t s, OsSocketOption option, intptr_t value)
 {
   int r = 0;
-  switch (option)
+  switch (option) //-V785 OsSocketOption has a single value for now
   {
     case OSO_NONBLOCK:
     {

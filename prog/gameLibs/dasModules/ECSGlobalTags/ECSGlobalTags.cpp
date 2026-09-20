@@ -2,10 +2,24 @@
 
 #include <daScript/daScript.h>
 #include <dasModules/dasModulesCommon.h>
+#include <dasModules/aotEcs.h>
 #include <dasModules/aotECSGlobalTags.h>
+#include <dasModules/aotECSGlobalTagsDas.h>
 
 namespace bind_dascript
 {
+bool ecs_has_tag_in_context(const char *tag, das::Context *context)
+{
+  if (!tag)
+    return false;
+  ecs::EntityManager *mgr = nullptr;
+  if (EsContext *esCtx = context ? safe_cast_es_context(context) : nullptr)
+    mgr = esCtx->mgr;
+  if (mgr)
+    return ecs_has_tag_in_mgr(tag, *mgr);
+  return ecs_has_global_tag(tag);
+}
+
 class ECSGlobalTagsModule final : public das::Module
 {
 public:
@@ -14,14 +28,14 @@ public:
     das::ModuleLibrary lib(this);
     addBuiltinDependency(lib, require("ecs"));
 
-    das::addExtern<DAS_BIND_FUN(ecs_has_tag)>(*this, lib, "ecs_has_tag", das::SideEffects::accessExternal,
-      "bind_dascript::ecs_has_tag");
+    das::addExtern<DAS_BIND_FUN(ecs_has_tag_in_context)>(*this, lib, "ecs_has_tag", das::SideEffects::accessExternal,
+      "bind_dascript::ecs_has_tag_in_context");
 
     verifyAotReady();
   }
   virtual das::ModuleAotType aotRequire(das::TextWriter &tw) const override
   {
-    tw << "#include <dasModules/aotECSGlobalTags.h>\n";
+    tw << "#include <dasModules/aotECSGlobalTagsDas.h>\n";
     return das::ModuleAotType::cpp;
   }
 };

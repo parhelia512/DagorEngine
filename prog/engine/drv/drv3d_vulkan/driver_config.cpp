@@ -408,6 +408,14 @@ void DriverConfig::configurePerDeviceDriverFeatures()
       debug("vulkan: XeSS disabled by per-driver config");
   }
 
+  {
+    // TODO: ban attribute read path due to difference between drivers and special requirements
+    // that we don't check and some of them can't checked
+    // rewrite shaders with workarounds and try enabling this feature back
+    bits.allowBarycentrics = getPerDriverPropertyBlock("barycentrics")->getBool("allow", false);
+    debug("vulkan: hardware barycentrics %s", bits.allowBarycentrics ? "allowed" : "disallowed");
+  }
+
   bits.brokenClearsOnNonLinearUAVRT =
     getPerDriverPropertyBlock("brokenClearsOnNonLinearUAVRT")->getBool("affected", Globals::VK::phy.vendor == GpuVendor::AMD);
   if (bits.brokenClearsOnNonLinearUAVRT)
@@ -423,30 +431,34 @@ void DriverConfig::configurePerDeviceDriverFeatures()
 
   signalWaitStage =
     (VkPipelineStageFlags)getPerDriverPropertyBlock("signalWaitStage")->getInt("value", VK_PIPELINE_STAGE_ALL_COMMANDS_BIT);
+  if (!Globals::VK::phy.hasAccelerationStructure)
+    signalWaitStage &= ~(VK_PIPELINE_STAGE_ACCELERATION_STRUCTURE_BUILD_BIT_KHR);
   if (signalWaitStage != VK_PIPELINE_STAGE_ALL_COMMANDS_BIT)
     debug("vulkan: using signal wait stage %s", formatPipelineStageFlags(signalWaitStage));
 }
 
 const DataBlock *DriverConfig::getPerDriverPropertyBlock(const char *prop_name)
 {
-  const DataBlock *propsBlk = ::dgs_get_settings()
-                                ->getBlockByNameEx("vulkan")
-                                ->getBlockByNameEx("vendor")
-                                ->getBlockByNameEx(Globals::VK::phy.vendorName)
-                                ->getBlockByNameEx("driverProps")
-                                ->getBlockByNameEx(prop_name);
+  const DataBlock *vendorsBlk = ::dgs_get_settings()->getBlockByNameEx("vulkan")->getBlockByNameEx("vendor");
+  // master debug override
+  const DataBlock *ret = vendorsBlk->getBlockByNameEx("override")->getBlockByNameEx(prop_name);
+
+  if (ret != &DataBlock::emptyBlock)
+    return ret;
+
+  const DataBlock *propsBlk = vendorsBlk->getBlockByNameEx(Globals::VK::phy.vendorName)->getBlockByNameEx(prop_name);
 
   uint32_t drvMajor = Globals::VK::phy.driverVersionDecoded[0];
   uint32_t drvMinor = Globals::VK::phy.driverVersionDecoded[1];
   uint32_t drvVerMax = 0x7FFFFFFF;
 
-  const DataBlock *ret = &DataBlock::emptyBlock;
-  dblk::iterate_child_blocks_by_name(*propsBlk, "entry", [&](const DataBlock &entry) {
+  dblk::iterate_child_blocks(*propsBlk, [&](const DataBlock &entry) {
     bool fitsMin = drvMajor >= entry.getInt("driverMinVer0", 0) && drvMinor >= entry.getInt("driverMinVer1", 0);
     bool fitsMax = drvMajor <= entry.getInt("driverMaxVer0", drvVerMax) && drvMinor <= entry.getInt("driverMaxVer1", drvVerMax);
 
     bool fitsType = true;
     bool gpuMatch = true;
+    bool gpuMaskMatch = true;
     bool driverInfoMatch = true;
     if (entry.paramExists("hwType"))
       fitsType = Globals::VK::phy.properties.deviceType == entry.getInt("hwType", 0);
@@ -463,6 +475,13 @@ const DataBlock *DriverConfig::getPerDriverPropertyBlock(const char *prop_name)
       });
     }
 
+    if (entry.paramExists("gpuMask"))
+    {
+      gpuMaskMatch = false;
+      dblk::iterate_params_by_name(entry, "gpuMask",
+        [&](int idx, int, int) { gpuMaskMatch |= strstr(Globals::VK::phy.properties.deviceName, entry.getStr(idx)) != NULL; });
+    }
+
     if (entry.paramExists("driverInfo"))
     {
       driverInfoMatch = false;
@@ -473,22 +492,44 @@ const DataBlock *DriverConfig::getPerDriverPropertyBlock(const char *prop_name)
 #endif
     }
 
-    if (fitsMin && fitsMax && gpuMatch && driverInfoMatch && fitsType)
-      ret = entry.getBlockByNameEx("data");
+    if (fitsMin && fitsMax && gpuMatch && driverInfoMatch && fitsType && gpuMaskMatch)
+    {
+      if (ret != &DataBlock::emptyBlock)
+      {
+        // ensure that config always selects single block for exact device
+        if (!entry.paramExists("priority") || !ret->paramExists("priority"))
+        {
+          D3D_ERROR("vulkan: per driver property \"%s\" entry overlap with other entry without priority for vendor %s", prop_name,
+            Globals::VK::phy.vendorName);
+          return;
+        }
+
+        int refPrio = ret->getInt("priority", 0);
+        int prio = entry.getInt("priority", 0);
+        if (refPrio == prio)
+        {
+          D3D_ERROR("vulkan: per driver property \"%s\" entry overlap with other entry with same priority %u for vendor %s", prop_name,
+            prio, Globals::VK::phy.vendorName);
+          return;
+        }
+        if (refPrio > prio)
+          return;
+      }
+      ret = &entry;
+    }
   });
 
   if (ret == &DataBlock::emptyBlock)
   {
-    const DataBlock *defaultBlock =
-      ::dgs_get_settings()->getBlockByNameEx("vulkan")->getBlockByNameEx("vendor")->getBlockByNameEx("default");
+    const DataBlock *defaultBlock = vendorsBlk->getBlockByNameEx("default");
 
-    ret = defaultBlock->getBlockByNameEx(::get_host_platform_string())->getBlockByNameEx("driverProps")->getBlockByNameEx(prop_name);
+    ret = defaultBlock->getBlockByNameEx(::get_host_platform_string())->getBlockByNameEx(prop_name);
 
     if (ret == &DataBlock::emptyBlock)
-    {
-      ret = defaultBlock->getBlockByNameEx("driverProps")->getBlockByNameEx(prop_name);
-    }
+      ret = defaultBlock->getBlockByNameEx(prop_name);
   }
+  else
+    ret = ret->getBlockByNameEx("data");
 
   return ret;
 }
@@ -921,9 +962,14 @@ void DriverConfig::extCapsFillUniversal(DriverDesc &caps)
   if (!Globals::VK::phy.deviceReportsOpacityMicromap)
     dropShaderModel(6.7_sm);
 
-  // SM 6.7: QuadAny/QuadAll (VK_KHR_shader_quad_control) - this extends existing quad
+  // SM 6.7
+  // QuadAny/QuadAll (VK_KHR_shader_quad_control) - this extends existing quad
   // subgroup operations, it doesn't provide them on its own
-  if (!(Globals::VK::phy.hasShaderQuadControl && hasRequiredWaveOps))
+  //
+  // Assume maximal reconvergence semantics (as DXIL/HLSL do). Without
+  // VK_KHR_shader_maximal_reconvergence the SPIR-V wave intrinsics have weaker reconvergence
+  // guarantees, so shaders compiled with the MaximalReconvergenceKHR execution mode can't be relied on.
+  if (!(Globals::VK::phy.hasShaderQuadControl && Globals::VK::phy.hasShaderMaximalReconvergence && hasRequiredWaveOps))
     dropShaderModel(6.6_sm);
 
   // dynamic/bindless resource indexing
@@ -942,7 +988,7 @@ void DriverConfig::extCapsFillUniversal(DriverDesc &caps)
     dropShaderModel(6.1_sm);
 
   // SV_Barycentrics
-  caps.caps.hasBarycentrics = Globals::VK::phy.hasFragmentShaderBarycentric;
+  caps.caps.hasBarycentrics = Globals::VK::phy.hasFragmentShaderBarycentric && bits.allowBarycentrics;
   if (!Globals::VK::phy.hasFragmentShaderBarycentric)
     dropShaderModel(6.0_sm);
 

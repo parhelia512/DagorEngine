@@ -661,18 +661,21 @@ public:
     if (dshlBindump != INVALID_BINDUMP_HANDLE)
     {
       ensureDshlElem(*texgen_get_logger(&texGen));
-      uint32_t program = BAD_PROGRAM;
-      ShaderStateBlockId stateBlk;
-      shaders::RenderStateId rstate;
-      shaders::ConstStateIdx cstate;
-      shaders::TexStateIdx tstate;
-      if (!dshlElem || get_dynamic_variant_states(dshlElem->native(), program, stateBlk, rstate, cstate, tstate) < 0 ||
-          program == BAD_PROGRAM)
+      bool setProgram = false;
+      if (dshlElem)
+      {
+        shaders::CombinedDynVariantState dynVarState = get_dynamic_variant_states(dshlElem->native());
+        if (is_valid(dynVarState) && dynVarState.program != BAD_PROGRAM)
+        {
+          d3d::set_program(dynVarState.program);
+          setProgram = true;
+        }
+      }
+      if (!setProgram)
       {
         texgen_get_logger(&texGen)->log(LOGLEVEL_ERR, String(128, "texgen dshl: no program for variant <%s>", dshlVariant.c_str()));
         return false;
       }
-      d3d::set_program(program);
     }
     else
     {
@@ -885,7 +888,6 @@ bool add_pixel_shader_texgen(const DataBlock &shaders, TextureGenerator *texGen)
     return false;
 
   DynamicMemGeneralSaveCB mem(tmpmem, 2048);
-  String resultShader;
   for (int i = 0; i < shaders.blockCount(); ++i)
   {
     const DataBlock *shaderBlock = shaders.getBlock(i);

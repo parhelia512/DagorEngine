@@ -7,12 +7,12 @@ async function consume(fut) { try { let _ = await fut } catch (_) {} }
 
 let r = Future()
 r.reject()
-print("faulted state: " + r.getState() + "\n")             // faulted
-print("getValue is null: " + (r.getValue() == null) + "\n") // true
+println($"faulted state: {r.getState()}")                  // faulted
+println($"getValue is null: {r.getValue() == null}") // true
 consume(r)   // mark the fault handled
 
 let p = Future()
-print("pending state: " + p.getState() + "\n")             // pending
+println($"pending state: {p.getState()}")                  // pending
 try { let _ = p.getValue(); print("BUG: pending no throw\n") }
 catch (_) { print("pending getValue throws\n") }
 

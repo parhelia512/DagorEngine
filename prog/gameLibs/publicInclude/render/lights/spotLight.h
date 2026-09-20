@@ -22,6 +22,7 @@ struct SpotLight
   float culling_radius;
   float shadowTanHalfAngle = -1.f;
   float shadowFrustumOffset = 0.f;
+  float sourceRadius = 0.f;
   Point2 shadowNearFarClippingPlanes = Point2::ZERO;
   bool shadows = false;
   bool contactShadows = false;
@@ -75,6 +76,7 @@ struct SpotLight
   }
   void setRadius(float rad) { pos_radius.w = rad; }
   void setCullingRadius(float rad) { culling_radius = rad; }
+  void setSourceRadius(float radius) { sourceRadius = radius; }
   void setColor(const Color3 &c)
   {
     color_atten.r = c.r;

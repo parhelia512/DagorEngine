@@ -37,6 +37,8 @@ struct BackendInterop
   std::atomic<bool> blockingPipelineCompilation{false};
   // out-of-arch passing of primary swapchain vsync status for streamline workaround
   std::atomic<bool> isVsyncOnPrimarySwapchain{false};
+  // frames the swapchain presented for the last finished frame (>1 with frame generation), written after present
+  std::atomic<uint32_t> lastPresentedFrameCount{1};
 
 
   struct PendingGPUWork

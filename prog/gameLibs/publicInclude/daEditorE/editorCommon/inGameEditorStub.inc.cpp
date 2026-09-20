@@ -19,4 +19,5 @@ EntityObjEditor *get_entity_obj_editor() { return nullptr; }
 bool has_in_game_editor() { return false; }
 void da_editor4_setup_scene(const char *) {}
 void register_editor_script(SqModules *) {}
+void unregister_editor_script(HSQUIRRELVM) {}
 void entity_obj_editor_for_each_entity(EntityObjEditor &, eastl::fixed_function<sizeof(void *), void(EntityObj *)>) {}

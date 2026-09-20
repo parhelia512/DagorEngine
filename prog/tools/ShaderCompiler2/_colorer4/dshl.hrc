@@ -29,8 +29,8 @@
            region="dComment" region00="dpOpenStruct" region10="dpCloseStruct"/>
 
    <regexp match='/\b[a-zA-Z_]\w*\s*(@)(f[1234]|(44))\B/' region1="dKeyword" region2="dString"/>
-   <regexp match='/\b[a-zA-Z_]\w*\s*(@)((c?buf)|(tex)|(shd))\B/' region1="dKeyword" region2="dString"/>
-   <regexp match='/\b[a-zA-Z_]\w*\s*(@)(smp((2d)|(3d)|(Array)|(Cube)|(CubeArray)))\B/' region1="dKeyword" region2="dString"/>
+   <regexp match='/\b[a-zA-Z_]\w*\s*(@)((c?buf)|(tex))\B/' region1="dKeyword" region2="dString"/>
+   <regexp match='/\b[a-zA-Z_]\w*\s*(@)(smp((2d)|(3d)|(Array)))\B/' region1="dKeyword" region2="dString"/>
    <regexp match='/\b[a-zA-Z_]\w*\s*(@)([vpc]s[fib]\B)/' region1="dKeyword" region2="dString"/>
    <keywords region="dHlslPreProc2">
       <word name="immediate_dword_count"/>

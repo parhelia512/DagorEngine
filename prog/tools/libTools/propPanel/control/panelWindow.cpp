@@ -3,6 +3,7 @@
 #include <propPanel/control/contextMenu.h>
 #include <propPanel/control/panelWindow.h>
 #include <propPanel/focusHelper.h>
+#include <propPanel/imguiHelper.h>
 #include <ioSys/dag_dataBlock.h>
 #include <imgui/imgui_internal.h>
 #include <ska_hash_map/flat_hash_map2.hpp>
@@ -240,6 +241,8 @@ void PanelWindowPropertyControl::updateImgui()
       middleMouseDragWindow = nullptr;
     }
   }
+
+  ImguiHelper::hookWindowScrollbarsForTestRuntime();
 }
 
 } // namespace PropPanel

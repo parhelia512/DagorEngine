@@ -46,15 +46,16 @@ void BhvRecalcHandler::onRecalcLayout(Element *elem)
     const char *key = "BhvRecalcHandler:initial";
     bool initial = elem->props.storage.RawGetSlotValue(key, true);
 
+    Sqrat::Object elemRef = elem->getRef(vm);
+    BaseScriptHandler *handler;
     if (nparams == 1)
-      scene->queueScriptHandler(new ScriptHandlerSqFunc<>(f));
+      handler = new ScriptHandlerSqFunc<>(f);
     else if (nparams == 2)
-      scene->queueScriptHandler(new ScriptHandlerSqFunc<bool>(f, initial));
+      handler = new ScriptHandlerSqFunc<bool>(f, initial);
     else
-    {
-      Sqrat::Object elemRef = elem->getRef(vm);
-      scene->queueScriptHandler(new ScriptHandlerSqFunc<bool, Sqrat::Object>(f, initial, elemRef));
-    }
+      handler = new ScriptHandlerSqFunc<bool, Sqrat::Object>(f, initial, elemRef);
+    handler->requiredElem = elemRef;
+    scene->queueScriptHandler(handler);
 
     elem->props.storage.SetValue(key, false);
   }

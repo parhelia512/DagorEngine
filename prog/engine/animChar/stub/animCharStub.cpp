@@ -10,6 +10,8 @@ namespace AnimV20
 int addEnumValue(const char *) { G_ASSERT_RETURN(false, 0); }
 int getEnumValueByName(const char *) { G_ASSERT_RETURN(false, 0); }
 const char *getEnumName(int) { G_ASSERT_RETURN(false, ""); }
+float AnimData::getDuration() const { G_ASSERT_RETURN(false, 0.f); }
+bool AnimData::sampleNodeTm(dag::Index16, float, TMatrix &) const { G_ASSERT_RETURN(false, false); }
 AnimV20::AnimGraphStateHolder::AnimGraphStateHolder(const AnimGraphStateHolder &st) :
   graph(st.graph),
   paramNames(st.paramNames),

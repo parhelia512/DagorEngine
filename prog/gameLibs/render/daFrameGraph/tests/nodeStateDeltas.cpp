@@ -86,7 +86,20 @@ struct DeltaCalculatorFixture
     for (auto idx : changed_nodes)
       nodesChanged.set(idx, true);
     IdIndexedFlags<dafg::intermediate::ResourceIndex, framemem_allocator> resourcesChanged(totalRes, false);
-    calc->calculatePerNodeStateDeltas(result, events, nodesChanged, resourcesChanged);
+    calc->calculatePerNodeStateDeltas(result, events, nodesChanged, resourcesChanged, resourcesChanged);
+  }
+
+  void compileWithRequestChanges(std::initializer_list<dafg::intermediate::ResourceIndex> changed_requests)
+  {
+    FRAMEMEM_REGION;
+    const uint32_t totalNodes = graph.nodes.totalKeys();
+    const uint32_t totalRes = graph.resources.totalKeys();
+    IdIndexedFlags<dafg::intermediate::NodeIndex, framemem_allocator> nodesChanged(totalNodes, false);
+    IdIndexedFlags<dafg::intermediate::ResourceIndex, framemem_allocator> resourcesChanged(totalRes, false);
+    IdIndexedFlags<dafg::intermediate::ResourceIndex, framemem_allocator> requestsChanged(totalRes, false);
+    for (auto idx : changed_requests)
+      requestsChanged.set(idx, true);
+    calc->calculatePerNodeStateDeltas(result, events, nodesChanged, resourcesChanged, requestsChanged);
   }
 
   void removeNode(dafg::intermediate::NodeIndex idx)
@@ -105,6 +118,31 @@ struct DeltaCalculatorFixture
 };
 
 } // namespace
+
+TEST_CASE("a request change alone dirties the requesting node's delta", "[stateDeltas][incremental]")
+{
+  DeltaCalculatorFixture f;
+
+  constexpr int FRAME_BLOCK = 42;
+  const auto tex = static_cast<dafg::intermediate::ResourceIndex>(0);
+  f.graph.resources.emplaceAt(tex);
+
+  [[maybe_unused]] auto a = f.addNode("a", -1);
+  auto b = f.addNode("b", -1);
+  f.graph.nodes[b].resourceRequests.push_back({tex, {}, false});
+  f.finalize();
+  f.compile();
+
+  REQUIRE(f.result.isMapped(b));
+  CHECK(!f.result[b].shaderBlockLayers.frameLayer.has_value());
+
+  f.graph.nodeStates[b].shaderBlockLayers.frameLayer = FRAME_BLOCK;
+  f.compileWithRequestChanges({tex});
+
+  REQUIRE(f.result.isMapped(b));
+  REQUIRE(f.result[b].shaderBlockLayers.frameLayer.has_value());
+  CHECK(*f.result[b].shaderBlockLayers.frameLayer == FRAME_BLOCK);
+}
 
 TEST_CASE("removed mid-schedule node dirties the new successor's delta", "[stateDeltas][incremental]")
 {
@@ -138,7 +176,7 @@ TEST_CASE("removed mid-schedule node dirties the new successor's delta", "[state
   CHECK(!f.result[d].shaderBlockLayers.frameLayer.has_value());
 
   // Now remove C. We deliberately do NOT report any node as changed: in the real flow
-  // apply_node_remap leaves D at its previous slot (try_remap_node_order preserves prev
+  // apply_node_remap leaves D at its previous slot (remap_node_order preserves prev
   // positions when it can) and does not propagate the removed node's change flag, so
   // nothing in nodes_changed reaches DeltaCalculator either.
   f.removeNode(c);
@@ -325,13 +363,11 @@ TEST_CASE("appending a node updates dst sentinel and the new node's delta", "[st
 
 TEST_CASE("shrinking the graph does not trip OOB on stale result keys", "[stateDeltas][incremental]")
 {
-  // Reproduces a crash that happens when IR builder's apply_node_remap hits its
-  // fallback path (remap failed -> graph.{nodes,nodeStates,nodeNames}.clear(), then
-  // re-emplace with a dense mapping). After that, graph.nodeStates.totalKeys() shrinks,
-  // but the cached `result` from the previous compile still holds entries at higher
-  // indices. The dirty-detection pass then indexes dirtyDeltas[key] with those stale
-  // keys, which is out of bounds now that dirtyDeltas is sized to the new (smaller)
-  // totalKeys.
+  // Stresses DeltaCalculator with a graph that shrinks between compiles:
+  // graph.nodeStates.totalKeys() goes down, but the cached `result` from the previous
+  // compile still holds entries at higher indices. The dirty-detection pass then
+  // indexes dirtyDeltas[key] with those stale keys, which is out of bounds now that
+  // dirtyDeltas is sized to the new (smaller) totalKeys.
   DeltaCalculatorFixture f;
 
   constexpr int FRAME_BLOCK = 42;
@@ -347,8 +383,8 @@ TEST_CASE("shrinking the graph does not trip OOB on stale result keys", "[stateD
   // Sanity: result has entries across all five slots (four users + dst sentinel).
   REQUIRE(f.result.isMapped(static_cast<dafg::intermediate::NodeIndex>(4)));
 
-  // Simulate apply_node_remap's fallback: clear the graph entirely and re-populate
-  // with fewer nodes. DeltaCalculator's class members (cachedForcePassBreak,
+  // Clear the graph entirely and re-populate with fewer nodes.
+  // DeltaCalculator's class members (cachedForcePassBreak,
   // firstActivationPosition, ...) are preserved across this, which matches production
   // (the DeltaCalculator instance itself is long-lived).
   f.graph.nodes.clear();
@@ -360,12 +396,8 @@ TEST_CASE("shrinking the graph does not trip OOB on stale result keys", "[stateD
   [[maybe_unused]] auto newA = f.addNode("a", -1);
   f.finalize();
 
-  // This compile should not crash / OOB. The old result entries at slots 2..4 need to
-  // be handled cleanly even though they now sit beyond graph.nodeStates.totalKeys().
   f.compile();
 
-  // After the shrink the single user node and the dst sentinel should both have valid,
-  // freshly-computed deltas.
   REQUIRE(f.result.isMapped(newA));
   REQUIRE(f.result.isMapped(f.dstSentinelIndex()));
 }

@@ -489,9 +489,10 @@ namespace drv3d_metal
     sub_texture = texture;
     bool no_srgb = (base->cflg & TEXCF_UNORDERED) && (base->cflg & TEXCF_SRGBREAD) && format2Metal(base->base_format) != base->metal_format;
     if (no_srgb)
-      sub_texture_no_srgb = [texture newTextureViewWithPixelFormat : format2Metal(base->base_format)];
+      texture_no_srgb = [texture newTextureViewWithPixelFormat : format2Metal(base->base_format)];
     else
-      sub_texture_no_srgb = texture;
+      texture_no_srgb = [texture retain];
+    sub_texture_no_srgb = texture_no_srgb;
 
     bool as_uint = (base->cflg & TEXCF_UNORDERED) && canAliasToUint(base->base_format & TEXFMT_MASK);
     if (as_uint)
@@ -569,7 +570,13 @@ namespace drv3d_metal
     g_textures.unlock();
     tid = drv3d_generic::BAD_HANDLE;
 
-    delete this;
+    if (immediate)
+      delete this;
+    else
+    {
+      std::lock_guard<std::mutex> scopedLock(render.delete_lock);
+      render.resources2delete.push_back({ .type = Render::DeletedResource::Type::ApiTexture, .submit = render.submits_scheduled, .apiTexture = this });
+    }
   }
 
   void Texture::ApiTexture::applyName(const char *name)
@@ -599,8 +606,8 @@ namespace drv3d_metal
     if (apiTex)
     {
       String tname;
-      if (heap_offset != ~0u)
-        tname.printf(0, "o %llu - %s", heap_offset, name);
+      if (apiTex->heap_offset != ~0u)
+        tname.printf(0, "o %llu - %s", apiTex->heap_offset, name);
       else
         tname.printf(0, "%s", name);
       apiTex->applyName(tname);
@@ -784,6 +791,13 @@ namespace drv3d_metal
     setName(name);
     check_texture_srgb_format(flg, name);
 
+    width = desc.width;
+    height = desc.height;
+    depth = desc.depth;
+    samples = desc.sampleCount;
+    mipLevels = desc.mipmapLevelCount;
+    start_level = 0;
+
     cflg = flg;
     metal_type = desc.textureType;
     if (metal_type == MTLTextureType2D)
@@ -793,16 +807,15 @@ namespace drv3d_metal
     else if (metal_type == MTLTextureTypeCube)
       type = D3DResourceType::CUBETEX;
     else if (metal_type == MTLTextureTypeCubeArray)
+    {
       type = D3DResourceType::CUBEARRTEX;
+      depth = desc.arrayLength;
+    }
     else if (metal_type == MTLTextureType2DArray)
+    {
       type = D3DResourceType::ARRTEX;
-
-    width = desc.width;
-    height = desc.height;
-    depth = desc.depth;
-    samples = desc.sampleCount;
-    mipLevels = desc.mipmapLevelCount;
-    start_level = 0;
+      depth = desc.arrayLength;
+    }
 
     base_format = flg & TEXFMT_MASK;
 
@@ -909,7 +922,6 @@ namespace drv3d_metal
 
     Texture* other = getbasetex(other_tex);
     G_ASSERT_RETURN(other, );
-
     G_ASSERT(lockFlags == 0 && other->lockFlags == 0);
 
     std::swap(apiTex, other->apiTex);
@@ -1314,21 +1326,6 @@ namespace drv3d_metal
     render.acquireOwnership();
     render.copyTex((Texture*)src, this);
     render.releaseOwnership();
-    return 1;
-  }
-
-  int Texture::updateSubRegion(BaseTexture* src,
-                          int src_subres_idx, int src_x, int src_y, int src_z, int src_w, int src_h, int src_d,
-                          int dest_subres_idx, int dest_x, int dest_y, int dest_z)
-  {
-    D3D_CONTRACT_ASSERT(!isStub());
-
-    if (!validate_update_sub_region_params(src, src_subres_idx, src_x, src_y, src_z, src_w, src_h, src_d,
-           this, dest_subres_idx, dest_x, dest_y, dest_z))
-      return 0;
-
-    render.copyTexRegion((Texture*)src, src_subres_idx, src_x, src_y, src_z, src_w, src_h, src_d,
-                         this, dest_subres_idx, dest_x, dest_y, dest_z);
     return 1;
   }
 

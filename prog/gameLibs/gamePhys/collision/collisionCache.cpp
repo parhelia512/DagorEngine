@@ -6,17 +6,39 @@
 #include <math/dag_Point2.h>
 #include <math/dag_mathUtils.h>
 #include <math/integer/dag_IPoint2.h>
-#include <gameMath/traceUtils.h>
+#include <rendInst/traceUtils.h>
 #include <perfMon/dag_statDrv.h>
 #include <rendInst/rendInstCollision.h>
 #include <landMesh/lmeshManager.h>
 #include <landMesh/landRayTracerSoA4.h>
 #include <heightmap/heightmapHandler.h>
-#include <sceneRay/dag_sceneRay.h>
-#include <sceneRay/dag_cachedRtVecFaces.h>
+#include <gameRes/dag_collisionResource.h>
 #include <physMap/physMap.h>
 #include <physMap/physMatSwRenderer.h>
 #include "collisionGlobals.h"
+
+bool dacoll::append_static_collision_tris(bbox3f_cref box, vec4f *out_tris, int &left)
+{
+  const CollisionResource *res = get_static_collision_resource();
+  if (!res)
+    return false;
+  const bool overflow = res->visitTrianglesInBox(box, CollisionNode::TRACEABLE, [&](vec3f a, vec3f b, vec3f c, int mat, int) {
+    if (left <= 0)
+      return true;
+    out_tris[0] = v_perm_xyzd(a, v_cast_vec4f(v_splatsi(static_cache_pack_tri_mat(mat))));
+    out_tris[1] = v_sub(b, a);
+    out_tris[2] = v_sub(c, a);
+    out_tris += 3;
+    --left;
+    return false;
+  });
+  return !overflow;
+}
+
+int dacoll::resolve_static_cache_tri_mat(int packed_w)
+{
+  return (packed_w & STATIC_CACHE_TRI_MAT_TAG) ? (packed_w & STATIC_CACHE_TRI_MAT_MASK) : -1;
+}
 
 static bool can_use_trace_cache(const bbox3f &query_box, const TraceMeshFaces *handle)
 {
@@ -97,19 +119,10 @@ void dacoll::validate_trace_cache(const bbox3f &query_box, const vec3f &expands,
   else
     handle->isLandmeshValid = false;
 
-  if (const StaticSceneRayTracer *sceneRay = dacoll::get_frt())
-  {
-    int leftForSceneRay = TraceMeshFaces::MAX_TRIANGLES_PER_SYSTEM;
-    handle->isStaticValid = sceneRay->getVecFacesCached(extBox, handle->triangles.data() + trianglesAdded * 3, leftForSceneRay);
-    int numTriangles = (TraceMeshFaces::MAX_TRIANGLES_PER_SYSTEM - leftForSceneRay);
-    if (handle->isStaticValid)
-    {
-      trianglesAdded += numTriangles;
-      left -= numTriangles;
-    }
-  }
-  else
-    handle->isStaticValid = false;
+  int leftForStatic = TraceMeshFaces::MAX_TRIANGLES_PER_SYSTEM;
+  handle->isStaticValid = append_static_collision_tris(extBox, handle->triangles.data() + trianglesAdded * 3, leftForStatic);
+  if (handle->isStaticValid)
+    left -= TraceMeshFaces::MAX_TRIANGLES_PER_SYSTEM - leftForStatic;
   handle->trianglesCount = handle->MAX_TRIANGLES - left;
 
   if (HeightmapHandler *heightMap = dacoll::get_lmesh() ? dacoll::get_lmesh()->getHmapHandler() : nullptr)

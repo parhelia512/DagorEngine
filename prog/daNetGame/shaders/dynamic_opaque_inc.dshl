@@ -22,6 +22,41 @@ interval disable_dynmat_params: no < 1, yes;
 
 int layered_material_detail_quality = 0;
 
+macro INIT_DYNAMIC_THERMAL_SIGNATURE()
+  static float thermal_vision_temperature = 0.0;
+endmacro
+
+macro USE_DYNAMIC_THERMAL_SIGNATURE()
+  (ps) { thermal_vision_temperature@f1 = thermal_vision_temperature; }
+  hlsl(ps) {
+    void init_thermal_signature(inout UnpackedGbuffer result, half3 diffuse_color)
+    {
+      if (special_vision <= 0)
+        return;
+      float material_temperature = get_thermal_vision_temperature();
+      bool blendWithTerrain = material_temperature < 0;
+      if (material_temperature > 0)
+      {
+        init_emission(result, material_temperature);
+        init_material(result, SHADING_SELFILLUM);
+      }
+      else if (blendWithTerrain )
+      {
+        init_isLandscape(result, 1);
+      }
+      else
+      {
+        result.albedo += THERMAL_TWEAK_ALBEDO_OFFSET;
+        result.smoothness += THERMAL_TWEAK_SMOOTHNESS_OFFSET;
+        result.metalness += THERMAL_TWEAK_METALNESS_OFFSET;
+        #ifdef THERMAL_TWEAK_SKINNED_ALBEDO_MUL
+          init_albedo(result, THERMAL_TWEAK_SKINNED_ALBEDO_MUL * diffuse_color);
+        #endif
+      }
+    }
+  }
+endmacro
+
 macro XRAY_DEPTH_PS()
   hlsl(ps) {
     float4 render_depth_ps() : SV_Target
@@ -199,7 +234,11 @@ macro DYNAMIC_SIMPLE_HELPER_PS()
         INIT_MULTIDRAW(input);
         SET_DRAW_CALL_ID(GET_DRAW_ID(input) & MATERIAL_OFFSET_MASK);
       #endif
-      discard_torn_wound(input.fragPos, input.fragNormal, input.tornWoundParams);
+      BRANCH
+      if (input.tornWoundParams.x < 0)
+        cut_wound_hole(input.tornWoundParams);
+      else if (discard_torn_wound(input.fragPos, input.fragNormal, input.tornWoundParams) < 0)
+        discard;
     }
   }
 endmacro

@@ -7,6 +7,8 @@
 #include <EASTL/type_traits.h>
 #include <EASTL/internal/function_detail.h>
 #include <debug/dag_assert.h>
+#include <generic/dag_nullableCallable.h>
+#include <util/dag_compilerDefs.h>
 
 
 namespace dag
@@ -18,6 +20,9 @@ namespace dag
  * than storing a reference to a dag::FixedMoveOnlyFunction.
  * \details Use FunctionRef<void() const> for a const callable function
  * object and FixedMoveOnlyFunction<void()> for a non-const callable one.
+ * A callable that is itself empty (an empty eastl::function, a null
+ * function pointer) makes an empty FunctionRef.
+ * Binding a plain function is invalid; wrap it in a lambda.
  *
  * \tparam Signature The type-erased signature of the function.
  */
@@ -49,6 +54,8 @@ struct FunctionRefBase
 
   explicit operator bool() const { return call != nullptr; }
 
+  bool sameTarget(const FunctionRefBase &other) const { return call == other.call && (call == nullptr || data == other.data); }
+
   // call should be hot
   CallSignature *call = nullptr;
   void *data;
@@ -68,7 +75,7 @@ constexpr bool is_function_ref_v = IsFunctionRef<T>::value;
 } // namespace detail
 
 template <typename Ret, typename... Args>
-class FunctionRef<Ret(Args...)> : private detail::FunctionRefBase<Ret(void *, Args...)>
+class DAGOR_POINTER_LIKE FunctionRef<Ret(Args...)> : private detail::FunctionRefBase<Ret(void *, Args...)>
 {
   using Base = detail::FunctionRefBase<Ret(void *, Args...)>;
 
@@ -84,22 +91,31 @@ class FunctionRef<Ret(Args...)> : private detail::FunctionRefBase<Ret(void *, Ar
 public:
   FunctionRef() = default;
 
+  FunctionRef(std::nullptr_t) : Base() {}
+
+  bool operator==(const FunctionRef &other) const { return this->sameTarget(other); }
+
   template <size_t size, typename Ret2, typename... Args2>
-  FunctionRef(FixedMoveOnlyFunction<size, Ret2(Args2...)> &fmof) : Base(fmof.storage)
+  FunctionRef(FixedMoveOnlyFunction<size, Ret2(Args2...)> &fmof DAGOR_LIFETIMEBOUND) : Base(fmof.storage)
   {
     call = fmof.call;
   }
 
   template <typename Ret2, typename... Args2>
-  FunctionRef(MoveOnlyFunction<Ret2(Args2...)> &fmof) : Base(fmof.storage.get())
+  FunctionRef(MoveOnlyFunction<Ret2(Args2...)> &fmof DAGOR_LIFETIMEBOUND) : Base(fmof.storage.get())
   {
     call = fmof.call;
   }
 
   template <typename F, typename = EASTL_INTERNAL_FUNCTION_VALID_FUNCTION_ARGS(F, Ret, Args..., Base, FunctionRef),
     typename = eastl::disable_if_t<detail::is_function_ref_v<eastl::decay_t<F>>>>
-  FunctionRef(F &&func_object) : Base(&func_object)
+  FunctionRef(F &&func_object DAGOR_LIFETIMEBOUND) : Base(&func_object)
   {
+    // an empty callable must stay an empty ref, else the caller's "if (ref)" guard sees a
+    // bound reference and calls through to nothing
+    if constexpr (detail::is_nullable_callable_v<eastl::decay_t<F>>)
+      if (!func_object)
+        return;
     call = &callImpl<eastl::decay_t<F>>;
   }
 
@@ -119,7 +135,7 @@ public:
 };
 
 template <typename Ret, typename... Args>
-class FunctionRef<Ret(Args...) const> : private detail::FunctionRefBase<Ret(void const *, Args...)>
+class DAGOR_POINTER_LIKE FunctionRef<Ret(Args...) const> : private detail::FunctionRefBase<Ret(void const *, Args...)>
 {
   using Base = detail::FunctionRefBase<Ret(void const *, Args...)>;
 
@@ -136,24 +152,44 @@ class FunctionRef<Ret(Args...) const> : private detail::FunctionRefBase<Ret(void
 public:
   FunctionRef() : Base() {}
 
+  FunctionRef(std::nullptr_t) : Base() {}
+
+  bool operator==(const FunctionRef &other) const { return this->sameTarget(other); }
+
   template <size_t size, typename Ret2, typename... Args2>
-  FunctionRef(const FixedMoveOnlyFunction<size, Ret2(Args2...) const> &fmof) :
+  FunctionRef(const FixedMoveOnlyFunction<size, Ret2(Args2...) const> &fmof DAGOR_LIFETIMEBOUND) :
     Base(const_cast<void *>(static_cast<const void *>(fmof.storage)))
   {
     call = fmof.call;
   }
 
+  // a non const lvalue is an exact match for the generic ctor below, so it needs its own overload
+  template <size_t size, typename Ret2, typename... Args2>
+  FunctionRef(FixedMoveOnlyFunction<size, Ret2(Args2...) const> &fmof DAGOR_LIFETIMEBOUND) :
+    FunctionRef(const_cast<const FixedMoveOnlyFunction<size, Ret2(Args2...) const> &>(fmof))
+  {}
+
   template <typename Ret2, typename... Args2>
-  FunctionRef(const MoveOnlyFunction<Ret2(Args2...) const> &fmof) :
+  FunctionRef(const MoveOnlyFunction<Ret2(Args2...) const> &fmof DAGOR_LIFETIMEBOUND) :
     Base(const_cast<void *>(static_cast<const void *>(fmof.storage.get())))
   {
     call = fmof.call;
   }
 
+  template <typename Ret2, typename... Args2>
+  FunctionRef(MoveOnlyFunction<Ret2(Args2...) const> &fmof DAGOR_LIFETIMEBOUND) :
+    FunctionRef(const_cast<const MoveOnlyFunction<Ret2(Args2...) const> &>(fmof))
+  {}
+
   template <typename F, typename = EASTL_INTERNAL_FUNCTION_VALID_FUNCTION_ARGS(F, Ret, Args..., Base, FunctionRef),
     typename = eastl::disable_if_t<detail::is_function_ref_v<eastl::decay_t<F>>>>
-  FunctionRef(F &&func_object) : Base(&func_object)
+  FunctionRef(F &&func_object DAGOR_LIFETIMEBOUND) : Base(const_cast<void *>(static_cast<const void *>(&func_object)))
   {
+    // an empty callable must stay an empty ref, else the caller's "if (ref)" guard sees a
+    // bound reference and calls through to nothing
+    if constexpr (detail::is_nullable_callable_v<eastl::decay_t<F>>)
+      if (!func_object)
+        return;
     call = &callImpl<eastl::decay_t<F>>;
   }
 

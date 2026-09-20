@@ -10,6 +10,7 @@ Sources =
   landMicroDetails.cpp
   lmeshManager.cpp
   lmeshWeightAtlas.cpp
+  lmeshWeightAtlasGpu.cpp
   lmeshWeightAtlasLegacyCpu.cpp
   lmeshWeightAtlasLegacyGpu.cpp
   lmeshLandClasses.cpp

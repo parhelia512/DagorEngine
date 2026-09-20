@@ -37,7 +37,7 @@ void BEContext::ensureStateForColorAttachments(VkRect2D area)
     verifyResident(colorAtt.img);
     colorAtt.img->checkDead();
 
-    if ((getFramebufferState().clearMode & (CLEAR_TARGET | CLEAR_DISCARD_TARGET)) &&
+    if ((getFramebufferState().clearMode & (CLEAR_TARGET | DISCARD_TARGET)) &&
         (colorAtt.img->getMipExtents2D(colorAtt.view.getMipBase()) == area.extent) && area.offset == VkOffset2D{0, 0})
       Backend::sync.addImageWriteDiscard(LogicAddress::forAttachmentWithLayout(VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL), colorAtt.img,
         VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
@@ -100,7 +100,7 @@ void BEContext::ensureStateForDepthAttachment(VkRect2D area)
 
     VkImageLayout dsLayout = ro ? VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL : VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
 
-    if (!ro && (getFramebufferState().clearMode & (CLEAR_ZBUFFER | CLEAR_DISCARD_ZBUFFER)) &&
+    if (!ro && (getFramebufferState().clearMode & (CLEAR_ZBUFFER | DISCARD_ZBUFFER)) &&
         (dsai.img->getMipExtents2D(ivs.getMipBase()) == area.extent) && area.offset == VkOffset2D{0, 0})
       Backend::sync.addImageWriteDiscard(LogicAddress::forAttachmentWithLayout(dsLayout), dsai.img, dsLayout,
         {ivs.getMipBase(), ivs.getMipCount(), ivs.getArrayBase(), ivs.getArrayCount()});
@@ -128,6 +128,7 @@ void BEContext::checkAttachmentsResMatch()
   int32_t testWidth = 0;
   int32_t testHeight = 0;
   const char *prevTexName = nullptr;
+  int32_t prevIndex = -1;
 
   if (passIdent.colorTargetMask)
   {
@@ -143,12 +144,13 @@ void BEContext::checkAttachmentsResMatch()
 
       if (!(testWidth == 0 && testHeight == 0))
         D3D_CONTRACT_ASSERTF((extents.width == testWidth && extents.height == testHeight),
-          "Render target resolution mismatch: %dx%d(%s) != %dx%d(%s)", testWidth, testHeight, prevTexName, extents.width,
-          extents.height, texName);
+          "Render target resolution mismatch: rt%d %dx%d(%s) != rt%d %dx%d(%s), caller\n%s", prevIndex, testWidth, testHeight,
+          prevTexName, i, extents.width, extents.height, texName, getCurrentCmdCaller());
 
       testWidth = extents.width;
       testHeight = extents.height;
       prevTexName = texName;
+      prevIndex = i;
     }
   }
 
@@ -211,7 +213,7 @@ void BEContext::beginPassInternal(RenderPassClass *pass_class, VulkanFramebuffer
 #endif
 
   StaticTab<VkClearValue, Driver3dRenderTarget::MAX_SIMRT + 1> clearValues;
-  if (fbs.clearMode & ~CLEAR_DISCARD)
+  if (fbs.clearMode & ~DISCARD_ALL)
     clearValues = pass_class->constructClearValueSet(fbs.colorClearValue, fbs.depthStencilClearValue);
 
   VkRenderPassBeginInfo rpbi = {VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO, nullptr};

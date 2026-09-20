@@ -9,7 +9,6 @@
 #include <EASTL/vector.h>
 #include <generic/dag_relocatableFixedVector.h>
 #include <3d/dag_resPtr.h>
-#include <3d/dag_textureIDHolder.h>
 #include <shaders/dag_computeShaders.h>
 #include <math/dag_hlsl_floatx.h>
 #include <memory/dag_framemem.h>
@@ -86,10 +85,11 @@ public:
   float hmapRange = 500;
   int precompResolution = 256;
   int precompCascades = 5;
+  bool useLowShader = false;
 
 protected:
   SharedTexWithShaderVar albedoTex, normalTex;
-  TextureIDHolderWithVar hmapTex, gmapTex, cmapTex;
+  UniqueTexWithShaderVar hmapTex, gmapTex, cmapTex;
   ComputeShader precompShader;
   UniqueBufWithShaderVar grassChannelsCB, clipmapRectsCB;
   dag::Vector<FastGrassType> grassChannelData;

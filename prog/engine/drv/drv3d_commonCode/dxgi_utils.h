@@ -38,6 +38,19 @@ eastl::optional<eastl::pair<uint32_t, uint32_t>> get_recommended_resolution(IDXG
 
 DriverVersion get_driver_version_from_adapter(IDXGIAdapter *adapter);
 
+// Adapter that the DX12 support probe looked at, for user facing messages. Filled for every status the probe
+// returns after it found a hardware adapter (OUTDATED_DRIVER, BLACKLISTED_DRIVER, INSUFFICIENT_DEVICE,
+// FULL_SUPPORT); left at the defaults for OUTDATED_OS and NO_DEVICE_FOUND.
+struct ProbedAdapterInfo
+{
+  String name;
+  uint32_t vendorId = 0;
+  uint32_t deviceId = 0;
+  DriverVersion driverVersion{};
+  // for a blacklisted driver: a newer driver without the defect exists, so the user can update instead of rolling back
+  bool fixedDriverAvailable = true;
+};
+
 DXGI_GPU_PREFERENCE get_gpu_preference_from_registry();
 
 bool is_software_device(const DXGI_ADAPTER_DESC1 &desc);

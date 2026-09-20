@@ -30,7 +30,7 @@ shader raytraced_water_reflections
 {
   INIT_AND_USE_ON_TOP_CAMERA_IN_CAMERA(cs)
 
-  supports global_const_block;
+  GLOBAL_CONSTS(cs)
   if (compatibility_mode == compatibility_mode_on || !use_hw_raytracing) { dont_render; }
 
   INIT_ZNZFAR_STAGE(cs)
@@ -43,12 +43,12 @@ shader raytraced_water_reflections
   VIEW_VEC_OPTIMIZED(cs)
   INIT_BVH(cs, 0, true)
   USE_BVH_FOR_REFLECTION(cs)
-  USE_BVH_FX_RENDER(cs)
+  USE_BVH_FX_RENDER(cs, false)
   USE_EMISSION_DECODE_COLOR_MAP(cs)
   INIT_PACK_UNPACK_DYNSTCODE(cs)
   PACK_UNPACK_GBUFFER_BASE(cs)
   USE_ADAPTIVE_RAY_OFFSET(cs)
-  INIT_RT_LIGHTING(cs, true, false, true, rtr_shadow == on, rtr_use_csm, false)
+  INIT_RT_LIGHTING(cs, true, false, true, rtr_shadow == on, false)
   USE_RT_LIGHTING(cs, 1, false)
   INIT_BVH_ATMOSPHERE(cs)
   USE_BVH_ATMOPHERE(cs)
@@ -182,6 +182,9 @@ shader raytraced_water_reflections
 
       HitInfo hitInfo;
       bool isHit = trace_ray(bvhMain, cameraToPoint, reflectionVec, 0, maxReflectionDistance, worldDist, bvhGroupWaterRefl, hitInfo);
+
+      if (isHit)
+        bvh_voxel_activity_mark(hitInfo.position);
 
       if (!isHit && bvhTerrainValid)
         isHit = trace_ray<true>(bvhTerrain, cameraToPoint, reflectionVec, maxReflectionDistance, 100000, worldDist, bvhGroupWaterRefl, hitInfo);

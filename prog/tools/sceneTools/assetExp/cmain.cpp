@@ -155,8 +155,10 @@ static void showUsage()
          "  -rebuild:<asset_type> rebuilds assets of specified type ignoring cache\n"
          "  -rebuildAsset:{asset} force rebuild of asset by name\n"
          "  -sharedNm[+|-]        force or disable usage of shared namemap for asset manager\n"
-         "  -validate_pkg         validates locations of exported assests\n"
+         "  -validate_pkg         validates locations of exported assets\n"
          "  -validate_pkg:strict  the same as -validate_pkg but checks non-exportable assets too\n"
+         "  -validate_alpha_test  validates alpha-test usage in rendInst/dynModels to avoid issues during OMM baking\n"
+         "  -validate_alpha_test:strict  the same as -validate_alpha_test but also reports all-opaque and all-transparent cases\n"
          "  -jobs:<NUM>           create and utilize NUM distribuited dabuild jobs\n"
          "  -only_res             export *.grp packs only\n"
          "  -only_tex             export *.dxp.bin packs only\n"
@@ -237,6 +239,7 @@ int DagorWinMain(bool debugmode)
   bool showpbarpct = true;
   bool show_important_warnings = false;
   int validate_pkg = 0;
+  int validate_alpha_test = 0;
   int maintTexOp = 0, maintPackOp = 0;
   int maintListOp = 0;
   bool maintOnly = false;
@@ -306,6 +309,10 @@ int DagorWinMain(bool debugmode)
       validate_pkg = 1;
     else if (stricmp(__argv[i], "-validate_pkg:strict") == 0)
       validate_pkg = 2;
+    else if (stricmp(__argv[i], "-validate_alpha_test") == 0)
+      validate_alpha_test = 1;
+    else if (stricmp(__argv[i], "-validate_alpha_test:strict") == 0)
+      validate_alpha_test = 2;
     else if (strnicmp(__argv[i], "-build:", 7) == 0)
     {
       singleAssetPairsList.push_back() = __argv[i] + 7;
@@ -475,6 +482,12 @@ int DagorWinMain(bool debugmode)
   setup_named_mount_points(*appblk.getBlockByNameEx("mountPoints"));
 
   setup_dxp_grp_write_ver(*appblk.getBlockByNameEx("assets")->getBlockByNameEx("build"), log);
+  if (validate_alpha_test)
+  {
+    DataBlock &b = *appblk.addBlock("assets")->addBlock("build")->addBlock("validateAlphaTest");
+    b.setBool("validate", true);
+    b.setBool("strict", validate_alpha_test > 1);
+  }
   appblk.setStr("appDir", app_dir);
   int max_jobs = appblk.getBlockByNameEx("assets")->getBlockByNameEx("build")->getInt("maxJobs", 32);
   if (jobs > max_jobs)
@@ -698,6 +711,18 @@ int DagorWinMain(bool debugmode)
   });
 
   for (int t = 0; t < targets.size(); t++)
+  {
+    uint64_t tc_storage = 0;
+    const char *ts = mkbindump::get_target_str(targets[t], tc_storage);
+    const DataBlock &expBlk = *appblk.getBlockByNameEx("assets")->getBlockByNameEx("export");
+
+    // detect_valid_patch() loads a vromfs and hashes grp_hdr: too costly to repeat for every asset type
+    Tab<bool> pkg_patch_build(pkgBlk.blockCount() + 1, false);
+    if (dabuild_allow_patch_build)
+      for (int p = -1, pe = pkgBlk.blockCount(); p < pe; p++)
+        pkg_patch_build[p + 1] =
+          detect_valid_patch(expBlk, p < 0 ? "." : pkgBlk.getBlock(p)->getBlockName(), app_dir, ts, assets_profile);
+
     for (int i = 0; i < mgr.getAssetTypesCount(); i++)
       if (const char *fn = appblk.getBlockByNameEx("assets")
                              ->getBlockByNameEx("build")
@@ -715,34 +740,48 @@ int DagorWinMain(bool debugmode)
             continue;
 
         bool pkg_exp_def = pkgBlk.getBool("defaultOn", true);
-        const DataBlock &expBlk = *appblk.getBlockByNameEx("assets")->getBlockByNameEx("export");
-        const DataBlock &destBlk = *expBlk.getBlockByNameEx("destination");
 
-        uint64_t tc_storage = 0;
-        const char *ts = mkbindump::get_target_str(targets[t], tc_storage);
         String profile_suffix;
         if (assets_profile && *assets_profile)
           profile_suffix.printf(0, ".%s", assets_profile);
 
         String mntPoint;
-        DataBlock blk;
+        // two layers while a patch build is active: the base file is shipped and must stay as it is,
+        // the patch file holds only the changed entries, and an empty block there deletes the base one (see gameres_patch_desc())
+        DataBlock baseBlk, patchBlk;
+        Tab<bool> pkg_desc_changed(pkgBlk.blockCount() + 1, false);
         for (int p = -1, pe = pkgBlk.blockCount(); p < pe; p++)
         {
           const char *pk_name = p < 0 ? "." : pkgBlk.getBlock(p)->getBlockName();
-          bool patch_build = detect_valid_patch(expBlk, pk_name, app_dir, ts, assets_profile);
-          assethlp::build_package_dest(mntPoint, expBlk, pk_name, app_dir, ts, assets_profile, patch_build);
-          String abs_fn(0, "%s/%s%s.bin", mntPoint, fn, profile_suffix);
-
           DataBlock pk_blk;
+
+          assethlp::build_package_dest(mntPoint, expBlk, pk_name, app_dir, ts, assets_profile);
+          String abs_fn(0, "%s/%s%s.bin", mntPoint, fn, profile_suffix);
           if (dd_file_exist(abs_fn) && pk_blk.load(abs_fn) && !pk_blk.isEmpty())
-            blk.addNewBlock(&pk_blk, pk_name);
+            baseBlk.addNewBlock(&pk_blk, pk_name);
+          else
+            baseBlk.addNewBlock(pk_name);
+
+          if (!pkg_patch_build[p + 1])
+            continue;
+          assethlp::build_package_dest(mntPoint, expBlk, pk_name, app_dir, ts, assets_profile, true);
+          abs_fn.printf(0, "%s/%s%s.bin", mntPoint, fn, profile_suffix);
+          if (dd_file_exist(abs_fn) && pk_blk.load(abs_fn) && !pk_blk.isEmpty())
+            patchBlk.addNewBlock(&pk_blk, pk_name);
+          else
+            patchBlk.addNewBlock(pk_name);
         }
 
+        // an empty block in the patch layer is a deleted entry, not a present one
+        auto hasDesc = [&baseBlk, &patchBlk](const char *pk_name, const char *asset_name) {
+          if (const DataBlock *pb = patchBlk.getBlockByName(pk_name))
+            if (const DataBlock *b = pb->getBlockByName(asset_name))
+              return !b->isEmpty();
+          return baseBlk.getBlockByNameEx(pk_name)->getBlockByName(asset_name) != nullptr;
+        };
+
         Tab<int> asset_idx_to_rebuild;
-        bool has_missing = false, desc_changed = false;
         IDagorAssetExporter *e = mgr.getAssetExporter(i);
-        if (e)
-          e->setBuildResultsBlk(&blk);
         for (int j = 0; j < mgr.getAssetCount(); j++)
         {
           if (mgr.getAsset(j).getType() != i)
@@ -755,10 +794,14 @@ int DagorWinMain(bool debugmode)
           if (pkname && !pkgBlk.getBlockByNameEx(pkname)->getBool(ts, pkg_exp_def))
             continue;
 
-          if (!blk.getBlockByNameEx(pkname ? pkname : ".")->getBlockByName(mgr.getAsset(j).getName()))
+          if (!hasDesc(pkname ? pkname : ".", mgr.getAsset(j).getName()))
           {
-            if (e && e->updateBuildResultsBlk(mgr.getAsset(j), AssetExportCache::getSharedDataPtr(), _MAKE4C('PC')))
-              desc_changed = true;
+            // the layer to update is per package, so name it here and not once before the loop
+            int pid = pkname ? pkgBlk.findBlock(pkname) : -1;
+            if (e)
+              e->setBuildResultsBlk(pkg_patch_build[pid + 1] ? &patchBlk : &baseBlk);
+            if (e && e->updateBuildResultsBlk(mgr.getAsset(j), _MAKE4C('PC')))
+              pkg_desc_changed[pid + 1] = true;
             else
               asset_idx_to_rebuild.push_back(j);
           }
@@ -773,7 +816,7 @@ int DagorWinMain(bool debugmode)
               mgr.getAssetTypeName(i), asset_idx_to_rebuild.size());
             rebuild_types.addNameId(mgr.getAssetTypeName(i));
             AssetExportCache::sharedDataAddRebuildType(i);
-            if (mgr.getTexAssetTypeId())
+            if (i == mgr.getTexAssetTypeId())
               dabuild_force_dxp_rebuild = true;
           }
           else
@@ -789,50 +832,79 @@ int DagorWinMain(bool debugmode)
         }
         for (int p = -1, pe = pkgBlk.blockCount(); p < pe; p++)
         {
-          DataBlock *b = blk.getBlockByName(p < 0 ? "." : pkgBlk.getBlock(p)->getBlockName());
-          if (!b)
-            continue;
-          for (int j = b->blockCount() - 1; j >= 0; j--)
-          {
-            DagorAsset *a = mgr.findAsset(b->getBlock(j)->getBlockName(), i);
+          const char *pk_name = p < 0 ? "." : pkgBlk.getBlock(p)->getBlockName();
+          bool patch_build = pkg_patch_build[p + 1];
+          DataBlock *base_b = baseBlk.getBlockByName(pk_name);
+          DataBlock *patch_b = patchBlk.getBlockByName(pk_name);
+
+          auto isExtra = [&](const char *asset_name) {
+            DagorAsset *a = mgr.findAsset(asset_name, i);
             if (!a || !dabuild->isAssetExportable(a))
+              return true;
+            const char *pkname = a->getCustomPackageName(ts, assets_profile);
+            return strcmp(pk_name, pkname ? pkname : ".") != 0;
+          };
+
+          // patch-only first: an entry the base also has is left to the deletion pass below instead of being dropped as extra
+          if (patch_build)
+            for (int j = patch_b->blockCount() - 1; j >= 0; j--)
             {
-              b->removeBlock(j);
-              desc_changed = true;
+              const char *asset_name = patch_b->getBlock(j)->getBlockName();
+              if (!isExtra(asset_name) || base_b->getBlockByName(asset_name))
+                continue;
+              patch_b->removeBlock(j);
+              pkg_desc_changed[p + 1] = true;
+            }
+          for (int j = base_b->blockCount() - 1; j >= 0; j--)
+          {
+            const char *asset_name = base_b->getBlock(j)->getBlockName();
+            if (!isExtra(asset_name))
+              continue;
+            if (patch_build) // the base file stays as shipped, so the removal lives in the patch only
+            {
+              DataBlock *pb = patch_b->getBlockByName(asset_name);
+              if (!pb)
+                patch_b->addNewBlock(asset_name);
+              else if (pb->isEmpty())
+                continue; // already recorded as deleted: the base entry it shadows stays extra for every later build
+              else
+                pb->clearData(); // in place, so that an override turning into a deletion does not move to the end of the file
             }
             else
-            {
-              const char *pkname = a->getCustomPackageName(ts, assets_profile);
-              if (strcmp(p < 0 ? "." : pkgBlk.getBlock(p)->getBlockName(), pkname ? pkname : ".") != 0)
-              {
-                b->removeBlock(j);
-                desc_changed = true;
-              }
-            }
+              base_b->removeBlock(j);
+            pkg_desc_changed[p + 1] = true;
           }
         }
-        if (desc_changed && !maintOnly)
-        {
+        if (!maintOnly && !dabuild_dry_run)
           for (int p = -1, pe = pkgBlk.blockCount(); p < pe; p++)
           {
+            if (!pkg_desc_changed[p + 1])
+              continue;
             const char *pk_name = p < 0 ? "." : pkgBlk.getBlock(p)->getBlockName();
-            bool patch_build = detect_valid_patch(expBlk, pk_name, app_dir, ts, assets_profile);
+            bool patch_build = pkg_patch_build[p + 1];
+            DataBlock *out_b = patch_build ? patchBlk.getBlockByName(pk_name) : baseBlk.getBlockByName(pk_name);
             assethlp::build_package_dest(mntPoint, expBlk, pk_name, app_dir, ts, assets_profile, patch_build);
             String abs_fn(0, "%s/%s%s.bin", mntPoint, fn, profile_suffix);
 
-            if (blk.getBlockByNameEx(pk_name)->blockCount())
+            if (out_b->blockCount())
             {
+              if (patch_build)
+              {
+                String base_mnt;
+                assethlp::build_package_dest(base_mnt, expBlk, pk_name, app_dir, ts, assets_profile);
+                dabuild_set_desc_base_md5(*out_b, String(0, "%s/%s%s.bin", base_mnt, fn, profile_suffix));
+              }
               dd_mkpath(abs_fn);
-              dblk::pack_to_binary_file(*blk.getBlockByName(pk_name), abs_fn);
-              log.addMessage(log.NOTE, "%s.descListOutPath: removed extra entries (%s)", mgr.getAssetTypeName(i), pk_name);
+              dblk::pack_to_binary_file(*out_b, abs_fn);
+              log.addMessage(log.NOTE, "%s.descListOutPath: updated desc list (%s)", mgr.getAssetTypeName(i), pk_name);
             }
             else if (dd_file_exists(abs_fn))
               FullFileSaveCB zero_cwr(abs_fn);
           }
-        }
         if (e)
           e->setBuildResultsBlk(nullptr);
       }
+  }
 
   if (assets_profile)
     log.addMessage(log.NOTE, "Exporting using profile: %s", assets_profile);
@@ -999,11 +1071,11 @@ int DagorWinMain(bool debugmode)
         return 1;
       }
       cwr.copyDataTo(fcwr);
-      printf("asset <%s> successfuly built%s to %s: sz=%d (for %.3f sec)\n", singleAsset.str(), singleAssetFastBuild ? "(fast)" : "",
+      printf("asset <%s> successfully built%s to %s: sz=%d (for %.3f sec)\n", singleAsset.str(), singleAssetFastBuild ? "(fast)" : "",
         singleAssetOut.str(), cwr.getSize(), t0 / 1000.f);
     }
     else
-      printf("asset <%s> successfuly built%s: sz=%d (for %.3f sec)\n", singleAsset.str(), singleAssetFastBuild ? "(fast)" : "",
+      printf("asset <%s> successfully built%s: sz=%d (for %.3f sec)\n", singleAsset.str(), singleAssetFastBuild ? "(fast)" : "",
         cwr.getSize(), t0 / 1000.f);
     if (aux_result_blk.blockCount() + aux_result_blk.paramCount() > 0)
     {
@@ -1221,6 +1293,7 @@ int DagorWinMain(bool debugmode)
       jobMem->showImportantWarnings = show_important_warnings;
       jobMem->expTex = export_tex;
       jobMem->expRes = export_res;
+      jobMem->validateAlphaTest = validate_alpha_test;
       jobMem->forceRebuildAssetIdxCount = force_rebuild_assets.size();
       G_ASSERTF(jobMem->forceRebuildAssetIdxCount <= countof(DabuildJobSharedMem::forceRebuildAssetIdx),
         "forceRebuildAssetIdxCount=%d max=%d", jobMem->forceRebuildAssetIdxCount, countof(DabuildJobSharedMem::forceRebuildAssetIdx));

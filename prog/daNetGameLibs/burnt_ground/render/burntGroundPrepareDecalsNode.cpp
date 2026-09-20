@@ -4,7 +4,7 @@
 #include "burntGround.h"
 
 #include <render/daFrameGraph/daFG.h>
-#include <render/world/cameraParams.h>
+#include <render/cameraParams.h>
 #include <render/world/frameGraphHelpers.h>
 #include <math/dag_hlsl_floatx.h>
 #include <3d/dag_lockSbuffer.h>

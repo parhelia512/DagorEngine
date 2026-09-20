@@ -12,7 +12,7 @@
 #include <render/viewVecs.h>
 #include <render/renderEvent.h>
 
-#include <render/world/cameraParams.h>
+#include <render/cameraParams.h>
 #include <render/world/frameGraphHelpers.h>
 #include <render/world/global_vars.h>
 #include <render/world/dafgCameraRegistrator.h>

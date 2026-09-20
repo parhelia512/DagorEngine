@@ -57,6 +57,22 @@ enum class SplitAxes : uint8_t
 int create_bvh_node_sah(Tab<bbox3f> &nodes, bbox3f *boxes, const uint32_t boxes_cnt, int max_children_count, int &max_depth,
   SplitAxes split_axes = SplitAxes::XYZ, uint32_t presort_use_radix_threshold = 48);
 
+// create_bvh_node_sah OUTPUT entry encoding, decoded by every consumer walk: w(bmin) =
+// faceIndex for a leaf, or -(subtree entries - 1) for an inner node; w(bmax) = the inner
+// node's children count (a leaf entry keeps the caller's input w(bmax) - payload, not count).
+// These helpers are the one home of that decode.
+inline int sahFaceIndex(const bbox3f *sah, int idx) { return v_extract_wi(v_cast_vec4i(sah[idx].bmin)); }
+inline bool sahIsLeaf(const bbox3f *sah, int idx) { return sahFaceIndex(sah, idx) >= 0; }
+inline int sahChildrenCount(const bbox3f *sah, int idx) { return v_extract_wi(v_cast_vec4i(sah[idx].bmax)); }
+// Entries the node spans in its preorder array (itself plus its subtree) -- the walk advance
+// to its next sibling. int64 hardens only the helper's negate and sahChildren's bounded walk;
+// consumers of builder-produced trees may cast the span back to int (those spans fit).
+inline int64_t sahSpan(const bbox3f *sah, int idx)
+{
+  const int f = sahFaceIndex(sah, idx);
+  return f < 0 ? -(int64_t)f + 1 : 1;
+}
+
 void addPropToPrimitivesAABBList(bbox3f *boxes, const uint16_t *indices, const vec4f *verts, int faces);
 void addPropToPrimitivesAABBList(bbox3f *boxes, const uint32_t *indices, const vec4f *verts, int faces);
 

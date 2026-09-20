@@ -7,51 +7,41 @@
 #include <util/dag_delayedAction.h>
 #include <ioSys/dag_dataBlock.h>
 #include <startup/dag_globalSettings.h>
+#include <string.h>
 #include <EASTL/string.h>
 #include <dag/dag_vector.h>
+#include <debug/dag_log.h>
 
 #include "main/hostedServerLauncher.h"
+#include "net/net.h"
 
-
-#if DAGOR_HOSTED_INTERNAL_SERVER
-void hosted_server_signal_ready();
-void hosted_server_disable_auto_ready();
-#endif
 
 namespace bind_dascript
 {
 
-#if DAGOR_HOSTED_INTERNAL_SERVER
-inline void signal_hosted_server_ready() { ::hosted_server_signal_ready(); }
-inline void disable_auto_hosted_server_ready() { ::hosted_server_disable_auto_ready(); }
-#else
-inline void signal_hosted_server_ready() {}
-inline void disable_auto_hosted_server_ready() {}
-#endif
-
 inline bool is_hosted_internal_server_active() { return ::is_hosted_internal_server_active(); }
 
-inline bool should_server_invoke_ready_manually()
-{
-  return dgs_get_settings()->getBlockByNameEx("debug")->getBool("hostedServerManualReady", false);
-}
+inline const char *get_hosted_internal_server_uid() { return ::get_hosted_internal_server_uid(); }
+
+inline const char *allocate_hosted_server_uid() { return ::allocate_hosted_server_uid(); }
+
+inline void set_hosted_server_start_uid(const char *uid) { ::set_hosted_server_start_uid(uid); }
+
+inline bool is_main_thread_network() { return ::is_main_thread_network(); }
+
 
 inline void request_start_hosted_server(const das::TArray<char *> &cmds,
   const char *main_das_path,
   const char *circuit,
-  bool allow_unsafe_das_code,
-  bool manual_ready,
-  das::Context *ctx,
-  das::LineInfoArg *at)
+  const char *uid,
+  const char *scene,
+  int tickrate,
+  const char *game_execution_mode,
+  das::Context * /*ctx*/,
+  das::LineInfoArg * /*at*/)
 {
-  // Compose argv in the order the child expects: main-das path first (positional), then
-  // wrapper-controlled -config:* flags, then project-supplied cmds. Project cmds are filtered
-  // so they cannot contain any `-config:*` -- engine settings overrides go through the typed
-  // parameters, and project code can't sneak in privileged flags (allowUnsafeDasCode etc.)
-  // bypassing the parent-state gate.
-  static constexpr const char kEnableSerializationFlag[] = "-config:game_das_enable_serialization";
   dag::Vector<eastl::string> argv;
-  argv.reserve(cmds.size + 5);
+  argv.reserve(cmds.size + 14);
   if (main_das_path && *main_das_path)
     argv.emplace_back(main_das_path);
   if (circuit && *circuit)
@@ -60,36 +50,47 @@ inline void request_start_hosted_server(const das::TArray<char *> &cmds,
     s += circuit;
     argv.emplace_back(eastl::move(s));
   }
-  if (allow_unsafe_das_code)
-    argv.emplace_back("-config:debug/allowUnsafeDasCode:b=yes");
-  if (manual_ready)
-    argv.emplace_back("-config:debug/hostedServerManualReady:b=yes");
-  // Host owns this policy (from host settings); reject project cmds that would clobber it.
-  const bool enable_serialization = dgs_get_settings()->getBool("game_das_enable_serialization", false);
-  {
-    eastl::string s = kEnableSerializationFlag;
-    s += enable_serialization ? ":b=yes" : ":b=no";
-    argv.emplace_back(eastl::move(s));
-  }
+
+  auto add_cfg_b = [&](const char *path, bool v) {
+    argv.emplace_back(eastl::string(eastl::string::CtorSprintf(), "-config:%s:b=%s", path, v ? "yes" : "no"));
+  };
+
+  const DataBlock &hostDebug = *dgs_get_settings()->getBlockByNameEx("debug");
+  add_cfg_b("debug/allowUnsafeDasCode", hostDebug.getBool("allowUnsafeDasCode", false));
+  if (hostDebug.paramExists("useAddonVromSrc"))
+    add_cfg_b("debug/useAddonVromSrc", hostDebug.getBool("useAddonVromSrc", false));
+  if (hostDebug.paramExists("vromfsFirstPriority"))
+    add_cfg_b("debug/vromfsFirstPriority", hostDebug.getBool("vromfsFirstPriority", false));
+  add_cfg_b("game_das_enable_serialization", dgs_get_settings()->getBool("game_das_enable_serialization", false));
+
+  // Project scene/tickrate/mode are typed params so project cmds stay free of -config:*.
+  if (scene && *scene)
+    argv.emplace_back(eastl::string(eastl::string::CtorSprintf(), "-config:scene:t=%s", scene));
+  if (tickrate > 0)
+    argv.emplace_back(eastl::string(eastl::string::CtorSprintf(), "-config:tickrate:i=%d", tickrate));
+  if (game_execution_mode && *game_execution_mode)
+    argv.emplace_back(eastl::string(eastl::string::CtorSprintf(), "-config:gameExecutionMode:t=%s", game_execution_mode));
+
+  if (::is_main_thread_network())
+    argv.emplace_back("-force_main_net");
+  else
+    argv.emplace_back("-force_user_net");
+
   for (uint32_t i = 0; i < cmds.size; ++i)
   {
     const char *c = cmds[i] ? cmds[i] : "";
-    // Only `-config:debug/*` is the privilege-escalation vector -- everything under `debug/`
-    // is controlled by the parent (allowUnsafeDasCode, hostedServerManualReady, etc.) and
-    // must go through the typed params. Other `-config:*` (tickrate, scene, gameExecutionMode)
-    // is legitimate game-side tuning; pass through unchanged.
-    if (strncmp(c, "-config:debug/", 14) == 0 || strncmp(c, kEnableSerializationFlag, sizeof(kEnableSerializationFlag) - 1) == 0)
+    if (strncmp(c, "-config:", 8) == 0)
     {
-      ctx->throw_error_at(at,
-        "request_start_hosted_server: project-supplied '%s' is not allowed; "
-        "privileged host flags must go through the typed parameters / host settings",
-        c);
-      return;
+      logwarn("request_start_hosted_server: dropping project cmd '%s' (host stamps -config)", c);
+      continue;
     }
     argv.emplace_back(c);
   }
 
-  if (!try_begin_hosted_server_start())
+  uid = resolve_hosted_server_start_uid(uid);
+  argv.emplace_back(eastl::string(eastl::string::CtorSprintf(), "%s%s", TEST_SERVER_LOG_UID_STAMP_PREFIX, uid ? uid : ""));
+
+  if (!try_begin_hosted_server_start(uid))
     return;
 
   run_action_on_main_thread([argv = eastl::move(argv)]() mutable {
@@ -103,10 +104,11 @@ inline void request_start_hosted_server(const das::TArray<char *> &cmds,
   });
 }
 
-inline void request_stop_hosted_server(das::Context *, das::LineInfoArg *)
+inline void request_stop_hosted_server(const char *uid, das::Context *, das::LineInfoArg *)
 {
-  clear_hosted_server_start_pending();
-  run_action_on_main_thread([]() { g_entity_mgr->broadcastEvent(EventHostedInternalServerToStop{}); });
+  eastl::string id = uid ? uid : "";
+  run_action_on_main_thread(
+    [id = eastl::move(id)]() { g_entity_mgr->broadcastEvent(EventHostedInternalServerToStop{ecs::string(id.c_str())}); });
 }
 
 } // namespace bind_dascript

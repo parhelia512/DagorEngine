@@ -14,6 +14,7 @@
 #include <rendInst/rendInstExtra.h>
 #include <rendInst/rendInstExtraAccess.h>
 #include <rendInst/rendInstCollision.h>
+#include <rendInst/riexSync.h>
 #include <rendInst/debugCollisionVisualization.h>
 #include <rendInst/gpuObjects.h>
 #include <rendInst/constants.h>
@@ -207,6 +208,41 @@ inline void getRiGenDestrInfo(const rendinst::RendInstDesc &desc, rendinst::Coll
   res = rendinst::getRiGenDestrInfo(desc);
 }
 
+inline rendinst::RendInstDesc ri_desc_to_net_restorable(const rendinst::RendInstDesc &desc, bool is_client)
+{
+  if (!desc.isValid())
+    return {};
+  rendinst::RendInstDesc res;
+  {
+    rendinst::AutoLockReadPrimaryAndExtra lock;
+    if (desc.isRiExtra() && !rendinst::isRiGenExtraValid(desc.getRiExtraHandle()))
+      return {};
+    res = rendinst::get_restorable_desc(desc);
+  }
+  if (res.isValid() && is_client)
+    res.pool = riexsync::get_server_ri_pool_id(res.pool, -1);
+  return res;
+}
+
+inline rendinst::RendInstDesc ri_desc_from_net_restorable(const rendinst::RendInstDesc &desc, bool is_client)
+{
+  rendinst::RendInstDesc res = desc;
+  if (is_client)
+    res.pool = riexsync::get_client_ri_pool_id(res.pool, -1);
+  if (!res.isValid())
+    return {};
+  if (res.isRiExtra())
+  {
+    rendinst::AutoLockReadPrimaryAndExtra lock;
+    res.idx = rendinst::find_restorable_data_index(res);
+    if (res.idx < 0)
+      return {};
+  }
+  else if (!rendinst::resolve_rigen_desc_subcell(res))
+    return {};
+  return res;
+}
+
 inline int rendinst_cloneRIGenExtraResIdx(const char *source_res_name, const char *new_res_name)
 {
   return rendinst::cloneRIGenExtraResIdx(source_res_name ? source_res_name : "", new_res_name ? new_res_name : "");
@@ -316,6 +352,17 @@ inline void rendinst_foreachTreeInBox(const BBox3 &bbox, const das::TBlock<void,
       rendinst::testObjToRendInstIntersection(bbox, cb, rendinst::GatherRiTypeFlag::RiGenOnly);
     },
     at);
+}
+
+inline void rendinst_doRIGenDamageFiltered(const BSphere3 &sphere, unsigned frame_no, const Point3 &axis,
+  const das::TBlock<bool, int, int> &pool_skip_block, das::Context *context, das::LineInfoArg *at)
+{
+  auto skip = [&](int layer, int pool) -> bool {
+    vec4f args[] = {das::cast<int>::from(layer), das::cast<int>::from(pool)};
+    vec4f res = context->invoke(pool_skip_block, args, nullptr, at);
+    return das::cast<bool>::to(res);
+  };
+  rendinst::doRIGenDamage(sphere, frame_no, axis, /*create_debris*/ true, skip);
 }
 
 inline void get_ri_color_infos(const das::TBlock<void, E3DCOLOR, E3DCOLOR, const das::TTemporary<const char *>> &block,

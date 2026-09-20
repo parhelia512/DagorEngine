@@ -40,7 +40,7 @@ endmacro
 macro USE_SCOPE_LENS_REFLECTIONS(code)
   USE_SCOPE_LENS_REFLECTIONS_MATH(code)
   hlsl(ps) {
-    half3 sample_scope_lens_reflections(VsOutput input, float4 screenpos, float2 lens_input_plane_coord, float4 lens_diffuse_color)
+    half3 sample_scope_lens_reflections(VsOutput input, float4 screenpos, float2 lens_input_plane_coord, float4 lens_diffuse_color, float stub)
     {
       float2 uv = get_scope_lens_reflection_uv(lens_input_plane_coord);
       float3 centerRadiance = tex2D(scope_lens_reflections, uv).rgb;

@@ -1,0 +1,4 @@
+local R = prog/gameLibs/render/puddle_query ;
+Sources +=
+  $(R)/dasModules/puddleQueryManager.cpp
+;

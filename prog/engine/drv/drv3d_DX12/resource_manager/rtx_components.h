@@ -210,13 +210,20 @@ static constexpr uint32_t RAYTRACE_AS_ALIGNMENT = D3D12_RAYTRACING_ACCELERATION_
 static_assert(0 == (RAYTRACE_AS_ALIGNMENT & (RAYTRACE_AS_ALIGNMENT - 1)), "AS_ALIGNMENT must be power of 2");
 static constexpr uint32_t RAYTRACE_HEAP_SIZE = 1024 * 1024 / 2;
 static_assert(RAYTRACE_HEAP_SIZE % RAYTRACE_HEAP_ALIGNMENT == 0);
+static constexpr uint32_t RAYTRACE_HEAP_MAX_SIZE = 4 * 1024 * 1024;
+static_assert(RAYTRACE_HEAP_MAX_SIZE % RAYTRACE_HEAP_ALIGNMENT == 0);
+static constexpr uint16_t RAYTRACE_EMPTY_HEAP_KEEP_FRAMES = 60;
 
 struct RaytraceAccelerationStructureHeap
 {
   RayTraceAccelerationStructurePool *pool = nullptr;
-  static constexpr uint32_t SLOTS = RAYTRACE_HEAP_SIZE / RAYTRACE_AS_ALIGNMENT;
+  // Slot count is per heap, not per bucket: heaps of one bucket grow geometrically. The tracker
+  // takes the biggest heap, so the max size alone states how far a bucket may grow.
+  static constexpr uint32_t SLOTS = RAYTRACE_HEAP_MAX_SIZE / RAYTRACE_AS_ALIGNMENT;
   Bitset<SLOTS> freeSlots;
+  uint16_t slotCount = 0;
   uint16_t takenSlotCount = 0;
+  uint16_t keepFramesLeft = 0;
 
   RaytraceAccelerationStructureHeap() { freeSlots.set(); }
 };
@@ -230,18 +237,20 @@ protected:
 
 private:
   ska::flat_hash_map<size_t, dag::Vector<RaytraceAccelerationStructureHeap>> heapBuckets DAG_TS_GUARDED_BY(rtasSpinlock);
+  uint16_t emptyHeapKeepFrames = RAYTRACE_EMPTY_HEAP_KEEP_FRAMES;
 
 protected:
   uint64_t memoryUsed DAG_TS_GUARDED_BY(rtasSpinlock) = 0;
 
 private:
-  dag::Expected<RaytraceAccelerationStructureHeap, MemoryAllocationError> allocAccelStructHeap(Device &device, uint32_t size)
-    DAG_TS_REQUIRES(rtasSpinlock);
+  dag::Expected<RaytraceAccelerationStructureHeap, MemoryAllocationError> allocAccelStructHeap(Device &device, uint32_t aligned_size,
+    uint16_t slot_count) DAG_TS_REQUIRES(rtasSpinlock);
   void freeAccelStructHeap(RaytraceAccelerationStructureHeap &&heap) DAG_TS_REQUIRES(rtasSpinlock);
 
   AccelerationStructureResult allocAccelStruct(Device &device, uint32_t size, ResourceTagType tag,
     RaytraceAccelerationStructure::Type type);
   void freeAccelStruct(RaytraceAccelerationStructure *accelStruct);
+  void retireEmptyAccelStructHeaps();
 
 protected:
   struct PendingForCompletedFrameData : BaseType::PendingForCompletedFrameData
@@ -251,8 +260,11 @@ protected:
     dag::Vector<RaytraceAccelerationStructure *> deletedTopAccelerationStructure;
   };
 
+  void setup(const SetupInfo &info);
+
   void completeFrameExecution(const CompletedFrameExecutionInfo &info, PendingForCompletedFrameData &data)
   {
+    retireEmptyAccelStructHeaps();
     {
       for (auto as : data.deletedTopAccelerationStructure)
       {

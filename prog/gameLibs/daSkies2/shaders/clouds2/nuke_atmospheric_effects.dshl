@@ -46,7 +46,7 @@ macro SAMPLE_CLOUDS_NUKE_INVERSION(code, for_render)
       Buffer<float4> nuke_atmospheric_effects@buf;
     }
     nuke_atmospheric_light_effects@buf = nuke_atmospheric_light_effects hlsl {
-      Buffer<float4> nuke_atmospheric_light_effects@buf;
+      Buffer<uint4> nuke_atmospheric_light_effects@buf;
     }
   }
 

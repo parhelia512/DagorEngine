@@ -112,9 +112,7 @@ public:
         if (cubTex == tex.getCubeTex())
           cubTex->texmiplevel(0, 0);
         d3d::settex(dynamic_cube_tex_reg_noVarId.get_int(), cubTex);
-        d3d::set_sampler(STAGE_PS, dynamic_cube_tex_reg_noVarId.get_int(),
-          d3d::request_sampler({.address_mode_u = d3d::AddressMode::Clamp, .address_mode_v = d3d::AddressMode::Clamp}));
-        d3d::clearview(CLEAR_DISCARD_TARGET, 0, 0, 0);
+        d3d::clearview(DISCARD_TARGET, 0, 0, 0);
         shader.render();
         d3d::set_render_target({}, DepthAccess::RW, {});
       }

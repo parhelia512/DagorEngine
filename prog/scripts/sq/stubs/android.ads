@@ -8,11 +8,6 @@ return {
   loadAds = function() {}
   showAds = function() {}
   isAdsLoaded = @() false
-  requestConsent = @(_) null
-  showPrivacy = @() null
-  showConsent = @() null
-  getConsentStatus = @() 0
-  canRequestAds = @() false
   setConsent = @(_) null
   setMetaData = @(_, __) null
   getProvidersStatus = @() ""
@@ -26,8 +21,4 @@ return {
   ADS_STATUS_NOT_FOUND = 7
   ADS_STATUS_OK = 10
   ADS_STATUS_FAIL_IN_QUEUE_SKIP = 11
-  CONSENT_REQUEST_NOT_REQUIRED = 1
-  CONSENT_REQUEST_OBTAINED = 3
-  CONSENT_REQUEST_REQUIRED = 2
-  CONSENT_REQUEST_UNKNOWN = 0
 }

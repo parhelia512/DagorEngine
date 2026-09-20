@@ -12,7 +12,7 @@
 #include <daECS/core/componentTypes.h>
 #include <daECS/core/entityComponent.h>
 #include <daECS/core/entityManager.h>
-#include <render/world/cameraParams.h>
+#include <render/cameraParams.h>
 #include <render/daFrameGraph/nodeHandle.h>
 #include "../shaders/dagdp_constants.hlsli"
 

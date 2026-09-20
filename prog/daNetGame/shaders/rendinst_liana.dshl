@@ -132,8 +132,8 @@ shader rendinst_liana
         uint hashVal2 = 0;
         uint3 inst_offset2 = inst_offset;
         HW_INSTANCE_OFFSET(inst_offset2);
-        BRANCH if (inst_offset2.y > 3)
-          hashVal2 = asuint((per_instance_data[instance_id*inst_offset2.y+inst_offset2.x+3]).x);
+        BRANCH if (inst_offset2.z & RI_CBUFFER_FLAGS__HASH_VAL)
+          hashVal2 = asuint((per_instance_data[instance_id*inst_offset2.y+inst_offset2.x+3]).z);
         //float4 tm_line_0 = per_instance_data[instance_id*inst_offset2.y+inst_offset2.x+0];\
         //float4 tm_line_1 = per_instance_data[instance_id*inst_offset2.y+inst_offset2.x+1];\
         //float4 tm_line_2 = per_instance_data[instance_id*inst_offset2.y+inst_offset2.x+2];\
@@ -165,7 +165,7 @@ shader rendinst_liana
         float3 hash = floor(input.pos-localNormal*thickness + 0.5);
         float3 phaseOfMovement = frac(sin(hash*111)*43.18127);
         input.pos += localNormal*(-thickness + 1.5*thickness*normalizedThickness);
-        float3 speedOfMovement = 3*(float3(11, 11.3, 11.7)*(phaseOfMovement*0.5+0.5) * (frac(phaseOfMovement*43.1717)>0.5 ? -1:1));
+        float3 speedOfMovement = 3*(float3(11, 11.3, 11.7)*(phaseOfMovement*0.5+0.5) * select(frac(phaseOfMovement*43.1717)>0.5, float3(-1,-1,-1), float3(1,1,1)));
         float3 amplitudeMovement = 0.1*float3(1,2,1);
         input.pos += saturate(phaseOfGrowth*4)*saturate(1-phaseOfGrowth*2)*float3(amplitudeMovement*sin(lianaLength.y*speedOfMovement + phaseOfMovement*2*PI));
         //input.pos += -localNormal*thickness;

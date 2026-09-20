@@ -1,6 +1,5 @@
 include "shaders_pc11.blk"
 include "raytracing.blk"
-// NOTE: only Dx12 supports OMM for now.
 include "../../../../prog/gameLibs/render/omm/shaders/build.blk"
 "@delete-all:packBin":b=false; packBin:b=yes
 

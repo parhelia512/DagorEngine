@@ -160,6 +160,8 @@ void backend::Swapchain::setPresentWindow(uint32_t index) { currentSwapchainInde
 
 void backend::Swapchain::registerSwapchainView(D3DDevice *device, Image *image, ImageViewInfo info)
 {
+  // A descriptor allocation only fails while the device is being removed, DescriptorHeap::allocate
+  // is fatal otherwise, so a view table entry that stays null is never reached in a live swapchain.
   auto &currentSwapchain = getCurrentSwapchain();
   auto &colorTarget = currentSwapchain.colorTarget;
   auto &swapchainViewSet = currentSwapchain.swapchainViewSet;

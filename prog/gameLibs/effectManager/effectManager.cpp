@@ -266,6 +266,8 @@ void AcesEffect::setFakeBrightnessBackgroundPos(const Point3 &backgroundPos)
   mgr->setFakeBrightnessBackgroundPosBuff(fxId, backgroundPos);
 }
 void AcesEffect::setLightRadiusMultiplier(float multiplier) { mgr->setFxLightRadiusMultiplierBuff(fxId, multiplier); }
+void AcesEffect::setLightFlags(uint32_t flags) { mgr->setFxLightFlagsBuff(fxId, flags); }
+void AcesEffect::setLightSourceRadius(float radius) { mgr->setFxLightSourceRadiusBuff(fxId, radius); }
 void AcesEffect::setFxScale(float scale) { mgr->setFxLightIntensityBuff(fxId, scale); }
 void AcesEffect::setRestrictionBox(const TMatrix &box) { mgr->setFxLightBoxBuff(fxId, box); }
 void AcesEffect::setWindScale(float scale) { mgr->setFxWindScaleBuff(fxId, scale); }
@@ -310,6 +312,8 @@ enum BuffCmdType
   FX_CMD_COLOR_MULT,
   FX_CMD_STOP,
   FX_CMD_LIGHT_RADIUS,
+  FX_CMD_LIGHT_FLAGS,
+  FX_CMD_LIGHT_SOURCE_RADIUS,
   FX_CMD_LIGHT_INTENSITY,
   FX_CMD_LIGHT_BOX,
   FX_CMD_WIND_SCALE,
@@ -630,6 +634,28 @@ void EffectManager::setFxLightRadiusMultiplier(BaseEffect &fx, float multiplier)
     pendingList[fx.pendingId].lightRadiusMultiplier = multiplier;
 }
 
+void EffectManager::setFxLightFlags(BaseEffect &fx, uint32_t flags)
+{
+  if (fx.pendingId < 0)
+  {
+    if (params.lightEnabled)
+      lightList[fx.lightId].lightFlags = flags;
+  }
+  else
+    pendingList[fx.pendingId].lightFlags = flags;
+}
+
+void EffectManager::setFxLightSourceRadius(BaseEffect &fx, float radius)
+{
+  if (fx.pendingId < 0)
+  {
+    if (params.lightEnabled)
+      lightList[fx.lightId].lightSourceRadius = radius;
+  }
+  else
+    pendingList[fx.pendingId].lightSourceRadius = radius;
+}
+
 void EffectManager::setFxLightIntensity(BaseEffect &fx, float intensity)
 {
   if (fx.pendingId < 0)
@@ -831,6 +857,8 @@ void EffectManager::createFxRes(AcesEffect::FxId fx_id, bool is_player, const Po
 
     setFxSpawnRate(*fx, markAsDeleted ? 0.f : pe.spawnRate);
     setFxLightRadiusMultiplier(*fx, pe.lightRadiusMultiplier);
+    setFxLightFlags(*fx, pe.lightFlags);
+    setFxLightSourceRadius(*fx, pe.lightSourceRadius);
     setFxLightIntensity(*fx, pe.lightIntensity);
     setFxLightBox(*fx, pe.lightBox);
     if (pe.windScale >= 0)
@@ -1413,7 +1441,14 @@ void EffectManager::teleportAllRandomRad(float r)
 
 void EffectManager::setFxTmBuff(AcesEffect::FxId fx_id, const TMatrix &tm, bool is_emitter_tm)
 {
+#if DAGOR_DBGLEVEL > 0
   validate_fx_tm(this, tm, params.resName.c_str());
+  {
+    OSSpinlockScopedLock callSiteLock(&mgrSLock);
+    if (BaseEffect *callSiteFx = fxList.get(fx_id))
+      validateDeleted(*callSiteFx);
+  }
+#endif
   if (push_fx_cmd(this, fx_id, is_emitter_tm ? FX_CMD_EMM_TM : FX_CMD_TM, [&](BuffCommand &cmd) { cmd.tm = tm; }))
     return;
   mgrSLock.lock();
@@ -1513,6 +1548,26 @@ void EffectManager::setFxLightRadiusMultiplierBuff(AcesEffect::FxId fx_id, float
   mgrSLock.lock();
   if (EffectManager::BaseEffect *e = fxList.get(fx_id))
     setFxLightRadiusMultiplier(*e, multiplier);
+  mgrSLock.unlock();
+}
+
+void EffectManager::setFxLightFlagsBuff(AcesEffect::FxId fx_id, uint32_t flags)
+{
+  if (push_fx_cmd(this, fx_id, FX_CMD_LIGHT_FLAGS, [&](BuffCommand &cmd) { cmd.u = flags; }))
+    return;
+  mgrSLock.lock();
+  if (EffectManager::BaseEffect *e = fxList.get(fx_id))
+    setFxLightFlags(*e, flags);
+  mgrSLock.unlock();
+}
+
+void EffectManager::setFxLightSourceRadiusBuff(AcesEffect::FxId fx_id, float radius)
+{
+  if (push_fx_cmd(this, fx_id, FX_CMD_LIGHT_SOURCE_RADIUS, [&](BuffCommand &cmd) { cmd.f = radius; }))
+    return;
+  mgrSLock.lock();
+  if (EffectManager::BaseEffect *e = fxList.get(fx_id))
+    setFxLightSourceRadius(*e, radius);
   mgrSLock.unlock();
 }
 
@@ -1679,6 +1734,8 @@ void EffectManager::updateCmdBuff()
       case FX_CMD_VELOCITY_SCALE_MIN_MAX: cmd.mgr->setFxVelocityScaleMinMax(*e, cmd.p2); break;
       case FX_CMD_SPAWN_RATE: cmd.mgr->setFxSpawnRate(*e, cmd.f); break;
       case FX_CMD_LIGHT_RADIUS: cmd.mgr->setFxLightRadiusMultiplier(*e, cmd.f); break;
+      case FX_CMD_LIGHT_FLAGS: cmd.mgr->setFxLightFlags(*e, cmd.u); break;
+      case FX_CMD_LIGHT_SOURCE_RADIUS: cmd.mgr->setFxLightSourceRadius(*e, cmd.f); break;
       case FX_CMD_LIGHT_INTENSITY: cmd.mgr->setFxLightIntensity(*e, cmd.f); break;
       case FX_CMD_LIGHT_BOX: cmd.mgr->setFxLightBox(*e, cmd.tm); break;
       case FX_CMD_WIND_SCALE: cmd.mgr->setFxWindScale(*e, cmd.f); break;

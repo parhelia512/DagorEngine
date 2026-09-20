@@ -45,6 +45,25 @@ MAKE_ECS_TYPES
 
 namespace bind_dascript
 {
+static bool eidEqual(ecs::EntityId a, ecs::EntityId b) { return a == b; }
+static bool eidNotEqual(ecs::EntityId a, ecs::EntityId b) { return a != b; }
+static bool eidBoolNot(ecs::EntityId a) { return !a; }
+
+// A policy op is a node, not a symbol: the interpreter makes SimT and the C++ AOT emits the
+// SimPolicy<> template inline, so neither needs an address. The jit can only call by address, so
+// the op hands out its aotEcs.h twin, wrapped for the jit ABI the way an extern would be.
+template <typename SimT, typename FuncT, FuncT fn, typename RetT, typename... Args>
+struct PolicyFnWithAddress final : public das::BuiltInFn<SimT, RetT, Args...>
+{
+  PolicyFnWithAddress(const char *name, const das::ModuleLibrary &lib, const char *cpp_name) :
+    das::BuiltInFn<SimT, RetT, Args...>(name, lib, cpp_name)
+  {}
+  void *getBuiltinAddress() const override
+  {
+    return das::ImplWrapCall<false, das::NeedVectorWrap<FuncT>::value, FuncT, fn>::get_builtin_address();
+  }
+};
+
 struct EntityIdAnnotation final : das::ManagedValueAnnotation<ecs::EntityId>
 {
   EntityIdAnnotation(das::ModuleLibrary &ml) : ManagedValueAnnotation(ml, "EntityId", " ::ecs::EntityId") {}
@@ -119,13 +138,16 @@ ECS::ECS() : das::Module("ecs")
   // G_VERIFY(addAlias(das::typeFactory<vec4f>::make(lib)));
   G_VERIFY(addAlias(das::make_vec4()));
 
-  // addFunction( new das::BuiltInFn<das::Sim_Equ<ecs::EntityId>,         bool, ecs::EntityId,  ecs::EntityId> ("==",
-  // lib, "Equ") ); addFunction( new das::BuiltInFn<das::Sim_NotEqu<ecs::EntityId>,      bool, ecs::EntityId,
-  // ecs::EntityId> ("!=",     lib, "NotEqu") );
-  das::addFunctionBasic<ecs::EntityId>(*this, lib);
+  addFunction(
+    new PolicyFnWithAddress<das::Sim_Equ<ecs::EntityId>, DAS_BIND_FUN(eidEqual), bool, const ecs::EntityId, const ecs::EntityId>(
+      "==", lib, "Equ"));
+  addFunction(
+    new PolicyFnWithAddress<das::Sim_NotEqu<ecs::EntityId>, DAS_BIND_FUN(eidNotEqual), bool, const ecs::EntityId, const ecs::EntityId>(
+      "!=", lib, "NotEqu"));
   das::addConstant<uint32_t>(*this, "INVALID_ENTITY_ID_VAL", ecs::ECS_INVALID_ENTITY_ID_VAL);
   das::addConstant<ecs::template_t>(*this, "INVALID_TEMPLATE_INDEX", ecs::INVALID_TEMPLATE_INDEX);
-  addFunction(new das::BuiltInFn<das::Sim_BoolNot<ecs::EntityId>, bool, ecs::EntityId>("!", lib, "BoolNot"));
+  addFunction(
+    new PolicyFnWithAddress<das::Sim_BoolNot<ecs::EntityId>, DAS_BIND_FUN(eidBoolNot), bool, ecs::EntityId>("!", lib, "BoolNot"));
   G_STATIC_ASSERT((eastl::is_same<das::string, ecs::string>::value));
   das::addExtern<DAS_BIND_FUN(castEid)>(*this, lib, "uint", das::SideEffects::none, "bind_dascript::castEid");
   das::addExtern<DAS_BIND_FUN(eidCast)>(*this, lib, "EntityId", das::SideEffects::none, "bind_dascript::eidCast");
@@ -197,6 +219,8 @@ ECS::ECS() : das::Module("ecs")
     "bind_dascript::_builtin_add_sub_template_name_str");
   das::addExtern<DAS_BIND_FUN(_builtin_remove_sub_template_name_str)>(*this, lib, "remove_sub_template_name", das::SideEffects::none,
     "bind_dascript::_builtin_remove_sub_template_name_str");
+  das::addExtern<DAS_BIND_FUN(_builtin_has_sub_template_name_str)>(*this, lib, "has_sub_template_name", das::SideEffects::none,
+    "bind_dascript::_builtin_has_sub_template_name_str");
 
   // modifiers
   das::addExtern<DAS_BIND_FUN(_builtin_add_sub_template)>(*this, lib, "addSubTemplate", das::SideEffects::modifyExternal,

@@ -532,8 +532,7 @@ bool OutlinerWindow::showTypeControls(ObjectTypeTreeItem &tree_item, int type, b
     if (dim_type_color)
       ImGui::PopStyleColor();
 
-    const ImRect itemRect(ImGui::GetItemRectMin(), ImGui::GetItemRectMax());
-    PropPanel::TreeHierarchyLineDrawer<OutlinerTreeItem>::draw(tree_item, *ImGui::GetWindowDrawList(), itemRect, leftIconPos.x,
+    PropPanel::TreeHierarchyLineDrawer<OutlinerTreeItem>::draw(tree_item, *ImGui::GetWindowDrawList(), endData.rowBB, leftIconPos.x,
       isExpanded, PropPanel::getOverriddenColorU32(PropPanel::ColorOverride::TREE_HIERARCHY_LINE),
       PropPanel::getOverriddenColorU32(PropPanel::ColorOverride::TREE_OPEN_CLOSE_ICON_INNER));
 
@@ -647,8 +646,7 @@ bool OutlinerWindow::showLayerControls(LayerTreeItem &tree_item, int type, int p
     if (dim_layer_color)
       ImGui::PopStyleColor();
 
-    const ImRect itemRect(ImGui::GetItemRectMin(), ImGui::GetItemRectMax());
-    PropPanel::TreeHierarchyLineDrawer<OutlinerTreeItem>::draw(tree_item, *ImGui::GetWindowDrawList(), itemRect, leftIconPos.x,
+    PropPanel::TreeHierarchyLineDrawer<OutlinerTreeItem>::draw(tree_item, *ImGui::GetWindowDrawList(), endData.rowBB, leftIconPos.x,
       isExpanded, PropPanel::getOverriddenColorU32(PropPanel::ColorOverride::TREE_HIERARCHY_LINE),
       PropPanel::getOverriddenColorU32(PropPanel::ColorOverride::TREE_OPEN_CLOSE_ICON_INNER));
 
@@ -749,7 +747,7 @@ bool OutlinerWindow::showLayerControls(LayerTreeItem &tree_item, int type, int p
 
     if (selected && layerRenamer)
     {
-      ImRect treeItemRect = itemRect;
+      ImRect treeItemRect = endData.rowBB;
       treeItemRect.Min.x = endData.textPos.x;
       layerRenamer->setTreeItemRect(treeItemRect);
     }
@@ -783,10 +781,11 @@ const char *OutlinerWindow::getObjectNoun(int type, int count) const
 }
 
 bool OutlinerWindow::showObjectControls(ObjectTreeItem &tree_item, int type, int per_type_layer_index, bool has_child,
-  bool dim_object_color)
+  bool dim_object_color, float action_buttons_total_width)
 {
   const bool selected = tree_item.isSelected();
-  ImGuiTreeNodeFlags treeFlags = ImGuiTreeNodeFlags_NavLeftJumpsToParent | ImGuiTreeNodeFlags_SpanAvailWidth;
+  ImGuiTreeNodeFlags treeFlags =
+    ImGuiTreeNodeFlags_NavLeftJumpsToParent | ImGuiTreeNodeFlags_SpanAvailWidth | ImGuiTreeNodeFlags_AllowOverlap;
   if (!has_child)
     treeFlags |= ImGuiTreeNodeFlags_Leaf;
   if (selected)
@@ -839,14 +838,69 @@ bool OutlinerWindow::showObjectControls(ObjectTreeItem &tree_item, int type, int
 
     handleDragAndDropDropping(type, per_type_layer_index);
 
-    PropPanel::ImguiHelper::treeNodeWithSpecialHoverBehaviorEnd(endData);
+    RenderableEditableObject &object = *tree_item.renderableEditableObject;
+    const bool objectVisible = treeInterface->isObjectVisible(object);
+    const bool objectLocked = treeInterface->isObjectLocked(object);
+    const bool hasVisibilityButton = showActionButtonVisibility && (endData.hovered || !objectVisible);
+    const bool hasLockButton = showActionButtonLock && (endData.hovered || objectLocked);
+    const ImVec2 fontSizedIconSize = PropPanel::ImguiHelper::getFontSizedIconSize();
+    const float iconWidthWithSpacing = fontSizedIconSize.x + ImGui::GetStyle().ItemSpacing.x;
+    const float maxX = PropPanel::ImguiHelper::treeNodeWithSpecialHoverBehaviorGetLabelClipMaxX();
+    // + iconWidthWithSpacing is the space taken by the toggle selection button.
+    const float visibilityButtonX = maxX - action_buttons_total_width + iconWidthWithSpacing;
+    const float lockButtonX = visibilityButtonX + (showActionButtonVisibility ? iconWidthWithSpacing : 0.0f);
 
-    const ImRect itemRect(ImGui::GetItemRectMin(), ImGui::GetItemRectMax());
-    PropPanel::TreeHierarchyLineDrawer<OutlinerTreeItem>::draw(tree_item, *ImGui::GetWindowDrawList(), itemRect, endData.textPos.x,
-      isExpanded, PropPanel::getOverriddenColorU32(PropPanel::ColorOverride::TREE_HIERARCHY_LINE),
+    float treeNodeLabelClipMaxX = maxX;
+    if (hasVisibilityButton)
+      treeNodeLabelClipMaxX = visibilityButtonX - ImGui::GetStyle().ItemSpacing.x;
+    else if (hasLockButton)
+      treeNodeLabelClipMaxX = lockButtonX - ImGui::GetStyle().ItemSpacing.x;
+
+    PropPanel::ImguiHelper::treeNodeWithSpecialHoverBehaviorEnd(endData, &treeNodeLabelClipMaxX);
+
+    PropPanel::TreeHierarchyLineDrawer<OutlinerTreeItem>::draw(tree_item, *ImGui::GetWindowDrawList(), endData.rowBB,
+      endData.textPos.x, isExpanded, PropPanel::getOverriddenColorU32(PropPanel::ColorOverride::TREE_HIERARCHY_LINE),
       PropPanel::getOverriddenColorU32(PropPanel::ColorOverride::TREE_OPEN_CLOSE_ICON_INNER));
 
-    if (endData.hovered)
+    const ImVec2 originalCursorPos = ImGui::GetCursorScreenPos();
+
+    bool actionButtonHovered = false;
+    if (hasVisibilityButton)
+    {
+      ImGui::SetCursorScreenPos(ImVec2(visibilityButtonX, endData.textPos.y));
+
+      const bool canChangeVisibility = treeInterface->canChangeObjectVisibility(object);
+      if (!canChangeVisibility)
+        ImGui::BeginDisabled();
+
+      const PropPanel::IconId objectVisibilityIcon = icons.getVisibilityIcon(objectVisible);
+      if (PropPanel::ImguiHelper::imageButtonFrameless("object_visibility", objectVisibilityIcon, fontSizedIconSize,
+            "Toggle visibility"))
+        treeInterface->toggleObjectVisibility(object);
+      actionButtonHovered |= ImGui::IsItemHovered();
+
+      if (!canChangeVisibility)
+        ImGui::EndDisabled();
+    }
+
+    if (hasLockButton)
+    {
+      ImGui::SetCursorScreenPos(ImVec2(lockButtonX, endData.textPos.y));
+
+      const bool canChangeLock = treeInterface->canChangeObjectLock(object);
+      if (!canChangeLock)
+        ImGui::BeginDisabled();
+
+      const PropPanel::IconId objectLockIcon = icons.getLockIcon(objectLocked);
+      if (PropPanel::ImguiHelper::imageButtonFrameless("object_lock", objectLockIcon, fontSizedIconSize, "Toggle locking"))
+        treeInterface->toggleObjectLock(object);
+      actionButtonHovered |= ImGui::IsItemHovered();
+
+      if (!canChangeLock)
+        ImGui::EndDisabled();
+    }
+
+    if (endData.hovered && !actionButtonHovered)
     {
       G_ASSERT(tree_item.getType() == OutlinerTreeItem::ItemType::Object);
       ObjectTreeItem &objectTreeItem = static_cast<ObjectTreeItem &>(tree_item);
@@ -867,9 +921,11 @@ bool OutlinerWindow::showObjectControls(ObjectTreeItem &tree_item, int type, int
       }
     }
 
+    ImGui::SetCursorScreenPos(originalCursorPos);
+
     if (selected && objectRenamer)
     {
-      ImRect treeItemRect = itemRect;
+      ImRect treeItemRect = endData.rowBB;
       treeItemRect.Min.x = endData.textPos.x;
       objectRenamer->setTreeItemRect(treeItemRect);
     }
@@ -906,9 +962,8 @@ bool OutlinerWindow::showObjectAssetNameControls(ObjectAssetNameTreeItem &tree_i
     {
       PropPanel::ImguiHelper::treeNodeWithSpecialHoverBehaviorEnd(endData);
 
-      const ImRect itemRect(ImGui::GetItemRectMin(), ImGui::GetItemRectMax());
-      PropPanel::TreeHierarchyLineDrawer<OutlinerTreeItem>::draw(tree_item, *ImGui::GetWindowDrawList(), itemRect, endData.textPos.x,
-        isExpanded, PropPanel::getOverriddenColorU32(PropPanel::ColorOverride::TREE_HIERARCHY_LINE),
+      PropPanel::TreeHierarchyLineDrawer<OutlinerTreeItem>::draw(tree_item, *ImGui::GetWindowDrawList(), endData.rowBB,
+        endData.textPos.x, isExpanded, PropPanel::getOverriddenColorU32(PropPanel::ColorOverride::TREE_HIERARCHY_LINE),
         PropPanel::getOverriddenColorU32(PropPanel::ColorOverride::TREE_OPEN_CLOSE_ICON_INNER));
     }
     else
@@ -920,8 +975,7 @@ bool OutlinerWindow::showObjectAssetNameControls(ObjectAssetNameTreeItem &tree_i
       endData.textPos.x += iconWidthWithSpacing;
       PropPanel::ImguiHelper::treeNodeWithSpecialHoverBehaviorEnd(endData);
 
-      const ImRect itemRect(ImGui::GetItemRectMin(), ImGui::GetItemRectMax());
-      PropPanel::TreeHierarchyLineDrawer<OutlinerTreeItem>::draw(tree_item, *ImGui::GetWindowDrawList(), itemRect, leftIconPos.x,
+      PropPanel::TreeHierarchyLineDrawer<OutlinerTreeItem>::draw(tree_item, *ImGui::GetWindowDrawList(), endData.rowBB, leftIconPos.x,
         isExpanded, PropPanel::getOverriddenColorU32(PropPanel::ColorOverride::TREE_HIERARCHY_LINE),
         PropPanel::getOverriddenColorU32(PropPanel::ColorOverride::TREE_OPEN_CLOSE_ICON_INNER));
 
@@ -1199,7 +1253,7 @@ void OutlinerWindow::renderTreeItem(OutlinerTreeItem &tree_item, const ImVec4 &d
     if (dimObject)
       ImGui::PushStyleColor(ImGuiCol_Text, dimmed_text_color);
 
-    if (showObjectControls(*objectTreeItem, typeIndex, layerIndex, hasAssetName, dimObject))
+    if (showObjectControls(*objectTreeItem, typeIndex, layerIndex, hasAssetName, dimObject, action_buttons_total_width))
       ImGui::TreePop();
 
     if (dimObject)
@@ -1252,8 +1306,19 @@ void OutlinerWindow::fillTree(ImGuiMultiSelectIO *multi_select_io)
   const float actionButtonsTotalWidth =
     (PropPanel::ImguiHelper::getFontSizedIconSize().x + ImGui::GetStyle().ItemSpacing.x) * actionButtonCount;
 
-  void *oldSelectionHead = outlinerModel->getSelectionHead();
+  OutlinerTreeItem *oldSelectionHead = outlinerModel->getSelectionHead();
   outlinerModel->setSelectionHead(nullptr);
+
+  if (ensureVisibleRequested != EnsureVisibleRequestState::NoRequest)
+  {
+    // Prefer the selection head, and then the first selected item. See updateSelectionHead().
+    OutlinerTreeItem *treeItemToShow = oldSelectionHead;
+    if (!treeItemToShow || treeItemToShow->getType() != OutlinerTreeItem::ItemType::Object)
+      treeItemToShow = outlinerModel->getFirstSelectedObjectTreeItem();
+
+    if (treeItemToShow)
+      outlinerModel->expandParents(*treeItemToShow);
+  }
 
   // Use a simple render cache for frequently needed visible data. It makes renderTreeItem() faster and clearer.
   for (ObjectTypeTreeItem *objectTypeTreeItem : outlinerModel->filteredObjectTypes)
@@ -1361,36 +1426,53 @@ void OutlinerWindow::fillTree(ImGuiMultiSelectIO *multi_select_io)
 
   if (addingLayerToType < 0 && !layerRenamer && !objectRenamer)
   {
-    if (ImGui::Shortcut(ImGuiKey_F2))
+    // Hovering the panel automatically focuses its root window (see editor_core_imgui_begin()), but these shortcuts are
+    // registered in the multi-select focus scope of the tree child window, so route them from the root window.
+    // Without this they would need a click in the tree first to work.
+    ImGuiInputFlags shortcutFlags = ImGuiInputFlags_RouteFocused;
+
+    // The root window also holds the search input, and an active widget claims only the keys it uses, so the root
+    // route would send the rest (F2, the Menu key) to the tree while the user types.
+    if (!ImGui::IsAnyItemActive())
+      shortcutFlags |= ImGuiInputFlags_RouteFromRootWindow;
+
+    // Hovering focuses no tree item, so there is no selection head then. Prefer the selection head, and then the first
+    // selected item, like the scroll to selection does. See updateSelectionHead().
+    const auto getTreeItemToExpand = [this]() -> OutlinerTreeItem * {
+      OutlinerTreeItem *treeItem = outlinerModel->getSelectionHead();
+      return treeItem ? treeItem : outlinerModel->getFirstSelectedObjectTreeItem();
+    };
+
+    if (ImGui::Shortcut(ImGuiKey_F2, shortcutFlags))
     {
       if (outlinerModel->isOnlyASingleObjectIsSelected())
         onMenuItemClick((unsigned)MenuItemId::RenameObject);
       else
         onMenuItemClick((unsigned)MenuItemId::RenameLayer);
     }
-    else if (ImGui::Shortcut(ImGuiKey_Delete))
+    else if (ImGui::Shortcut(ImGuiKey_Delete, shortcutFlags))
     {
       onMenuItemClick((unsigned)MenuItemId::DeleteObject);
     }
-    else if (ImGui::Shortcut(ImGuiMod_Ctrl | ImGuiKey_F))
+    else if (ImGui::Shortcut(ImGuiMod_Ctrl | ImGuiKey_F, shortcutFlags))
     {
       PropPanel::focus_helper.requestFocus(&searchInputFocusId);
     }
-    else if (ImGui::Shortcut(ImGuiMod_Shift | ImGuiKey_LeftArrow))
+    else if (ImGui::Shortcut(ImGuiMod_Shift | ImGuiKey_LeftArrow, shortcutFlags))
     {
-      if (OutlinerTreeItem *selectionHead = outlinerModel->getSelectionHead())
-        selectionHead->setExpandedRecursive(false);
+      if (OutlinerTreeItem *treeItem = getTreeItemToExpand())
+        treeItem->setExpandedRecursive(false);
     }
-    else if (ImGui::Shortcut(ImGuiMod_Shift | ImGuiKey_RightArrow))
+    else if (ImGui::Shortcut(ImGuiMod_Shift | ImGuiKey_RightArrow, shortcutFlags))
     {
-      if (OutlinerTreeItem *selectionHead = outlinerModel->getSelectionHead())
-        selectionHead->setExpandedRecursive(true);
+      if (OutlinerTreeItem *treeItem = getTreeItemToExpand())
+        treeItem->setExpandedRecursive(true);
     }
-    else if (ImGui::Shortcut(ImGuiKey_Z))
+    else if (ImGui::Shortcut(ImGuiKey_Z, shortcutFlags))
     {
       ensureVisibleRequested = EnsureVisibleRequestState::Requested;
     }
-    else if (ImGui::Shortcut(ImGuiKey_Menu))
+    else if (ImGui::Shortcut(ImGuiKey_Menu, shortcutFlags))
     {
       createContextMenuByKeyboard();
     }

@@ -78,7 +78,7 @@ shader fill_windows_grid_range_cs, fill_windows_grid_range_fast_cs
 
       float3 center = lt + 0.5*windowsGridLT.www;
       BRANCH
-      if (any((rb < windowsBoxLt) || (lt > windowsBoxRb.xyz)))
+      if (any(or(rb < windowsBoxLt, lt > windowsBoxRb.xyz)))
       {
         if (windowFrameId == 0)
           structuredBufferAt(grid, gridI) = 0;
@@ -110,14 +110,14 @@ shader fill_windows_grid_range_cs, fill_windows_grid_range_fast_cs
         float3 col3 = float3(w.row0.w,w.row1.w,w.row2.w);
         float3 windowC = center - col3;
         BRANCH
-        if (!any(windowC<-0.5*windowsGridLT.w-windowsBoxRb.w || windowC>0.5*windowsGridLT.w + windowsBoxRb.w))//window size missing
+        if (!any(or(windowC<-0.5*windowsGridLT.w-windowsBoxRb.w, windowC>0.5*windowsGridLT.w + windowsBoxRb.w)))//window size missing
         {
           float3 col0 = float3(w.row0.x, w.row1.x, w.row2.x);
           float3 col1 = float3(w.row0.y, w.row1.y, w.row2.y);
           float3 col2 = float3(w.row0.z, w.row1.z, w.row2.z);
           float3 tmin, tmax;
           transform_box(tmin, tmax, lt - col3, rb - col3, col0, col1, col2);
-          if (!any((tmax < -WINDOW_HALF_LOCAL_BOX) || (tmin > WINDOW_HALF_LOCAL_BOX)))
+          if (!any(or(tmax < -WINDOW_HALF_LOCAL_BOX, tmin > WINDOW_HALF_LOCAL_BOX)))
           {
             uint at;
             InterlockedAdd(totalWindowsCnt[subGridCoord], 1, at);

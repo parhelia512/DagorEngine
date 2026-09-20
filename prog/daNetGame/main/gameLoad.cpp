@@ -72,7 +72,7 @@
 #include <sqstdblob.h>
 #include "main.h"
 #include "render/renderSettings.h"
-#include "render/animatedSplashScreen.h"
+#include <animated_splash_screen_api.h>
 #include <gui/dag_visualLog.h>
 #include <forceFeedback/forceFeedback.h>
 #include <3d/dag_picMgr.h>
@@ -476,9 +476,10 @@ GamePackage load_game_package()
   if (const DataBlock *addons = gameInfo.gameSettings.getBlockByName("addonBasePath"))
     parse_addons(gameInfo, *addons, useAddonVromSrc);
 
-  eastl::unordered_map<eastl::string, eastl::vector<uint32_t>> chunksMap;
 
 #if _TARGET_XBOX | _TARGET_C1 | _TARGET_C2
+
+  eastl::unordered_map<eastl::string, eastl::vector<uint32_t>> chunksMap;
 
   auto collectAddonChunks = [&](const char *addon_name, const DataBlock *blk, eastl::vector<uint32_t> &chunks_list) {
 #if _TARGET_XBOX
@@ -600,7 +601,7 @@ void unload_current_game()
   }
 
   // Explicitly flush delayed actions that might hold sq callbacks (which in turn might need entities, not empty tdb, etc...)
-  perform_delayed_actions();
+  flush_delayed_actions();
 
   net_on_about_to_clear_all_entities(*g_entity_mgr);
 
@@ -954,7 +955,8 @@ static void load_scene_impl(const eastl::string_view &scene_name,
       if (!dd_file_exist(ugm_entities_import_fn.c_str() + 1))
         ugm_entities_import_fn.clear();
     }
-    ecs_set_global_tags_context(*g_entity_mgr, ugm_entities_es_order_fn.empty() ? nullptr : ugm_entities_es_order_fn.c_str());
+    ecs_reset_global_tags_and_load_es_order(*g_entity_mgr,
+      ugm_entities_es_order_fn.empty() ? nullptr : ugm_entities_es_order_fn.c_str());
 
     gamescripts::das_load_ecs_templates();
     debug("load_ecs_templates");
@@ -1033,11 +1035,23 @@ static void prepare_to_switch_scene()
   animated_splash_screen_allow_watchdog_kick(true);
 }
 
+struct LoadSceneAfterDasReloadAction final : public DelayedAction
+{
+  eastl::string scene;
+  explicit LoadSceneAfterDasReloadAction(eastl::string &&s) : scene(eastl::move(s)) {}
+  void performAction() override
+  {
+    load_scene_impl(scene, {}, {}, {});
+    switch_scene_flag.store(false);
+  }
+};
+
 struct ReloadDasModulesJob final : public cpujobs::IJob
 {
   das::daScriptEnvironment *bound;
-  explicit ReloadDasModulesJob(das::daScriptEnvironment *bound_) : bound(bound_) {}
-  const char *getJobName(bool &) const override { return "ReloadDasModulesJob"; }
+  eastl::string scene;
+  ReloadDasModulesJob(das::daScriptEnvironment *bound_, eastl::string_view scene_) : bound(bound_), scene(scene_) {}
+  const char *getJobName(bool &) const override { return DAPROFILER_STRING("ReloadDasModulesJob"); }
   void doJob() override
   {
     das::daScriptEnvironment::setBound(bound);
@@ -1054,7 +1068,7 @@ struct ReloadDasModulesJob final : public cpujobs::IJob
   {
     bind_dascript::main_thread_post_load();
     g_entity_mgr->broadcastEvent(EventDaScriptReloaded());
-    switch_scene_flag.store(false);
+    add_delayed_action(new LoadSceneAfterDasReloadAction(eastl::move(scene)));
     delete this;
     mem_collect_threads(/*loading_job_only*/ true);
   }
@@ -1188,8 +1202,6 @@ static void switch_scene_and_apply_update(eastl::string_view scene)
   else
     debug("Vroms are up-to-date %s == %s", updatedVersion.to_string(), cacheVersion.to_string());
 
-  load_scene_impl(scene, {}, {}, {});
-
   // Use game's version after vroms has been remounted.
   // Remount of vroms might change game's version.
   const updater::Version currentVersion = get_updated_game_version();
@@ -1228,7 +1240,6 @@ static void switch_scene_and_apply_update(eastl::string_view scene)
           "debugEnableDataReload: %@",
       currentVersion.to_string(), cacheVersion.to_string(), alwaysReloadOverlay, alwaysReloadGameSq, alwaysReloadDas,
       debugEnableDataReload);
-    switch_scene_flag.store(false);
   }
   else
   {
@@ -1273,14 +1284,15 @@ static void switch_scene_and_apply_update(eastl::string_view scene)
     {
       debug("Start a job to reload das modules.");
 
-      G_VERIFY(cpujobs::add_job(ecs::get_common_loading_job_mgr(), new ReloadDasModulesJob(das::daScriptEnvironment::getBound())));
+      G_VERIFY(
+        cpujobs::add_job(ecs::get_common_loading_job_mgr(), new ReloadDasModulesJob(das::daScriptEnvironment::getBound(), scene)));
+      return; // ReloadDasModulesJob release will load the scene
     }
-    else
-    {
-      debug("Game scripts (daScript) has't been reloaded");
-      switch_scene_flag.store(false);
-    }
+    debug("Game scripts (daScript) has't been reloaded");
   }
+
+  load_scene_impl(scene, {}, {}, {});
+  switch_scene_flag.store(false);
 }
 
 bool is_load_in_progress() { return switch_scene_flag.load() || is_level_loading(); }

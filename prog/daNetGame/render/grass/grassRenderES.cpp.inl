@@ -37,7 +37,7 @@
 #include <ecs/render/updateStageRender.h>
 #include <render/world/defaultVrsSettings.h>
 #include <render/world/deformHeightmap.h>
-#include <render/world/cameraParams.h>
+#include <render/cameraParams.h>
 #include <drv/3d/dag_renderStates.h>
 #include <drv/3d/dag_draw.h>
 #include <drv/3d/dag_vertexIndexBuffer.h>

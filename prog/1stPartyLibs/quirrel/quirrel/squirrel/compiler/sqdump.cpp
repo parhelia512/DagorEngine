@@ -256,6 +256,10 @@ void DumpInstructions(const StreamCB &stream, SQLineInfosHeader *lineinfos, int 
                 break;
             }
 
+            case _OP_SPREAD:
+                streamprintf(stream, "  // spread r%d into r%d, reserve %d more", int(inst._arg1), int(inst._arg0), int(inst._arg2));
+                break;
+
             case _OP_APPENDARRAY: {
                 streamprintf(stream, "  // r%d.append(", int(inst._arg0));
                 switch (inst._arg2) {
@@ -678,8 +682,8 @@ void DumpInstructions(const StreamCB &stream, SQLineInfosHeader *lineinfos, int 
                 streamprintf(stream, "  // pop %d trap(s)", int(inst._arg0));
                 break;
 
-            case _OP_PATCH_DOCOBJ:
-                streamprintf(stream, "  // patch docobj r%d", int(inst._arg0));
+            case _OP_SET_CLASS_DOCSTRING:
+                streamprintf(stream, "  // set class docstring %u on r%d", unsigned(inst._arg1), int(inst._arg0));
                 break;
 
             default:

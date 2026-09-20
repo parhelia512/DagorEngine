@@ -526,7 +526,7 @@ void ECSEntityObject::recreateObject(ObjectEditor *objEd)
   removedEntityComponents.reset();
 }
 
-bool ECSEntityObject::canTransformFreely() const
+bool ECSEntityObject::canTransform() const
 {
   const ecs::EntityId *parentEid = g_entity_mgr->getNullable<ecs::EntityId>(getEid(), ECS_HASH("hierarchy_parent"));
   return !isLocked() && (!parentEid || !*parentEid || g_entity_mgr->has(getEid(), ECS_HASH("hierarchy_parent_last_transform")));

@@ -7,12 +7,13 @@
 #include <daECS/core/ecsHash.h>
 #include <daECS/core/component.h>
 #include <generic/dag_smallTab.h>
+#include <util/dag_compilerDefs.h>
 
 namespace ecs
 {
 
 typedef dag::Vector<ChildComponent> BaseArray;
-class Array : protected BaseArray
+class DAGOR_WARN_IF_UNUSED Array : protected BaseArray
 {
 public:
   typedef BaseArray base_type;

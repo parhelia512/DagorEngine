@@ -23,6 +23,7 @@ using namespace drv3d_metal;
 
 // d3d:: calls that allocate/resize/free bindless ranges have no external sync requirement, so do sync internally.
 static WinCritSec rangesMutex;
+static WinCritSec samplerTableMutex;
 
 uint32_t BindlessManager::allocateBindlessResourceRange(D3DResourceType type, uint32_t count)
 {
@@ -95,10 +96,22 @@ uint32_t BindlessManager::registerBindlessSampler(int index, float bias)
 {
   D3D_CONTRACT_ASSERTF_RETURN(index >= 0, 0, "Trying to register an invalid bindless sampler");
 
-  id<MTLSamplerState> sampler = render.sampler_states[index].sampler;
+  id<MTLSamplerState> sampler = nil;
+  {
+    std::lock_guard<std::mutex> lock(render.samplerStatesMutex);
+    sampler = render.sampler_states[index].sampler;
+  }
+
+  uint64_t samplerResId = 0;
+  if (@available(iOS 16, macOS 13.0, *))
+  {
+    MTLResourceID res = sampler.gpuResourceID;
+    memcpy(&samplerResId, &res, sizeof(res));
+  }
 
   uint32_t newIndex;
   {
+    WinAutoLock lock(samplerTableMutex);
     auto ref = eastl::find(begin(samplerTable), end(samplerTable), sampler);
     if (ref != end(samplerTable))
     {
@@ -106,22 +119,16 @@ uint32_t BindlessManager::registerBindlessSampler(int index, float bias)
     }
 
     newIndex = static_cast<uint32_t>(samplerTable.size());
+    if (newIndex >= Render::BINDLESS_SAMPLER_COUNT)
+    {
+      D3D_CONTRACT_ERROR("Metal: out of bindless sampler slots, limit is %u", Render::BINDLESS_SAMPLER_COUNT);
+      DAG_FATAL("Metal: Critical D3D contract violation, out of bindless sampler slots, can not continue");
+      return 0;
+    }
     samplerTable.push_back(sampler);
   }
 
-  G_ASSERTF(newIndex < Render::BINDLESS_SAMPLER_COUNT, "bindless sampler slot out of range: %d (max slot id: %d)", newIndex, Render::BINDLESS_SAMPLER_COUNT);
-  if (render.bindlessSamplerBiases.size() < newIndex + 1)
-  {
-    render.bindlessSamplerBiases.resize(newIndex + 1);
-    render.bindlessSamplersCache.resize(newIndex + 1);
-  }
-  render.bindlessSamplerBiases[newIndex] = bias;
-  if (@available(iOS 16, macOS 13.0, *))
-  {
-    MTLResourceID res = sampler.gpuResourceID;
-    memcpy(&render.bindlessSamplersCache[newIndex], &res, sizeof(res));
-  }
-  render.bindless_resources_bound &= ~BindlessTypeSampler;
+  render.updateBindlessSamplerAnyThread(newIndex, bias, samplerResId);
 
   return newIndex;
 }

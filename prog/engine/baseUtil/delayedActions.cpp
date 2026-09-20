@@ -92,37 +92,91 @@ struct DelayedRecord
   bool isValid() const { return action || cb; }
 };
 
+// ACTION_DEBUG_NAMES_LOC embeds a newline+tab, which would split the line and hide the site from a grep
+static const char *one_line_name(const char *src, char *buf, size_t buf_size)
+{
+  if (!src)
+    return "?";
+  size_t i = 0;
+  for (; src[i] && i + 1 < buf_size; ++i)
+    buf[i] = (src[i] == '\n' || src[i] == '\t') ? ' ' : src[i];
+  buf[i] = '\0';
+  return buf;
+}
+
+static void warn_dropped(const Tab<DelayedRecord> &list, const char *list_name)
+{
+  char name[192];
+  for (const DelayedRecord &rec : list)
+    logwarn("delayed %s <%s> in %s list dropped, never performed", rec.action ? "action" : "callback",
+      one_line_name(rec.debugName, name, sizeof(name)), list_name);
+}
+
+// once teardown started no drain reads the lists again, so free the record instead of queueing it into a dead one
+static void drop_posted_at_teardown(DelayedAction *action, const char *debug_name)
+{
+  char name[192];
+  logwarn("delayed %s <%s> posted after teardown started, dropped", action ? "action" : "callback",
+    one_line_name(debug_name, name, sizeof(name)));
+  delete action;
+}
+
 static struct DelayedActionsContext
 {
   Tab<DelayedRecord> delayed_actions, delayed_actions_buffered;
   WinCritSec delayedCrit;
   int quotaUsec = 40000;
+  uint32_t postCount = 0;   //< bumped on every post, so flush() can tell a fresh record from a precondition-blocked one
+  bool tearingDown = false; //< set once in the destructor and never cleared
 
   DelayedActionsContext() { delayed_actions.reserve(8); }
   ~DelayedActionsContext()
   {
-    for (int i = 0; i < delayed_actions.size(); ++i)
-      delayed_actions[i].destroy();
-    clear_and_shrink(delayed_actions);
-    for (int i = 0; i < delayed_actions_buffered.size(); ++i)
-      delayed_actions_buffered[i].destroy();
-    clear_and_shrink(delayed_actions_buffered);
+    // detach under the lock, since a back thread can still post while we tear down; destroy() deletes user
+    // actions, so it runs outside the lock, the same rule perform() follows for run() and destroy()
+    Tab<DelayedRecord> actions, buffered;
+    {
+      WinAutoLock lock(delayedCrit);
+      tearingDown = true;
+      actions.swap(delayed_actions);
+      buffered.swap(delayed_actions_buffered);
+    }
+
+    // records are dropped here, never run: a callback that never ran leaks whatever it was meant to free
+    warn_dropped(actions, "main");
+    warn_dropped(buffered, "buffered");
+
+    for (DelayedRecord &rec : actions)
+      rec.destroy();
+    for (DelayedRecord &rec : buffered)
+      rec.destroy();
+  }
+
+  // false once teardown started, and then the record is ours to free: no drain will ever read it
+  bool post(Tab<DelayedRecord> &list, DelayedAction *action, delayed_callback cb, void *cb_arg, const char *debug_name)
+  {
+    WinAutoLock lock(delayedCrit);
+    if (DAGOR_UNLIKELY(tearingDown))
+      return false;
+    postCount++;
+    list.push_back(DelayedRecord(action, cb, cb_arg, debug_name ? debug_name : "DelayedAction"));
+    return true;
   }
 
   void add(DelayedAction *action, delayed_callback cb = NULL, void *cb_arg = NULL, const char *debug_name = NULL)
   {
     if (!action && !cb)
       return;
-    WinAutoLock lock(delayedCrit);
-    delayed_actions.push_back(DelayedRecord(action, cb, cb_arg, debug_name ? debug_name : "DelayedAction"));
+    if (!post(delayed_actions, action, cb, cb_arg, debug_name))
+      drop_posted_at_teardown(action, debug_name);
   }
 
   void addBuffered(DelayedAction *action, delayed_callback cb = NULL, void *cb_arg = NULL, const char *debug_name = NULL)
   {
     if (!action && !cb)
       return;
-    WinAutoLock lock(delayedCrit);
-    delayed_actions_buffered.push_back(DelayedRecord(action, cb, cb_arg, debug_name ? debug_name : "DelayedAction"));
+    if (!post(delayed_actions_buffered, action, cb, cb_arg, debug_name))
+      drop_posted_at_teardown(action, debug_name);
   }
 
   bool remove(DelayedAction *action)
@@ -142,14 +196,16 @@ static struct DelayedActionsContext
     append_items(delayed_actions, delayed_actions_buffered.size(), delayed_actions_buffered.data());
     delayed_actions_buffered.clear();
   }
-  void perform()
+  // returns how many actions ran; 0 means none could and only buffered records were promoted, which is what flush()
+  // stops on. a positive count can still be a pass the quota truncated, leaving runnable records queued
+  int perform()
   {
     delayedCrit.lock();
     if (delayed_actions.empty())
     {
       move_buffered_actions();
       delayedCrit.unlock();
-      return;
+      return 0;
     }
     DA_PROFILE_EVENT("perform_delayed_actions");
     int i = 0, actionsLeft = 0, cnt = 0;
@@ -170,7 +226,7 @@ static struct DelayedActionsContext
     {
       move_buffered_actions();
       delayedCrit.unlock();
-      return;
+      return 0;
     }
     delayedCrit.unlock();
 
@@ -194,6 +250,41 @@ static struct DelayedActionsContext
 
     WinAutoLock lock(delayedCrit);
     move_buffered_actions();
+    return cnt;
+  }
+
+  void flush()
+  {
+    // perform() can promote buffered records and still return 0 without running them, so promote up front;
+    // a pass that ran nothing with nothing posted meanwhile leaves only precondition-blocked records
+    constexpr int maxPasses = 8;
+    int pass = 0;
+    for (; pass < maxPasses; ++pass)
+    {
+      uint32_t postedBefore;
+      {
+        WinAutoLock lock(delayedCrit);
+        move_buffered_actions();
+        postedBefore = postCount;
+      }
+
+      const int done = perform();
+
+      WinAutoLock lock(delayedCrit);
+      if (!done && postCount == postedBefore)
+        break;
+    }
+
+    // both exits can leave records queued: precondition-blocked ones on the natural break, and whatever a
+    // quota-truncated pass did not reach at the cap; the caller tears down without them having run
+    int left;
+    {
+      WinAutoLock lock(delayedCrit);
+      left = delayed_actions.size() + delayed_actions_buffered.size();
+    }
+    if (left)
+      logwarn("flush_delayed_actions() left %d action(s) queued (%s)", left,
+        pass == maxPasses ? "pass cap reached" : "blocked on precondition");
   }
 
 } da_ctx;
@@ -220,6 +311,8 @@ void add_delayed_callback_buffered(delayed_callback cb, void *cb_arg, const char
 /* you can't implement remove_delayed_callback() because pair cb+arg doesn not identify it uniquely */
 
 void perform_delayed_actions() { da_ctx.perform(); }
+
+void flush_delayed_actions() { da_ctx.flush(); }
 
 void set_delayed_action_max_quota(int quota_usec) { da_ctx.quotaUsec = quota_usec; }
 

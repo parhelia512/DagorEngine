@@ -138,8 +138,7 @@ void FlightStickClassDriver::refreshDeviceList()
     eastl::swap(devices, oldDevices);
     devices.clear();
 
-    gameinput::DevicesList controllers;
-    gameinput::get_devices(GameInputKindFlightStick, controllers);
+    gameinput::DevicesList controllers = gameinput::get_devices(GameInputKindFlightStick);
 
     for (IGameInputDevice *sysDevice : controllers)
       if (sysDevice)

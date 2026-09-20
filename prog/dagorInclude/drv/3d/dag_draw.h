@@ -5,10 +5,11 @@
 #pragma once
 
 #include <util/dag_inttypes.h>
+#include <drv/3d/dag_multi_interface.h>
 
 class Sbuffer;
 
-namespace d3d
+namespace d3d _MULTI_INTERFACE
 {
 /**
  * @brief Draw primitives.
@@ -134,7 +135,7 @@ bool multi_draw_indirect(int prim_type, Sbuffer *args, uint32_t draw_count, uint
  * @return True if the draw operation was successful, false otherwise.
  */
 bool multi_draw_indexed_indirect(int prim_type, Sbuffer *args, uint32_t draw_count, uint32_t stride_bytes, uint32_t byte_offset = 0);
-} // namespace d3d
+} // namespace d3d _MULTI_INTERFACE
 
 #if _TARGET_D3D_MULTI
 #include <drv/3d/dag_interface_table.h>

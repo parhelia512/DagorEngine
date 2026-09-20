@@ -218,7 +218,13 @@ static void send_delayed_connection_event(net::ConnectionId conn_id)
   auto res = delayed_connection_event_map.find(conn_id);
   if (res != delayed_connection_event_map.end())
   {
-    g_entity_mgr->broadcastEventImmediate(eastl::move(*res->second));
+    // Field order of NET_ECS_EVENT(EventOnClientConnected) in daECS/net/netEvents.h.
+    constexpr size_t EV_USER_ID = 1, EV_APP_ID = 8;
+    // The vrom sync can outlast the matching push carrying the player's real appId, and back
+    // then NetMatchingEventOnPlayerAppIdChanged had no player entity to correct.
+    EventOnClientConnected &evt = *res->second;
+    evt.get<EV_APP_ID>() = dedicated_matching::get_player_app_id(evt.get<EV_USER_ID>());
+    g_entity_mgr->broadcastEventImmediate(eastl::move(evt));
     res->second.reset();
   }
 }
@@ -240,14 +246,13 @@ static void on_sync_vroms_done_msg(const net::IMessage *msgraw)
       statsd::profile("syncvroms.done_ms", (long)syncTimeMs);
   }
 
-  uint32_t &connFlagsRW = msgraw->connection->getConnFlagsRW();
-  if (!(connFlagsRW & net::CF_PENDING))
+  if (!msgraw->connection->hasAnyFlags(net::CF_PENDING))
   {
-    debug("[SyncVroms]: The connection is excpected to by in peding state.");
+    debug("[SyncVroms]: The connection is expected to be in pending state.");
     return;
   }
 
-  connFlagsRW &= ~net::CF_PENDING; // not pending anymore
+  msgraw->connection->clearFlags(net::CF_PENDING);
 
   send_delayed_connection_event(msgraw->connection->getId());
 
@@ -351,8 +356,7 @@ struct DedicatedNetObserver final : public net::INetworkObserver
     net::IConnection &conn = *msgraw->connection;
     auto msg = msgraw->cast<ClientInfo>();
     G_ASSERT(msg);
-    uint32_t &connFlags = conn.getConnFlagsRW();
-    if (DAGOR_UNLIKELY(!(connFlags & net::CF_PENDING)))
+    if (DAGOR_UNLIKELY(!conn.hasAnyFlags(net::CF_PENDING)))
     {
       logwarn("ClientInfo for not pending connection %d", (int)conn.getId());
       return;
@@ -418,14 +422,14 @@ struct DedicatedNetObserver final : public net::INetworkObserver
     const bool vromsAreTheSame = check_client_vroms_and_send_diffs(msg);
 
     if (vromsAreTheSame)
-      connFlags &= ~net::CF_PENDING; // not pending anymore
+      conn.clearFlags(net::CF_PENDING);
 
     {
       ServerInfo srvInfoMsg((uint16_t)serverFlags, (uint8_t)phys_get_tickrate(), (uint8_t)phys_get_bot_tickrate(), get_exe_version32(),
         sceneload::get_current_game().sceneName, sceneload::get_current_game().levelBlkPath, Tab<uint8_t>{});
 
       g_entity_mgr->broadcastEventImmediate(
-        OnNetDedicatedPrepareServerInfo(srvInfoMsg, serverFlags, connFlags, clientFlags, userId, userName, pltf, conn));
+        OnNetDedicatedPrepareServerInfo(srvInfoMsg, serverFlags, clientFlags, userId, userName, pltf, conn));
       srvInfoMsg.connection = &conn;
       send_net_msg(*g_entity_mgr, net::get_msg_sink(), eastl::move(srvInfoMsg));
     }
@@ -441,17 +445,16 @@ struct DedicatedNetObserver final : public net::INetworkObserver
         send_event_after_sync_vroms_done(conn.getId(), eastl::move(evt));
     }
 
-    if (!(connFlags & net::CF_PENDING)) // i.e. not disconnected in event handlers
-      flush_new_connection(conn);
+    flush_new_connection(conn);
   }
 
   void onConnect(net::Connection &conn) override
   {
     G_VERIFY(conn.setEntityInScopeAlways(net::get_msg_sink()));
-    if (!conn.isBlackHole()) // network connection
+    if (!conn.isBlackHole())
     {
+      conn.addFlags(net::CF_PENDING);
       debug("Client #%d connected, wait for identity message", (int)conn.getId());
-      conn.getConnFlagsRW() = net::CF_PENDING;
 
       if (ecs::get_common_loading_job_mgr() == cpujobs::COREID_IMMEDIATE) // Init MT loading mgr on first connect
         init_loading_job_manager();

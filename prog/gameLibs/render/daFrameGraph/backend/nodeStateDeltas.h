@@ -90,7 +90,6 @@ struct RPsDescKey
 {
   dag::RelocatableFixedVector<RenderPassTargetDesc, 8> targets;
   dag::RelocatableFixedVector<RenderPassBind, 16> binds;
-  uint32_t subpassBindingOffset;
 
   bool operator==(const RPsDescKey &other) const = default;
 };
@@ -104,7 +103,6 @@ public:
 
     hash_combine(result, rpDesc.targets.size());
     hash_combine(result, rpDesc.binds.size());
-    hash_combine(result, rpDesc.subpassBindingOffset);
 
     for (auto &prTarget : rpDesc.targets)
       hash_combine(result, (*this)(prTarget));
@@ -148,7 +146,8 @@ public:
 
   void calculatePerNodeStateDeltas(NodeStateDeltas &result, const BarrierScheduler::EventsCollection &events,
     const IdIndexedFlags<intermediate::NodeIndex, framemem_allocator> &nodes_changed,
-    const IdIndexedFlags<intermediate::ResourceIndex, framemem_allocator> &resources_changed);
+    const IdIndexedFlags<intermediate::ResourceIndex, framemem_allocator> &resources_changed,
+    const IdIndexedFlags<intermediate::ResourceIndex, framemem_allocator> &resource_requests_changed);
 
   // On some platforms, driver objects can have internal caches and aggregate
   // too much elements over time, so wiping at an opportune time is a good idea.
@@ -196,14 +195,10 @@ private:
   NodeStateDelta getStateDelta(const intermediate::RequiredNodeState &first, const intermediate::RequiredNodeState &second,
     bool force_pass_break, uint16_t schedule_position);
 
-  // Snapshots the previous values of firstActivationPosition / firstAccessPosition /
-  // baseInitialized into framemem, recomputes them from the current graph and events,
-  // and returns a framemem "resource dirty" flag that is the union of `resources_changed`
-  // and the internal state changes (resources whose activation / access position or
-  // base-initialized bit flipped between this call and the previous one).
   IdIndexedFlags<intermediate::ResourceIndex, framemem_allocator> precomputeResourceState(
     const BarrierScheduler::EventsCollection &events,
-    const IdIndexedFlags<intermediate::ResourceIndex, framemem_allocator> &resources_changed);
+    const IdIndexedFlags<intermediate::ResourceIndex, framemem_allocator> &resources_changed,
+    const IdIndexedFlags<intermediate::ResourceIndex, framemem_allocator> &resource_requests_changed);
 
   IdIndexedFlags<intermediate::NodeIndex> computeDirtyDeltas(const NodeStateDeltas &result,
     const BarrierScheduler::EventsCollection &events, const IdIndexedFlags<intermediate::NodeIndex, framemem_allocator> &nodes_changed,

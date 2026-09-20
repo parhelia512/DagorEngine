@@ -2,19 +2,23 @@
 #pragma once
 
 #include "canvas_clipboard.h"
+#include "graph_add_node_popup.h"
+#include "graph_canvas_cull.h"
+#include "graph_context_menu.h"
 #include "graph_dead_paths.h"
+#include "graph_drag_collision.h"
 #include "graph_edge_reconnect.h"
-#include "graph_undo.h" // GraphSelection
+#include "graph_edge_render.h" // LinkDropOnCanvas
+#include "graph_edit_types.h"
+#include "graph_pin_jump_menu.h"
 
 #include <propPanel/c_control_event_handler.h>
 #include <propPanel/control/panelWindow.h>
 
+#include <EASTL/hash_map.h>
 #include <EASTL/hash_set.h>
 #include <EASTL/string.h>
-#include <EASTL/utility.h>
 #include <EASTL/vector.h>
-
-#include <imgui/imgui.h>
 
 #include <graphEditor/graph_data.h>
 
@@ -26,16 +30,22 @@ struct EditorContext;
 }
 } // namespace ax
 
+class GraphDocument;
 class GraphEditorPlg;
 struct IGraphTexGenService;
 
 class GraphPanel final : public PropPanel::ControlEventHandler
 {
 public:
-  GraphPanel(GraphEditorPlg &plugin, IGraphTexGenService *tex_gen_service, GraphData &graph_data);
+  GraphPanel(GraphEditorPlg &plugin, IGraphTexGenService *tex_gen_service, GraphDocument &doc);
   ~GraphPanel() override;
 
   PropPanel::PanelWindowPropertyControl *getPanelWindow() { return panelWindow; }
+
+  ImVec2 getLastCanvasCenter() const { return lastCanvasCenter; }
+
+  // True while a node-library drag hovers this canvas -- while releasing would create the node.
+  bool isBaseNodeDropTargetHot() const;
 
   void updateImgui();
 
@@ -52,10 +62,8 @@ public:
   // unique id call this then pass the result to addNode.
   int allocateNodeId() const;
 
-  // Edge counterpart of allocateNodeId / addNode. addEdge trusts the caller's id and just
-  // appends; removeEdgeById is a linear scan + erase (returns false if no edge with that id).
-  // Used by the link-create / link-delete plumbing in updateImgui.
-  int allocateEdgeId() const;
+  // addEdge trusts the caller's id and just appends; removeEdgeById is a linear scan + erase
+  // (returns false if no edge with that id). Edge ids come from next_edge_id.
   void addEdge(GraphData::Edge edge);
   bool removeEdgeById(int edge_id);
   bool removeNodeById(int node_id);
@@ -65,10 +73,9 @@ public:
   // next render pushes graphData.x/y to the node editor.
   void markPositionsPending(const eastl::vector<int> &node_ids);
 
-  // Queue a SetGroupSize push for existing block nodes whose graphData blockWidth/blockHeight changed
-  // out of frame (resize undo/redo): inserts the ids into pendingBlockSizeIds and marks the cull cache
-  // dirty. ne stores group bounds, so the size must be pushed explicitly (drawBlockNode does it).
-  void markBlockSizesPending(const eastl::vector<int> &node_ids);
+  // Block sizes changed out of frame (resize undo/redo): drops the cull cache, which holds the old
+  // bounds. draw_block_node pushes the size to ne itself, on the first frame the block draws.
+  void markBlockSizesChanged();
 
   // Per-tick hook driven by the plugin's actObjects. Runs between ImGui frames -- the right
   // place for anything that needs to be done outside WithinFrameScope (modal dialogs in
@@ -90,7 +97,7 @@ public:
   // build the selection closure for block nodes.
   void collectNodesInsideBlock(int block_node_id, eastl::vector<int> &out_child_ids) const;
 
-  // Selection undo support (used by GraphEditorPlg). getRecordedSelection returns the selection (nodes
+  // Selection undo support (used by GraphDocument). getRecordedSelection returns the selection (nodes
   // + links, sorted) as of frame start -- the "old" set a graph op folds into its undo entry.
   // suppressSelectionUndoThisFrame tells the frame-end detector that this frame's selection change is
   // already accounted for (folded into an edit, or undo-driven), so it resyncs instead of recording.
@@ -99,12 +106,12 @@ public:
   void suppressSelectionUndoThisFrame() { suppressSelectionRecord = true; }
   void setPendingSelection(const GraphSelection &selection);
 
-  static uint64_t makePinId(int node_id, int pin_index)
-  {
-    return ((uint64_t(uint32_t(node_id)) + 1) << 20) | (uint64_t(uint32_t(pin_index)) + 1);
-  }
-  static uint64_t makeNodeId(int node_id) { return uint64_t(uint32_t(node_id)) + 1; }
-  static uint64_t makeLinkId(int edge_id) { return uint64_t(uint32_t(edge_id)) + 1; }
+  // Ctrl+A / Ctrl+D / Ctrl+I and the editor's Zoom and center reach the plugin on the editor's command
+  // path, out of frame. ne's calls need the editor current, so all four are queued for the next render pass.
+  void requestSelectAll() { selectAllRequested = true; }
+  void requestDeselectAll() { deselectAllRequested = true; }
+  void requestInvertSelection() { invertSelectionRequested = true; }
+  void requestFrameSelected() { frameSelectedRequested = true; }
 
 private:
   // Node deletes captured during the deletion loop but waiting for the next actObjects tick
@@ -121,21 +128,53 @@ private:
   PropPanel::PanelWindowPropertyControl *panelWindow = nullptr;
   GraphEditorPlg &plugin;
   IGraphTexGenService *texGenService = nullptr;
-  GraphData &graphData;
+  GraphDocument &doc;
+  // Writes go through doc.mutateGraphData, under the graph lock.
+  const GraphData &graphData;
   ax::NodeEditor::EditorContext *editor = nullptr;
 
   // Node ids that need ne::SetNodePosition pushed this frame (using node.x/node.y, which is
   // already canvas-space). Populated by onGraphDataChanged (every loaded id) and addNode
-  // (each drag-drop insert). Drained per-id during the render loop; cleared on graph reload.
+  // (each drag-drop insert). Drained by GraphCanvasCull::update; cleared on graph reload.
   eastl::hash_set<int> pendingPositionIds;
 
-  // Block node ids that need ne::SetGroupSize pushed this frame (their graphData size changed out of
-  // frame via resize undo/redo). Drained in drawBlockNode before BeginNode.
-  eastl::hash_set<int> pendingBlockSizeIds;
+  // Group size last pushed per block id (GraphData::Node::id); draw_block_node re-pushes on a change.
+  eastl::hash_map<int, ImVec2> appliedBlockGroupSizes;
+
+  // Canvas space, from the last rendered frame. This panel draws before the node library, so a
+  // double click there always follows a capture.
+  ImVec2 lastCanvasCenter = ImVec2(0.0f, 0.0f);
+
+
+  // Stamped with a frame rather than cleared: a hidden panel never runs updateImgui, so a plain
+  // bool would stay stuck on the last visible frame.
+  int dropTargetHotFrame = -1;
+
+  // Pin a node-library drag is over, resolved before the node pass so the pin that lights up is the
+  // pin the drop splices into.
+  int dropTargetPinNode = -1;
+  int dropTargetPinIndex = -1;
+
+  // Add transit node pressed with no pin or edge under the cursor: the gesture stays armed, previews
+  // the node it would splice in, and the next click on a pin or edge is what opens the picker.
+  bool transitArmed = false;
+  int transitTargetNode = -1;
+  int transitTargetPin = -1;
+  int transitTargetEdge = -1;
 
   CanvasClipboard canvasClipboard;
+  GraphContextMenu contextMenu;
+  // Where the standing menu's Paste lands, rather than wherever the cursor ended up on the row.
+  ImVec2 contextMenuCanvasPos = ImVec2(0.0f, 0.0f);
+
   GraphEdgeReconnect edgeReconnect;
   GraphData::Edge reconnectRemovedEdge; // edge dropped when a reconnect (A) begins; recorded for undo on resolve
+  GraphPinJumpMenu pinJumpMenu;
+
+  // "Drop a link on empty canvas to make a node." linkDrop outlives the frame: ne confirms the drop
+  // a frame after the button comes up.
+  LinkDropOnCanvas linkDrop;
+  GraphAddNodePopup addNodePopup;
 
   // Selection undo. lastSelection is the selection (nodes + links, sorted) as of the last settled
   // frame -- the diff basis for recording deliberate changes and the "old" set graph ops fold into
@@ -146,6 +185,10 @@ private:
   GraphSelection pendingSelection;
   bool hasPendingSelection = false;
   bool suppressSelectionRecord = false;
+  bool selectAllRequested = false;
+  bool deselectAllRequested = false;
+  bool invertSelectionRequested = false;
+  bool frameSelectedRequested = false;
 
   // Reads the current ne selection (nodes + links) into out, as sorted original ids.
   void readSelection(GraphSelection &out) const;
@@ -170,29 +213,11 @@ private:
   // release. Avoids scanning all nodes on every mouse-press. Drained when the release is processed.
   eastl::vector<BlockSize> blockResizeOld;
 
-  struct NodeCull
-  {
-    ImVec2 rectMin;       // node rect in canvas space (ne::GetNodePosition)
-    ImVec2 rectMax;       // rectMin + ne::GetNodeSize
-    bool visible = false; // rect meets the margin-inflated viewport, or bounds not yet known
-    bool needed = false;  // visible, or holds an endpoint of a link whose span meets the viewport
-  };
-  eastl::vector<NodeCull> cullNodes;
-  eastl::vector<eastl::pair<int, int>> cullNodeOrder;
-
-  // Cull-result memoization. The pass that fills cullNodes / cullNodeOrder is ~O(N^2) (ne::GetNodePosition
-  // / GetNodeSize are linear lookups), so it is rebuilt only when an input changes and otherwise reused.
-  // cullDirty is raised by graph mutations (add / remove node / edge, graph reload). cullViewMin/Max is the
-  // canvas-space viewport the cache was built against -- a pan / zoom / navigate-animation moves it and
-  // forces a rebuild. cullSettleFrames keeps the pass running during a pointer interaction and for a few
-  // frames after, so a node drag or block resize (ne bounds move with no view / graph-data change) shows.
-  bool cullDirty = true;
-  int cullSettleFrames = 0;
-  ImVec2 cullViewMin = ImVec2(0.0f, 0.0f);
-  ImVec2 cullViewMax = ImVec2(0.0f, 0.0f);
+  GraphCanvasCull canvasCull;
+  GraphDragCollision dragCollision;
 
   DeadPaths deadPaths;
-  // Pins touched by any edge, and the subset touched by at least one live one, as makePinId keys.
+  // Pins touched by any edge, and the subset touched by at least one live one, as make_pin_id keys.
   // ne::PinHadAnyLinks cannot serve instead: a muted link is still submitted, so ne keeps reporting
   // its pins as fed.
   eastl::hash_set<uint64_t> linkedPins;
@@ -200,15 +225,46 @@ private:
   uint64_t deadPathsRevision = ~uint64_t(0);
   void refreshDeadPaths();
 
-  void drawCommentNode(const GraphData::Node &n, bool selected);
-  void drawBlockNode(const GraphData::Node &n, bool selected);
+  // Call between ne::Suspend() and ne::Resume().
+  void updateContextMenu();
+  // The canvas rect is threaded down to the "Add node" row, which places into it.
+  void applyPendingMenuAction(const ImVec2 &canvas_min, const ImVec2 &canvas_max);
+  void applySelectionRequests();
+
+  // Copy + paste at an offset, leaving the canvas clipboard alone: the design puts Duplicate next to
+  // Copy / Paste, so one must not overwrite what the other holds.
+  void duplicateSelection();
+  void selectAllNodes();
+  // Nodes only, for the reason selectAllNodes gives: a link the user had picked is dropped, not kept.
+  void invertNodeSelection();
+  // Snapshots the edge first so the whole gesture resolves as one undo entry (recordReconnectEdge).
+  void beginEdgeReroute(int edge_id, int detach_node, int detach_pin);
 
   void showNextSelectedNode();
   void removeSelectedKeepingConnections();
   void removeEdgesUnderCursor();
   void jumpToOppositePin();
-
-  int cullNodeIndex(int node_id) const;
+  // The two placed drop points, one per trigger: below-forward of the pin, or above the cursor on
+  // the edge. Each is shared by its Space shortcut and its context menu row. splice picks between
+  // the Add node and Add transit node rows; an edge passes its id so a splice moves only that wire.
+  void openAddNodePopupAtPin(int node_id, int pin_index, const ImVec2 &canvas_min, const ImVec2 &canvas_max, bool splice);
+  void openAddNodePopupAtEdge(int source_node, int source_pin, int edge_id, const ImVec2 &cursor_canvas, const ImVec2 &canvas_min,
+    const ImVec2 &canvas_max, bool splice);
+  // Where a node dropped on a pin lands. Not the cursor: that is on the pin, inside another node.
+  ImVec2 spawnPosAtPin(int node_id, int pin_index, const ImVec2 &canvas_min, const ImVec2 &canvas_max) const;
+  // Node top-left for a drop point, shared by every placement: the picker's view clamp, then the
+  // ghost body offset, so a preview and the node that follows it land together.
+  ImVec2 spawnPosForDrop(const ImVec2 &drop_canvas, bool source_is_output, const ImVec2 &canvas_min, const ImVec2 &canvas_max) const;
+  // And whether the dragged template could carry it, which the picker answers by filtering its list.
+  bool canSpliceDrop(const char *template_uid, int node_id, int pin_index) const;
+  void resolveBaseNodeDropTarget();
+  // Both run before ne::Begin, and must: the canvas pass rewrites the mouse into canvas space, which
+  // the edge target's ScreenToCanvas must not meet, and the picker has to stand before that pass
+  // captures the aim the ghost is drawn from.
+  void resolveArmedTransitTarget();
+  void updateArmedTransit(const ImVec2 &canvas_min, const ImVec2 &canvas_max);
+  // After the node pass instead, so the preview lies over the canvas it describes.
+  void drawArmedTransitPreview(const ImVec2 &canvas_min, const ImVec2 &canvas_max);
 
   // After-frame pass: mirror each block's current ne::GetNodeSize back into GraphData so a
   // user-driven resize (handled internally by ne::SizeAction for group nodes) round-trips

@@ -8,12 +8,13 @@
 #include <memory/dag_mem.h>
 #include <generic/dag_span.h>
 #include <dag/dag_relocatable.h>
+#include <util/dag_compilerDefs.h>
 
 #include <supp/dag_define_KRNLIMP.h>
 extern "C" KRNLIMP void dd_simplify_fname_c(char *fn);
 #include <supp/dag_undef_KRNLIMP.h>
 
-class SimpleString
+class DAGOR_WARN_IF_UNUSED SimpleString
 {
 public:
   typedef char value_type;

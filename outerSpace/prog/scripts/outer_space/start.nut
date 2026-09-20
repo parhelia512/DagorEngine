@@ -1,11 +1,13 @@
+
 #default:forbid-root-table
 
 import "%dngscripts/ecs.nut" as ecs
+from "dagor.system" import DBGLEVEL
+from "dagor.debug" import logerr
+from "dagor.fs" import scan_folder
+
 ecs.clear_vm_entity_systems()
 require("%scripts/globs/sqevents.nut")
-let {DBGLEVEL} = require("dagor.system")
-let {logerr} = require("dagor.debug")
-let {scan_folder} = require("dagor.fs")
 
 let use_realfs = (DBGLEVEL > 0) ? true: false
 

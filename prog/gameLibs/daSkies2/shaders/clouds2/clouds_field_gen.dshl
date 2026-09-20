@@ -155,8 +155,8 @@ shader gen_cloud_layers_non_empty
   WRITE_TO_TEX1D_SUMZ()
 
   (ps) {
-    clouds_field_volume@smp = clouds_field_volume hlsl {
-      Texture3D<float> clouds_field_volume@smp;
+    clouds_field_volume@tex = clouds_field_volume hlsl {
+      Texture3D<float> clouds_field_volume@tex;
     };
   }
   hlsl(ps) {

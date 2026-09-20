@@ -44,6 +44,7 @@ endmacro
 
 macro DYNMODEL_SHARED_DECL()
   supports global_frame;
+  GLOBAL_CONSTS(vs)
   DYNMODEL_SHARED_DECL_BUFFER(vs)
   DYNMODEL_SHARED_DECL_BUFFER(ps)
   DYNMODEL_SHARED_WORLD_LOCAL(vs)
@@ -215,6 +216,9 @@ hlsl(code)
   float3 mul_bone3(float3 p3, bone_t m) { return float3(dot(m.r0.xyz, p3), dot(m.r1.xyz, p3), dot(m.r2.xyz, p3)); }
   float3 mul_bone3m(float3 p3, float3x3 m3) { return mul(m3, p3); }
 
+##if dynmodel_node_collapser_data == no
+  #error dng skinning needs the node collapser bits, assume dynmodel_node_collapser_data = yes
+##endif
   void get_node_collapser_bits(out uint4 node_collapser_bits[2])
   {
     uint offsetToNodeChunk = OFFSET_TO_NODE_DATA(0);
@@ -310,7 +314,7 @@ hlsl(code)
     #endif
     output_pos = eye_to_point.x * globtm_0 + eye_to_point.y * globtm_1 + eye_to_point.z * globtm_2 + globtm_3;
 
-    if (all(skinnedTm.r0 == 0 && skinnedTm.r1 == 0 && skinnedTm.r2 == 0))
+    if (all(and(and(skinnedTm.r0 == 0, skinnedTm.r1 == 0), skinnedTm.r2 == 0)))
       output_pos = NaN;
   }
 }

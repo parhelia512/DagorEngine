@@ -129,6 +129,7 @@ extern bool per_instance_front_to_back;
 extern bool use_tree_lod0_offset;
 extern bool use_lods_by_distance_update;
 extern float lods_by_distance_range_sq;
+extern float lods_by_distance_mul_bias_sq;
 
 extern int dynamicImpostorTypeVarId, dynamicImpostorBackViewDepVarId, dynamicImpostorBackShadowVarId;
 extern int dynamicImpostorViewXVarId, dynamicImpostorViewYVarId;

@@ -10,15 +10,18 @@
 #include <drv/3d/dag_driverDesc.h>
 #include <drv/3d/dag_enhanced_barrier.h>
 #include <drv/3d/dag_rwResource.h>
+#include <drv/3d/dag_texture.h>
 
 #include <perfMon/dag_statDrv.h>
 #include <util/dag_convar.h>
+#include <util/dag_console.h>
 #include <memory/dag_framemem.h>
 
 #include <render/daFrameGraph/daFG.h>
 #include <shaders/dag_refinedBlock.h>
 
 #include <debug/backendDebug.h>
+#include <debug/jsonDump.h>
 #include <frontend/multiplexingInternal.h>
 #include <frontend/dynamicResolution.h>
 #include <backend/resourceScheduling/nativeResourceAllocator.h>
@@ -41,6 +44,8 @@ InitOnDemand<Runtime, false> Runtime::instance;
 
 Runtime::Runtime() // -V730
 {
+  load_resource_scheduling_settings();
+
   if (d3d::get_driver_desc().caps.hasResourceHeaps)
     resourceAllocator.reset(new NativeResourceAllocator(nodeTracker));
   else
@@ -144,7 +149,7 @@ void Runtime::resolveBlobTypes()
   }
 }
 
-void Runtime::validateRegistry(NodesChanged &nodeChanges, ResourcesChanged &resourceChanges)
+void Runtime::validateRegistry(NodesChanged &nodeChanges, ResourcesChanged &resourceChanges, ResourcesChanged &resourceRequestChanges)
 {
   TIME_PROFILE(validateRegistry);
   if (verbose)
@@ -193,26 +198,27 @@ void Runtime::validateRegistry(NodesChanged &nodeChanges, ResourcesChanged &reso
     if (valid != prevNodeValid.test(nodeId, true))
     {
       nodeChanges[nodeId] = true;
-      // Also mark all resources requested by this node as changed
-      // which re-does the work that resourceLifetimeChanged does.
+      // The node joins or leaves the lifetimes of the resources it requests,
+      // which re-does the work that calculateDependencyData does.
       const auto &node = registry.nodes[nodeId];
       for (const auto [unresolvedResIdx, _] : node.resourceRequests)
-        resourceChanges[nameResolver.resolve(unresolvedResIdx)] = true;
+        resourceRequestChanges[nameResolver.resolve(unresolvedResIdx)] = true;
       for (const auto [unresolvedResIdx, _] : node.historyResourceReadRequests)
-        resourceChanges[nameResolver.resolve(unresolvedResIdx)] = true;
+        resourceRequestChanges[nameResolver.resolve(unresolvedResIdx)] = true;
     }
 
   currentStage = CompilationStage::REQUIRES_IR_GRAPH_BUILD;
 }
 
 
-auto Runtime::buildIrGraph(const ResourcesChanged &resources_changed, const NodesChanged &nodes_changed)
+auto Runtime::buildIrGraph(const ResourcesChanged &resources_changed, const ResourcesChanged &resource_requests_changed,
+  const NodesChanged &nodes_changed)
 {
   TIME_PROFILE(buildIrGraph);
   if (verbose)
     debug("daFG: Building IR graph...");
   auto result = irGraphBuilder.build(unsortedIntermediateGraph, currentMultiplexingExtents, prevMultiplexingExtents, irMapping,
-    resources_changed, nodes_changed);
+    resources_changed, resource_requests_changed, nodes_changed);
 
   currentStage = CompilationStage::REQUIRES_PASS_COLORING;
   return result;
@@ -236,10 +242,15 @@ Runtime::IrNodesChanged Runtime::scheduleNodes(const IrNodesChanged &irNodesChan
     debug("daFG: Scheduling nodes...");
 
   IrNodesChanged schedulingNodesChanged;
-  schedulingNodesChanged.reserve(eastl::max(intermediateGraph.nodes.totalKeys(), unsortedIntermediateGraph.nodes.totalKeys()));
+  schedulingNodesChanged.reserve(intermediateGraph.nodes.totalKeys() + unsortedIntermediateGraph.nodes.totalKeys());
 
   {
-    auto newOrder = cullingScheduler.schedule(unsortedIntermediateGraph, passColoring);
+    IdIndexedMapping<intermediate::NodeIndex, intermediate::NodeIndex> prevPositions(unsortedIntermediateGraph.nodes.totalKeys(),
+      intermediate::NODE_NOT_MAPPED);
+    for (auto [idx, node] : unsortedIntermediateGraph.nodes.enumerate())
+      if (node.frontendNode && irMapping.wasNodeMapped(*node.frontendNode, node.multiplexingIndex))
+        prevPositions[idx] = irMapping.mapNode(*node.frontendNode, node.multiplexingIndex);
+    auto newOrder = cullingScheduler.schedule(unsortedIntermediateGraph, passColoring, prevPositions);
 
     // Incremental resource update (resources keep their index, no reindexing by scheduling)
     intermediateGraph.resources.updateFrom(unsortedIntermediateGraph.resources, irResourcesChanged);
@@ -293,14 +304,14 @@ auto Runtime::calculateResourceLifetimes() -> IrResourcesChanged
 }
 
 void Runtime::scheduleBarriers(const IrNodesChanged &nodesChanged, const IrResourcesChanged &resourcesChanged,
-  const IrResourcesChanged &lifetimeChangedResources)
+  const IrResourcesChanged &resourceRequestsChanged, const IrResourcesChanged &lifetimeChangedResources)
 {
   TIME_PROFILE(scheduleBarriers);
   if (verbose)
     debug("daFG: Scheduling barriers...");
 
   barrierScheduler.scheduleEvents(allResourceEvents, intermediateGraph, resourceLifetimeCalculator.lifetimes(), passColoring,
-    nodesChanged, resourcesChanged, lifetimeChangedResources);
+    nodesChanged, resourcesChanged, resourceRequestsChanged, lifetimeChangedResources);
 
   cacheUntrackedReleaseBarriers();
 
@@ -309,16 +320,17 @@ void Runtime::scheduleBarriers(const IrNodesChanged &nodesChanged, const IrResou
 
 void Runtime::cacheUntrackedReleaseBarriers()
 {
+  untrackedReleaseBarriers.assign(intermediateGraph.resources.totalKeys(), intermediate::EnhancedBarrier{});
   for (const auto &frameEvents : allResourceEvents)
     for (const auto &nodeEvents : frameEvents.values())
       for (const auto &ev : nodeEvents)
       {
         if (BarrierScheduler::barrier_kind(ev) != BarrierScheduler::Event::BarrierKind::Release)
           continue;
-        if (!intermediateGraph.resources.isMapped(ev.resource) || !intermediateGraph.resources[ev.resource].isScheduled())
+        if (!intermediateGraph.resources.isMapped(ev.resource))
           continue;
 
-        auto &releaseBarrier = intermediateGraph.resources[ev.resource].asScheduled().untrackedReleaseBarrier;
+        auto &releaseBarrier = untrackedReleaseBarriers[ev.resource];
         if (auto *bufferBarrier = eastl::get_if<BarrierScheduler::Event::EnhancedBufferBarrier>(&ev.data))
           releaseBarrier.emplace<d3d::BufferBarrier>(bufferBarrier->barrier).pipelineSync.dst = d3d::PipelineStageFlag::All;
         else if (auto *textureBarrier = eastl::get_if<BarrierScheduler::Event::EnhancedTextureBarrier>(&ev.data))
@@ -326,13 +338,15 @@ void Runtime::cacheUntrackedReleaseBarriers()
       }
 }
 
-void Runtime::recalculateStateDeltas(const IrNodesChanged &nodesChanged, const IrResourcesChanged &resourcesChanged)
+void Runtime::recalculateStateDeltas(const IrNodesChanged &nodesChanged, const IrResourcesChanged &resourcesChanged,
+  const IrResourcesChanged &resourceRequestsChanged)
 {
   TIME_PROFILE(recalculateStateDeltas);
   if (verbose)
     debug("daFG: Recalculating state deltas...");
 
-  deltaCalculator.calculatePerNodeStateDeltas(perNodeStateDeltas, allResourceEvents, nodesChanged, resourcesChanged);
+  deltaCalculator.calculatePerNodeStateDeltas(perNodeStateDeltas, allResourceEvents, nodesChanged, resourcesChanged,
+    resourceRequestsChanged);
 
   // Reassign bindless texture and buffer slots for the freshly compiled graph.
   bindlessSlotManager.rebuild(intermediateGraph);
@@ -361,7 +375,7 @@ void Runtime::updateAutoResolutions()
     // Impossible situation, sanity check
     G_ASSERT_CONTINUE(id != AutoResTypeNameId::Invalid);
 
-    auto &desc = eastl::get<ResourceDescription>(res.description);
+    auto &desc = res.getGpuDescription();
     switch (desc.type)
     {
       case D3DResourceType::TEX:
@@ -430,7 +444,8 @@ void Runtime::scheduleResources(const IrResourcesChanged &lifetimeChangedResourc
     if (resourceScheduler.isResourcePreserved(prevFrame, idx))
       pendingDeactivations[historyPairing[idx]] = eastl::monostate{};
 
-  resourceAllocator->applySchedule(prevFrame, schedule, intermediateGraph, dynResolutions, corrections, pendingDeactivations);
+  resourceAllocator->applySchedule(prevFrame, schedule, intermediateGraph, untrackedReleaseBarriers, dynResolutions, corrections,
+    pendingDeactivations);
 
   applyAliasSyncStages(schedule, corrections);
 
@@ -622,8 +637,7 @@ void Runtime::updateHistory()
               bool copied = false;
               if (historySourceResIdx != intermediate::RESOURCE_NOT_MAPPED)
               {
-                const auto *srcRelease = eastl::get_if<d3d::TextureBarrier>(
-                  &intermediateGraph.resources[historySourceResIdx].asScheduled().untrackedReleaseBarrier);
+                const auto *srcRelease = eastl::get_if<d3d::TextureBarrier>(&untrackedReleaseBarriers[historySourceResIdx]);
                 if (srcRelease)
                 {
                   BaseTexture *prevTex = resourceAllocator->getTexture(prevFrame, historySourceResIdx);
@@ -645,8 +659,8 @@ void Runtime::updateHistory()
                     for (int mip = 0; mip < texInfo.mipLevels; mip++)
                     {
                       const int subResIdx = tex->calcSubResIdx(mip, slice, texInfo.mipLevels);
-                      if (tex->updateSubRegion(prevTex, subResIdx, 0, 0, 0, max(1, texInfo.w >> mip), max(1, texInfo.h >> mip),
-                            max(1, texInfo.d >> mip), subResIdx, 0, 0, 0))
+                      if (d3d::update_sub_region(prevTex, subResIdx, 0, 0, 0, max(1, texInfo.w >> mip), max(1, texInfo.h >> mip),
+                            max(1, texInfo.d >> mip), tex, subResIdx, 0, 0, 0))
                         continue;
                       logerr("daFG: failed to copy historical texture data for '%s'",
                         registry.knownNames.getName(res.frontendResources.back()));
@@ -695,8 +709,8 @@ void Runtime::updateHistory()
                 for (int mip = 0; mip < texInfo.mipLevels; mip++)
                 {
                   const int subResIdx = tex->calcSubResIdx(mip, slice, texInfo.mipLevels);
-                  if (tex->updateSubRegion(prevTex, subResIdx, 0, 0, 0, max(1, texInfo.w >> mip), max(1, texInfo.h >> mip),
-                        max(1, texInfo.d >> mip), subResIdx, 0, 0, 0))
+                  if (d3d::update_sub_region(prevTex, subResIdx, 0, 0, 0, max(1, texInfo.w >> mip), max(1, texInfo.h >> mip),
+                        max(1, texInfo.d >> mip), tex, subResIdx, 0, 0, 0))
                     continue;
 
                   logerr("daFG: failed to copy historical texture data for '%s'",
@@ -835,6 +849,7 @@ void Runtime::setMultiplexingExtents(multiplexing::Extents extents)
 
 void Runtime::updateDynamicResolution(int curr_frame)
 {
+  TIME_PROFILE(updateDynamicResolution);
   if (d3d::get_driver_desc().caps.hasResourceHeaps)
   {
     auto dynResUpdates = collect_dynamic_resolution_updates(registry);
@@ -856,6 +871,7 @@ void Runtime::updateDynamicResolution(int curr_frame)
 
 Runtime::BlockProviderMap Runtime::applyRefinedBlockBindings(int curr_frame, int prev_frame)
 {
+  TIME_PROFILE(applyRefinedBlockBindings);
   BlockProviderMap blockProviderMap;
   for (auto [nodeId, node] : registry.nodes.enumerate())
     for (const auto &[blockId, provider] : node.registeredRefinedBlocks)
@@ -1107,13 +1123,19 @@ void Runtime::recompile()
     nameResolutionChanges.resize<AutoResTypeNameId>(registry.knownNames.nameCount<AutoResTypeNameId>(), false);
   }
 
+  ResourcesChanged resourceRequestChanges;
+  if (currentStage > CompilationStage::REQUIRES_DEPENDENCY_DATA_CALCULATION)
+    resourceRequestChanges.resize(registry.knownNames.nameCount<ResNameId>(), false);
+
   IrGraphBuilder::IrNodesChanged unsortedIrNodesChanged;
   IrGraphBuilder::IrResourcesChanged irResourcesChanged;
+  IrGraphBuilder::IrResourcesChanged irResourceRequestsChanged;
 
   if (currentStage > CompilationStage::REQUIRES_IR_GRAPH_BUILD)
   {
     unsortedIrNodesChanged.resize(unsortedIntermediateGraph.nodes.totalKeys(), false);
     irResourcesChanged.resize(unsortedIntermediateGraph.resources.totalKeys(), false);
+    irResourceRequestsChanged.resize(unsortedIntermediateGraph.resources.totalKeys(), false);
   }
 
   IrGraphBuilder::IrNodesChanged irNodesChanged;
@@ -1172,23 +1194,20 @@ void Runtime::recompile()
       [[fallthrough]];
 
     case CompilationStage::REQUIRES_DEPENDENCY_DATA_CALCULATION:
-    {
-      auto resourceLifetimeChanged = calculateDependencyData(nodeChanges);
-      for (auto [resId, value] : resourceLifetimeChanged.enumerate())
-        resourceChanges[resId] = resourceChanges[resId] || value;
-    }
+      resourceRequestChanges = calculateDependencyData(nodeChanges);
       [[fallthrough]];
 
     case CompilationStage::REQUIRES_REGISTRY_VALIDATION:
       // Does not modify nodeChanges/resourceChanges under normal circumstances, only when something is invalid
-      validateRegistry(nodeChanges, resourceChanges);
+      validateRegistry(nodeChanges, resourceChanges, resourceRequestChanges);
       [[fallthrough]];
 
     case CompilationStage::REQUIRES_IR_GRAPH_BUILD:
     {
-      auto [irNodChang, irResChang] = buildIrGraph(resourceChanges, nodeChanges);
-      unsortedIrNodesChanged = eastl::move(irNodChang);
-      irResourcesChanged = eastl::move(irResChang);
+      auto irChanges = buildIrGraph(resourceChanges, resourceRequestChanges, nodeChanges);
+      unsortedIrNodesChanged = eastl::move(irChanges.irNodesChanged);
+      irResourcesChanged = eastl::move(irChanges.irResourcesChanged);
+      irResourceRequestsChanged = eastl::move(irChanges.irResourceRequestsChanged);
     }
       [[fallthrough]];
 
@@ -1203,11 +1222,11 @@ void Runtime::recompile()
       [[fallthrough]];
 
     case CompilationStage::REQUIRES_BARRIER_SCHEDULING:
-      scheduleBarriers(irNodesChanged, irResourcesChanged, lifetimeChangedResources);
+      scheduleBarriers(irNodesChanged, irResourcesChanged, irResourceRequestsChanged, lifetimeChangedResources);
       [[fallthrough]];
 
     case CompilationStage::REQUIRES_STATE_DELTA_RECALCULATION:
-      recalculateStateDeltas(irNodesChanged, irResourcesChanged);
+      recalculateStateDeltas(irNodesChanged, irResourcesChanged, irResourceRequestsChanged);
       [[fallthrough]];
 
     case CompilationStage::REQUIRES_AUTO_RESOLUTION_UPDATE: updateAutoResolutions(); [[fallthrough]];
@@ -1262,3 +1281,24 @@ void before_reset(bool)
 
 #include <drv/3d/dag_resetDevice.h>
 REGISTER_D3D_BEFORE_RESET_FUNC(dafg::before_reset);
+
+#if DAGOR_DBGLEVEL > 0
+static bool dafg_state_dump_console_handler(const char *argv[], int argc)
+{
+  int found = 0;
+  CONSOLE_CHECK_NAME("dafg", "dump_to_json", 1, 1)
+  {
+    if (dafg::Runtime::isInitialized())
+    {
+      auto &runtime = dafg::Runtime::get();
+      dafg::dump_state_to_json(runtime.getInternalRegistry(), runtime.getIntermediateGraph(), runtime.getNodeStateDeltas());
+    }
+    else
+    {
+      logerr("daFG: can't dump, runtime is not initialized");
+    }
+  }
+  return found;
+}
+REGISTER_CONSOLE_HANDLER(dafg_state_dump_console_handler);
+#endif

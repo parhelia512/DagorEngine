@@ -8,7 +8,9 @@
 #include <osApiWrappers/dag_atomic.h>
 #include <debug/dag_assert.h>
 
-#if DAGOR_DBGLEVEL > 0
+// Under tsan the interlocked busy counter adds happens-before edges between guarded scopes,
+// which hides the very races this checks for; tsan itself detects them better (no overlap needed).
+#if DAGOR_DBGLEVEL > 0 && !DAGOR_THREAD_SANITIZER
 
 // Asserts when scopes tagged with the same name overlap, from another thread or by
 // reentry on the same one: it verifies external serialization, it is not a lock.

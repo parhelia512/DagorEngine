@@ -207,12 +207,14 @@ void ResourceAllocator::gatherPotentialDeactivationSet(int prev_frame, Potential
 
   for (auto [idx, res] : cachedIntermediateResources.enumerate())
     if (res.isScheduled() && res.asScheduled().history != History::No)
+    {
+      const auto &releaseBarrier = cachedReleaseBarriers[idx];
       switch (res.asScheduled().resourceType)
       {
         case ResourceType::Texture:
         {
           eastl::optional<d3d::TextureBarrier> release;
-          if (auto *bar = eastl::get_if<d3d::TextureBarrier>(&res.asScheduled().untrackedReleaseBarrier))
+          if (auto *bar = eastl::get_if<d3d::TextureBarrier>(&releaseBarrier))
             release = *bar;
           result[idx] = TextureDeactivation{getTexture(prev_frame, idx), release};
           break;
@@ -220,7 +222,7 @@ void ResourceAllocator::gatherPotentialDeactivationSet(int prev_frame, Potential
         case ResourceType::Buffer:
         {
           eastl::optional<d3d::BufferBarrier> release;
-          if (auto *bar = eastl::get_if<d3d::BufferBarrier>(&res.asScheduled().untrackedReleaseBarrier))
+          if (auto *bar = eastl::get_if<d3d::BufferBarrier>(&releaseBarrier))
             release = *bar;
           result[idx] = BufferDeactivation{getBuffer(prev_frame, idx), release};
           break;
@@ -230,6 +232,7 @@ void ResourceAllocator::gatherPotentialDeactivationSet(int prev_frame, Potential
           break;
         default: G_ASSERT(false); break;
       }
+    }
 }
 
 void ResourceAllocator::closeTransientResources()
@@ -256,11 +259,13 @@ void ResourceAllocator::refreshManagedTexture(int frame, intermediate::ResourceI
 }
 
 void ResourceAllocator::applySchedule(int prev_frame, const ResourceSchedule &schedule, const intermediate::Graph &graph,
+  const IdIndexedMapping<intermediate::ResourceIndex, intermediate::EnhancedBarrier> &release_barriers,
   const DynamicResolutions &dyn_resolutions, const BadResolutionTracker::Corrections &corrections,
   PotentialDeactivationSet &potentialDeactivations)
 {
   cachedIntermediateResources = graph.resources;
   cachedIntermediateResourceNames = graph.resourceNames;
+  cachedReleaseBarriers = release_barriers;
 
   auto &allocationLocations = schedule.allocationLocations;
   auto &heapRequests = schedule.heapRequests;

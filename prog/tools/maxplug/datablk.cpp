@@ -6,6 +6,7 @@
 #include <string.h>
 
 #include <algorithm>
+#include <locale>
 #include <string_view>
 #include <unordered_map>
 
@@ -177,7 +178,7 @@ void DataBlockParser::skipWhite()
         else if (nc == '*')
         {
           int cnt = 1;
-          while (curp + 2 < textend)
+          while (curp + 2 <= textend)
           {
             if (curp[0] == '/' && curp[1] == '*')
             {
@@ -378,7 +379,7 @@ void DataBlockParser::parse(DataBlock &blk, bool isTop)
       getValue(value);
       blk.addParam(name.data(), type, value.data(), curLine, currentFile().c_str());
     }
-    else if (_stricmp(name.data(), "include") == 0)
+    else if (iequal(name, "include"))
     {
       std::string value;
       getValue(value);
@@ -397,7 +398,7 @@ void DataBlockParser::parse(DataBlock &blk, bool isTop)
 
       if (!is)
       {
-        debug("can't open include file '%s' for '%s'\n", value.data(), baseFileName.c_str());
+        debug("can't open include file '{}' for '{}'\n", value.data(), baseFileName.c_str());
         throw SyntaxErrorException("can't open include file");
       }
 
@@ -442,22 +443,33 @@ int DataBlock::addParam(const char *name, ParamType type, const char *value, int
 {
   nameIds.emplace_back(nameMap->addNameId(name));
 
-  char *org_locale = setlocale(LC_ALL, "C");
-
   switch (type)
   {
     case ParamType::TYPE_STRING: params.emplace_back(std::string(value)); break;
 
-    case ParamType::TYPE_INT: params.emplace_back(std::stoi(value)); break;
+    case ParamType::TYPE_INT:
+    {
+      int i = 0;
+      if (parse_nums(value, i) != 1)
+        debug("invalid int value in line {} of '{}'\n", line, filename);
+      params.emplace_back(i);
+    }
+    break;
 
-    case ParamType::TYPE_REAL: params.emplace_back(std::stof(value)); break;
+    case ParamType::TYPE_REAL:
+    {
+      real r = 0.f;
+      if (parse_nums(value, r) != 1)
+        debug("invalid real value in line {} of '{}'\n", line, filename);
+      params.emplace_back(r);
+    }
+    break;
 
     case ParamType::TYPE_POINT2:
     {
       Point2 p2(0.f, 0.f);
-      int res = sscanf(value, " %f , %f", &p2.x, &p2.y);
-      if (res != 2)
-        debug("invalid point2 value in line %d of '%s'\n", line, filename);
+      if (parse_nums(value, p2.x, p2.y) != 2)
+        debug("invalid point2 value in line {} of '{}'\n", line, filename);
       params.emplace_back(p2);
     }
     break;
@@ -465,9 +477,8 @@ int DataBlock::addParam(const char *name, ParamType type, const char *value, int
     case ParamType::TYPE_POINT3:
     {
       Point3 p3(0.f, 0.f, 0.f);
-      int res = sscanf(value, " %f , %f , %f", &p3.x, &p3.y, &p3.z);
-      if (res != 3)
-        debug("invalid point3 value in line %d of '%s'\n", line, filename);
+      if (parse_nums(value, p3.x, p3.y, p3.z) != 3)
+        debug("invalid point3 value in line {} of '{}'\n", line, filename);
       params.emplace_back(p3);
     }
     break;
@@ -475,44 +486,42 @@ int DataBlock::addParam(const char *name, ParamType type, const char *value, int
     case ParamType::TYPE_POINT4:
     {
       Point4 p4(0.f, 0.f, 0.f, 0.f);
-      int res = sscanf(value, " %f , %f , %f , %f", &p4.x, &p4.y, &p4.z, &p4.w);
-      if (res != 4)
-        debug("invalid point4 value in line %d of '%s'\n", line, filename);
+      if (parse_nums(value, p4.x, p4.y, p4.z, p4.w) != 4)
+        debug("invalid point4 value in line {} of '{}'\n", line, filename);
       params.emplace_back(p4);
     }
     break;
 
     case ParamType::TYPE_IPOINT2:
     {
-      IPoint2 ip2(0.f, 0.f);
-      int res = sscanf(value, " %i , %i", &ip2.x, &ip2.y);
-      if (res != 2)
-        debug("invalid ipoint2 value in line %d of '%s'\n", line, filename);
+      IPoint2 ip2(0, 0);
+      if (parse_nums(value, ip2.x, ip2.y) != 2)
+        debug("invalid ipoint2 value in line {} of '{}'\n", line, filename);
       params.emplace_back(ip2);
     }
     break;
 
     case ParamType::TYPE_IPOINT3:
     {
-      IPoint3 ip3(0.f, 0.f, 0.f);
-      int res = sscanf(value, " %i , %i , %i", &ip3.x, &ip3.y, &ip3.z);
-      if (res != 3)
-        debug("invalid ipoint3 value in line %d of '%s'\n", line, filename);
+      IPoint3 ip3(0, 0, 0);
+      if (parse_nums(value, ip3.x, ip3.y, ip3.z) != 3)
+        debug("invalid ipoint3 value in line {} of '{}'\n", line, filename);
       params.emplace_back(ip3);
     }
     break;
 
     case ParamType::TYPE_BOOL:
     {
+      const CaseInsensitiveEqual eq;
       bool b = false;
-      if (_stricmp(value, "yes") == 0 || _stricmp(value, "on") == 0 || _stricmp(value, "true") == 0 || _stricmp(value, "1") == 0)
+      if (eq(value, "yes") || eq(value, "on") || eq(value, "true") || eq(value, "1"))
         b = true;
-      else if (_stricmp(value, "no") == 0 || _stricmp(value, "off") == 0 || _stricmp(value, "false") == 0 || _stricmp(value, "0") == 0)
+      else if (eq(value, "no") || eq(value, "off") || eq(value, "false") || eq(value, "0"))
         b = false;
       else
       {
         b = false;
-        debug("invalid boolean value '%s' in line %d of '%s'\n", value, line, filename);
+        debug("invalid boolean value '{}' in line {} of '{}'\n", value, line, filename);
       }
       params.emplace_back(b);
     }
@@ -521,10 +530,9 @@ int DataBlock::addParam(const char *name, ParamType type, const char *value, int
     case ParamType::TYPE_E3DCOLOR:
     {
       int r = 255, g = 255, b = 255, a = 255;
-      int res = sscanf(value, " %d , %d , %d , %d", &r, &g, &b, &a);
       //== check value range
-      if (res < 3)
-        debug("invalid e3dcolor value in line %d of '%s'\n", line, filename);
+      if (parse_nums(value, r, g, b, a) < 3)
+        debug("invalid e3dcolor value in line {} of '{}'\n", line, filename);
 
       E3DCOLOR c;
       c.r = r;
@@ -538,14 +546,13 @@ int DataBlock::addParam(const char *name, ParamType type, const char *value, int
     case ParamType::TYPE_MATRIX:
     {
       TMatrix tm = TMatrix::IDENT;
-      int res = sscanf(value,
-        "[[ %f , %f , %f ] [ %f , %f , %f ] "
-        "[ %f , %f , %f ] [ %f , %f , %f ]]",
-        &tm.m[0][0], &tm.m[0][1], &tm.m[0][2], &tm.m[1][0], &tm.m[1][1], &tm.m[1][2], &tm.m[2][0], &tm.m[2][1], &tm.m[2][2],
-        &tm.m[3][0], &tm.m[3][1], &tm.m[3][2]);
+      std::string rows(value);
+      std::ranges::replace(rows, '[', ' ');
+      std::ranges::replace(rows, ']', ',');
 
-      if (res != 12)
-        debug("invalid TMatrix value in line %d of '%s'\n", line, filename);
+      if (parse_nums(rows, tm.m[0][0], tm.m[0][1], tm.m[0][2], tm.m[1][0], tm.m[1][1], tm.m[1][2], tm.m[2][0], tm.m[2][1], tm.m[2][2],
+            tm.m[3][0], tm.m[3][1], tm.m[3][2]) != 12)
+        debug("invalid TMatrix value in line {} of '{}'\n", line, filename);
 
       params.emplace_back(tm);
     }
@@ -557,7 +564,6 @@ int DataBlock::addParam(const char *name, ParamType type, const char *value, int
       break;
   }
 
-  setlocale(LC_ALL, org_locale);
   return int(params.size()) - 1;
 }
 
@@ -678,29 +684,9 @@ bool DataBlock::loadText(std::string &text, const char *filename)
   {
     parser.parse(*this, true);
   }
-  catch (DataBlockParser::SyntaxErrorException e)
+  catch (const DataBlockParser::SyntaxErrorException &e)
   {
-    debug("DataBlock error in line %d of '%s':\n  %s\n", parser.curLine, filename ? filename : "<unknown>", e.what());
-
-    if (!paramCount())
-      reset();
-
-    return false;
-  }
-  catch (std::invalid_argument &e)
-  {
-    debug("DataBlock error in line %d of '%s': invalid numeric value:\n  %s\n", parser.curLine, filename ? filename : "<unknown>",
-      e.what());
-
-    if (!paramCount())
-      reset();
-
-    return false;
-  }
-  catch (std::out_of_range &e)
-  {
-    debug("DataBlock error in line %d of '%s': numeric value out of range:\n  %s\n", parser.curLine, filename ? filename : "<unknown>",
-      e.what());
+    debug("DataBlock error in line {} of '{}':\n  {}\n", parser.curLine, filename ? filename : "<unknown>", e.what());
 
     if (!paramCount())
       reset();
@@ -710,13 +696,6 @@ bool DataBlock::loadText(std::string &text, const char *filename)
 
   return true;
 }
-
-bool DataBlock::loadText(const char *text, int len, const char *filename)
-{
-  std::string buf(text, len);
-  return loadText(buf, filename);
-}
-
 
 bool DataBlock::load(const fs::path &fname)
 {
@@ -730,7 +709,7 @@ bool DataBlock::load(const fs::path &fname)
 
   if (!is)
   {
-    debug("can't open include file '%s'\n", narrow_name.c_str());
+    debug("can't open include file '{}'\n", narrow_name.c_str());
     return false;
   }
 
@@ -748,13 +727,13 @@ bool DataBlock::loadFromStream(std::ifstream &is, const char *fname)
 
 // Saving
 
-static void writeString(std::ofstream &os, const char *s)
+static void writeString(std::ostream &os, const char *s)
 {
   if (s && *s)
     os << s;
 }
 
-static void writeStringValue(std::ofstream &os, const char *s)
+static void writeStringValue(std::ostream &os, const char *s)
 {
   if (!s)
     s = "";
@@ -780,7 +759,7 @@ static void writeStringValue(std::ofstream &os, const char *s)
 }
 
 
-void DataBlock::saveText(std::ofstream &os, int level) const
+void DataBlock::saveText(std::ostream &os, int level) const
 {
   for (size_t i = 0; i < params.size(); ++i)
   {
@@ -847,7 +826,7 @@ void DataBlock::saveText(std::ofstream &os, int level) const
       case ParamType::TYPE_E3DCOLOR:
       {
         auto &c = std::get<E3DCOLOR>(p);
-        os << ":c=" << c.r << ", " << c.g << ", " << c.b << ", " << c.a;
+        os << ":c=" << int(c.r) << ", " << int(c.g) << ", " << int(c.b) << ", " << int(c.a);
       }
         break;
 
@@ -887,16 +866,19 @@ void DataBlock::saveText(std::ofstream &os, int level) const
   }
 }
 
+void DataBlock::saveToTextStream(std::ostream &os) const { saveText(os); }
+
 bool DataBlock::saveToTextFile(const fs::path &filename) const
 {
   std::ofstream os(filename, std::ios::binary);
   if (!os)
   {
-    debug(_T("cant open '%s' file for writing"), filename.c_str());
+    debug(_T("cant open '{}' file for writing"), filename.c_str());
     return false;
   }
+  os.imbue(std::locale::classic());
 
-  saveText(os);
+  saveToTextStream(os);
   return true;
 }
 

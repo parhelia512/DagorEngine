@@ -241,12 +241,14 @@ const char *override_state_descr(const shaders::OverrideState &state)
 
   res.aprintf(0, "Color write mask: 0x%X\n", state.colorWr);
 
-  if (state.isOn(Bits::Z_TEST_DISABLE | Bits::Z_WRITE_DISABLE | Bits::Z_WRITE_ENABLE | Bits::Z_BOUNDS_ENABLED | Bits::Z_CLAMP_ENABLED |
-                 Bits::Z_FUNC | Bits::Z_BIAS))
+  if (state.isOn(Bits::Z_TEST_DISABLE | Bits::Z_TEST_ENABLE | Bits::Z_WRITE_DISABLE | Bits::Z_WRITE_ENABLE | Bits::Z_BOUNDS_ENABLED |
+                 Bits::Z_CLAMP_ENABLED | Bits::Z_FUNC | Bits::Z_BIAS))
   {
     res.append("Z overrides:\n");
     if (state.isOn(Bits::Z_TEST_DISABLE))
       res.append("  test disabled\n");
+    if (state.isOn(Bits::Z_TEST_ENABLE))
+      res.append("  test enabled\n");
     if (state.isOn(Bits::Z_WRITE_DISABLE))
       res.append("  write disabled\n");
     if (state.isOn(Bits::Z_WRITE_ENABLE))

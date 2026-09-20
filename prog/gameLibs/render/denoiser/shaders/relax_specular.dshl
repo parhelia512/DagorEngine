@@ -5,6 +5,8 @@ hlsl(cs) {
   #define NRD_MODE   RADIANCE
   #define NRD_INTERNAL
   #define MODE_5X5 0
+
+  float4 cbuf0Sentinel: register(c45);
 }
 
 // This one is used by all relax shaders

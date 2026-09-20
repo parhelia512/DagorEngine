@@ -13,6 +13,9 @@ license agreement from NVIDIA CORPORATION is strictly prohibited.
 #include "omm.h"
 #include "defines.h"
 #include "std_containers.h"
+#include <istream>
+#include <ostream>
+#include <streambuf>
 #include "texture_impl.h"
 #include "log.h"
 

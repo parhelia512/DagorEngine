@@ -6,7 +6,7 @@
 #include <drv/3d/dag_info.h>
 #include <3d/dag_quadIndexBuffer.h>
 #include <render/viewVecs.h>
-#include <render/world/cameraParams.h>
+#include <render/cameraParams.h>
 
 #include <daECS/core/entityManager.h>
 #include <daECS/core/componentTypes.h>

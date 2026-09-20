@@ -9,7 +9,7 @@ async function throwsSelf() { throw fut }
 
 async function consume(f) {
     try { let _ = await f; print("BUG: fulfilled\n") }
-    catch (e) { print("caught: " + e + "\n") }
+    catch (e) { println($"caught: {e}") }
 }
 
 fut = throwsSelf()

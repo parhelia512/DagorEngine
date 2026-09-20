@@ -77,7 +77,8 @@ public:
   virtual void addViewportAccelerator(unsigned cmd_id, ImGuiKeyChord key_chord, bool allow_repeat = false) = 0;
   virtual void addViewportAccelerator(unsigned cmd_id, const char *command_id, bool allow_repeat = false) = 0;
   virtual void clearAccelerators() = 0;
-  virtual unsigned processImguiAccelerator(bool has_active_viewport, bool &viewport_accelerator) = 0;
+  // active_viewport_canvas_id: the ImGui ID of the active viewport's canvas item, 0 if no viewport is active.
+  virtual unsigned processImguiAccelerator(ImGuiID active_viewport_canvas_id, bool &viewport_accelerator) = 0;
 
   virtual void initCustomMouseCursors(const char *path) = 0;
   virtual void updateImguiMouseCursor() = 0;

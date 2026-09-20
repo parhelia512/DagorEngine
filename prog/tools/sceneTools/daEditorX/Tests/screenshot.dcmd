@@ -3,4 +3,4 @@ wait.textures
 wait.time 10000
 screenshot.create
 wait.time 500
-app.terminate 0
+exit no

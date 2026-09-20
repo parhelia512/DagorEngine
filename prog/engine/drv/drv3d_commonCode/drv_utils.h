@@ -1,7 +1,7 @@
 // Copyright (C) Gaijin Games KFT.  All rights reserved.
 #pragma once
 
-#if _TARGET_PC_WIN
+#if _TARGET_PC_WIN | _TARGET_XBOX
 #include <windows.h>
 #endif
 
@@ -27,7 +27,9 @@ bool get_settings_use_retina();
 void get_current_main_window_rect(int &out_def_left, int &out_def_top, int &out_def_width, int &out_def_height);
 void get_current_display_screen_mode(int &out_def_left, int &out_def_top, int &out_def_width, int &out_def_height);
 bool is_current_main_window_maximized();
+#endif
 
+#if _TARGET_PC_WIN | _TARGET_XBOX
 struct RenderWindowSettings
 {
   int resolutionX;
@@ -56,7 +58,9 @@ struct RenderWindowParams
 };
 
 bool set_render_window_params(RenderWindowParams &p, const RenderWindowSettings &s);
+#endif
 
+#if _TARGET_PC_WIN
 int set_display_device_mode(bool inwin, int res_x, int res_y, int scr_bpp, DEVMODE &out_devm);
 
 bool get_monitor_info(const char *monitorName, String *friendlyMonitorName, int *uniqueIndex);

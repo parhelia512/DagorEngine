@@ -268,19 +268,13 @@ void TreesAboveDepth::init(float half_distance, float texel_size)
 
   trees2dDist = nextTrees2dDist;
   debug("init trees2d map tex %d^2, texel %f, range %f", trees2dDRes, trees2dDist * 2 / trees2dDRes, trees2dDist);
-  trees2d.set(
-    d3d::create_tex(NULL, trees2dDRes, trees2dDRes, TEXCF_RTARGET | TEXCF_SRGBREAD | TEXCF_SRGBWRITE, 1, "trees2d", RESTAG_DAGI2),
-    "trees2d");
-  trees2d.setVar();
+  trees2d =
+    dag::create_tex(NULL, trees2dDRes, trees2dDRes, TEXCF_RTARGET | TEXCF_SRGBREAD | TEXCF_SRGBWRITE, 1, "trees2d", RESTAG_DAGI2);
 
-  trees2dDepth.set(d3d::create_tex(NULL, trees2dDRes, trees2dDRes, TEXFMT_DEPTH16 | TEXCF_RTARGET, 1, "trees2d_depth", RESTAG_DAGI2),
-    "trees2d_depth");
-  trees2dDepth.setVar();
+  trees2dDepth = dag::create_tex(NULL, trees2dDRes, trees2dDRes, TEXFMT_DEPTH16 | TEXCF_RTARGET, 1, "trees2d_depth", RESTAG_DAGI2);
 
-  trees2dDepthMin.set(
-    d3d::create_tex(NULL, trees2dDRes, trees2dDRes, TEXFMT_DEPTH16 | TEXCF_RTARGET, 1, "trees2d_depth_min", RESTAG_DAGI2),
-    "trees2d_depth_min");
-  trees2dDepthMin.setVar();
+  trees2dDepthMin =
+    dag::create_tex(NULL, trees2dDRes, trees2dDRes, TEXFMT_DEPTH16 | TEXCF_RTARGET, 1, "trees2d_depth_min", RESTAG_DAGI2);
 
   {
     d3d::SamplerInfo smpInfo;

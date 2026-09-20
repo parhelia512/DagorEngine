@@ -12,6 +12,7 @@
 #include <libTools/shaderResBuilder/rendInstResSrc.h>
 #include <libTools/shaderResBuilder/lodsEqMatGather.h>
 #include <libTools/shaderResBuilder/matSubst.h>
+#include <libTools/shaderResBuilder/validateAlphaTest.h>
 #include <generic/dag_tabUtils.h>
 #include <generic/dag_smallTab.h>
 #include <libTools/shaderResBuilder/globalVertexDataConnector.h>
@@ -29,8 +30,6 @@
 #include <debug/dag_debug.h>
 #include <util/dag_bitArray.h>
 #include <obsolete/dag_cfg.h>
-#include <sceneRay/dag_sceneRay.h>
-#include <libTools/ambientOcclusion/ambientOcclusion.h>
 #include <supp/dag_alloca.h>
 #include <EASTL/vector_set.h>
 #include <EASTL/string.h>
@@ -88,8 +87,7 @@ void RenderableInstanceLodsResSrc::splitRealTwoSided(Mesh &m, Bitarray &is_mater
 
 
 // add mesh node
-void RenderableInstanceLodsResSrc::addMeshNode(Lod &lod, Node *n_, Node *key_node, LodsEqualMaterialGather &mat_gather,
-  StaticSceneRayTracer *ao_tracer)
+void RenderableInstanceLodsResSrc::addMeshNode(int lod_no, Lod &lod, Node *n_, Node *key_node, LodsEqualMaterialGather &mat_gather)
 {
   if (!n_)
     return;
@@ -129,7 +127,7 @@ void RenderableInstanceLodsResSrc::addMeshNode(Lod &lod, Node *n_, Node *key_nod
         lod.bsph += ::mesh_bounding_sphere(mesh.getVert().data(), mesh.getVert().size());
 
         for (int i = 0; i < n.child.size(); ++i)
-          addMeshNode(lod, n.child[i], key_node, mat_gather, NULL);
+          addMeshNode(lod_no, lod, n.child[i], key_node, mat_gather);
         return;
       }
 
@@ -265,6 +263,8 @@ void RenderableInstanceLodsResSrc::addMeshNode(Lod &lod, Node *n_, Node *key_nod
           int flags = 0;
           shmat[i]->enum_channels(extra_chans_used, flags);
         }
+        if (log && shmat[i])
+          AlphaTestValidation::validate(mesh, i, *subMat, *shmat[i], lod.fileName, n.name, *log);
       }
 
       if (find_value_idx(extra_chans_used.extraIdx, 53) >= 0)
@@ -341,7 +341,7 @@ void RenderableInstanceLodsResSrc::addMeshNode(Lod &lod, Node *n_, Node *key_nod
       if (buildImpostorDataNow)
         processImpostorMesh(mesh, shmat);
 
-      md.build(mesh, shmat.data(), numMat, IdentColorConvert::object, false);
+      md.build(mesh, shmat.data(), numMat, IdentColorConvert::object, false, 128, lod_no, n.name);
 
       if (::generate_quads && billboard)
       {
@@ -820,58 +820,14 @@ void RenderableInstanceLodsResSrc::addMeshNode(Lod &lod, Node *n_, Node *key_nod
 
   for (int i = 0; i < n.child.size(); ++i)
   {
-    addMeshNode(lod, n.child[i], key_node, mat_gather, ao_tracer);
+    addMeshNode(lod_no, lod, n.child[i], key_node, mat_gather);
   }
 }
 
-void RenderableInstanceLodsResSrc::addNode(Lod &lod, Node *n, Node *key_node, LodsEqualMaterialGather &mat_gather,
-  StaticSceneRayTracer *ao_tracer)
+void RenderableInstanceLodsResSrc::addNode(int lod_no, Lod &lod, Node *n, Node *key_node, LodsEqualMaterialGather &mat_gather)
 {
   // enum meshes
-  addMeshNode(lod, n, key_node, mat_gather, ao_tracer);
-}
-
-static const int AO_INDEX = 100;
-
-class HasAOChanCB : public ShaderChannelsEnumCB
-{
-public:
-  bool hasAO;
-  int aoIndex;
-  HasAOChanCB(int ind) : hasAO(false), aoIndex(ind) {}
-
-  void enum_shader_channel(int u, int ui, int t, int vbu, int vbui, ChannelModifier mod, int /*stream*/) override
-  {
-    if (u == SCUSAGE_EXTRA && ui == aoIndex)
-      hasAO = true;
-  }
-};
-
-static bool has_ao(Node &n, RenderableInstanceLodsResSrc *ri)
-{
-  if (n.mat)
-    for (unsigned int materialNo = 0; materialNo < n.mat->subMatCount(); materialNo++)
-    {
-      Ptr<MaterialData> subMat = n.mat->getSubMat(materialNo);
-      if (!subMat)
-        continue;
-      matSubst.substMatClass(*subMat);
-      subMat = ri->processMaterial(subMat, false);
-      Ptr<ShaderMaterial> m = new_shader_material(*subMat, true, false);
-      if (m)
-      {
-        HasAOChanCB hasAOcb(AO_INDEX);
-        int flags = 0;
-        m->enum_channels(hasAOcb, flags);
-        if (hasAOcb.hasAO)
-          return true;
-      }
-    }
-
-  for (int i = 0; i < n.child.size(); ++i)
-    if (has_ao(*n.child[i], ri))
-      return true;
-  return false;
+  addMeshNode(lod_no, lod, n, key_node, mat_gather);
 }
 
 bool RenderableInstanceLodsResSrc::addLod(const char *filename, real range, LodsEqualMaterialGather &mat_gather,
@@ -1103,8 +1059,6 @@ bool RenderableInstanceLodsResSrc::addLod(const char *filename, real range, Lods
 
   override_materials(matList, material_overrides, nullptr);
 
-  bool hasAO = has_ao(*sc.root, this);
-
   if (add_mat_script)
   {
     for (auto &mat : matList)
@@ -1122,13 +1076,10 @@ bool RenderableInstanceLodsResSrc::addLod(const char *filename, real range, Lods
       remove_mat_script_param(*mat, "material_pn_triangulation");
   }
 
-  BuildableStaticSceneRayTracer *rayTracer = NULL;
   sc.root->calc_wtm();
   if (log)
     if (!matSubst.checkMatClasses(sc.root, filename, *log))
       return false;
-  if (hasAO)
-    rayTracer = create_buildable_staticmeshscene_raytracer(Point3(1, 1, 1), 7); // fixme
 
   int lodId = append_items(lods, 1);
   Lod &lod = lods[lodId];
@@ -1159,7 +1110,7 @@ bool RenderableInstanceLodsResSrc::addLod(const char *filename, real range, Lods
   skip_nodes.addNameId("occluder_box");
   skip_nodes.addNameId("floater_box");
   ::collapse_nodes(sc.root, sc.root, false, false, curDagFname, skip_nodes, true);
-  addNode(lod, sc.root, sc.root, mat_gather, rayTracer);
+  addNode(lodId, lod, sc.root, sc.root, mat_gather);
   curDagFname = NULL;
 
   if (hasOccl && !explicitOccl && lodId == 0)
@@ -1278,7 +1229,6 @@ bool RenderableInstanceLodsResSrc::addLod(const char *filename, real range, Lods
   //     lod.rigid.meshData.elem[elemNo].si,
   //     lod.rigid.meshData.elem[elemNo].numf);
   // }
-  del_it(rayTracer);
   return true;
 }
 

@@ -12,7 +12,7 @@ async function main() {
     wide.append(f)
   }
   let r = await Future.all(wide)
-  print("wide len: " + r.len() + " first: " + r[0] + " last: " + r[999] + "\n")
+  println($"wide len: {r.len()} first: {r[0]} last: {r[999]}")
 
   // Nested: Future.all over 50 Future.race results. Each race has one
   // pre-resolved input (which wins) and one that never settles.
@@ -24,7 +24,7 @@ async function main() {
     groups.append(Future.race([a, b]))
   }
   let rr = await Future.all(groups)
-  print("nested len: " + rr.len() + " first: " + rr[0] + " last: " + rr[49] + "\n")
+  println($"nested len: {rr.len()} first: {rr[0]} last: {rr[49]}")
 
   print("script done\n")
 }

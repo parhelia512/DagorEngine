@@ -271,8 +271,6 @@ public:
   virtual const char *geomObjectGetShaderName(const GeomObject &go, int idx) const = 0;
   virtual ShaderMesh *geomObjectGetShaderMesh(const GeomObject &go, int idx) const = 0;
 
-  virtual bool geomObjectShadowRayHitTest(GeomObject &go, const Point3 &p, const Point3 &dir, real maxt,
-    int trace_flags = 0) const = 0;
   virtual bool geomObjectTraceRay(GeomObject &go, const Point3 &p, const Point3 &dir, real &maxt, Point3 *norm) const = 0;
   virtual bool geomObjectReloadRayTracer(GeomObject &go) const = 0;
   virtual StaticSceneRayTracer *geomObjectGetRayTracer(GeomObject &go) const = 0;
@@ -523,19 +521,8 @@ public:
 class IDagorScene
 {
 public:
-  // StaticSceneRayTracer
-  virtual int staticSceneRayTracerTraceRay(StaticSceneRayTracer &rt, const Point3 &p, const Point3 &wdir2, real &mint2,
-    int from_face = -1) const = 0;
-
   // FastRtDump
   virtual int fastRtDumpTraceRay(FastRtDump &frt, int custom, const Point3 &p, const Point3 &dir, real &t, int &out_pmid) const = 0;
-
-  // BuildableStaticSceneRayTracer
-  virtual BuildableStaticSceneRayTracer *createBuildableStaticmeshsceneRaytracer(const Point3 &lsz, int lev) const = 0;
-  virtual bool buildableStaticSceneRayTracerAddmesh(BuildableStaticSceneRayTracer &rt, const Point3 *vert, int vcount,
-    const unsigned *face, unsigned stride, int fn, const unsigned *face_flags, bool rebuild = true) const = 0;
-  virtual bool buildableStaticSceneRayTracerReserve(BuildableStaticSceneRayTracer &rt, int face_count, int vert_count) const = 0;
-  virtual bool buildableStaticSceneRayTracerRebuild(BuildableStaticSceneRayTracer &rt) const = 0;
 
   // StaticSceneBuilder::StdTonemapper
   virtual StaticSceneBuilder::StdTonemapper *newStdTonemapper(IMemAlloc *alloc = NULL) const = 0;

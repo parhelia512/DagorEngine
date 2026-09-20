@@ -1139,7 +1139,7 @@ int DagorWinMain(bool debugmode)
     memfree(grp, tmpmem);
   del_it(lev);
   del_it(dxp);
-  gameres_rendinst_desc.reset();
-  gameres_dynmodel_desc.reset();
+  gameres_reset_desc(gameres_rendinst_desc);
+  gameres_reset_desc(gameres_dynmodel_desc);
   return 0;
 }

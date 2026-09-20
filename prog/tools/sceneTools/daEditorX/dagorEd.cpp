@@ -52,6 +52,11 @@
 #include <scene/dag_visibility.h>
 #include <gui/dag_imgui.h>
 
+namespace environment
+{
+void after_d3d_reset(bool full_reset);
+}
+
 namespace workcycle_internal
 {
 extern bool window_initing;
@@ -104,6 +109,7 @@ static struct DagorEdReset3DCallback : public IDrv3DResetCB
       DAEDITOR3.conNote("reloading textures...");
       ddsx::reload_active_textures(0);
     }
+    environment::after_d3d_reset(full_reset);
     DAEDITOR3.conNote("notifying services (reset finished)...");
     DAGORED2->spawnEvent(HUID_AfterD3DReset, (void *)(uintptr_t)full_reset);
   }

@@ -11,6 +11,8 @@
 #include "driver_config.h"
 #include "timelines.h"
 #include "vulkan_allocation_callbacks.h"
+// after the driver headers: it pulls vulkan.h, which must see vulkan_api.h platform defines first
+#include <drv/shadersMetaData/spirv/unpack.h>
 
 using namespace drv3d_vulkan;
 
@@ -107,11 +109,10 @@ void PipelineManager::afterDeviceReset()
 void PipelineManager::prepareRemoval(ProgramID program)
 {
   CleanupQueue &cleanups = Backend::gpuJob.get().cleanups;
-  auto index = program_to_index(program);
   switch (get_program_type(program))
   {
-    case program_type_graphics: cleanups.enqueue(*graphics.takeOut(index)); break;
-    case program_type_compute: cleanups.enqueue(*compute.takeOut(index)); break;
+    case program_type_graphics: cleanups.enqueue(*graphics.takeOut(GraphicsProgram::getIndexFromID(program))); break;
+    case program_type_compute: cleanups.enqueue(*compute.takeOut(ComputeProgram::getIndexFromID(program))); break;
     default: G_ASSERTF(false, "Broken program type"); return;
   }
 }
@@ -124,10 +125,9 @@ VulkanShaderModuleHandle PipelineManager::makeVkModule(const ShaderModuleBlob *m
   Tab<uint8_t> tmpstorageSmolv(framemem_ptr());
   if (module->sizeSmolv)
   {
-    G_ASSERT(module->sizeSmolv <= tmpstorage.size());
-    uint32_t decodedSize = smolv::GetDecodedBufferSize(tmpstorage.data() + module->offset, module->sizeSmolv);
-    tmpstorageSmolv.resize(decodedSize);
-    G_VERIFY(smolv::Decode(tmpstorage.data() + module->offset, module->sizeSmolv, tmpstorageSmolv.data(), tmpstorageSmolv.size()));
+    G_ASSERT(module->offset + module->sizeSmolv <= tmpstorage.size());
+    G_VERIFY(spirv::decode_smolv(make_span_const(tmpstorage.data() + module->offset, tmpstorage.size() - module->offset),
+      module->sizeSmolv, tmpstorageSmolv));
   }
   const auto &src = module->sizeSmolv ? tmpstorageSmolv : tmpstorage;
   const uint32_t size = module->sizeSmolv == 0 && module->size ? module->size : src.size();

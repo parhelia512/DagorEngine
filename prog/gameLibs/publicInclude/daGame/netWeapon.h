@@ -5,9 +5,10 @@
 #pragma once
 
 #include <gamePhys/phys/weaponState.h>
+#include <gamePhys/common/loc.h>
 
 #include "math/dag_Point3.h"
-#include "math/dag_Point2.h"
+#include "math/dag_TMatrix.h"
 
 class NetWeapon
 {
@@ -16,8 +17,10 @@ public:
   {
     int index;
     Point3 pos;
-    Point2 visualAngles;
-    Point2 angles;
+    Point3 visualPos;
+    gamephys::Orient visualOrient;
+    gamephys::Orient orient;
+    TMatrix restTm;
     bool engaged;
   };
   virtual void saveWeaponState(WeaponState &out_weapon_state) const = 0;

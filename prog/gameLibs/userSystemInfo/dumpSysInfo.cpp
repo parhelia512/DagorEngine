@@ -12,6 +12,9 @@
 #include <drv/3d/dag_driverDesc.h>
 #include <drv/3d/dag_info.h>
 
+#if _TARGET_PC || _TARGET_IOS || _TARGET_ANDROID
+#include <folders/folders.h>
+#endif
 
 #if USE_CPU_FEATURES
 #include <cpu_features/include/cpu_features_macros.h>
@@ -179,6 +182,43 @@ void dump_sysinfo()
   int memPageSize = systeminfo::get_mem_page_size();
   if (memPageSize > 0)
     debug("SYSINFO_PAGESIZE: %d", memPageSize);
+
+#if _TARGET_PC || _TARGET_IOS || _TARGET_ANDROID
+  String diskPath = folders::get_exe_dir();
+  if (diskPath.empty())
+  {
+#if _TARGET_ANDROID
+    diskPath = folders::get_gamedata_dir();
+#else
+    diskPath = folders::get_game_dir();
+#endif
+  }
+#else
+  String diskPath; // consoles report their own storage and ignore the path
+#endif
+
+  // both lines always print (type on PC only), so a missing line means an old client and not a failed query
+#if _TARGET_PC
+  DiskType diskType = DiskType::Unknown;
+  systeminfo::get_disk_type(diskPath.c_str(), diskType);
+  debug("SYSINFO_DISK_TYPE: \"%s\"", systeminfo::to_string(diskType));
+#endif
+
+  uint64_t diskFreeBytes = 0, diskTotalBytes = 0;
+  if (!systeminfo::get_disk_space(diskPath.c_str(), diskFreeBytes, diskTotalBytes))
+    debug("SYSINFO_DISK_FREE: unknown");
+  else
+  {
+    int freeGb = int(diskFreeBytes / (1024ull * 1024ull * 1024ull));
+    if (diskTotalBytes)
+    {
+      int totalGb = int(diskTotalBytes / (1024ull * 1024ull * 1024ull));
+      int freePercent = int(diskFreeBytes * 100ull / diskTotalBytes);
+      debug("SYSINFO_DISK_FREE: %dGB free of %dGB (%d%%)", freeGb, totalGb, freePercent);
+    }
+    else
+      debug("SYSINFO_DISK_FREE: %dGB free", freeGb);
+  }
 }
 
 void dump_dll_names()
@@ -323,6 +363,18 @@ const char *to_string(ThermalStatus status)
     case ThermalStatus::Critical: return "Critical";
     case ThermalStatus::Emergency: return "Emergency";
     case ThermalStatus::Shutdown: return "Shutdown";
+    default: return "Unknown";
+  }
+}
+
+const char *to_string(DiskType disk_type)
+{
+  switch (disk_type)
+  {
+    case DiskType::Hdd: return "HDD";
+    case DiskType::Ssd: return "SSD";
+    case DiskType::Remote: return "Remote";
+    case DiskType::RamDisk: return "RamDisk";
     default: return "Unknown";
   }
 }

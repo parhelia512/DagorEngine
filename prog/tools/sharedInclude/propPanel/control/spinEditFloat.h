@@ -77,6 +77,8 @@ public:
 
   void setDefaultValue(Variant var) override { defaultValue = var.convert<float>(); }
 
+  const char *getImguiTypeName() const override { return "EditFloat"; }
+
   void updateImgui() override;
 
 private:

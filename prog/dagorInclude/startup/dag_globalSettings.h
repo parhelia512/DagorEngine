@@ -51,6 +51,9 @@ static inline const char *dgs_get_fatal_context(char *buf, int sz, bool terse = 
 //! last resort to recover after out of memory; should return true to try allocate once more
 extern KRNLIMP bool (*dgs_on_out_of_memory)(size_t sz);
 
+//! called by the driver on GPU out of memory; may run on any thread inside driver allocation locks, must not wait unboundedly
+extern KRNLIMP void (*dgs_report_gpu_out_of_memory)();
+
 //! this function should return pointer to global settings in DataBlock form
 //! default implementation returns NULL until overriden by another implemenation
 //! at startup

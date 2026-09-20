@@ -130,15 +130,13 @@ const char *df_next_base_path(int *index_ptr)
 static void rebuild_strings()
 {
   char stor2[4096];
-  ptrdiff_t rebase = stor2 - fn_storage;
-
   memcpy(stor2, fn_storage, sizeof(stor2));
   fn_next_ptr = fn_storage;
   fn_remove_cnt = 0;
 
   for (int i = 0; i < DF_MAX_BASE_PATH_NUM; i++)
     if (df_base_path[i])
-      df_base_path[i] = fn_dup(df_base_path[i] + rebase);
+      df_base_path[i] = fn_dup(stor2 + (df_base_path[i] - fn_storage));
 }
 
 #define EXPORT_PULL dll_pull_osapiwrappers_basePathMgr

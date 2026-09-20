@@ -20,14 +20,14 @@ struct OmniLight
   alignas(16) Point4 boxR1;
   alignas(16) Point4 boxR2;
   alignas(16) Point4 posRelToOrigin_cullRadius;
-  alignas(16) Point4 shadowNearFarClippingPlanesPad;
+  alignas(16) Point4 shadowZnZf_flags_sourceRadius;
   OmniLight() {}
   OmniLight(const Point3 &p, const Color3 &col, float rad, float att) :
     pos_radius(p.x, p.y, p.z, rad),
     color_atten(col.r, col.g, col.b, att),
     dir__tex_scale(0, 1, 0, 0),
     posRelToOrigin_cullRadius(0, 0, 0, -1),
-    shadowNearFarClippingPlanesPad(0, 0, 0, 0)
+    shadowZnZf_flags_sourceRadius(0, 0, 0, 0)
   {
     setDefaultBox();
   }
@@ -36,7 +36,7 @@ struct OmniLight
     color_atten(col.r, col.g, col.b, att),
     dir__tex_scale(0, 1, 0, 0),
     posRelToOrigin_cullRadius(0, 0, 0, -1),
-    shadowNearFarClippingPlanesPad(0, 0, 0, 0)
+    shadowZnZf_flags_sourceRadius(0, 0, 0, 0)
   {
     setBox(box);
   }
@@ -45,7 +45,7 @@ struct OmniLight
     color_atten(col.r, col.g, col.b, att),
     dir__tex_scale(0, 1, 0, 0),
     posRelToOrigin_cullRadius(0, 0, 0, -1),
-    shadowNearFarClippingPlanesPad(0, 0, 0, 0)
+    shadowZnZf_flags_sourceRadius(0, 0, 0, 0)
   {
     if (box != nullptr && lengthSq(box->getcol(0)) > 0)
       setBox(*box);
@@ -58,7 +58,7 @@ struct OmniLight
     color_atten(col.r, col.g, col.b, att),
     dir__tex_scale(dir.x, dir.y, dir.z, 0),
     posRelToOrigin_cullRadius(0, 0, 0, -1),
-    shadowNearFarClippingPlanesPad(0, 0, 0, 0)
+    shadowZnZf_flags_sourceRadius(0, 0, 0, 0)
   {
     setDefaultBox();
     setTexture(tex, texture_scale, tex_rotation);
@@ -69,16 +69,16 @@ struct OmniLight
     color_atten(col.r, col.g, col.b, att),
     dir__tex_scale(dir.x, dir.y, dir.z, 0),
     posRelToOrigin_cullRadius(0, 0, 0, -1),
-    shadowNearFarClippingPlanesPad(0, 0, 0, 0)
+    shadowZnZf_flags_sourceRadius(0, 0, 0, 0)
   {
     setBox(box);
     setTexture(tex, texture_scale, tex_rotation);
 
     if (shadow_zn_zfar.x > 0)
-      shadowNearFarClippingPlanesPad.x = shadow_zn_zfar.x;
+      shadowZnZf_flags_sourceRadius.x = shadow_zn_zfar.x;
 
-    if (shadow_zn_zfar.y > shadowNearFarClippingPlanesPad.x)
-      shadowNearFarClippingPlanesPad.y = shadow_zn_zfar.y;
+    if (shadow_zn_zfar.y > shadowZnZf_flags_sourceRadius.x)
+      shadowZnZf_flags_sourceRadius.y = shadow_zn_zfar.y;
   }
   void setPos(const Point3 &p)
   {
@@ -152,6 +152,8 @@ struct OmniLight
     posRelToOrigin_cullRadius.z = pos.z;
     posRelToOrigin_cullRadius.w = cullRadius;
   }
+  void setSourceRadius(float radius) { shadowZnZf_flags_sourceRadius.w = radius; }
+  float getSourceRadius() const { return shadowZnZf_flags_sourceRadius.w; }
   static OmniLight create_empty()
   {
     OmniLight l;
@@ -159,7 +161,7 @@ struct OmniLight
     l.dir__tex_scale = Point4(0, 1, 0, 0);
     l.setDefaultBox();
     l.posRelToOrigin_cullRadius = Point4(0, 0, 0, -1);
-    l.shadowNearFarClippingPlanesPad = Point4(0, 0, 0, 0);
+    l.shadowZnZf_flags_sourceRadius = Point4(0, 0, 0, 0);
     return l;
   }
 };

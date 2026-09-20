@@ -20,7 +20,6 @@ Sources =
   perlin.cpp
   ffd44.cpp
   triangleTriangleIntersection.cpp
-  triangleBoxIntersection.cpp
   sHmath.cpp
   geomTree.cpp
   geomTreeMap.cpp

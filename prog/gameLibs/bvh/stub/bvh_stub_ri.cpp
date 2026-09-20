@@ -22,8 +22,8 @@ void update_ri_extra_instances(ContextId, const Point3 &, const Point3 &, const 
 {}
 void wait_ri_gen_instances_update(ContextId) {}
 void wait_ri_extra_instances_update(ContextId) {}
-void tidy_up_trees(ContextId) {}
-void wait_tidy_up_trees() {}
+void tidy_up_rendinsts(ContextId) {}
+void wait_tidy_up_rendinsts() {}
 void collect_staged_blas_addresses(ContextId, dag::Vector<uint64_t> &) {}
 
 void set_dist_mul(float) {}

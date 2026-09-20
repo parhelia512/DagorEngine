@@ -252,15 +252,15 @@ int get_double_click_time();
 
 //! reset all control bindings for all actions
 void reset_actions_binding();
-//! load control bindings to new column (for all actions) from BLK
+//! load control bindings to new column (for all actions except for ones with useBinding) from BLK
 void append_actions_binding(const DataBlock &blk);
 //! clears control bindings for specified column
 void clear_actions_binding(int column);
-//! load control bindings for specified column (for all actions) from BLK;
+//! load control bindings for specified column (for all actions except for ones with useBinding) from BLK;
 //! (optional) on_config_ver_differ() is called when versions differ and may alter blk before it is parsed
 void load_actions_binding(const DataBlock &blk, int column,
   void (*on_config_ver_differ)(DataBlock &blk, int config_ver, int bindings_ver) = nullptr);
-//! save control bindings for specified column (for all actions) to BLK
+//! save control bindings for specified column (for all actions except for ones with useBinding) to BLK
 void save_actions_binding(DataBlock &blk, int column);
 bool save_actions_binding_ex(DataBlock &blk, int column, const DataBlock *base_preset);
 //! returns number of columns for control bindings
@@ -332,10 +332,14 @@ action_set_handle_t set_breaking_action_set(action_set_handle_t set);
 
 //! returns control bindings for specified action and column as BLK
 void get_action_binding(action_handle_t action, int column, DataBlock &out_binding);
-//! set control bindings for specified action and column from BLK
+//! set control bindings for specified action and column from BLK, refused for action with useBinding
 void set_action_binding(action_handle_t action, int column, const DataBlock &binding);
-//! reset control bindings for specified action and specified column (or -1 to reset all columns)
+//! reset control bindings for specified action and specified column, refused for action with useBinding
 void reset_action_binding(action_handle_t action, int column);
+//! tells daInput that bindings were changed through the rows returned by get_*_action_binding(), so that the actions
+//! declaring useBinding of them copy the change; by default every action and every column are published,
+//! specified action is the one owning the binding, passing one that reads it is reported and does nothing
+void action_binding_changed(action_handle_t action = BAD_ACTION_HANDLE, int column = -1);
 //! returns control bindings for specified action and column (digital)
 DigitalActionBinding *get_digital_action_binding(action_handle_t action, int column);
 //! returns control bindings for specified action and column (analogue axis)
@@ -356,6 +360,12 @@ action_handle_t get_action_handle_by_ord(int ord_idx);
 int get_action_sets_count();
 //! returns action set by ordinal index
 action_set_handle_t get_action_set_handle_by_ord(int ord_idx);
+//! returns the layer of the action set on the stack: the smaller value is processed first;
+//! 0 both for an unknown handle and for a set that actionSetsOrder does not name
+int get_action_set_priority(action_set_handle_t set);
+//! returns true when action sets are declared (with exclusive_with) to be never active at the same time,
+//! and false for a handle that is not an action set
+bool are_action_sets_exclusive(action_set_handle_t a, action_set_handle_t b);
 
 //! starts bindings recording for specified action (results are stored to temp buffer and retrived with finish_recording_bindings)
 void start_recording_bindings(action_handle_t action);
@@ -368,11 +378,14 @@ bool is_recording_complete();
 //! finishes bindings recording and returns true when binding is complete (bindings is store to out_binding)
 bool finish_recording_bindings(DataBlock &out_binding);
 
-//! checks whether specified binding for specified action conflicts with other actions (in relevant actionsets)
+//! checks whether specified binding for specified action conflicts with other actions (in relevant actionsets);
+//! out_a names the action owning the binding, never one that reads it with useBinding
 bool check_bindings_conflicts(action_handle_t action, const DataBlock &binding, Tab<action_handle_t> &out_a, Tab<int> &out_c);
-//! checks whether specified binding for specified action conflicts with another action
+//! checks whether specified binding for specified action conflicts with another action;
+//! false when one reads the binding of the other with useBinding, since both fire from one row
 bool check_bindings_conflicts_one(action_handle_t a1, int column1, action_handle_t a2, int column2);
-//! checks whether specified binding for specified action hides some actions (in other actionset layers)
+//! checks whether specified binding for specified action hides some actions (in other actionset layers);
+//! out_a names owning actions, as check_bindings_conflicts does
 bool check_bindings_hides_action(action_handle_t action, const DataBlock &binding, Tab<action_handle_t> &out_a, Tab<int> &out_c);
 
 

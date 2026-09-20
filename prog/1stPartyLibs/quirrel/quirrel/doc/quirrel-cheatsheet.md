@@ -1,8 +1,8 @@
 # Quirrel cheat-sheet
 
 Quick rules for writing and reviewing Quirrel (.nut) code. Aimed at reviewers,
-agents and tooling; not a language manual. Full docs: `doc/source/` in this repo
-(start with `reference/language/`). Analyzer diagnostics list:
+agents and tooling; not a language manual. Full docs: the reference site next to
+this file (start with `content/pages/language/`). Analyzer diagnostics list:
 `squirrel/compiler/compilationcontext.h` (DIAGNOSTICS macro). Facts below are
 verified against csq 1.0.37 behavior, not just docs.
 
@@ -16,7 +16,7 @@ verified against csq 1.0.37 behavior, not just docs.
   - RIGHT: `$"score {score} of {total}"` (interpolation, compiles to subst),
     `"".concat(a, b, c)`, `", ".join(arr)`, `"{0}:{1}".subst(a, b)`.
   - Analyzer: w264 (plus-string).
-- `$"..."` cannot nest; escape literal braces as `\{ \}`.
+- `$"..."` nests; escape literal braces as `\{ \}`.
 - Format/subst argument counts are checked: w231, w334.
 
 ## Bindings and declarations
@@ -43,7 +43,7 @@ verified against csq 1.0.37 behavior, not just docs.
   w291 fires if a `_name` is actually used).
 - `@@"..."` docstrings document exported APIs.
 
-## Type annotations (see reference/language/type_annotations.rst)
+## Type annotations (see content/pages/language/annotations.md)
 
 - Syntax: `function f(x: int, s: string|null = null): float {}`,
   lambdas `@(a: number): number a * 2`, combined `function [pure] g(v: number): int`.
@@ -84,8 +84,13 @@ verified against csq 1.0.37 behavior, not just docs.
   expression: `arr.map(function(v) { if (!v.enabled) throw null; return mk(v) })`
   == `arr.filter(@(v) v.enabled).map(mk)`.
 - `arr.append(a, b, c)`, not `arr.extend([a, b, c])` (w270) and not `push`
-  (removed). `array(n)`, not `[].resize(n)` (w319). `t.clone()`, not
-  `t.__merge({})` (w318). `.indexof()`, not `.find()`.
+  (removed). `array(n)`, not `[].resize(n)` (w319). `{ ...t }`, not
+  `t.__merge({})` (w318), and not `t.clone()`, which also carries the delegate. `.indexof()`, not `.find()`.
+- `{ ...src, k = v }` and `[ ...src, v ]` spread into a literal: a table takes
+  a table, a class or an instance, an array takes an array, `null` adds nothing,
+  a later key wins, and the result is a new container even when `src` is frozen
+  (mutable unless the module sets `#allow-auto-freeze`, which freezes every
+  literal). Literals only: no `f(...args)`, no rest in destructuring.
 - Membership: `x in t`, `x not in t`, `arr.contains(v)`.
 - Do not modify a container inside its own foreach (w292).
 - `delete` operator is deprecated: use `t.$rawdelete(key)` (`$` = type-method
@@ -101,8 +106,9 @@ verified against csq 1.0.37 behavior, not just docs.
   reads as a function: `params?.filter` is `Table.filter`, not null (same for
   `map`, `len`, `keys`, ...). Indexing does not: use `key in t` and `t[key]`
   to read caller-supplied fields.
-- Default param values evaluate at call time, and a mutable default (table or
-  array) is shared between calls: never mutate it (w335).
+- Default param values evaluate once, when the closure is created, so a
+  mutable default (table or array) is one object shared by every call: never
+  mutate it (w335).
 
 ## Misc correctness
 

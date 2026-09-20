@@ -469,6 +469,7 @@ struct AnimationGraphStateRecAnnotation : das::ManagedStructureAnnotation<::Anim
 
     addField<DAS_BIND_MANAGED_FIELD(nodeId)>("nodeId");
     addField<DAS_BIND_MANAGED_FIELD(morphTime)>("morphTime");
+    addField<DAS_BIND_MANAGED_FIELD(morphType)>("morphType");
     addField<DAS_BIND_MANAGED_FIELD(forcedStateDur)>("forcedStateDur");
     addField<DAS_BIND_MANAGED_FIELD(forcedStateSpd)>("forcedStateSpd");
     addField<DAS_BIND_MANAGED_FIELD(minTimeScale)>("minTimeScale");
@@ -1245,6 +1246,12 @@ public:
       das::SideEffects::modifyArgument,
       "das_call_member<void(DynamicRenderableSceneInstance::*)(uint32_t), "
       "&::DynamicRenderableSceneInstance::markNodeCollapserNode>::invoke");
+    using method_setNodeCollapserTarget =
+      das::das_call_member<void (DynamicRenderableSceneInstance::*)(int), &::DynamicRenderableSceneInstance::setNodeCollapserTarget>;
+    das::addExtern<DAS_CALL_METHOD(method_setNodeCollapserTarget)>(*this, lib, "scene_instance_setNodeCollapserTarget",
+      das::SideEffects::modifyArgument,
+      "das_call_member<void(DynamicRenderableSceneInstance::*)(int), "
+      "&::DynamicRenderableSceneInstance::setNodeCollapserTarget>::invoke");
     using method_NodeCollapserBits_setAll = DAS_CALL_MEMBER(DynamicRenderableSceneInstance::NodeCollapserBits::setAll);
     das::addExtern<DAS_CALL_METHOD(method_NodeCollapserBits_setAll)>(*this, lib, "node_collapser_bits_setAll",
       das::SideEffects::modifyArgument, DAS_CALL_MEMBER_CPP(DynamicRenderableSceneInstance::NodeCollapserBits::setAll));
@@ -1325,6 +1332,16 @@ public:
       das::SideEffects::worstDefault, "bind_dascript::anim_graph_getAnimNodeNames");
     das::addExtern<DAS_BIND_FUN(anim_graph_getStRec)>(*this, lib, "anim_graph_getStRec", das::SideEffects::worstDefault,
       "bind_dascript::anim_graph_getStRec");
+    das::addExtern<DAS_BIND_FUN(anim_graph_getStateChanCount)>(*this, lib, "anim_graph_getStateChanCount", das::SideEffects::none,
+      "bind_dascript::anim_graph_getStateChanCount");
+    das::addExtern<DAS_BIND_FUN(anim_graph_getStateChanFifo)>(*this, lib, "anim_graph_getStateChanFifo", das::SideEffects::none,
+      "bind_dascript::anim_graph_getStateChanFifo");
+    das::addExtern<DAS_BIND_FUN(anim_graph_getStateChanNodemaskOfs)>(*this, lib, "anim_graph_getStateChanNodemaskOfs",
+      das::SideEffects::none, "bind_dascript::anim_graph_getStateChanNodemaskOfs");
+    das::addExtern<DAS_BIND_FUN(anim_graph_getStateRec)>(*this, lib, "anim_graph_getStateRec", das::SideEffects::modifyArgument,
+      "bind_dascript::anim_graph_getStateRec");
+    das::addExtern<DAS_BIND_FUN(anim_get_fifo_morph_type_name)>(*this, lib, "anim_get_fifo_morph_type_name", das::SideEffects::none,
+      "bind_dascript::anim_get_fifo_morph_type_name");
 
     das::addExtern<DAS_BIND_FUN(animchar_getDebugBlenderState)>(*this, lib, "animchar_getDebugBlenderState",
       das::SideEffects::accessExternal, "bind_dascript::animchar_getDebugBlenderState");
@@ -1340,6 +1357,20 @@ public:
 
     das::addExtern<DAS_BIND_FUN(AnimData_get_source_anim_data)>(*this, lib, "AnimData_get_source_anim_data",
       das::SideEffects::accessExternal, "bind_dascript::AnimData_get_source_anim_data");
+    das::addExtern<DAS_BIND_FUN(AnimData_duration)>(*this, lib, "AnimData_duration", das::SideEffects::accessExternal,
+      "bind_dascript::AnimData_duration");
+    das::addExtern<DAS_BIND_FUN(AnimData_note_count)>(*this, lib, "AnimData_note_count", das::SideEffects::accessExternal,
+      "bind_dascript::AnimData_note_count");
+    das::addExtern<DAS_BIND_FUN(AnimData_note_name)>(*this, lib, "AnimData_note_name", das::SideEffects::accessExternal,
+      "bind_dascript::AnimData_note_name");
+    das::addExtern<DAS_BIND_FUN(AnimData_note_time)>(*this, lib, "AnimData_note_time", das::SideEffects::accessExternal,
+      "bind_dascript::AnimData_note_time");
+    das::addExtern<DAS_BIND_FUN(AnimData_node_count)>(*this, lib, "AnimData_node_count", das::SideEffects::accessExternal,
+      "bind_dascript::AnimData_node_count");
+    das::addExtern<DAS_BIND_FUN(AnimData_node_name)>(*this, lib, "AnimData_node_name", das::SideEffects::accessExternal,
+      "bind_dascript::AnimData_node_name");
+    das::addExtern<DAS_BIND_FUN(AnimData_sample_node)>(*this, lib, "AnimData_sample_node", das::SideEffects::modifyArgument,
+      "bind_dascript::AnimData_sample_node");
 
     das::addExtern<DAS_BIND_FUN(AnimBlendNodeLeaf_get_anim<::AnimV20::AnimBlendNodeLeaf>)>(*this, lib, "AnimBlendNodeLeaf_get_anim",
       das::SideEffects::modifyArgument, "bind_dascript::AnimBlendNodeLeaf_get_anim< ::AnimV20::AnimBlendNodeLeaf>");

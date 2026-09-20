@@ -22,6 +22,10 @@ typedef __attribute__((neon_vector_type(4))) int __vec4i;
 #elif defined(_MSC_VER)
 typedef union __declspec(intrin_type) __declspec(align(16)) __n128 __vec4f;
 #endif
+#elif _TARGET_SIMD_SCALAR
+// the dag_vecMathDecl.h scalar structs, by tag: this header does not include vecmath
+typedef struct vec4f_scalar_t __vec4f;
+typedef struct vec4i_scalar_t __vec4i;
 #endif
 
 #ifdef __cplusplus

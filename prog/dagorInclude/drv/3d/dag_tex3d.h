@@ -171,14 +171,6 @@ public:
 
   static inline int calcSubResIdx(int level, int slice, int mip_levels) { return level + slice * mip_levels; }
   inline int calcSubResIdx(int level, int slice = 0) const { return calcSubResIdx(level, slice, level_count()); }
-  // Requires TEXCF_UPDATE_DESTINATION, TEXCF_RTARGET or TEXCF_UNORDERED usage for this texture.
-  virtual int updateSubRegion(BaseTexture *src, int src_subres_idx, int src_x, int src_y, int src_z, int src_w, int src_h, int src_d,
-    int dest_subres_idx, int dest_x, int dest_y, int dest_z) = 0;
-  virtual int updateSubRegionNoOrder(BaseTexture *src, int src_subres_idx, int src_x, int src_y, int src_z, int src_w, int src_h,
-    int src_d, int dest_subres_idx, int dest_x, int dest_y, int dest_z)
-  {
-    return updateSubRegion(src, src_subres_idx, src_x, src_y, src_z, src_w, src_h, src_d, dest_subres_idx, dest_x, dest_y, dest_z);
-  }
   virtual int level_count() const = 0;                     // number of mipmap levels
   virtual int texmiplevel(int minlevel, int maxlevel) = 0; // default is 0, 0
   virtual bool isCubeArray() const { return false; }
@@ -226,74 +218,6 @@ public:
   virtual bool allocateTex() { return true; }
   //! discards texture and returns it to STUB state
   virtual void discardTex() {}
-
-  // Replaces the texture with a smaller one defined by info, overlapping mip levels are automatically
-  // migrated to the new texture. This does not need TEXCF_UPDATE_DESTINATION to work, even if the default
-  // implementation would do so. Drivers that can not executed updateSubRegion correctly without the
-  // TEXCF_UPDATE_DESTINATION flag have to implement this in a way so it will work correctly.
-  //
-  // Returns true on success, may return false on fail. Only fail case can be the failure to allocate the
-  // replacement texture.
-  [[nodiscard]] virtual BaseTexture *downSize(int width, int height, int depth, int mips, unsigned start_src_level,
-    unsigned level_offset)
-  {
-    auto rep = makeTmpTexResCopy(width, height, depth, mips);
-    if (!rep)
-      return nullptr;
-
-    TextureInfo selfInfo;
-    getinfo(selfInfo);
-
-    unsigned sourceLevel = max<unsigned>(level_offset, start_src_level);
-    unsigned sourceLevelEnd = min<unsigned>(selfInfo.mipLevels, mips + level_offset);
-    rep->texmiplevel(sourceLevel - level_offset, sourceLevelEnd - level_offset - 1);
-    for (; sourceLevel < sourceLevelEnd; sourceLevel++)
-    {
-      for (int s = 0; s < selfInfo.a; s++)
-      {
-        // copy depth is the source mip depth: 1 for the layered types (each slice is a separate
-        // subresource iterated by s), the per-mip depth for volumes
-        rep->updateSubRegion(this, calcSubResIdx(sourceLevel, s, selfInfo.mipLevels), 0, 0, 0, max<int>(selfInfo.w >> sourceLevel, 1),
-          max<int>(selfInfo.h >> sourceLevel, 1), max<int>(selfInfo.d >> sourceLevel, 1),
-          calcSubResIdx(sourceLevel - level_offset, s, mips), 0, 0, 0);
-      }
-    }
-    return rep;
-  }
-  // Replaces the texture with a larger one defined by info, overlapping mip levels are automatically
-  // migrated to the new texture. This does not need TEXCF_UPDATE_DESTINATION to work, even if the default
-  // implementation would do so. Drivers that can not executed updateSubRegion correctly without the
-  // TEXCF_UPDATE_DESTINATION flag have to implement this in a way so it will work correctly.
-  //
-  // Returns true on success, may return false on fail. Only fail case can be the failure to allocate the
-  // replacement texture.
-  [[nodiscard]] virtual BaseTexture *upSize(int width, int height, int depth, int mips, unsigned start_src_level,
-    unsigned level_offset)
-  {
-    auto rep = makeTmpTexResCopy(width, height, depth, mips);
-    if (!rep)
-      return nullptr;
-
-    TextureInfo selfInfo;
-    getinfo(selfInfo);
-
-    unsigned destinationLevel = level_offset + start_src_level;
-    unsigned destinationLevelEnd = min<unsigned>(selfInfo.mipLevels + level_offset, mips);
-    rep->texmiplevel(destinationLevel, destinationLevelEnd - 1);
-    for (; destinationLevel < destinationLevelEnd; destinationLevel++)
-    {
-      for (int s = 0; s < selfInfo.a; s++)
-      {
-        // copy depth is the source mip depth: 1 for the layered types (each slice is a separate
-        // subresource iterated by s), the per-mip depth for volumes
-        rep->updateSubRegion(this, calcSubResIdx(destinationLevel - level_offset, s, selfInfo.mipLevels), 0, 0, 0,
-          max<int>(width >> destinationLevel, 1), max<int>(height >> destinationLevel, 1),
-          max<int>(selfInfo.d >> (destinationLevel - level_offset), 1), calcSubResIdx(destinationLevel, s, mips), 0, 0, 0);
-      }
-    }
-
-    return rep;
-  }
 
   BaseTexture() = default;
   BaseTexture(BaseTexture &&) = default;

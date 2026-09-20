@@ -3,6 +3,7 @@
 #include <gamePhys/collision/collisionLib.h>
 #include <gamePhys/collision/collisionCache.h>
 #include <gamePhys/collision/collisionInstances.h>
+#include "../collisionLibPrivate.h"
 
 namespace dacoll
 {
@@ -28,6 +29,8 @@ bool traceray_normalized_ri(const Point3 &, const Point3 &, real &, int *, Point
   G_ASSERT_RETURN(false, false);
 }
 void validate_trace_cache(const bbox3f &, const vec3f &, float, TraceMeshFaces *, float) { G_ASSERT(0); }
+bool append_static_collision_tris(bbox3f_cref, vec4f *, int &) { G_ASSERT_RETURN(false, false); }
+int resolve_static_cache_tri_mat(int) { G_ASSERT_RETURN(false, -1); }
 bool trace_game_objects(const Point3 &, const Point3 &, float &, Point3 &, int, int) { G_ASSERT_RETURN(false, false); }
 bool trace_game_objects_with_grid_filter(const Point3 &, const Point3 &, float &, Point3 &, int, int, const dag::ConstSpan<uint32_t>)
 {
@@ -156,7 +159,8 @@ CollisionObject &get_reusable_box_collision() { G_ASSERT_RETURN(false, tmpObj); 
 void move_ri_instance(const rendinst::RendInstDesc &, const Point3 &, const Point3 &) { G_ASSERT(0); }
 void enable_disable_ri_instance(const rendinst::RendInstDesc &, bool) { G_ASSERT(0); }
 void flush_ri_instances() { G_ASSERT(0); }
-bool is_ri_instance_enabled(const CollisionInstances *, const rendinst::RendInstDesc &) { G_ASSERT_RETURN(false, true); }
+ska::flat_hash_map<rendinst::RendInstDesc, int, RendInstDescHash> disabled_ri_instances;
+bool is_ri_instance_disabled_outofline(const rendinst::RendInstDesc &) { G_ASSERT_RETURN(false, false); }
 int get_link_name_id(const char *) { G_ASSERT_RETURN(false, -1); }
 const char *get_link_name(const int) { G_ASSERT_RETURN(false, NULL); }
 

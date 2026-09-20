@@ -17,9 +17,12 @@
 #include <shaders/dag_shaderMesh.h>
 #include <shaders/dag_overrideStates.h>
 #include <shaders/dag_shaders.h>
+#include <shaders/dag_shaderVarsUtils.h>
+#include <shaders/dag_shStateBlockBindless.h>
 #include <math/dag_Point2.h>
 #include <math/integer/dag_IBBox2.h>
 #include <3d/dag_render.h>
+#include <3d/dag_texStreamingContext.h>
 #include <shaders/dag_shaderBlock.h>
 #include <shaders/dag_DynamicShaderHelper.h>
 #include <debug/dag_debug.h>
@@ -340,10 +343,7 @@ LandVtexRenderer::LandVtexRenderer(LandMeshManager &provider, dag::ConstSpan<Lan
   ShaderGlobal::set_texture(var::vertical_nm_tex, vertNmTexId);
   ShaderGlobal::set_texture(var::vertical_det_tex, vertDetTexId);
 
-  int detMapElemSize, size;
-  provider.getDetailMapSize(detMapElemSize, size);
-  float cellSize = provider.getLandCellSize();
-  detMapTcScale = detMapElemSize / (size * cellSize);
+  detMapTcScale = provider.getDetailMapTcScale();
 
   for (int i = 0; i < landClasses.size(); ++i)
   {
@@ -763,8 +763,9 @@ void LandMeshRenderer::getCellState(LandMeshManager &provider, int cell_x, int c
         curState.trivial = false;
     }
   }
-  if (!curState.map1)
-    curState.numDetailTextures = 1;
+  // the record says what the shader weights: a cell the atlas could not page keeps its first landclass, and so does one with no atlas
+  curState.numDetailTextures =
+    min(curState.numDetailTextures, curState.map1 ? provider.getWeightAtlas()->cellBlendCount(cell_x, cell_y) : 1);
   if (curState.numDetailTextures == 0)
   {
     static int last_t = 0, happens = 0;
@@ -935,6 +936,273 @@ inline bool shouldRenderMeshElem(const LandMeshManager &provider, int cellId, in
          provider.getDecalElems().data()[cellId].shouldRenderElem[elemId];
 }
 
+class DirectDrawcalls
+{
+public:
+  static __forceinline void draw(int si, int numf, int baseVertex) { d3d_err(d3d::drawind(PRIM_TRILIST, si, numf, baseVertex)); }
+  static __forceinline void setVertexData(GlobalVertexData *vb) { vb->setToDriver(); }
+  static __forceinline void setSampler(int idx, d3d::SamplerHandle smp)
+  {
+    d3d::set_sampler(STAGE_PS, decals_overrideSampler_const_no_array[idx], smp);
+  }
+  static __forceinline bool setShader(ShaderElement *se) { return se->setStates(0, true); }
+};
+
+class MultidrawRecorder
+{
+public:
+  void draw(int si, int numf, int baseVertex)
+  {
+    G_ASSERT_RETURN(currentShaderState.shaderValid, ); // renderCellDecalsImpl's state should prevent that.
+    G_ASSERT_RETURN(stateSwitches.size(), );
+    stateSwitchHasDrawcall = true;
+
+    drawcallsData.emplace_back(stateSwitches.size() - 1, currentShaderState.cstate, si, numf, baseVertex);
+  }
+  void setVertexData(GlobalVertexData *vb)
+  {
+    prepareStateSwitch();
+    stateSwitches.back().vb = vb;
+  }
+  void setSampler(int idx, d3d::SamplerHandle smp)
+  {
+    prepareStateSwitch();
+    stateSwitches.back().samplers[idx] = smp;
+  }
+  bool setShader(ShaderElement *se)
+  {
+    const shaders::CombinedDynVariantState dynVarState = get_dynamic_variant_states(se->native());
+    currentShaderState.shaderValid = is_valid(dynVarState);
+    if (!currentShaderState.shaderValid)
+      return false;
+
+    const shaders::ConstStateIdx cstate = dynVarState.const_state;
+    G_ASSERT(is_packed_material(cstate)); // expecting all decals "supports __static_multidraw_cbuf;"
+    bool isMergable = !stateSwitches.empty() && currentShaderState.rstate == dynVarState.render_state &&
+                      get_material_id(currentShaderState.cstate) == get_material_id(cstate) &&
+                      currentShaderState.prog == dynVarState.program;
+
+    currentShaderState.cstate = cstate; // always set cstate, get_material_offset(cstate) provides bindless indices.
+    if (!isMergable)
+    {
+      currentShaderState.rstate = dynVarState.render_state;
+      currentShaderState.prog = dynVarState.program;
+
+      prepareStateSwitch();
+      stateSwitches.back().variantState = {se, dynVarState};
+    }
+
+    bindlessStatesToUpdate.emplace(cstate);
+    return true;
+  }
+
+public:
+  struct StateSwitch
+  {
+    GlobalVertexData *vb = nullptr;
+    carray<d3d::SamplerHandle, LandMeshManager::DECALS_OVERRIDE_SAMPLERS_COUNT> samplers;
+    struct
+    {
+      ShaderElement *se = nullptr;
+      shaders::CombinedDynVariantState dynVarState = {};
+    } variantState;
+
+    StateSwitch() { eastl::fill(samplers.begin(), samplers.end(), d3d::SamplerHandle::Invalid); }
+  };
+  dag::Vector<StateSwitch, framemem_allocator> stateSwitches;
+
+  struct DrawcallData
+  {
+    int stateSwitchIdx = 0;
+    shaders::ConstStateIdx cstate = shaders::ConstStateIdx::Invalid;
+    int si = 0;
+    int numf = 0;
+    int baseVertex = 0;
+
+    DrawcallData() = default;
+    DrawcallData(int state_switch_idx, shaders::ConstStateIdx cstate_, int si_, int numf_, int base_vertex) :
+      stateSwitchIdx(state_switch_idx), cstate(cstate_), si(si_), numf(numf_), baseVertex(base_vertex)
+    {}
+  };
+  dag::Vector<DrawcallData, framemem_allocator> drawcallsData;
+
+  ska::flat_hash_set<shaders::ConstStateIdx, eastl::hash<shaders::ConstStateIdx>, eastl::equal_to<shaders::ConstStateIdx>,
+    framemem_allocator>
+    bindlessStatesToUpdate;
+
+private:
+  void prepareStateSwitch()
+  {
+    if (stateSwitchHasDrawcall || stateSwitches.empty())
+    {
+      stateSwitches.emplace_back();
+      stateSwitchHasDrawcall = false;
+    }
+  }
+
+  bool stateSwitchHasDrawcall = false;
+  struct
+  {
+    shaders::RenderStateId rstate = shaders::RenderStateId::Invalid;
+    shaders::ConstStateIdx cstate = shaders::ConstStateIdx::Invalid;
+    uint32_t prog = -1;
+    bool shaderValid = false;
+  } currentShaderState;
+};
+
+template <class T>
+bool LandMeshRenderer::renderCellDecalsImpl(LandMeshManager &provider, const RenderPassCtx &pass_ctx,
+  const MirroredCellState &mirroredCell, bool force_samplers_no_mipbias, T &cb)
+{
+  ShaderMesh *decalm = provider.getCellDecalShaderMeshOffseted(mirroredCell.cellX, mirroredCell.cellY);
+  int id = mirroredCell.cellX + mirroredCell.cellY * provider.getNumCellsX();
+  G_ASSERT(decalm);
+  G_ASSERT(provider.getDecalElems().size() && provider.getDecalElems()[id].elemBoxes.size() == decalm->getAllElems().size());
+
+  bool setSamplersNoMipbias =
+    (pass_ctx.desc.mode == LMeshRenderingMode::RENDERING_CLIPMAP || force_samplers_no_mipbias) &&
+    eastl::find_if(decals_overrideSampler_const_no_array.begin(), decals_overrideSampler_const_no_array.end(),
+      [](int smp_reg) { return smp_reg >= 0; }) != decals_overrideSampler_const_no_array.end();
+
+  DECL_ALIGN16(IBBox2, subCellBox);
+  Point3 meshOffset = provider.getOffset();
+  float cellSize = provider.getLandCellSize();
+  IPoint2 cellOfs(provider.getCellOrigin().x * 65535, provider.getCellOrigin().y * 65535);
+  const BBox3 &renderBBox = pass_ctx.desc.renderInBBox;
+  if (!renderBBox.isempty())
+  {
+    cellSize /= 65535.f;
+    subCellBox[0].x = (int)floorf((renderBBox[0].x - meshOffset.x) / cellSize);
+    subCellBox[0].y = (int)floorf((renderBBox[0].z - meshOffset.z) / cellSize);
+    subCellBox[1].x = (int)floorf((renderBBox[1].x - meshOffset.x) / cellSize);
+    subCellBox[1].y = (int)floorf((renderBBox[1].z - meshOffset.z) / cellSize);
+    subCellBox[0] -= cellOfs;
+    subCellBox[1] -= cellOfs;
+  }
+  else
+  {
+    vec4f invGridCellSzV = v_splats(65535.0f / cellSize);
+    vec4f ofs = v_make_vec4f(meshOffset.x, meshOffset.z, meshOffset.x, meshOffset.z);
+    vec4f worldBboxXZ = v_perm_xzac(pass_ctx.frustumWorldBBox.bmin, pass_ctx.frustumWorldBBox.bmax);
+    vec4f regionV = v_sub(worldBboxXZ, ofs);
+    regionV = v_mul(regionV, invGridCellSzV);
+    vec4i regionI = v_cvt_floori(regionV);
+    regionI = v_subi(regionI, v_cast_vec4i(v_perm_xyxy(v_ldu_half(&cellOfs.x))));
+    v_sti(&subCellBox[0].x, regionI);
+  }
+
+#if _TARGET_SIMD_SSE
+  vec4i subCellBoxV = v_cast_vec4i(v_ld((float *)&subCellBox[0].x));
+  subCellBoxV = v_cast_vec4i(v_perm_zwxy(v_cast_vec4f(subCellBoxV)));
+#endif
+  GlobalVertexData *vertexData = NULL;
+  ShaderElement *e = NULL;
+  bool curShaderValid = false;
+  int stored_sv = 0, stored_numv = 0, stored_si = 0, stored_numf = 0, stored_baseVertex = 0;
+  carray<d3d::SamplerHandle, LandMeshManager::DECALS_OVERRIDE_SAMPLERS_COUNT> currentSamplers;
+  eastl::fill(currentSamplers.begin(), currentSamplers.end(), d3d::SamplerHandle::Invalid);
+
+  bool renderedAnything = false;
+  for (int i = 0; i < decalm->getAllElems().size(); ++i) //-V522
+  {
+    if (!shouldRenderMeshElem(provider, id, i))
+      continue;
+
+#if _TARGET_SIMD_SSE
+    vec4i elemBoxV = *(vec4i *)(&provider.getDecalElems().data()[id].elemBoxes.data()[i][0].x);
+    int mask = _mm_movemask_ps(v_cast_vec4f(_mm_cmpgt_epi32(elemBoxV, subCellBoxV))); // v_cmp_gti(elemBoxV,
+                                                                                      // v_perm_zwxy(subCellBoxV))
+    if (((mask | (~mask >> 2)) & (1 | 2)))
+      continue;
+#else
+    IBBox2 ib = provider.getDecalElems().data()[id].elemBoxes[i];
+    if (!unsafe_overlap(ib, subCellBox))
+      continue;
+#endif
+    const ShaderMesh::RElem &re = decalm->getAllElems().data()[i];
+    const dag::Span<const d3d::SamplerHandle> reSamplers =
+      provider.getCellDecalElemSamplersNoMipbiasMeshOffseted(mirroredCell.cellX, mirroredCell.cellY, i);
+    G_ASSERT(!setSamplersNoMipbias || reSamplers.size() == currentSamplers.size());
+
+    if (!re.e)
+      continue;
+    if (re.vertexData != vertexData)
+    {
+      if (stored_numf && curShaderValid)
+      {
+        cb.draw(stored_si, stored_numf, stored_baseVertex);
+        renderedAnything = true;
+      }
+      vertexData = re.vertexData;
+      cb.setVertexData(vertexData);
+      stored_numf = 0;
+    }
+    if (setSamplersNoMipbias &&
+        !eastl::equal(currentSamplers.begin(), currentSamplers.end(), reSamplers.begin(),
+          [](const auto &curSmp, const auto &reSmp) { return reSmp == d3d::SamplerHandle::Invalid || reSmp == curSmp; }))
+    {
+      if (stored_numf && curShaderValid)
+      {
+        cb.draw(stored_si, stored_numf, stored_baseVertex);
+        renderedAnything = true;
+      }
+      for (int j = 0; j < currentSamplers.size(); ++j)
+      {
+        if (reSamplers[j] != d3d::SamplerHandle::Invalid)
+        {
+          currentSamplers[j] = reSamplers[j];
+          cb.setSampler(j, currentSamplers[j]);
+        }
+      }
+      stored_numf = 0;
+    }
+    if (e != re.e)
+    {
+      if (stored_numf && curShaderValid)
+      {
+        cb.draw(stored_si, stored_numf, stored_baseVertex);
+        renderedAnything = true;
+      }
+      e = re.e;
+      curShaderValid = cb.setShader(e);
+      stored_sv = re.sv, stored_numv = re.numv, stored_si = re.si, stored_numf = re.numf, stored_baseVertex = re.baseVertex;
+    }
+    else
+    {
+      if (stored_numf && (stored_baseVertex != re.baseVertex || stored_numf * 3 + stored_si != re.si))
+      {
+        if (curShaderValid)
+        {
+          cb.draw(stored_si, stored_numf, stored_baseVertex);
+          renderedAnything = true;
+        }
+        stored_sv = re.sv, stored_numv = re.numv, stored_si = re.si, stored_numf = re.numf, stored_baseVertex = re.baseVertex;
+      }
+      else
+      {
+        if (!stored_numf)
+          stored_sv = re.sv, stored_numv = re.numv, stored_si = re.si, stored_numf = re.numf, stored_baseVertex = re.baseVertex;
+        else
+        {
+          int ev = re.sv + re.numv;
+          int stored_ev = stored_sv + stored_numv;
+          stored_ev = max(stored_ev, ev);
+          stored_sv = min(stored_sv, re.sv);
+          stored_numv = stored_ev - stored_sv;
+          stored_numf += re.numf;
+        }
+      }
+    }
+  }
+  if (stored_numf && curShaderValid)
+  {
+    cb.draw(stored_si, stored_numf, stored_baseVertex);
+    renderedAnything = true;
+  }
+
+  return renderedAnything;
+}
+
 bool LandMeshRenderer::renderCellDecals(LandMeshManager &provider, const RenderPassCtx &pass_ctx,
   const MirroredCellState &mirroredCell, bool force_samplers_no_mipbias)
 {
@@ -947,144 +1215,63 @@ bool LandMeshRenderer::renderCellDecals(LandMeshManager &provider, const RenderP
   if ((!provider.isInTools() || provider.forceHeightmapRendering) && provider.getDecalElems().size() &&
       provider.getDecalElems()[id].elemBoxes.size() == decalm->getAllElems().size())
   {
-    bool setSamplersNoMipbias =
-      (pass_ctx.desc.mode == LMeshRenderingMode::RENDERING_CLIPMAP || force_samplers_no_mipbias) &&
-      eastl::find_if(decals_overrideSampler_const_no_array.begin(), decals_overrideSampler_const_no_array.end(),
-        [](int smp_reg) { return smp_reg >= 0; }) != decals_overrideSampler_const_no_array.end();
-
-    DECL_ALIGN16(IBBox2, subCellBox);
-    Point3 meshOffset = provider.getOffset();
-    float cellSize = provider.getLandCellSize();
-    IPoint2 cellOfs(provider.getCellOrigin().x * 65535, provider.getCellOrigin().y * 65535);
-    const BBox3 &renderBBox = pass_ctx.desc.renderInBBox;
-    if (!renderBBox.isempty())
+    if (auto &caps = d3d::get_driver_desc().caps; !provider.isInTools() && caps.hasWellSupportedIndirect && caps.hasBindless)
     {
-      cellSize /= 65535.f;
-      subCellBox[0].x = (int)floorf((renderBBox[0].x - meshOffset.x) / cellSize);
-      subCellBox[0].y = (int)floorf((renderBBox[0].z - meshOffset.z) / cellSize);
-      subCellBox[1].x = (int)floorf((renderBBox[1].x - meshOffset.x) / cellSize);
-      subCellBox[1].y = (int)floorf((renderBBox[1].z - meshOffset.z) / cellSize);
-      subCellBox[0] -= cellOfs;
-      subCellBox[1] -= cellOfs;
+      MultidrawRecorder recorder;
+      renderCellDecalsImpl(provider, pass_ctx, mirroredCell, force_samplers_no_mipbias, recorder);
+
+      if (recorder.drawcallsData.size())
+      {
+        for (auto stateIdx : recorder.bindlessStatesToUpdate)
+          update_bindless_state(stateIdx, TexStreamingContext::MAX_TEX_LEVEL);
+
+        const auto multiDrawRenderer = multidrawContext.fillBuffers(recorder.drawcallsData.size(),
+          [&](uint32_t drawcallId, uint32_t &indexCountPerInstance, uint32_t &instanceCount, uint32_t &startIndexLocation,
+            int32_t &baseVertexLocation, uint32_t &perDrawData) {
+            const auto &data = recorder.drawcallsData[drawcallId];
+            indexCountPerInstance = 3 * data.numf;
+            instanceCount = 1;
+            startIndexLocation = data.si;
+            baseVertexLocation = data.baseVertex;
+            perDrawData = get_material_offset(data.cstate);
+          });
+
+        if (multiDrawRenderer.valid())
+        {
+          int drawStartIdx = 0;
+          int endStateSwitchIdx = recorder.drawcallsData.back().stateSwitchIdx + 1; // last state switch might not have any drawcalls.
+          for (int currentStateSwitchIdx = 0; currentStateSwitchIdx < endStateSwitchIdx; ++currentStateSwitchIdx)
+          {
+            const auto &stateSwitch = recorder.stateSwitches[currentStateSwitchIdx];
+
+            if (stateSwitch.vb)
+              stateSwitch.vb->setToDriver();
+            for (int idx = 0; idx < stateSwitch.samplers.size(); ++idx)
+              if (stateSwitch.samplers[idx] != d3d::SamplerHandle::Invalid)
+                d3d::set_sampler(STAGE_PS, decals_overrideSampler_const_no_array[idx], stateSwitch.samplers[idx]);
+            if (stateSwitch.variantState.se)
+              set_states_for_variant(stateSwitch.variantState.se->native(), stateSwitch.variantState.dynVarState);
+
+            int drawCount = 0;
+            while (drawStartIdx + drawCount < recorder.drawcallsData.size() &&
+                   recorder.drawcallsData[drawStartIdx + drawCount].stateSwitchIdx == currentStateSwitchIdx)
+              ++drawCount;
+
+            G_ASSERT_CONTINUE(drawCount);
+            multiDrawRenderer.render(PRIM_TRILIST, drawStartIdx, drawCount);
+
+            drawStartIdx += drawCount;
+          }
+          G_ASSERT(drawStartIdx == recorder.drawcallsData.size());
+
+          renderedAnything = true;
+        }
+      }
     }
     else
     {
-      vec4f invGridCellSzV = v_splats(65535.0f / cellSize);
-      vec4f ofs = v_make_vec4f(meshOffset.x, meshOffset.z, meshOffset.x, meshOffset.z);
-      vec4f worldBboxXZ = v_perm_xzac(pass_ctx.frustumWorldBBox.bmin, pass_ctx.frustumWorldBBox.bmax);
-      vec4f regionV = v_sub(worldBboxXZ, ofs);
-      regionV = v_mul(regionV, invGridCellSzV);
-      vec4i regionI = v_cvt_floori(regionV);
-      regionI = v_subi(regionI, v_cast_vec4i(v_perm_xyxy(v_ldu_half(&cellOfs.x))));
-      v_sti(&subCellBox[0].x, regionI);
-    }
-
-#if _TARGET_SIMD_SSE
-    vec4i subCellBoxV = v_cast_vec4i(v_ld((float *)&subCellBox[0].x));
-    subCellBoxV = v_cast_vec4i(v_perm_zwxy(v_cast_vec4f(subCellBoxV)));
-#endif
-    GlobalVertexData *vertexData = NULL;
-    ShaderElement *e = NULL;
-    bool curShaderValid = false;
-    int stored_sv = 0, stored_numv = 0, stored_si = 0, stored_numf = 0, stored_baseVertex = 0;
-    carray<d3d::SamplerHandle, LandMeshManager::DECALS_OVERRIDE_SAMPLERS_COUNT> currentSamplers;
-    eastl::fill(currentSamplers.begin(), currentSamplers.end(), d3d::SamplerHandle::Invalid);
-
-    for (int i = 0; i < decalm->getAllElems().size(); ++i)
-    {
-      if (!shouldRenderMeshElem(provider, id, i))
-        continue;
-
-#if _TARGET_SIMD_SSE
-      vec4i elemBoxV = *(vec4i *)(&provider.getDecalElems().data()[id].elemBoxes.data()[i][0].x);
-      int mask = _mm_movemask_ps(v_cast_vec4f(_mm_cmpgt_epi32(elemBoxV, subCellBoxV))); // v_cmp_gti(elemBoxV,
-                                                                                        // v_perm_zwxy(subCellBoxV))
-      if (((mask | (~mask >> 2)) & (1 | 2)))
-        continue;
-#else
-      IBBox2 ib = provider.getDecalElems().data()[id].elemBoxes[i];
-      if (!unsafe_overlap(ib, subCellBox))
-        continue;
-#endif
-      const ShaderMesh::RElem &re = decalm->getAllElems().data()[i];
-      const dag::Span<const d3d::SamplerHandle> reSamplers =
-        provider.getCellDecalElemSamplersNoMipbiasMeshOffseted(mirroredCell.cellX, mirroredCell.cellY, i);
-      G_ASSERT(!setSamplersNoMipbias || reSamplers.size() == currentSamplers.size());
-
-      if (!re.e)
-        continue;
-      if (re.vertexData != vertexData)
-      {
-        if (stored_numf && curShaderValid)
-        {
-          d3d_err(d3d::drawind(PRIM_TRILIST, stored_si, stored_numf, stored_baseVertex));
-          renderedAnything = true;
-        }
-        vertexData = re.vertexData;
-        vertexData->setToDriver();
-        stored_numf = 0;
-      }
-      if (setSamplersNoMipbias &&
-          !eastl::equal(currentSamplers.begin(), currentSamplers.end(), reSamplers.begin(),
-            [](const auto &curSmp, const auto &reSmp) { return reSmp == d3d::SamplerHandle::Invalid || reSmp == curSmp; }))
-      {
-        if (stored_numf && curShaderValid)
-        {
-          d3d_err(d3d::drawind(PRIM_TRILIST, stored_si, stored_numf, stored_baseVertex));
-          renderedAnything = true;
-        }
-        for (int j = 0; j < currentSamplers.size(); ++j)
-        {
-          if (reSamplers[j] != d3d::SamplerHandle::Invalid)
-          {
-            currentSamplers[j] = reSamplers[j];
-            d3d::set_sampler(STAGE_PS, decals_overrideSampler_const_no_array[j], currentSamplers[j]);
-          }
-        }
-        stored_numf = 0;
-      }
-      if (e != re.e)
-      {
-        if (stored_numf && curShaderValid)
-        {
-          d3d_err(d3d::drawind(PRIM_TRILIST, stored_si, stored_numf, stored_baseVertex));
-          renderedAnything = true;
-        }
-        e = re.e;
-        curShaderValid = e->setStates(0, true);
-        stored_sv = re.sv, stored_numv = re.numv, stored_si = re.si, stored_numf = re.numf, stored_baseVertex = re.baseVertex;
-      }
-      else
-      {
-        if (stored_numf && (stored_baseVertex != re.baseVertex || stored_numf * 3 + stored_si != re.si))
-        {
-          if (curShaderValid)
-          {
-            d3d_err(d3d::drawind(PRIM_TRILIST, stored_si, stored_numf, stored_baseVertex));
-            renderedAnything = true;
-          }
-          stored_sv = re.sv, stored_numv = re.numv, stored_si = re.si, stored_numf = re.numf, stored_baseVertex = re.baseVertex;
-        }
-        else
-        {
-          if (!stored_numf)
-            stored_sv = re.sv, stored_numv = re.numv, stored_si = re.si, stored_numf = re.numf, stored_baseVertex = re.baseVertex;
-          else
-          {
-            int ev = re.sv + re.numv;
-            int stored_ev = stored_sv + stored_numv;
-            stored_ev = max(stored_ev, ev);
-            stored_sv = min(stored_sv, re.sv);
-            stored_numv = stored_ev - stored_sv;
-            stored_numf += re.numf;
-          }
-        }
-      }
-    }
-    if (stored_numf && curShaderValid)
-    {
-      d3d_err(d3d::drawind(PRIM_TRILIST, stored_si, stored_numf, stored_baseVertex));
-      renderedAnything = true;
+      DirectDrawcalls cb;
+      renderedAnything = renderCellDecalsImpl(provider, pass_ctx, mirroredCell, force_samplers_no_mipbias, cb);
     }
   }
   else

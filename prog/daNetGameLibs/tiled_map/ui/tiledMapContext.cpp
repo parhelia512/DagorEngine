@@ -50,11 +50,18 @@ inline bool hasLoadedTile(const TilesHashMap &tiles, const QuadKey &quadKey)
 struct TileAsyncLoadRequest
 {
   QuadKey quadKey;
+  // Rewritten by the main thread while the loader thread may read it in
+  // load_tile_confirm_cb: access only via interlocked ops after submission.
   int generation = 0;
 };
 
 static TiledMapContext *s_tiled_map_ctx = NULL;
 static eastl::vector_set<TileAsyncLoadRequest *> requests;
+// Incremented on freeAllPictures to invalidate in-flight async requests.
+// A file-scope atomic (not a context member): load_tile_confirm_cb reads it
+// on the PicMgr loader thread and must not touch s_tiled_map_ctx, whose
+// lifetime is managed by the main thread (script reload re-creates it).
+static int s_tile_load_generation = 0;
 
 inline void releasePicTex(PICTUREID &pid, TEXTUREID &tid)
 {
@@ -70,14 +77,13 @@ inline void releasePicTex(PICTUREID &pid, TEXTUREID &tid)
   tid = BAD_TEXTUREID;
 }
 
+// Runs on the PicMgr loader thread: only req and the atomic generation may be read here.
 static bool load_tile_confirm_cb(void *arg)
 {
-  if (!s_tiled_map_ctx || !arg)
+  if (!arg)
     return false;
   auto req = (TileAsyncLoadRequest *)arg;
-  if (req->generation != s_tiled_map_ctx->tileLoadGeneration)
-    return false;
-  return true;
+  return interlocked_relaxed_load(req->generation) == interlocked_acquire_load(s_tile_load_generation);
 }
 static void load_tiles_cb(
   PICTUREID pid, TEXTUREID tid, d3d::SamplerHandle smp, const Point2 *tcLt, const Point2 *tcRb, const Point2 *picture_sz, void *arg)
@@ -99,9 +105,9 @@ static void load_tiles_cb(
   }
 
   // Discard callbacks from a superseded config (e.g. fast context switch between maps).
-  // freeAllPictures() bumps tileLoadGeneration, so any in-flight request issued before
+  // freeAllPictures() bumps the load generation, so any in-flight request issued before
   // that point will mismatch and must not write into the current context's tile maps.
-  if (req->generation != s_tiled_map_ctx->tileLoadGeneration)
+  if (interlocked_relaxed_load(req->generation) != interlocked_relaxed_load(s_tile_load_generation))
   {
     releasePicTex(pid, tid);
     requests.erase(req);
@@ -209,7 +215,7 @@ void TiledMapContext::freeAllPictures()
   if (!s_tiled_map_ctx)
     return;
   s_tiled_map_ctx->canLoadTiles = false;
-  s_tiled_map_ctx->tileLoadGeneration++;
+  interlocked_increment(s_tile_load_generation);
   for (auto &tile : s_tiled_map_ctx->tiles)
     releasePicTex(tile.second.picId, tile.second.texId);
   s_tiled_map_ctx->tiles.clear();
@@ -506,7 +512,7 @@ struct FogOfWarCompressJob final : public cpujobs::IJob
   const char *getJobName(bool &copy_str) const override
   {
     copy_str = false;
-    return "FogOfWarCompressJob";
+    return DAPROFILER_STRING("FogOfWarCompressJob");
   }
 
   void doJob() override
@@ -863,7 +869,8 @@ void TiledMapContext::dispatchTiles(const eastl::vector<QuadKey> &requiredTiles,
     if (hasLoadedTile(tilesHashMap, quadKey))
       continue;
     else if (eastl::find_if(requests.begin(), requests.end(), [&quadKey](TileAsyncLoadRequest *req) {
-               return req->quadKey == quadKey && req->generation == s_tiled_map_ctx->tileLoadGeneration;
+               return req->quadKey == quadKey &&
+                      interlocked_relaxed_load(req->generation) == interlocked_relaxed_load(s_tile_load_generation);
              }) != requests.end())
     {
       // with many calls to updateVisibleTiles() we can have tilesHashMap without the tile and pending request for the
@@ -876,7 +883,7 @@ void TiledMapContext::dispatchTiles(const eastl::vector<QuadKey> &requiredTiles,
       TileHandle tile;
       TileAsyncLoadRequest *req = new TileAsyncLoadRequest();
       req->quadKey = quadKey;
-      req->generation = s_tiled_map_ctx->tileLoadGeneration;
+      req->generation = interlocked_relaxed_load(s_tile_load_generation);
       eastl::string filename =
         eastl::string(eastl::string::CtorSprintf{}, "%s/%s.avif", prefix.c_str(), quadKey.empty() ? "combined" : quadKey.c_str());
       int sync = PictureManager::get_picture_ex(filename.c_str(), tile.picId, tile.texId, tile.smpId, nullptr, nullptr, nullptr, cb,
@@ -917,7 +924,7 @@ void TiledMapContext::dispatchTiles(const eastl::vector<QuadKey> &requiredTiles,
   }
 
   eastl::vector<QuadKey> removeTiles;
-  for (const auto tile : tilesHashMap)
+  for (const auto &tile : tilesHashMap)
     if (eastl::find(keepTiles.begin(), keepTiles.end(), tile.first) == keepTiles.end())
       removeTiles.push_back(tile.first);
 
@@ -928,9 +935,9 @@ void TiledMapContext::dispatchTiles(const eastl::vector<QuadKey> &requiredTiles,
     tilesHashMap.erase(tile);
 
     eastl::find_if(requests.begin(), requests.end(), [&tile](TileAsyncLoadRequest *req) {
-      if (req->quadKey != tile || req->generation != s_tiled_map_ctx->tileLoadGeneration)
+      if (req->quadKey != tile || interlocked_relaxed_load(req->generation) != interlocked_relaxed_load(s_tile_load_generation))
         return false;
-      req->generation = s_tiled_map_ctx->tileLoadGeneration - 1; //~0u;
+      interlocked_relaxed_store(req->generation, interlocked_relaxed_load(s_tile_load_generation) - 1); //~0u;
       return true;
     });
   }
@@ -1115,6 +1122,8 @@ void tiled_map_fog_of_war_render_ui(const RenderEventUI &evt)
 // note: if fog_of_war provided via config and not connected to ecs entity, force darg to setup new map config.
 void tiled_map_fog_of_war_after_reset()
 {
+  if (!s_tiled_map_ctx)
+    return;
   s_tiled_map_ctx->fogOfWarDataGen = 1;
   s_tiled_map_ctx->fogOfWarPrevDataGen = 0;
 }

@@ -5,8 +5,8 @@ from "async" import Future
 // catches them. Empty `all` is valid (fulfils with []); empty `race` throws.
 
 function check(label, fn) {
-  try { fn(); print(label + ": no throw\n") }
-  catch (e) { print(label + ": " + e + "\n") }
+  try { fn(); println($"{label}: no throw") }
+  catch (e) { println($"{label}: {e}") }
 }
 
 check("all(42)", @() Future.all(42))

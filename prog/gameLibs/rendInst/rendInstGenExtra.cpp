@@ -13,7 +13,6 @@
 #include "riGen/riGrid.h"
 #include "riGen/riGridDebug.h"
 #include "riGen/genObjUtil.h"
-#include "riGen/riCollOptimize.h"
 #include "render/extraRender.h"
 #include "render/gpuObjects.h"
 #include "visibility/genVisibility.h"
@@ -29,6 +28,7 @@
 #include <gameRes/dag_gameResHooks.h>
 #include <gameRes/dag_collisionResource.h>
 #include <shaders/dag_shaderResUnitedData.h>
+#include <shaders/dag_dynSceneRes.h>
 #include <3d/dag_ringDynBuf.h>
 #include <drv/3d/dag_buffers.h>
 #include <drv/3d/dag_resetDevice.h>
@@ -45,6 +45,12 @@
 #include <string.h>
 #include <EASTL/bitvector.h>
 
+#define DEBUG_RI_DESTR_LOD_UPDATE 0
+#if DEBUG_RI_DESTR_LOD_UPDATE
+#include <gameRes/dag_resourceNameResolve.h>
+#include <gui/dag_visualLog.h>
+#endif
+
 #if DAGOR_DBGLEVEL > 0
 static const int LOGMESSAGE_LEVEL = LOGLEVEL_ERR;
 #else
@@ -52,7 +58,14 @@ static const int LOGMESSAGE_LEVEL = LOGLEVEL_WARN;
 #endif
 
 static const DataBlock *riConfig = nullptr;
-static ska::flat_hash_map<eastl::string_view, const DataBlock *> riConfigLookupCache;
+// riExtra{} and legacy dmg{} entries are not interchangeable: only the former carries hp/nextRes,
+// so a lookup must know which kind it found
+struct RiConfigEntry
+{
+  const DataBlock *blk;
+  bool fromRiExtraBlock;
+};
+static ska::flat_hash_map<eastl::string_view, RiConfigEntry> riConfigLookupCache;
 rendinst::RiExtraPoolsVec rendinst::riExtra;
 void rendinst::RiExtraPoolsVec::interlocked_insert(int id)
 {
@@ -96,7 +109,6 @@ void rendinst::iterateRIExtraMap(const eastl::fixed_function<sizeof(void *) * 4,
   ScopedRIExtraReadLock rd;
   iterate_names(rendinst::riExtraMap, cb);
 }
-int rendinst::getRIExtraMapSize() { return int(riExtra.size_interlocked()); }
 uint64_t rendinst::getRIExtraGlobalWorldVersion(bool add, bool del)
 {
   if (add && del)
@@ -119,6 +131,10 @@ int rendinst::getRIExtraPoolRef(int res_idx)
 void (*rendinst::on_vsm_invalidate)() = nullptr;
 
 static void getRendinstLandclassData(TempRiLandclassVec &ri_landclasses);
+
+// riExtra grid, tiled scenes and additional data manager exist exactly while this is set;
+// unguarded, since init, term and addRIGenExtraResIdx() all run on the main or level-load thread
+static bool ri_extra_inited = false;
 
 SmartReadWriteFifoLock rendinst::ccExtra;
 
@@ -207,10 +223,12 @@ static void term_ri_extra_grids()
 {
   rendinst::term_tiled_scenes();
   riExtraGrid.clear();
+  ri_extra_inited = false;
 }
 
 void rendinst::initRIGenExtra(bool need_render, const DataBlock *level_blk)
 {
+  ri_extra_inited = true;
   get_rendinst_land_class_data = &getRendinstLandclassData;
   init_ri_extra_grid(level_blk);
   if (!need_render)
@@ -272,7 +290,7 @@ void rendinst::termRIGenExtra()
 
 void rendinst::RiExtraPool::setWasNotSavedToElems()
 {
-  riExtra.poolWasNotSavedToElems[this - riExtra.data()] = true;
+  riExtra.interlocked_set_was_not_saved_to_elems(int(this - riExtra.data()));
   interlocked_increment(rendinst::render::pendingRebuildCnt);
 }
 
@@ -325,6 +343,59 @@ void rendinst::RiExtraPool::validateLodLimits()
   // debug("riExtra[%d].lodLimits=%08X", this-riExtra.data(), lodLimits);
 }
 
+void rendinst::RiExtraPool::setupDestrPhysResLodMask(const char *res_nm)
+{
+  uint8_t mask = 0;
+  if (destroyedPhysRes && destroyedPhysRes->models.size())
+  {
+    if (destroyedPhysRes->models[0]->lods.size() > 1)
+    {
+      // we expect 1 model in physRes, so remap lods of 1st model to RI lods;
+      // each RI lod takes the destr lod covering the far edge of its range, so finer destr lods
+      // are never prefetched here and a destruction closer than that edge streams them on spawn
+      G_ASSERT(destroyedPhysRes->models[0]->lods.size() < 0xF); // lod+1 must fit the nibble
+      for (unsigned ri_li = 0; ri_li < 2; ri_li++)
+        for (const auto &lod : destroyedPhysRes->models[0]->lods)
+          if (distSqLOD[ri_li] <= lod.range * lod.range)
+          {
+            mask |= (((&lod - destroyedPhysRes->models[0]->lods.data()) + 1) & 0xF) << (ri_li * 4);
+            break;
+          }
+    }
+    G_UNUSED(res_nm);
+#if DEBUG_RI_DESTR_LOD_UPDATE
+    unsigned min_lod_count = 16;
+    for (const auto &m : destroyedPhysRes->models)
+      if (min_lod_count > m->lods.size())
+        min_lod_count = m->lods.size();
+    debug("%s: %p: destrPhysResLodMask=0x%02X (riDist=[%g, %g]) min_lod_count=%d (poDist[%g, %g, %g])", res_nm, destroyedPhysRes, mask,
+      sqrtf(distSqLOD[0]), sqrtf(distSqLOD[1]), min_lod_count, destroyedPhysRes->models[0]->lods[0].range,
+      destroyedPhysRes->models[0]->lods.size() > 1 ? destroyedPhysRes->models[0]->lods[1].range : 0,
+      destroyedPhysRes->models[0]->lods.size() > 2 ? destroyedPhysRes->models[0]->lods[2].range : 0);
+#endif
+  }
+  destrPhysResLodMask = mask; // single store, render threads read it without the ccExtra lock
+}
+void rendinst::RiExtraPool::updateModelReqLod(DynamicPhysObjectData *physRes, unsigned lod)
+{
+  for (auto &m : physRes->models)
+  {
+    // mask is remapped from models[0], other models may have less lods
+    const unsigned m_lod = min<unsigned>(lod, m->lods.size() - 1);
+#if DEBUG_RI_DESTR_LOD_UPDATE
+    String dm_name;
+    // log only requests that really lower the resident lod, the rest are no-op due to per-frame min
+    if (m_lod < m->getQlReqLodEff() && resolve_game_resource_name(dm_name, m))
+    {
+      String msg(0, "updateModelReqLod(%s, %d -> %d)", dm_name, m->getQlReqLodEff(), m_lod);
+      visuallog::logmsg(msg);
+      debug(msg);
+    }
+#endif
+    m->updateReqLod(m_lod);
+  }
+}
+
 
 const DataBlock *rendinst::getRIGenExtraConfig() { return riConfig; }
 const DataBlock *rendinst::registerRIGenExtraConfig(const DataBlock *persist_props)
@@ -336,15 +407,22 @@ const DataBlock *rendinst::registerRIGenExtraConfig(const DataBlock *persist_pro
   if (riConfig)
   {
     dblk::iterate_child_blocks(*riConfig->getBlockByNameEx("riExtra"),
-      [&](const DataBlock &blk) { riConfigLookupCache.emplace(eastl::string_view(blk.getBlockName()), &blk); });
+      [&](const DataBlock &blk) { riConfigLookupCache.emplace(eastl::string_view(blk.getBlockName()), RiConfigEntry{&blk, true}); });
     const int nameNid = riConfig->getNameId("name");
     dblk::iterate_child_blocks_by_name(*riConfig, "dmg", [&](const DataBlock &blk) {
       const char *name = blk.getStrByNameId(nameNid, "");
       if (name && *name)
-        riConfigLookupCache.emplace(eastl::string_view(name), &blk);
+        riConfigLookupCache.emplace(eastl::string_view(name), RiConfigEntry{&blk, false});
     });
   }
   return prev;
+}
+const DataBlock *rendinst::getRIGenExtraBlockByName(const char *ri_res_name)
+{
+  if (!ri_res_name || !*ri_res_name)
+    return nullptr;
+  const auto it = riConfigLookupCache.find(eastl::string_view(ri_res_name));
+  return it != riConfigLookupCache.end() && it->second.fromRiExtraBlock ? it->second.blk : nullptr;
 }
 bool rendinst::isRIGenExtraObstacle(const char *nm)
 {
@@ -352,14 +430,14 @@ bool rendinst::isRIGenExtraObstacle(const char *nm)
     return false;
   if (!nm || !*nm)
     return false;
-  const DataBlock *b = riConfig->getBlockByNameEx("riExtra")->getBlockByName(nm);
+  const DataBlock *b = getRIGenExtraBlockByName(nm);
   return !b || b->getBool("isObstacle", true);
 }
 bool rendinst::isRIGenExtraUsedInDestr(const char *nm)
 {
   if (!riConfig)
     return false;
-  return riConfig->getBlockByNameEx("riExtra")->getBlockByName(nm) != nullptr;
+  return getRIGenExtraBlockByName(nm) != nullptr;
 }
 
 static inline float riResLodRange(RenderableInstanceLodsResource *riRes, int lod, const DataBlock *ri_ovr)
@@ -384,7 +462,7 @@ static const DataBlock &getRiParamsBlockByName(const char *ri_res_name)
   if (!riConfig)
     return DataBlock::emptyBlock;
   if (const auto it = riConfigLookupCache.find(eastl::string_view(ri_res_name)); it != riConfigLookupCache.end())
-    return *it->second;
+    return *it->second.blk;
   return DataBlock::emptyBlock;
 }
 
@@ -604,7 +682,7 @@ int rendinst::addRIGenExtraResIdx(const char *ri_res_name, int ri_pool_ref, int 
   if (!riRes)
     return -1;
 
-  if (!rendinst::render::vbExtraCtx[RI_EXTRA_VB_CTX_MAIN].vb && RendInstGenData::renderResRequired && maxExtraRiCount)
+  if (!ri_extra_inited && RendInstGenData::renderResRequired && maxExtraRiCount)
   {
     debug("initRIGenExtra: due to addRIGenExtraResIdx()");
     rendinst::initRIGenExtra();
@@ -640,7 +718,7 @@ int rendinst::addRIGenExtraResIdx(const char *ri_res_name, int ri_pool_ref, int 
 
   // todo: make it project dependent and data driven
   riExtra[id].isWalls = strstr(ri_res_name, "walls") != 0 || strstr(ri_res_name, "house") != 0 || strstr(ri_res_name, "building") != 0;
-  riExtra[id].useVsm = getRiParamsBlockByName(ri_res_name).getBool("useVsm", false);
+  riExtra[id].useVsm = paramsBlock.getBool("useVsm", false);
 
   riExtra[id].isDynamicRendinst = bool(ri_flags & AddRIFlag::Dynamic);
 
@@ -648,34 +726,14 @@ int rendinst::addRIGenExtraResIdx(const char *ri_res_name, int ri_pool_ref, int 
   riExtra[id].riPoolRefLayer = ri_pool_ref_layer;
   riExtra[id].useShadow = useShadow;
   riExtra[id].immortal = immortal;
-  riExtra[id].destrTimeToLive = 15.0f;
-  riExtra[id].destrDefaultTimeToLive = -1.0f;
-  riExtra[id].destrTimeToKinematic = -1.0f;
-  riExtra[id].destrTimeToSinkUnderground = -1.0f;
   riExtra[id].rendinstHeight = combinedRendinstHeight;
   riExtra[id].indestructibleByNuke = indestructibleByNuke;
   riExtra[id].killsNearEffects = false;
-
-  // These values will be overwritten by per-asset blks if they are specified there
-  if (const DataBlock *defaults = riConfig && !immortal ? riConfig->getBlockByName("riExtraDestrDefaults") : nullptr)
-  {
-    riExtra[id].destroyedColl = defaults->getBool("nextColl", riExtra[id].destroyedColl);
-    riExtra[id].destrTimeToLive = defaults->getReal("destrTimeToLive", riExtra[id].destrTimeToLive);
-    riExtra[id].destrDefaultTimeToLive = defaults->getReal("destrDefaultTimeToLive", riExtra[id].destrDefaultTimeToLive);
-    if (defaults->getBool("destrDynDeform", false))
-      riExtra[id].destrTimeToKinematic = 0.05f;
-    riExtra[id].destrTimeToKinematic = defaults->getReal("destrTimeToKinematic", riExtra[id].destrTimeToKinematic);
-    riExtra[id].destrTimeToSinkUnderground = defaults->getReal("destrTimeToSinkUnderground", riExtra[id].destrTimeToSinkUnderground);
-    riExtra[id].destrDisintegrationDuration =
-      defaults->getReal("destrDisintegrationDuration", riExtra[id].destrDisintegrationDuration);
-    riExtra[id].destrTimeToStartDisintegration =
-      defaults->getReal("destrTimeToStartDisintegration", riExtra[id].destrTimeToStartDisintegration);
-    riExtra[id].destrDisintegrationScale = defaults->getReal("destrDisintegrationScale", riExtra[id].destrDisintegrationScale);
-  }
+  riExtra[id].underwaterOnly = underwaterOnly;
 
   if (immortal)
     ;
-  else if (const DataBlock *b = riConfig ? riConfig->getBlockByNameEx("riExtra")->getBlockByName(ri_res_name) : nullptr)
+  else if (const DataBlock *b = getRIGenExtraBlockByName(ri_res_name))
   {
     riExtra[id].initialHP = b->getReal("hp", 300);
     float regenTime = b->getReal("hpFullRegenTime", 180);
@@ -685,16 +743,6 @@ int rendinst::addRIGenExtraResIdx(const char *ri_res_name, int ri_pool_ref, int 
     riExtra[id].indestructibleByNuke = b->getBool("indestructibleByNuke", indestructibleByNuke);
     riExtra[id].rendinstHeight = b->getReal("combinedRendinstHeight", 0.0f);
     riExtra[id].killsNearEffects = b->getBool("killsNearEffects", false);
-    riExtra[id].destrTimeToLive = b->getReal("destrTimeToLive", riExtra[id].destrTimeToLive);
-    riExtra[id].destrDefaultTimeToLive = b->getReal("destrDefaultTimeToLive", riExtra[id].destrDefaultTimeToLive);
-    if (riExtra[id].destrTimeToKinematic < 0.0f && b->getBool("destrDynDeform", false))
-      riExtra[id].destrTimeToKinematic = 0.05f;
-    riExtra[id].destrTimeToSinkUnderground = b->getReal("destrTimeToSinkUnderground", riExtra[id].destrTimeToSinkUnderground);
-    riExtra[id].destrTimeToKinematic = b->getReal("destrTimeToKinematic", riExtra[id].destrTimeToKinematic);
-    riExtra[id].destrDisintegrationDuration = b->getReal("destrDisintegrationDuration", riExtra[id].destrDisintegrationDuration);
-    riExtra[id].destrTimeToStartDisintegration =
-      b->getReal("destrTimeToStartDisintegration", riExtra[id].destrTimeToStartDisintegration);
-    riExtra[id].destrDisintegrationScale = b->getReal("destrDisintegrationScale", riExtra[id].destrDisintegrationScale);
 #if RI_VERBOSE_OUTPUT
     debug("riExtra hp=%.1f damageThres=%.3f regenRate=%.3f", riExtra[id].initialHP, riExtra[id].damageThreshold,
       riExtra[id].regenHpRate);
@@ -718,10 +766,7 @@ int rendinst::addRIGenExtraResIdx(const char *ri_res_name, int ri_pool_ref, int 
 
     next_res = b->getStr("physRes", nullptr);
     if (next_res && *next_res)
-    {
       riExtra[id].destroyedPhysRes = (DynamicPhysObjectData *)get_gameres_cb(next_res, PhysObjGameResClassId);
-      riExtra[id].isDestroyedPhysResExist = riExtra[id].destroyedPhysRes != nullptr;
-    }
     else if (next_res)
       logerr("empty physRes for riExtra=%s", ri_res_name);
   }
@@ -746,10 +791,7 @@ int rendinst::addRIGenExtraResIdx(const char *ri_res_name, int ri_pool_ref, int 
           }
           const char *destroyedModelName = blk->getStr("destroyedModelName", nullptr);
           if (destroyedModelName && *destroyedModelName)
-          {
             riExtra[id].destroyedPhysRes = (DynamicPhysObjectData *)get_gameres_cb(destroyedModelName, PhysObjGameResClassId);
-            riExtra[id].isDestroyedPhysResExist = riExtra[id].destroyedPhysRes != nullptr;
-          }
           float regenTime = blk->getReal("hpFullRegenTime", 180);
           riExtra[id].regenHpRate = (riExtra[id].initialHP > 0 && regenTime > 0) ? riExtra[id].initialHP / regenTime : 0;
           riExtra[id].damageThreshold = riExtra[id].initialHP / 1000;
@@ -784,6 +826,7 @@ int rendinst::addRIGenExtraResIdx(const char *ri_res_name, int ri_pool_ref, int 
     }
   }
 
+  riExtra[id].isDestroyedPhysResExist = riExtra[id].destroyedPhysRes != nullptr;
   update_ri_extra_game_resources(ri_res_name, id, riRes, paramsBlock, get_gameres_cb);
 
   return id;
@@ -809,8 +852,8 @@ static void update_ri_extra_game_resources(const char *ri_res_name, int id, Rend
     release_game_resource_ex(collRes, CollisionGameResClassId);
     collRes = nullptr;
   }
-  if (collRes)
-    optimize_collres_on_load(collRes, [&collName]() { return collName; });
+  if (collRes && !(collRes->collisionFlags & COLLISION_RES_FLAG_OPTIMIZED))
+    logerr("collRes (%p, %s) expected to be optimized", collRes, collName);
 
   // Update riExtra[id] fields which depends on game resources (riRes and collision)
 
@@ -1040,12 +1083,13 @@ static void update_ri_extra_game_resources(const char *ri_res_name, int id, Rend
 
   riExtra[id].distSqLOD[0] = lod_cnt > 1 ? riResLodRange(riRes, 0, ri_ovr) : max_lod_dist;
 #if RI_VERBOSE_OUTPUT
-  debug("riExtra[%d] %s, %d lods, max_dist=%.1f, rad=%.3f "
-        "atest_m=%04X, %04X, %04X, %04X cull_m=%04X, %04X, %04X, %04X%s %.0f hm=%02X LL=%04X",
-    id, ri_res_name, lod_cnt, max_lod_dist, riExtra[id].bsphRad(), riExtra[id].elemMask[0].atest, riExtra[id].elemMask[1].atest,
-    riExtra[id].elemMask[2].atest, riExtra[id].elemMask[3].atest, riExtra[id].elemMask[0].cullN, riExtra[id].elemMask[1].cullN,
-    riExtra[id].elemMask[2].cullN, riExtra[id].elemMask[3].cullN, riExtra[id].largeOccluder ? " LARGE" : "",
-    box_wd.x * box_wd.y * box_wd.z, riExtra[id].hideMask, riExtra[id].lodLimits);
+  if (rendinst::is_ri_verbose_dump_expected())
+    debug("riExtra[%d] %s, %d lods, max_dist=%.1f, rad=%.3f "
+          "atest_m=%04X, %04X, %04X, %04X cull_m=%04X, %04X, %04X, %04X%s %.0f hm=%02X LL=%04X",
+      id, ri_res_name, lod_cnt, max_lod_dist, riExtra[id].bsphRad(), riExtra[id].elemMask[0].atest, riExtra[id].elemMask[1].atest,
+      riExtra[id].elemMask[2].atest, riExtra[id].elemMask[3].atest, riExtra[id].elemMask[0].cullN, riExtra[id].elemMask[1].cullN,
+      riExtra[id].elemMask[2].cullN, riExtra[id].elemMask[3].cullN, riExtra[id].largeOccluder ? " LARGE" : "",
+      box_wd.x * box_wd.y * box_wd.z, riExtra[id].hideMask, riExtra[id].lodLimits);
 #endif
   if (lod_cnt > 0)
   {
@@ -1058,6 +1102,8 @@ static void update_ri_extra_game_resources(const char *ri_res_name, int id, Rend
   else
     for (int l = 0; l < rendinst::RiExtraPool::MAX_LODS; l++)
       riExtra[id].distSqLOD[l] = max_lod_dist * max_lod_dist;
+
+  riExtra[id].setupDestrPhysResLodMask(ri_res_name); // must be after distSqLOD is set
 
   rendinst::add_ri_pool_to_tiled_scenes(riExtra[id], id, ri_res_name, max_lod_dist);
   // this is hacky way to prevent constant invalidating of cache due to moving rendinsts, but still preserve validity of cache.
@@ -2129,6 +2175,22 @@ void rendinst::gatherRIGenExtraCollidable(riex_collidable_t &out_handles, const 
     eastl::sort(out_handles.begin(), out_handles.end());
 }
 
+void rendinst::gatherRIGenExtraCollidable(riex_collidable_t &out_handles, const BBox3 &box, uint32_t first_pool,
+  dag::ConstSpan<uint32_t> pool_bits, bool read_lock) DAG_TS_NO_THREAD_SAFETY_ANALYSIS
+{
+  {
+    ScopedLockRead lock(read_lock ? &rendinst::ccExtra : nullptr);
+    TIME_PROFILE_DEV(gather_riex_collidable_box_bits);
+    rigrid_find_in_box_by_bounding_pool_bits(riExtraGrid, v_ldu_bbox3(box), first_pool, pool_bits, [&](RiGridObject object) {
+      out_handles.push_back(object.handle);
+      return false;
+    });
+  }
+
+  if (!out_handles.empty())
+    eastl::sort(out_handles.begin(), out_handles.end());
+}
+
 void rendinst::gatherRIGenExtraCollidable(riex_collidable_t &out_handles, const BSphere3 &sphere, bool read_lock)
 {
   {
@@ -2183,9 +2245,10 @@ void rendinst::gatherRIGenExtraCollidable(riex_collidable_t &out_handles, const 
 }
 
 
-void rendinst::gatherRIGenExtraCollidableMin(riex_collidable_t &out_handles, bbox3f_cref box, float min_bsph_rad)
+template <typename Container>
+static void gather_riex_collidable_min(Container &out_handles, bbox3f_cref box, float min_bsph_rad)
 {
-  ScopedRIExtraReadLock rd;
+  rendinst::ScopedRIExtraReadLock rd;
   TIME_PROFILE_DEV(gather_riex_collidable_box_min);
 
   rigrid_find_in_box_by_bounding_min(
@@ -2195,6 +2258,16 @@ void rendinst::gatherRIGenExtraCollidableMin(riex_collidable_t &out_handles, bbo
       return false;
     },
     min_bsph_rad);
+}
+
+void rendinst::gatherRIGenExtraCollidableMin(riex_collidable_t &out_handles, bbox3f_cref box, float min_bsph_rad)
+{
+  gather_riex_collidable_min(out_handles, box, min_bsph_rad);
+}
+
+void rendinst::gatherRIGenExtraCollidableMin(Tab<riex_handle_t> &out_handles, bbox3f_cref box, float min_bsph_rad)
+{
+  gather_riex_collidable_min(out_handles, box, min_bsph_rad);
 }
 
 void rendinst::gatherRIGenExtraCollidableMax(riex_collidable_t &out_handles, const BSphere3 &sphere, float max_bsph_rad)
@@ -2316,8 +2389,9 @@ void rendinst::prepareRiExtraRefs(const DataBlock &_riConf)
 {
   const DataBlock &riConf = *_riConf.getBlockByNameEx("riExtra");
   for (int i = 0; i < riConf.blockCount(); i++)
-    if (DataBlock *b = gameres_rendinst_desc.getBlockByName(riConf.getBlock(i)->getBlockName()))
-      addRiExtraRefs(b, riConf.getBlock(i), nullptr);
+    if (const DataBlock *b = gameres_find_ri_desc_block(riConf.getBlock(i)->getBlockName()))
+      // riDesc is read only everywhere else; this pass alone denormalizes riConf refs into it
+      addRiExtraRefs(const_cast<DataBlock *>(b), riConf.getBlock(i), nullptr);
 }
 
 bool rayHitRiExtraInstance(const Point3 &from, const Point3 &dir, float len, rendinst::riex_handle_t handle,
@@ -2402,6 +2476,8 @@ void rendinst::reapplyLodRanges()
     else
       for (int l = 0; l < rendinst::RiExtraPool::MAX_LODS; l++)
         pool.distSqLOD[l] = max_lod_dist * max_lod_dist;
+
+    pool.setupDestrPhysResLodMask(riExtraMap.getName(id));
   });
 }
 
@@ -2474,7 +2550,7 @@ bool rendinst::RendInstDesc::doesReflectedInstanceMatches(const rendinst::RendIn
 
 bool rendinst::RendInstDesc::isDynamicRiExtra() const { return isRiExtra() && rendinst::riExtra[pool].isDynamicRendinst; }
 
-uint32_t rendinst::getRiGenExtraResCount() { return riExtra.size(); }
+int rendinst::getRiGenExtraResCount() { return riExtra.size_interlocked(); }
 bool rendinst::isRiGenExtraResIdValid(int id) { return riExtra.isValid(id); }
 
 int rendinst::getRiGenExtraInstances(Tab<rendinst::riex_handle_t> &out_handles, uint32_t res_idx)

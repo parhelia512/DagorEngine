@@ -1,6 +1,5 @@
+from "settings" import get_setting_by_blk_path, set_setting_by_blk_path_and_save
 from "%scripts/ui/ui_library.nut" import *
-
-let {get_setting_by_blk_path, set_setting_by_blk_path_and_save} = require("settings")
 
 let mkOptText = @(text) {rendObj = ROBJ_TEXT text size = const [flex(1), SIZE_TO_CONTENT] halign = ALIGN_RIGHT fontSize = hdpx(25)}
 

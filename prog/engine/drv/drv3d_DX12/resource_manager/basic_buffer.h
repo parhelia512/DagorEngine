@@ -2,10 +2,12 @@
 #pragma once
 
 #include "heap_components.h"
+#include <debug/names.h>
 #include <d3d12_error_handling.h>
 #include <driver.h>
 #include <resource_memory.h>
 
+#include <EASTL/string_view.h>
 #include <supp/dag_comPtr.h>
 
 
@@ -31,7 +33,7 @@ public:
   ID3D12Resource *getResourcePtr() const { return buffer.Get(); }
 
   HRESULT create(ID3D12Device *device, const D3D12_RESOURCE_DESC &desc, ResourceMemory mem, D3D12_RESOURCE_STATES initial_state,
-    bool map)
+    bool map, eastl::string_view name)
   {
     HRESULT errorCode = S_OK;
 #if _TARGET_XBOX
@@ -50,6 +52,7 @@ public:
     }
 #endif
     bufferMemory.initializeFrom(mem, buffer.Get(), map);
+    debug::name_resource(buffer.Get(), name);
     return errorCode;
   }
 

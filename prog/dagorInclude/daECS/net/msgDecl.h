@@ -6,14 +6,9 @@
 
 #include <daECS/net/message.h>
 #include <daECS/net/connid.h>
+#include <daECS/net/netbase.h> // for write_eid()/read_eid()
 #include <daNet/bitStream.h>
 #include <EASTL/tuple.h>
-
-namespace net
-{
-void write_eid(danet::BitStream &bs, ecs::EntityId eid);
-bool read_eid(const danet::BitStream &bs, ecs::EntityId &eid); // return false if read from stream failed
-} // namespace net
 
 namespace danet // To consider: move declaration (but not definition) of these functions to entityId.h?
 {
@@ -27,8 +22,9 @@ class IConnection;
 
 namespace detail
 {
+// mcls is carried only so that an eid field that does not fit the wire format can name its message
 template <typename T>
-inline void write_value(danet::BitStream &bs, const T &val)
+inline void write_value(danet::BitStream &bs, const T &val, const MessageClass &)
 {
   bs.Write(val);
 }
@@ -40,22 +36,23 @@ inline bool read_value(const danet::BitStream &bs, T &val, const IConnection &)
 
 // Special meaning: ConnectionId is "virtual" member - no data is written, but on read it's
 // substituted to id of connection this message was received from
-inline void write_value(danet::BitStream &, ConnectionId) {} // Nothing is written
+inline void write_value(danet::BitStream &, ConnectionId, const MessageClass &) {} // Nothing is written
+void write_value(danet::BitStream &bs, ecs::EntityId eid, const MessageClass &mcls);
 bool read_value(const danet::BitStream &bs, ConnectionId &cid, const IConnection &conn);
 
 template <typename T, int I>
 struct Serialize
 {
-  void operator()(const T &t, danet::BitStream &bs)
+  void operator()(const T &t, danet::BitStream &bs, const MessageClass &mcls)
   {
-    Serialize<T, I - 1>()(t, bs);
-    write_value(bs, eastl::get<I - 1>(t));
+    Serialize<T, I - 1>()(t, bs, mcls);
+    write_value(bs, eastl::get<I - 1>(t), mcls);
   }
 };
 template <typename T>
 struct Serialize<T, 0>
 {
-  void operator()(const T &, danet::BitStream &) {}
+  void operator()(const T &, danet::BitStream &, const MessageClass &) {}
 };
 
 template <typename T, int I>
@@ -75,35 +72,35 @@ struct DeSerialize<T, 0>
 
 } // namespace net
 
-#define ECS_NET_DECL_MSG_EX(Klass, BaseKlass, TU)                                                                       \
-  struct Klass final : public BaseKlass, TU                                                                             \
-  {                                                                                                                     \
-    typedef TU Tuple;                                                                                                   \
-    ECS_NET_DECL_MSG_CLASS_BASE(Klass, BaseKlass) {}                                                                    \
-    template <typename... Args>                                                                                         \
-    Klass(Args &&...args) : Tuple(eastl::forward<Args>(args)...)                                                        \
-    {}                                                                                                                  \
-    Klass(Tuple &&tup) : Tuple(eastl::move(tup)) {}                                                                     \
-    Klass(Klass &&) = default;                                                                                          \
-    virtual void pack(danet::BitStream &bs) const override                                                              \
-    {                                                                                                                   \
-      net::detail::Serialize<Tuple, eastl::tuple_size<Tuple>::value>()(static_cast<const Tuple &>(*this), bs);          \
-    }                                                                                                                   \
-    virtual bool unpack(const danet::BitStream &bs, const net::IConnection &conn) override                              \
-    {                                                                                                                   \
-      return net::detail::DeSerialize<Tuple, eastl::tuple_size<Tuple>::value>()(static_cast<Tuple &>(*this), bs, conn); \
-    }                                                                                                                   \
-    template <size_t I>                                                                                                 \
-    const typename eastl::tuple_element<I, Tuple>::type &get() const                                                    \
-    {                                                                                                                   \
-      return eastl::get<I>(static_cast<const Tuple &>(*this));                                                          \
-    }                                                                                                                   \
-    template <size_t I>                                                                                                 \
-    typename eastl::tuple_element<I, Tuple>::type &get()                                                                \
-    {                                                                                                                   \
-      return eastl::get<I>(static_cast<Tuple &>(*this));                                                                \
-    }                                                                                                                   \
-    net::IMessage *moveHeap() && override { return new Klass(eastl::move(*this)); }                                     \
+#define ECS_NET_DECL_MSG_EX(Klass, BaseKlass, TU)                                                                             \
+  struct Klass final : public BaseKlass, TU                                                                                   \
+  {                                                                                                                           \
+    typedef TU Tuple;                                                                                                         \
+    ECS_NET_DECL_MSG_CLASS_BASE(Klass, BaseKlass) {}                                                                          \
+    template <typename... Args>                                                                                               \
+    Klass(Args &&...args) : Tuple(eastl::forward<Args>(args)...)                                                              \
+    {}                                                                                                                        \
+    Klass(Tuple &&tup) : Tuple(eastl::move(tup)) {}                                                                           \
+    Klass(Klass &&) = default;                                                                                                \
+    virtual void pack(danet::BitStream &bs) const override                                                                    \
+    {                                                                                                                         \
+      net::detail::Serialize<Tuple, eastl::tuple_size<Tuple>::value>()(static_cast<const Tuple &>(*this), bs, getMsgClass()); \
+    }                                                                                                                         \
+    virtual bool unpack(const danet::BitStream &bs, const net::IConnection &conn) override                                    \
+    {                                                                                                                         \
+      return net::detail::DeSerialize<Tuple, eastl::tuple_size<Tuple>::value>()(static_cast<Tuple &>(*this), bs, conn);       \
+    }                                                                                                                         \
+    template <size_t I>                                                                                                       \
+    const typename eastl::tuple_element<I, Tuple>::type &get() const                                                          \
+    {                                                                                                                         \
+      return eastl::get<I>(static_cast<const Tuple &>(*this));                                                                \
+    }                                                                                                                         \
+    template <size_t I>                                                                                                       \
+    typename eastl::tuple_element<I, Tuple>::type &get()                                                                      \
+    {                                                                                                                         \
+      return eastl::get<I>(static_cast<Tuple &>(*this));                                                                      \
+    }                                                                                                                         \
+    net::IMessage *moveHeap() && override { return new Klass(eastl::move(*this)); }                                           \
   }
 
 #define ECS_BUILD_TUPLE(...)               eastl::tuple<__VA_ARGS__>

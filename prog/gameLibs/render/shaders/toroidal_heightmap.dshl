@@ -8,10 +8,12 @@ float parallax_shadow_strength = 5;
 float parallax_mip = 3;
 
 texture toroidal_heightmap_texarray;
+sampler toroidal_heightmap_texarray_samplerstate;
 
 macro INIT_TOROIDAL_HEIGHTMAP(code)
   (code) {
-    toroidal_heightmap_texarray@smpArray = toroidal_heightmap_texarray;
+    toroidal_heightmap_texarray@texArray = toroidal_heightmap_texarray;
+    toroidal_heightmap_texarray_samplerstate@sampler = toroidal_heightmap_texarray_samplerstate;
     toroidalClipmap_world2uv_1@f4 = toroidalClipmap_world2uv_1;
     toroidalClipmap_world2uv_2@f4 = toroidalClipmap_world2uv_2;
     toroidalClipmap_world_offsets@f4 = toroidalClipmap_world_offsets;

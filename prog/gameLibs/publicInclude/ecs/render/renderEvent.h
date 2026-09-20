@@ -6,4 +6,15 @@
 
 #include <daECS/core/event.h>
 
-ECS_BROADCAST_EVENT_TYPE(AfterDeviceReset, bool /*force_reset*/)
+class DataBlock;
+
+
+struct EventRenderSceneLoaded : public ecs::Event
+{
+  const DataBlock &level_blk;
+  ECS_BROADCAST_EVENT_DECL(EventRenderSceneLoaded)
+  EventRenderSceneLoaded(const DataBlock &lev_blk) : ECS_EVENT_CONSTRUCTOR(EventRenderSceneLoaded), level_blk(lev_blk) {}
+};
+
+ECS_BROADCAST_EVENT_TYPE(EventRenderSceneUnload)
+ECS_BROADCAST_EVENT_TYPE(EventAfterDeviceReset, bool /*force_reset*/)

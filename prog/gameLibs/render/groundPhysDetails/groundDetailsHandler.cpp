@@ -68,9 +68,8 @@ void GroundDisplacementCPU::init(int tex_size, float heightmap_texel_size, float
   }
 
   // texture for gpu physics simulations
-  GPUgroundPhysDetailsTex.set(
-    d3d::create_tex(NULL, 2 * bufferSize, 2 * bufferSize, TEXCF_RTARGET | TEXFMT_R32F, 1, "GPUground_physdetails_tex", RESTAG_LAND),
-    "GPUground_physdetails_tex");
+  GPUgroundPhysDetailsTex =
+    dag::create_tex(NULL, 2 * bufferSize, 2 * bufferSize, TEXCF_RTARGET | TEXFMT_R32F, 1, "GPUground_physdetails_tex", RESTAG_LAND);
 
   loadedDisplacement.resize(bufferSize * bufferSize);
   mem_set_0(loadedDisplacement);

@@ -1,0 +1,11 @@
+return {
+  requestConsent = @(_) null
+  showPrivacy = @() null
+  showConsent = @() null
+  getConsentStatus = @() 0
+  canRequestAds = @() false
+  CONSENT_REQUEST_NOT_REQUIRED = 1
+  CONSENT_REQUEST_REQUIRED = 2
+  CONSENT_REQUEST_OBTAINED = 3
+  CONSENT_REQUEST_UNKNOWN = 0
+}

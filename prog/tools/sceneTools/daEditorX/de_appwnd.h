@@ -157,6 +157,7 @@ public:
 
   const DeWorkspace &getWorkspace() const override;
   const EditorWorkspace &getBaseWorkspace() override;
+  const char *getTestScriptMount() const override { return "%daeditorx_tests"; }
 
   bool isInBatchOp() override { return on_batch_exit != NULL; }
 
@@ -164,7 +165,7 @@ public:
   void enablePluginsRender() override;
 
   void preparePluginsListmenu() override;
-  void startWithWorkspace(const char *def_workspace_name) override;
+  void startWithWorkspace(const char *def_workspace_name, const char *app_blk_path, const char *refused_arguments) override;
 
   int getPluginCount() override;
   IGenEditorPlugin *getPlugin(int idx) override;
@@ -202,18 +203,11 @@ public:
   // custom colliders
   void registerCustomCollider(IDagorEdCustomCollider *coll) const override;
   void unregisterCustomCollider(IDagorEdCustomCollider *coll) const override;
-  void enableCustomShadow(const char *name) const override;
-  void disableCustomShadow(const char *name) const override;
   void enableCustomCollider(const char *name) const override;
   void disableCustomCollider(const char *name) const override;
 
-  bool isCustomShadowEnabled(const IDagorEdCustomCollider *collider) const override;
   int getCustomCollidersCount() const override;
   IDagorEdCustomCollider *getCustomCollider(int idx) const override;
-  bool fillCustomCollidersList(PropPanel::ContainerPropertyControl &panel, const char *grp_caption, int grp_pid, int collider_pid,
-    bool shadow, bool open_grp) const override;
-
-  bool onPPColliderCheck(int pid, const PropPanel::ContainerPropertyControl &panel, int collider_pid, bool shadow) const override;
 
   bool getUseOnlyVisibleColliders() const override;
   void setUseOnlyVisibleColliders(bool use) override;
@@ -232,7 +226,6 @@ public:
   void repaint() override;
 
   void correctCursorInSurfMove(const Point3 &delta) override;
-  bool shadowRayHitTest(const Point3 &src, const Point3 &dir, real dist) override;
   int getNextUniqueId() override;
   bool spawnEvent(unsigned event_huid, void *user_data) override;
   // ==========================================================================

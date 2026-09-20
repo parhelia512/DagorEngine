@@ -70,6 +70,8 @@ private:
   BlobView getBlobView(ResNameId res_name_id, int frame, intermediate::MultiplexingIndex multi_index) const;
   BlobView getBlobView(intermediate::ResourceIndex res_idx, int frame) const;
 
+  const char *resourceName(intermediate::ResourceIndex res_idx) const;
+
   template <class T>
   const T &getDynamicParameter(const intermediate::DynamicParameter &param, int frame) const;
 

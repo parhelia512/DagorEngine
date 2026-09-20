@@ -4,6 +4,8 @@
 //
 #pragma once
 
+#include <propPanel/control/menuStyle.h>
+
 namespace PropPanel
 {
 
@@ -24,9 +26,21 @@ public:
 
   // title: the title and the shortcut key text of the menu item. The shortcut key text must be separated with \t.
   virtual void addItem(unsigned menu_id, unsigned item_id, const char *title) = 0;
+  // Like addItem, but the second column is a comment rather than a key hint: it pins to the label
+  // column, and the title is not split on '\t'.
+  virtual void addItemWithComment(unsigned menu_id, unsigned item_id, const char *title, const char *comment) = 0;
 
-  virtual void addSeparator(unsigned menu_id, unsigned item_id = 0) = 0;
+  virtual void addSeparator(unsigned menu_id) = 0;
+  // title: like addItem, the shortcut key text may follow the title after a \t.
   virtual void addSubMenu(unsigned menu_id, unsigned submenu_id, const char *title) = 0;
+
+  // A caption row (menu title, group heading): not clickable, and not indented into the checkmark
+  // column the items reserve.
+  virtual void addLabel(unsigned menu_id, const char *title) = 0;
+
+  // Look overrides for the rows this menu draws in a popup, its sub-menus included. A menu bar's own
+  // top-level rows go through ImGui's horizontal path, which reads none of it.
+  virtual void setStyle(const MenuStyle &style) = 0;
 
   virtual int getItemCount(unsigned menu_id) = 0;
   virtual bool isEmpty() const = 0;
@@ -40,7 +54,8 @@ public:
   virtual void setRadioById(unsigned item_id, unsigned group_first_item_id = 0, unsigned group_last_item_id = 0) = 0;
 
   // title: the title of the menu item. If null then it will not be changed.
-  // shortcut: the shortcut key text of the menu item (e.g.: Ctrl+F1). If null then it will not be changed.
+  // shortcut: the shortcut key text of the menu item (e.g.: Ctrl+F1), or the comment of a row added
+  // through addItemWithComment -- one field carries both. If null then it will not be changed.
   virtual void setCaptionById(unsigned item_id, const char *title = nullptr, const char *shortcut = nullptr) = 0;
 
   virtual void setEventHandler(IMenuEventHandler *event_handler) = 0;

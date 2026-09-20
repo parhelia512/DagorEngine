@@ -35,8 +35,6 @@ interval envi_cover_rt: off < 1, on;
 
 texture noise_128_tex_hash;
 
-int rtr_use_csm = 0;
-
 float4 bvh_eye_sclera_color = (0.651, 0.565, 0.565, 0);
 float4 bvh_eye_iris_color = (0.075, 0.094, 0.09, 0);
 
@@ -291,6 +289,12 @@ macro USE_RT_SURFACE_PARAMS(stage, fast_mode)
       return float4(input_color.xyz * 2.0, input_color.w);
     }
 
+    half4 unpack_srgb_e3dcolor(uint packed_color)
+    {
+      half4 color = half4((packed_color >> uint4(16, 8, 0, 24)) & 255) / 255.0h;
+      return half4(pow((color.rgb + 0.055) / 1.055, 2.4), color.a);
+    }
+
     // from const_color_inc.dshl
     half3 get_color_mul(half3 colorMul, half4 const_color)
     {
@@ -327,6 +331,26 @@ macro USE_RT_SURFACE_PARAMS(stage, fast_mode)
       albedo.rgb = lerp(albedo.rgb, albedo.rgb * paintColor  * calculatedDetails.z, saturate(detailsWeight));
       ##endif
     }
+
+##if !fast_mode
+    void apply_paint_by_mask(HitInfo hitInfo, float mip_level, inout half3 albedo)
+    {
+      half primaryMask = 0;
+      if (hitInfo.extraTextureIndex != 0xFFFFU)
+        primaryMask = (half)nonUniformBindlessTex2D(bvh_textures, hitInfo.extraTextureIndex).SampleLevel(bvh_wrap_sampler, hitInfo.texcoord, mip_level).x;
+
+      half secondaryMask = 0;
+      if (hitInfo.secondaryMaskTextureIndex != 0xFFFFU)
+        secondaryMask = (half)nonUniformBindlessTex2D(bvh_textures, hitInfo.secondaryMaskTextureIndex).SampleLevel(bvh_wrap_sampler, hitInfo.texcoord, mip_level).x;
+
+      half3 primaryColor = unpack_srgb_e3dcolor(hitInfo.perInstanceDataCompressed.z).rgb;
+      half3 secondaryColor = unpack_srgb_e3dcolor(hitInfo.perInstanceDataCompressed.w).rgb;
+
+      albedo *= (1 - max(primaryMask, secondaryMask))
+              + saturate(primaryMask - secondaryMask) * primaryColor
+              + secondaryMask * secondaryColor;
+    }
+##endif
 
     half3 calc_perling_layers(HitInfo hitInfo, float mip_level)
     {
@@ -463,7 +487,7 @@ macro USE_RT_SURFACE_PARAMS(stage, fast_mode)
 
     float4 get_camo_params(HitInfo hitInfo)
     {
-      uint camoArgsPacked = asuint(hitInfo.perInstanceDataCompressed.y);
+      uint camoArgsPacked = hitInfo.perInstanceDataCompressed.y;
       const uint TWELVE_BIT_MASK = (1U << 12) - 1;
       const float MAX_SCALE = 2;
       float condition = float((camoArgsPacked >> 24) & 0xFF) / 0xFF;
@@ -615,6 +639,10 @@ macro USE_RT_SURFACE_PARAMS(stage, fast_mode)
           sp.albedo = texel.rgb;
           texelAlpha = texel.a;
           apply_painting(hitInfo, texel.a, sp.albedo);
+          ##if !fast_mode
+            if (is_painted_by_mask(hitInfo.material))
+              apply_paint_by_mask(hitInfo, mipLevel, sp.albedo);
+          ##endif
           if (hitInfo.isEye)
           {
             half eyeLerpParam = texel.b;
@@ -631,8 +659,7 @@ macro USE_RT_SURFACE_PARAMS(stage, fast_mode)
             }
             else
             {
-              fillColor = (half4((hitInfo.perInstanceDataCompressed.xxxx >> uint4(16, 8, 0, 24)) & 255) / 255.0h);
-              fillColor = half4(pow((fillColor.rgb + 0.055) / 1.055, 2.4), fillColor.a);
+              fillColor = unpack_srgb_e3dcolor(hitInfo.perInstanceDataCompressed.x);
               fillColor.rgb = fillColor.rgb * fillColor.a + sp.albedo * (1. - fillColor.a);
             }
 
@@ -659,7 +686,7 @@ macro USE_RT_SURFACE_PARAMS(stage, fast_mode)
         ##if !fast_mode
           if (hitInfo.isCamo)
           {
-            uint camoTexPacked = asuint(hitInfo.perInstanceDataCompressed.x);
+            uint camoTexPacked = hitInfo.perInstanceDataCompressed.x;
             uint camoTexIndex = camoTexPacked >> 16;
             if (camoTexIndex != 0xFFFFU)
             {
@@ -746,7 +773,7 @@ macro USE_RT_SURFACE_PARAMS(stage, fast_mode)
 endmacro
 
 // use_cockpit_lights is Skyquake specific
-macro INIT_RT_LIGHTING(stage, use_cockpit_lights, use_sampler_for_cloud_shadows, use_dagi, shadow_use_rt, shadow_use_csm_unused, use_probes)
+macro INIT_RT_LIGHTING(stage, use_cockpit_lights, use_sampler_for_cloud_shadows, use_dagi, shadow_use_rt, use_probes)
   INIT_RT_SURFACE_PARAMS(stage)
   INIT_SKY_DIFFUSE_BASE(stage)
   INIT_ENVI_SPECULAR_BASE(stage)
@@ -1055,7 +1082,7 @@ macro GET_SCATTERED_REFLECTION_VECTOR(stage)
   }
 endmacro
 
-macro RT_PREV_FRAME_SAMPLE(stage, struct_name)
+macro RT_PREV_FRAME_SAMPLE(stage, struct_name, prev_frame_sample_enabled)
   (stage)
   {
     prev_globtm_psf@f44 = { prev_globtm_psf_0, prev_globtm_psf_1, prev_globtm_psf_2, prev_globtm_psf_3 };
@@ -1072,6 +1099,8 @@ macro RT_PREV_FRAME_SAMPLE(stage, struct_name)
     {
       static bool get_screen_sample(float3 worldPos, float3 rayDir, out float3 radiance)
       {
+        if (!(prev_frame_sample_enabled))
+          return false;
         float4 prevNDC = mul(float4(worldPos, 1), prev_globtm_psf);
         float3 prevUVW = float3(prevNDC.xy / prevNDC.w, prevNDC.w);
         prevUVW.xy = float2(prevUVW.x, -prevUVW.y) * 0.5 + 0.5;

@@ -64,7 +64,7 @@ shader dynamic_chevron
   ///PS PART
   if (dyn_model_render_pass != render_pass_normal)
   {
-    if (num_bones == four_bones && has_wounds == torn_wounds)
+    if (num_bones == four_bones && has_wounds >= torn_wounds)
     {
       DYNAMIC_SIMPLE_DISCRAD_WOUNDS_PS()
     }

@@ -70,8 +70,8 @@ static ecs::EntitySystemDesc tree_burning_update_es_es_desc
 static void register_tree_burning_callbacks_on_level_loaded_es_all_events(const ecs::Event &__restrict evt, const ecs::QueryView &__restrict components)
 {
   G_UNUSED(components);
-  G_FAST_ASSERT(evt.is<OnLevelLoaded>());
-  register_tree_burning_callbacks_on_level_loaded_es(static_cast<const OnLevelLoaded&>(evt)
+  G_FAST_ASSERT(evt.is<EventRenderSceneLoaded>());
+  register_tree_burning_callbacks_on_level_loaded_es(static_cast<const EventRenderSceneLoaded&>(evt)
         );
 }
 static ecs::EntitySystemDesc register_tree_burning_callbacks_on_level_loaded_es_es_desc
@@ -83,7 +83,7 @@ static ecs::EntitySystemDesc register_tree_burning_callbacks_on_level_loaded_es_
   empty_span(),
   empty_span(),
   empty_span(),
-  ecs::EventSetBuilder<OnLevelLoaded>::build(),
+  ecs::EventSetBuilder<EventRenderSceneLoaded>::build(),
   0
 ,"render");
 static constexpr ecs::ComponentDesc init_burnable_ri_extra_es_comps[] =

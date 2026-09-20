@@ -5,6 +5,7 @@ mountPoints{
   "%daslib":t="../../prog/1stPartyLibs/daScript/daslib"
   "%gameLibs":t="../../prog/gameLibs"
   "%dasImgui":t="../../prog/1stPartyLibs/daScript/modules/dasImgui/daslib"
+  "%dasLLVM":t="../../prog/1stPartyLibs/daScript/modules/dasLLVM"
   "%danetlibs":t="../../prog/daNetGameLibs"
   "%scripts":t="scripts"
 }

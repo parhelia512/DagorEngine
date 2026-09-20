@@ -174,14 +174,14 @@ macro INIT_REFRACTION_GLASS_BASE(generate_transparent_gbuffer_pass)
   static float max_thickness = 0.2;
   static float isShell = 1;
   static float glassIoR = 1.5;
-  static float diffuse_is_tint = 0;
+  static int diffuse_is_tint = 0;
 
   if(rendinst_transparent_gbuffer_pass != generate)
   {
     (ps) {
       mediumTintColor@f4 = (mediumTintColor.r, mediumTintColor.g, mediumTintColor.b, isShell);
       mediumThickness@f4 = (min_thickness, max_thickness, 1./glassIoR, ((1-glassIoR)*(1-glassIoR))/((1+glassIoR)*(1+glassIoR)));
-      diffuse_is_tint@f1 = diffuse_is_tint;
+      diffuse_is_tint@i1 = diffuse_is_tint;
     }
     hlsl(ps) {
       #define isRefractionGlass 1
@@ -333,7 +333,7 @@ hlsl(ps)
         half3 mediumColor = mediumTintColor.rgb;
         half isShell = mediumTintColor.a;
       #else
-        half3 mediumColor = lerp(get_mediumTintColor().rgb, diffuseColor.rgb, get_diffuse_is_tint());
+        half3 mediumColor = get_diffuse_is_tint() ? diffuseColor.rgb : get_mediumTintColor().rgb;
         half isShell = get_mediumTintColor().a;
       #endif
       float3 refractWorldDir = refract(-view, worldNormal, airToGlassIoR);

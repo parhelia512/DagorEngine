@@ -141,7 +141,7 @@ public:
     folderPath(folder_path), zipPath(zip_path), eventName(event_name)
   {}
 
-  const char *getJobName(bool &) const override { return "ZipFolderJob"; }
+  const char *getJobName(bool &) const override { return DAPROFILER_STRING("ZipFolderJob"); }
 
   void doJob() override
   {

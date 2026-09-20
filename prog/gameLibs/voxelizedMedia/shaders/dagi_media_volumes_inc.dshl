@@ -1,0 +1,13 @@
+// per instance baked media volume resources. the injection and the debug tracer take
+// dagi_media_volumes_inject.dshl on top of this; the finalize cs needs only the atlas
+// grid, so the declarations stay free of the project light chain that file pulls in
+
+buffer dagi_media_vol_instances;
+buffer dagi_media_vol_grid;
+buffer dagi_media_vol_grid_ix;
+buffer dagi_media_vol_types;
+buffer dagi_media_vol_albedo;
+texture dagi_media_vol_atlas;
+int4 dagi_media_vol_grid_lt_sz;
+float4 dagi_media_vol_grid_cell; // inv cell size xz
+int4 dagi_media_vol_atlas_grid = (1, 1, 1, 1); // bricks per axis, w = x*y

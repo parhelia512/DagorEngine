@@ -40,10 +40,9 @@ public:
     //   2) BLAS: caller supplies a pointer to vert21-packed BLAS data (vertOffset locates the vert21
     //      stream within blasData) plus the tree to walk -- soa4Root or (treeStart, treeEnd), see
     //      soa4Root below. The walker frustum-culls per BVH node and emits triangle indices into a
-    //      job-local cache RenderVert21TriList consumes. Used by the CollisionResource feeder for the
-    //      whole combined-per-behavior grid BLAS and for an individual node's per-node chunk BLAS.
-    //      blasData must outlive rasterizeMeshes -- safe because CollisionResource grids and chunks are
-    //      resource-persistent.
+    //      job-local cache RenderVert21TriList consumes. Used by the CollisionResource feeder for a
+    //      node's per-node chunk BLAS. blasData must outlive rasterizeMeshes -- safe because
+    //      CollisionResource chunks are resource-persistent.
     //   verts != nullptr selects mode 1; else (blasData != nullptr) mode 2.
     // tri_count is the exact triangle count for the slice in mode 1; in mode 2 it is the BLAS walker's
     // triLimit cap. triSkip is the BLAS-order triangle offset for mode 2, non-zero only for the 2nd+
@@ -60,7 +59,7 @@ public:
     // Mode 2 walker select: a valid root walks the SoA4 tree (RenderBlasSOA4) over blasData/
     // vertOffset and treeStart/treeEnd go unused; invalid (default) walks the stackless slice
     // (treeStart, treeEnd) via RenderBlasStackless. The collision occluder feeder sets it for every
-    // grid/chunk task (CollisionResource CPU trees are SoA4); stackless remains for non-collision feeds.
+    // chunk task (CollisionResource CPU trees are SoA4); stackless remains for non-collision feeds.
     soa4::RootRef soa4Root;
   };
 
@@ -112,7 +111,7 @@ private:
       // Note: would be wake-up either by wake_up_all in `animchar_before_render_es` or `bvh_start_before_render_jobs_es`
       threadpool::add(this, prio, qpos, threadpool::AddFlags::None);
     }
-    const char *getJobName(bool &) const override { return "rasterizer_all_tasks"; }
+    const char *getJobName(bool &) const override { return DAPROFILER_STRING("rasterizer_all_tasks"); }
     // Per-job triangle index cache, reused across BLAS-mode tasks. The feeder partitions tasks to
     // triangles_partition slices so tri_count normally fits this static cap; a single unpartitioned
     // BLAS slice could exceed it and falls back to a framemem-backed spill.
@@ -140,8 +139,8 @@ private:
           }
           else if (task.blasData)
           {
-            // BLAS-walk path: the whole combined-per-behavior CollisionResource grid BLAS, or an
-            // individual node's per-node chunk BLAS. Either walker frustum-culls and emits triangles
+            // BLAS-walk path: a CollisionResource node's per-node chunk BLAS. The walker
+            // frustum-culls and emits triangles
             // directly to RenderVert21TriList -- no caller-side vert/face arrays, and blasData is
             // persistent so it satisfies the async task lifetime a decoded scratch could not.
             // CACHE_INSUFFICIENT = walk-and-emit on this call; triSkip/tri_count select this slice of
@@ -175,7 +174,7 @@ private:
     MaskedOcclusionCulling *occlusion = nullptr;
     void start(uint32_t &qpos) { threadpool::add(this, prio, qpos, threadpool::AddFlags::None); }
     void doJob() override { occlusion->ClearBuffer(); }
-    const char *getJobName(bool &) const override { return "clear_rasterizer_occlusion"; };
+    const char *getJobName(bool &) const override { return DAPROFILER_STRING("clear_rasterizer_occlusion"); };
   };
 
   struct MergingJob final : public cpujobs::IJob
@@ -199,7 +198,7 @@ private:
       quant = quant_;
       initialTile = mergedTiles.fetch_add(quant, dag::memory_order_relaxed);
     }
-    const char *getJobName(bool &) const override { return "merge_occlusion"; }
+    const char *getJobName(bool &) const override { return DAPROFILER_STRING("merge_occlusion"); }
     virtual void doJob() override
     {
       for (uint32_t startTile = initialTile; startTile < endTile; startTile = mergedTiles.fetch_add(quant))

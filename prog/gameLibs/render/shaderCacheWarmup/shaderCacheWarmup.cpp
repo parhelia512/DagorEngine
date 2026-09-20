@@ -388,8 +388,7 @@ private:
   virtual ScriptedShaderMaterial *initMaterial(const shaderbindump::ShaderClass &sc) = 0;
   virtual bool isValidShader(const int vpr, const int fsh) const = 0;
   virtual void onStaticVariant(ScriptedShaderElement &el) = 0;
-  virtual void onDynamicVariant(const shaderbindump::ShaderCode::Pass &variant, const size_t variant_id,
-    const ScriptedShaderElement &el) = 0;
+  virtual void onDynamicVariant(const size_t variant_id, const ScriptedShaderElement &el) = 0;
 
   virtual void onGpuAcquired() = 0;
   virtual void onGpuReleased() = 0;
@@ -542,7 +541,7 @@ private:
       if (d3dFlusher.acquireGpu())
         onGpuAcquired();
 
-      onDynamicVariant(variantPasses, variantId, el);
+      onDynamicVariant(variantId, el);
 
       if (d3dFlusher.afterPipelineCreation())
       {
@@ -613,8 +612,7 @@ private:
 
   virtual void onStaticVariant(ScriptedShaderElement &el) override { el.preCreateStateBlocks(); }
 
-  virtual void onDynamicVariant(const shaderbindump::ShaderCode::Pass &, const size_t variant_id,
-    const ScriptedShaderElement &el) override
+  virtual void onDynamicVariant(const size_t variant_id, const ScriptedShaderElement &el) override
   {
     d3d::set_program(el.passes[variant_id].id.pr);
 
@@ -682,9 +680,9 @@ private:
 
   virtual void onStaticVariant(ScriptedShaderElement &) override {}
 
-  virtual void onDynamicVariant(const shaderbindump::ShaderCode::Pass &variant, const size_t, const ScriptedShaderElement &el)
+  virtual void onDynamicVariant(const size_t variant_id, const ScriptedShaderElement &el)
   {
-    const PROGRAM program = el.getComputeProgram(&variant.rpass.get());
+    const PROGRAM program = el.preCreateComputeProgram(variant_id);
 
     d3d::set_program(program);
     const uintptr_t pipelineType = STAGE_CS;

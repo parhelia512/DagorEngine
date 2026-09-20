@@ -240,16 +240,6 @@ folder {
 
 folder {
   output:t="dng_scene_viewer.vromfs.bin"
-  path:t="../../../prog/daNetGameLibs/puddle_query/"
-  dest_path:t="danetlibs/puddle_query/"
-  scan_folder:b=true
-  scan_subfolders:b=true
-  wildcard:t="*.blk"
-
-}
-
-folder {
-  output:t="dng_scene_viewer.vromfs.bin"
   path:t="../../../prog/daNetGameLibs/dynamic_details/"
   dest_path:t="danetlibs/dynamic_details/"
   scan_folder:b=true
@@ -431,6 +421,16 @@ folder {
   scan_subfolders:b=true
   wildcard:t="*.blk"
   wildcard:t="*.das"
+
+}
+
+folder {
+  output:t="dng_scene_viewer.vromfs.bin"
+  path:t="../../../prog/gameLibs/render/puddle_query/"
+  dest_path:t="gameLibs/render/puddle_query/"
+  scan_folder:b=true
+  scan_subfolders:b=true
+  wildcard:t="*.blk"
 
 }
 

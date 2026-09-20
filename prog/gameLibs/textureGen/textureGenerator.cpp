@@ -27,7 +27,7 @@ static TextureGenLogger defaultLogger;
 #define FALLBACK_TO_NO_OPTIMIZATION_ON_FAILURE 1
 
 #if FALLBACK_TO_NO_OPTIMIZATION_ON_FAILURE
-#define MAX_GEN_NODE_CALL_COUNT 100000000
+#define MAX_GEN_NODE_CALL_COUNT 5000000
 static unsigned gen_node_call_count = 0;
 static bool optimizer_failed_in_this_update = false;
 #endif
@@ -209,10 +209,21 @@ static void reorder(AppelNode &node)
 
 static void gen_appel_node(AppelNode &node, const Bitarray &nodeUsed, const Bitarray &nodeGenerated,
   const eastl::vector<unsigned> &nodesSize, const eastl::vector<eastl::vector_set<int>> &nodesProducingCurrent,
-  const eastl::vector<eastl::vector_set<int>> &nodesProducedByCurrent)
+  const eastl::vector<eastl::vector_set<int>> &nodesProducedByCurrent, Bitarray &nodeVisiting)
 {
   if (!nodeUsed[node.nodeI] || nodeGenerated[node.nodeI])
     return;
+
+  if (nodeVisiting[node.nodeI])
+  {
+    optimizer_failure = true;
+#if FALLBACK_TO_NO_OPTIMIZATION_ON_FAILURE
+    optimizer_failed_in_this_update = true;
+#endif
+    return;
+  }
+
+  nodeVisiting.set(node.nodeI, 1);
 
 #if FALLBACK_TO_NO_OPTIMIZATION_ON_FAILURE
   gen_node_call_count++;
@@ -220,6 +231,7 @@ static void gen_appel_node(AppelNode &node, const Bitarray &nodeUsed, const Bita
   {
     optimizer_failure = true;
     optimizer_failed_in_this_update = true;
+    nodeVisiting.set(node.nodeI, 0);
     return;
   }
 #endif
@@ -232,9 +244,11 @@ static void gen_appel_node(AppelNode &node, const Bitarray &nodeUsed, const Bita
     if (!nodeUsed[chNode] || nodeGenerated[chNode])
       continue;
     node.children.emplace_back(chNode, nodesSize[chNode]); //
-    gen_appel_node(node.children.back(), nodeUsed, nodeGenerated, nodesSize, nodesProducingCurrent, nodesProducedByCurrent);
+    gen_appel_node(node.children.back(), nodeUsed, nodeGenerated, nodesSize, nodesProducingCurrent, nodesProducedByCurrent,
+      nodeVisiting);
   }
   reorder(node);
+  nodeVisiting.set(node.nodeI, 0);
 }
 
 static void generate_appel_node(AppelNode &node, Bitarray &nodeGenerated, Tab<int> &nodesExecutionOrder)
@@ -314,6 +328,9 @@ static void instruction_selection_appel(Bitarray &nodeGenerated, Tab<int> &nodes
   const eastl::vector<eastl::vector_set<int>> &nodesProducedByCurrent)
 {
   AppelNode pseudo_node = {-1, 0};
+  Bitarray nodeVisiting;
+  nodeVisiting.resize(nodeGenerated.size());
+  nodeVisiting.reset();
 
   for (auto genNode : finalNodes)
   {
@@ -321,7 +338,8 @@ static void instruction_selection_appel(Bitarray &nodeGenerated, Tab<int> &nodes
       continue;
     pseudo_node.hold += nodesSize[genNode];
     pseudo_node.children.emplace_back(genNode, nodesSize[genNode]);
-    gen_appel_node(pseudo_node.children.back(), nodeUsed, nodeGenerated, nodesSize, nodesProducingCurrent, nodesProducedByCurrent);
+    gen_appel_node(pseudo_node.children.back(), nodeUsed, nodeGenerated, nodesSize, nodesProducingCurrent, nodesProducedByCurrent,
+      nodeVisiting);
   }
 
   reorder(pseudo_node);

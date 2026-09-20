@@ -201,20 +201,8 @@ Template::Template(const char *tname, ComponentsMap &&amap, component_set &&trac
   path(path_)
 #endif
 {
-#if DAECS_EXTENSIVE_CHECKS
-  auto checkSet = [&](const char *n, const component_set &s) {
-    for (auto t : s)
-    {
-      if (components.end() == eastl::find_if(components.begin(), components.end(), [&](auto &c) { return c.first == t; }))
-        logerr("%s component (0x%X) in template <%s> is not in it's component's list", n, t, tname);
-    }
-  };
-
-  checkSet("tracked", tracked_set);
-  checkSet("replicated", replicated_set);
-// checkSet("ignoredInInitialReplication", ignored_initial_repl);//this has to checked including parents!
-#endif
-
+  // tracked/replicated can name components of parent templates; validateSets checks
+  // membership after parents resolve
   buildSets(tracked_set, replicated_set, ignored_initial_repl);
   G_UNUSED(path_);
   inheritedFlags = localFlags;
@@ -292,6 +280,43 @@ bool Template::hasComponent(const HashedConstString &hashed_name, const Template
     return false;
   eastl::bitvector<framemem_allocator> visited(db.size());
   return hasComponentDFS(hashed_name, db, visited);
+}
+
+void Template::validateSets(const TemplatesData &db, const TemplateDBInfo *info, const Template *instantiated) const
+{
+#if DAECS_EXTENSIVE_CHECKS && DAGOR_DBGLEVEL > 0
+  if (setsValidated)
+    return;
+  setsValidated = true;
+  const Template &root = instantiated ? *instantiated : *this;
+  auto checkSet = [&](const char *n, ComponentsSet s) {
+    for (const component_t c : s)
+    {
+      // a name declared in another template can be legal here: filtered out by _tags in
+      // this config, or applied when this template instantiates with the declaring one
+      if (db.getComponentName(c) || (info && info->componentTags.find(c) != info->componentTags.end()))
+        continue;
+      // components created by code or by the net template sync exist only in DataComponents
+      if (db.mgr && db.mgr->getDataComponents().findComponentId(c) != INVALID_COMPONENT_INDEX)
+        continue;
+      // last, the costly one: the full hierarchy view of the instantiating template, so
+      // an ancestor's name that a descendant declares is legal
+      if (root.hasComponent(HashedConstString{nullptr, c}, db))
+        continue;
+      logerr("%s component <0x%X> in template <%s> (%s) is not a component of any known template", n, c, getName(), getPath());
+    }
+  };
+  checkSet("tracked", trackedSet());
+  checkSet("replicated", replicatedSet());
+  checkSet("skipInitialReplication", ignoredSet());
+  // this instantiation consumes the ancestors' sets too; each validates once
+  for (const uint32_t p : parents)
+    db.getTemplateRefById(p).validateSets(db, info, &root);
+#else
+  G_UNUSED(db);
+  G_UNUSED(info);
+  G_UNUSED(instantiated);
+#endif
 }
 
 const ChildComponent &Template::getComponent(const HashedConstString &hashed_name, const TemplatesData &db) const

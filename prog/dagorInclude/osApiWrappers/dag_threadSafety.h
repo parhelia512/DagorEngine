@@ -15,6 +15,12 @@
 
 #define DAG_TS_CAPABILITY(x) __attribute__((capability(x)))
 
+#if __has_attribute(reentrant_capability)
+#define DAG_TS_REENTRANT_CAPABILITY __attribute__((reentrant_capability))
+#else
+#define DAG_TS_REENTRANT_CAPABILITY
+#endif
+
 #define DAG_TS_SCOPED_CAPABILITY __attribute__((scoped_lockable))
 
 #define DAG_TS_GUARDED_BY(x) __attribute__((guarded_by(x)))
@@ -59,6 +65,8 @@
 #ifndef DAG_TS_CAPABILITY
 
 #define DAG_TS_CAPABILITY(x)
+
+#define DAG_TS_REENTRANT_CAPABILITY
 
 #define DAG_TS_SCOPED_CAPABILITY
 

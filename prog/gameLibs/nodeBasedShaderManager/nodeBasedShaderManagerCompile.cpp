@@ -1,10 +1,10 @@
 // Copyright (C) Gaijin Games KFT.  All rights reserved.
 
 #include <nodeBasedShaderManager/nodeBasedShaderManager.h>
-#include <hlslCompiler/hlslCompiler.h>
 #include <hash/crc32.h>
 #include <drv/3d/dag_platform_pc.h>
 #include <drv/3d/dag_info.h>
+#include <drv/3d/dag_shaderModelVersion.h>
 #include <startup/dag_globalSettings.h>
 #include <folders/folders.h>
 #include <webui/shaderEditors.h>
@@ -16,6 +16,8 @@
 
 String NodeBasedShaderManager::toolsPath;
 String NodeBasedShaderManager::rootPath;
+
+d3d::shadermodel::Version NodeBasedShaderManager::fshToShaderModel(const char *fsh) { return operator""_sm(fsh); }
 
 void NodeBasedShaderManager::initCompilation()
 {
@@ -65,9 +67,14 @@ bool NodeBasedShaderManager::compileScriptedShaders(const String &shader_name, c
   const String shName = buildScriptedShaderName(shader_name);
   DataBlock shaderBlk = shader_blk; // @TODO: mutable
   shaderBlk.setStr("shader_name", "\n" + shName);
+
+  const char *fsh = getShaderModelFsh(shader_blk);
+  const d3d::shadermodel::Version shaderModel = fshToShaderModel(fsh);
+  const char *psSuffix = d3d::as_ps_string(shaderModel);
+
   const String tmpDumpNameBase(32, "%s.tmp", shName.str());
-  const String tmpDumpName(32, "%s%s.ps50.shdump.bin", tmpDumpNameBase,
-    get_nbsm_platform() == VULKAN_BINDLESS || get_nbsm_platform() == MTL_BINDLESS ? ".bindless" : "");
+  const String tmpDumpName(32, "%s%s.%s.shdump.bin", tmpDumpNameBase,
+    get_nbsm_platform() == VULKAN_BINDLESS || get_nbsm_platform() == MTL_BINDLESS ? ".bindless" : "", psSuffix);
 
   auto writeFile = [&](const String &name, const String &content) {
     FullFileSaveCB file(name.str());
@@ -160,12 +167,12 @@ bool NodeBasedShaderManager::compileScriptedShaders(const String &shader_name, c
         includePath:t="%s/prog/gameLibs/publicInclude"
       }
       Compile {
-        fsh:t = 5.0
+        fsh:t = %s
         additional_dump:b = yes
       }
     )",
     tmpDumpNameBase, DSC_TABLE[get_nbsm_platform()].dumpSuff, rootPath.str(), outputDshl, rootPath.str(), rootPath.str(),
-    rootPath.str(), rootPath.str(), rootPath.str());
+    rootPath.str(), rootPath.str(), rootPath.str(), fsh);
   String dshl = ShaderGraphRecompiler::substituteDshl(shader, shaderBlk);
 
   if (!writeFile(outputDshl, dshl))
@@ -204,7 +211,7 @@ bool NodeBasedShaderManager::compileScriptedShaders(const String &shader_name, c
     return false;
   }
 
-  if (!reload_shaders_bindump(scriptedShadersDumpHandle, tmpDumpNameBase.c_str(), scriptedShadersDumpName.c_str(), d3d::sm50))
+  if (!reload_shaders_bindump(scriptedShadersDumpHandle, tmpDumpNameBase.c_str(), scriptedShadersDumpName.c_str(), shaderModel))
     return false;
 
   cachedDumpGeneration = get_shaders_bindump_generation(scriptedShadersDumpHandle);

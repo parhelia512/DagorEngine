@@ -314,7 +314,7 @@ float HumanInput::GameInputGamepadClassDriver::getStickDeadZoneAbs(int stick_idx
 
 static gameinput::DevicesList devices;
 
-void refresh_gamepads() { gameinput::get_devices(GameInputKindGamepad, devices); }
+void refresh_gamepads() { devices = gameinput::get_devices(GameInputKindGamepad); }
 
 bool is_gamepad_connected(int slot) { return slot >= 0 && slot < (int)devices.size() && devices[slot]; }
 

@@ -64,6 +64,7 @@ void rendinst::riGenVisibilityScheduleForcedLodLoading(const RiGenVisibility *vi
 
 #if DAGOR_DBGLEVEL > 0
 CONSOLE_INT_VAL("rendinst", parallel_for, 7, 0, 8);
+CONSOLE_FLOAT_VAL("rendinst", lods_by_distance_mul_bias, 0.0f); // >= 0 overrides the lodsByDistanceMulBias setting
 #endif
 
 template <typename T>
@@ -267,7 +268,9 @@ bool rendinst::prepareExtraVisibilityInternal(RiGenVisibility &vbase, mat44f_cre
       // going through all pools here is slow, all non-empty pools in riexData from previous frame are in riexPoolOrder
       for (int pool : visibility.riexPoolOrder)
         visibility.riexData[lod][pool & render::RI_RES_ORDER_COUNT_MASK].clear();
-      clear_and_resize(visibility.riexData[lod], poolInfo.size());
+      // resize, not clear_and_resize: the inner vectors must keep their capacity when the pool count changes,
+      // else every visible bucket overflows on the next cull and forces a full recull
+      visibility.riexData[lod].resize(poolInfo.size());
       visibility.minSqDistances[lod].resize(poolInfo.size());
       memset(visibility.minSqDistances[lod].data(), 0x7f, data_size(visibility.minSqDistances[lod])); // ~FLT_MAX
       if (vbase.riex.approxInvDensities[lod].size() != poolInfo.size())
@@ -320,7 +323,7 @@ bool rendinst::prepareExtraVisibilityInternal(RiGenVisibility &vbase, mat44f_cre
   if (sortLarge)
   {
     for (int lod = 0; lod < LARGE_LOD_CNT; ++lod)
-      clear_and_resize(visibility.riexLarge[lod], poolInfo.size());
+      visibility.riexLarge[lod].resize(poolInfo.size()); // keep capacities, same as riexData
   }
 
   int newVisCnt = 0;
@@ -375,14 +378,16 @@ bool rendinst::prepareExtraVisibilityInternal(RiGenVisibility &vbase, mat44f_cre
       }
     }
     scene::pool_index poolId = scene::get_node_pool(m);
-    const auto &riPool = poolInfo[poolId];
-    const unsigned llm = riPool.lodLimits >> ((ri_game_render_mode + 1) * 8);
+    const auto *riPool = get_pool_info_if_ready(poolInfo, poolId);
+    if (DAGOR_UNLIKELY(!riPool))
+      return false;
+    const unsigned llm = riPool->lodLimits >> ((ri_game_render_mode + 1) * 8);
     const unsigned min_lod = llm & 0xF, max_lod = (llm >> 4) & 0xF;
-    if (riPool.distSqLOD[max_lod] <= distSqScaledNormalized * rendinst::render::riExtraLodsShiftDistMulForCulling)
+    if (riPool->distSqLOD[max_lod] <= distSqScaledNormalized * rendinst::render::riExtraLodsShiftDistMulForCulling)
       return false;
     lod = 0;
     if (forced_extra_lod_less_then_zero)
-      lod = find_lod<rendinst::RiExtraPool::MAX_LODS>(riPool.distSqLOD, distSqScaledNormalized);
+      lod = find_lod<rendinst::RiExtraPool::MAX_LODS>(riPool->distSqLOD, distSqScaledNormalized);
     else
       lod = forcedExtraLod;
     lod = clamp(lod, min_lod, max_lod);
@@ -395,7 +400,7 @@ bool rendinst::prepareExtraVisibilityInternal(RiGenVisibility &vbase, mat44f_cre
     }
     visibility.minSqDistances[lod].data()[poolId] = min(visibility.minSqDistances[lod].data()[poolId], distSqScaledNormalized);
     vec4f *addData = append_data(visibility.riexData[lod].data()[poolId], RIEXTRA_VECS_COUNT);
-    rendinst::render::write_ri_extra_per_instance_data(addData, tiled_scene, poolId, ni, m, riPool.isDynamic);
+    rendinst::render::write_ri_extra_per_instance_data(addData, tiled_scene, poolId, ni, m, riPool->isDynamic);
     newVisCnt++;
 
     return true;
@@ -1079,7 +1084,12 @@ void rendinst::requestRiExtraLodsByDistance(const Point3 &camera_pos)
   TIME_PROFILE(riextra_lods_by_distance);
 
   Point3_vec4 vpos = camera_pos;
-  float distSqMul = rendinst::riExtraCullDistSqMul;
+  float mulBiasSq = render::lods_by_distance_mul_bias_sq;
+#if DAGOR_DBGLEVEL > 0
+  if (lods_by_distance_mul_bias.get() > 0.f)
+    mulBiasSq = sqr(lods_by_distance_mul_bias.get());
+#endif
+  float distSqMul = rendinst::riExtraCullDistSqMul * mulBiasSq;
   vec4f vpos_distscale = v_perm_xyzd((vec4f &)vpos, v_splats(distSqMul));
 
   uint32_t visibleFlag = ri_game_render_mode == 0   ? RendinstTiledScene::VISIBLE_0
@@ -1088,7 +1098,7 @@ void rendinst::requestRiExtraLodsByDistance(const Point3 &camera_pos)
 
   auto &poolInfo = riExTiledScenes.getPools();
   bbox3f bbox;
-  v_bbox3_init_by_bsph(bbox, vpos_distscale, v_splats(sqrtf(render::lods_by_distance_range_sq * distSqMul)));
+  v_bbox3_init_by_bsph(bbox, vpos_distscale, v_splats(sqrtf(safediv(render::lods_by_distance_range_sq, distSqMul))));
 
   int totalTiles = 0;
   for (const auto &tiled_scene : riExTiledScenes.scenes())
@@ -1120,7 +1130,9 @@ void rendinst::requestRiExtraLodsByDistance(const Point3 &camera_pos)
     auto cb = [&tiled_scene, &poolInfo, vpos_distscale](scene::node_index ni, mat44f_cref m) {
       G_UNUSED(ni);
       const scene::pool_index poolId = scene::get_node_pool(m);
-      const auto &riPool = poolInfo[poolId];
+      const auto *riPool = get_pool_info_if_ready(poolInfo, poolId);
+      if (DAGOR_UNLIKELY(!riPool))
+        return;
 
       vec4f sphere = scene::get_node_bsphere(m);
       vec3f distSqScaled = v_mul_x(v_length3_sq_x(v_sub(vpos_distscale, sphere)), v_splat_w(vpos_distscale));
@@ -1133,12 +1145,12 @@ void rendinst::requestRiExtraLodsByDistance(const Point3 &camera_pos)
       float radScaleInv2 = radScaleInv * radScaleInv;
       float distSqScaledNormalized = v_extract_x(distSqScaled) * radScaleInv2;
 
-      const unsigned llm = riPool.lodLimits >> ((ri_game_render_mode + 1) * 8);
+      const unsigned llm = riPool->lodLimits >> ((ri_game_render_mode + 1) * 8);
       const unsigned min_lod = llm & 0xF, max_lod = (llm >> 4) & 0xF;
-      if (riPool.distSqLOD[max_lod] <= distSqScaledNormalized * rendinst::render::riExtraLodsShiftDistMulForCulling)
+      if (riPool->distSqLOD[max_lod] <= distSqScaledNormalized * rendinst::render::riExtraLodsShiftDistMulForCulling)
         return;
 
-      unsigned lod = find_lod<rendinst::RiExtraPool::MAX_LODS>(riPool.distSqLOD, distSqScaledNormalized);
+      unsigned lod = find_lod<rendinst::RiExtraPool::MAX_LODS>(riPool->distSqLOD, distSqScaledNormalized);
       lod = clamp(lod, min_lod, max_lod);
 
       if (DAGOR_LIKELY(riExtra.isValid(poolId) && riExtra[poolId].res))
@@ -1249,19 +1261,21 @@ bool rendinst::prepareRIGenExtraVisibilityBoxInternal(bbox3f_cref box_cull, int 
       if (filter_ri_clipmap && !scene::check_node_flags(m, RendinstTiledScene::IS_RENDINST_CLIPMAP))
         return;
       const scene::pool_index poolId = scene::get_node_pool(m);
-      const auto &riPool = poolInfo[poolId];
+      const auto *riPool = get_pool_info_if_ready(poolInfo, poolId);
+      if (DAGOR_UNLIKELY(!riPool))
+        return;
       if (filter_grassify && !riExtra[poolId].isGrassify)
         return;
-      if (riPool.distSqLOD[rendinst::RiExtraPool::MAX_LODS - 1] < min_dist_sq)
+      if (riPool->distSqLOD[rendinst::RiExtraPool::MAX_LODS - 1] < min_dist_sq)
         return;
-      const unsigned llm = riPool.lodLimits >> ((ri_game_render_mode + 1) * 8);
+      const unsigned llm = riPool->lodLimits >> ((ri_game_render_mode + 1) * 8);
       const unsigned min_lod = llm & 0xF, max_lod = (llm >> 4) & 0xF;
       int lod = clamp((unsigned)forced_lod, min_lod, max_lod);
       maxLodUsed = max(lod, maxLodUsed);
       if (result_box)
         v_bbox3_add_box(*result_box, tiled_scene.calcNodeBox(m));
       vec4f *addData = append_data(visibility.riexData[lod].data()[poolId], RIEXTRA_VECS_COUNT);
-      rendinst::render::write_ri_extra_per_instance_data(addData, tiled_scene, poolId, ni, m, riPool.isDynamic);
+      rendinst::render::write_ri_extra_per_instance_data(addData, tiled_scene, poolId, ni, m, riPool->isDynamic);
       newVisCnt++;
     });
   }
@@ -1277,7 +1291,7 @@ bool rendinst::prepareRIGenExtraVisibilityBoxInternal(bbox3f_cref box_cull, int 
   return true;
 }
 
-void rendinst::filterVisibility(RiGenVisibility &from, RiGenVisibility &to, const VisibilityExternalFilter &external_filter)
+void rendinst::filterVisibility(RiGenVisibility &from, RiGenVisibility &to, VisibilityExternalFilter external_filter)
 {
   TIME_D3D_PROFILE(filter_visibility);
 

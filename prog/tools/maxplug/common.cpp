@@ -1,9 +1,8 @@
 // Copyright (C) Gaijin Games KFT.  All rights reserved.
 
 #include <algorithm>
+#include <ranges>
 #include <sstream>
-#include <iomanip>
-#include <cstdarg>
 
 #include "common.h"
 #include "dagor.h"
@@ -111,17 +110,6 @@ std::string wideToStr(std::wstring_view sv)
   std::string res(len, 0);
   WideCharToMultiByte(CP_UTF8, 0, sv.data(), (int)sv.size(), &res[0], len, NULL, NULL);
   return res;
-}
-
-
-std::wstring format_str(const TCHAR *fmt, ...)
-{
-  va_list args;
-  va_start(args, fmt);
-  TSTR res;
-  res.vprintf(fmt, args);
-  va_end(args);
-  return std::wstring(res.data());
 }
 
 
@@ -244,23 +232,27 @@ fs::path get_cfg_filename(const TCHAR *cfg)
   return cfgPath;
 }
 
+fs::path resolve_tex_path(const wchar_t *name)
+{
+  const fs::path path(name);
+
+  // relative_path() drops the leading separators that operator/ would take for a root, keeping
+  // only the drive of dagor_path
+  return path.is_absolute() ? path : dagor_path / path.relative_path();
+}
+
 
 std::vector<std::wstring> split(std::wstring_view text, const wchar_t delim)
 {
-  std::vector<std::wstring> tokens;
-  tokens.reserve(std::count(text.begin(), text.end(), delim) + 1);
+  if (text.empty())
+    return {std::wstring()};
 
-  for (size_t pos = 0;;)
-  {
-    const size_t end = text.find(delim, pos);
-    if (end == std::wstring_view::npos)
-    {
-      tokens.emplace_back(text.substr(pos));
-      return tokens;
-    }
-    tokens.emplace_back(text.substr(pos, end - pos));
-    pos = end + 1;
-  }
+  std::vector<std::wstring> tokens;
+  tokens.reserve(std::ranges::count(text, delim) + 1);
+
+  for (auto sub : text | std::views::split(std::views::single(delim)))
+    tokens.emplace_back(sub.begin(), sub.end());
+  return tokens;
 }
 
 std::wstring replace_all(std::wstring str, std::wstring_view from, std::wstring_view to)
@@ -337,30 +329,34 @@ std::wstring trim_params(std::wstring_view from)
   return s;
 }
 
-std::string escape_string(std::string_view input)
+std::string escape_json_string(std::string_view input)
 {
-  std::ostringstream escaped;
+  static const char hex_digits[] = "0123456789abcdef";
+
+  std::string escaped;
+  escaped.reserve(input.size());
+
   for (unsigned char ch : input)
     switch (ch)
     {
-      case '\\': escaped << "\\\\"; break;
-      case '\"': escaped << "\\\""; break;
-      case '\'': escaped << "\\\'"; break;
-      case '\n': escaped << "\\n"; break;
-      case '\r': escaped << "\\r"; break;
-      case '\t': escaped << "\\t"; break;
-      case '\b': escaped << "\\b"; break;
-      case '\f': escaped << "\\f"; break;
-      case '\v': escaped << "\\v"; break;
-      case '\a': escaped << "\\a"; break;
-      case '\?': escaped << "\\?"; break;
+      case '\\': escaped += "\\\\"; break;
+      case '\"': escaped += "\\\""; break;
+      case '\b': escaped += "\\b"; break;
+      case '\f': escaped += "\\f"; break;
+      case '\n': escaped += "\\n"; break;
+      case '\r': escaped += "\\r"; break;
+      case '\t': escaped += "\\t"; break;
       default:
-        // Handle non-printable characters using hex codes
-        if (ch < 32 || ch > 126)
-          escaped << "\\x" << std::hex << std::setw(2) << std::setfill('0') << (int)ch;
+        if (ch < 0x20)
+        {
+          escaped += "\\u00";
+          escaped += hex_digits[ch >> 4];
+          escaped += hex_digits[ch & 0xf];
+        }
         else
-          escaped << ch;
+          escaped += ch;
         break;
     }
-  return escaped.str();
+
+  return escaped;
 }

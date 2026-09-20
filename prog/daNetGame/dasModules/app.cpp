@@ -9,6 +9,12 @@
 
 MAKE_TYPE_FACTORY(sceneload::UserGameModeContext, sceneload::UserGameModeContext);
 
+// the renderer publishes it and the das AOT does not link the renderer, so the
+// storage sits with the binding: every game's AOT then reads the default
+static bool loading_splash_opens_onto_game_flag = false;
+void set_loading_splash_opens_onto_game(bool opens) { loading_splash_opens_onto_game_flag = opens; }
+bool loading_splash_opens_onto_game() { return loading_splash_opens_onto_game_flag; }
+
 namespace bind_dascript
 {
 struct UserGameModeContextAnnotation : das::ManagedStructureAnnotation<sceneload::UserGameModeContext, false>
@@ -38,6 +44,9 @@ public:
 
     das::addExtern<DAS_BIND_FUN(get_exe_version_str)>(*this, lib, "get_exe_version_str", das::SideEffects::accessExternal,
       "::get_exe_version_str");
+
+    das::addExtern<DAS_BIND_FUN(::loading_splash_opens_onto_game)>(*this, lib, "loading_splash_opens_onto_game",
+      das::SideEffects::accessExternal, "::loading_splash_opens_onto_game");
 
     das::addExtern<DAS_BIND_FUN(app_profile_get_app_id)>(*this, lib, "get_app_id", das::SideEffects::accessExternal,
       "::app_profile_get_app_id");

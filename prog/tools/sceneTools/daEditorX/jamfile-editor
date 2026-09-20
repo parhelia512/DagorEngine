@@ -145,7 +145,6 @@ UseProgLibs =
   tools/sceneTools/daEditorX/ecsEditor
   tools/sceneTools/daEditorX/Environment
   tools/sceneTools/daEditorX/Collision
-  tools/sceneTools/daEditorX/Collision/bullet_write
   tools/sceneTools/daEditorX/ScnExport
   tools/sceneTools/daEditorX/ssView
   tools/sceneTools/daEditorX/binSceneView
@@ -251,6 +250,7 @@ include $(Root)/$(Location)/_dng_libs.jam ;
 
 include $(Root)/prog/gameLibs/daeditorPlotDebug/_lib.jam ;
 include $(Root)/prog/gameLibs/imgui_daeditor/_lib.jam ;
+include $(Root)/prog/gameLibs/voxelizedMedia/_lib.jam ;
 
 gamePulls_action = make_module_pull_cpp ;
 Sources += gamePulls.jamvar ;

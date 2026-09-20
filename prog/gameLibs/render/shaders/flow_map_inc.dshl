@@ -78,14 +78,14 @@ macro USE_WATER_FLOWMAP(code)
       float2 flowmapSample = float2(0, 0);
 
       float2 flowmapUV = worldPos.xz * world_to_flowmap.xy + world_to_flowmap.zw;
-      if (all(flowmapUV >= 0 && flowmapUV <= 1))
+      if (all(and(flowmapUV >= 0, flowmapUV <= 1)))
       {
         float2 flowmapVec = tex2Dlod(water_flowmap_tex, float4(flowmapUV, 0, 0)).xy - 0.5;
         flowmapSample += flowmapVec * water_flowmap_strength.x;
       }
 
       float2 flowmapUVAdd0 = worldPos.xz * world_to_flowmap_add_0.xy + world_to_flowmap_add_0.zw;
-      if (all(flowmapUVAdd0 >= 0 && flowmapUVAdd0 <= 1))
+      if (all(and(flowmapUVAdd0 >= 0, flowmapUVAdd0 <= 1)))
       {
         float flowmapStrengthAdd0 = saturate(viewDist * water_flowmap_strength_add_0.x + water_flowmap_strength_add_0.y) * water_flowmap_strength_add_0.z;
         float2 flowmapSampleAdd0 = tex2Dlod(water_flowmap_tex_add_0, float4(flowmapUVAdd0, 0, 0)).xy;
@@ -97,7 +97,7 @@ macro USE_WATER_FLOWMAP(code)
         if (water_flowmap_cascades >= 3)
         {
           float2 flowmapUVAdd2 = worldPos.xz * world_to_flowmap_add_2.xy + world_to_flowmap_add_2.zw;
-          if (all(flowmapUVAdd2 >= 0 && flowmapUVAdd2 <= 1))
+          if (all(and(flowmapUVAdd2 >= 0, flowmapUVAdd2 <= 1)))
           {
             float2 flowmapSampleAdd2 = tex2Dlod(water_flowmap_tex_add_2, float4(flowmapUVAdd2, 0, 0)).xy;
             flowmapSampleAdd2 *= saturate(2 - 2 * length(flowmapUVAdd2 * 2 - 1));
@@ -127,7 +127,7 @@ macro USE_WATER_FLOWMAP(code)
       {
         float flowmapSample = 0;
         float2 flowmapUVAdd1 = worldPos.xz * world_to_flowmap_add_1.xy + world_to_flowmap_add_1.zw;
-        if (all(flowmapUVAdd1 >= 0 && flowmapUVAdd1 <= 1))
+        if (all(and(flowmapUVAdd1 >= 0, flowmapUVAdd1 <= 1)))
         {
           float flowmapStrengthAdd1 = water_flowmap_strength_add_1.w;
           float flowmapSampleAdd1 = tex2Dlod(water_flowmap_tex_blur, float4(flowmapUVAdd1, 0, 0)).x;
@@ -139,7 +139,7 @@ macro USE_WATER_FLOWMAP(code)
           if (water_flowmap_cascades >= 3)
           {
             float2 flowmapUVAdd2 = worldPos.xz * world_to_flowmap_add_2.xy + world_to_flowmap_add_2.zw;
-            if (all(flowmapUVAdd2 >= 0 && flowmapUVAdd2 <= 1))
+            if (all(and(flowmapUVAdd2 >= 0, flowmapUVAdd2 <= 1)))
             {
               float flowmapSampleAdd2 = tex2Dlod(water_flowmap_tex_blur, float4(flowmapUVAdd2, 0, 0)).y;
               flowmapSampleAdd2 *= saturate(2 - 2 * length(flowmapUVAdd2 * 2 - 1));
@@ -161,7 +161,7 @@ macro USE_WATER_FLOWMAP(code)
         if (water_flowmap_cascades >= 3)
         {
           float2 flowmapUVAdd2 = worldPos.xz * world_to_flowmap_add_2.xy + world_to_flowmap_add_2.zw;
-          if (all(flowmapUVAdd2 >= 0 && flowmapUVAdd2 <= 1))
+          if (all(and(flowmapUVAdd2 >= 0, flowmapUVAdd2 <= 1)))
           {
             float flowmapSampleAdd2 = tex2Dlod(water_flowmap_tex_blur, float4(flowmapUVAdd2, 0, 0)).y;
             float2 flowmapNormalAdd2;
@@ -245,7 +245,7 @@ macro USE_WATER_FLOWMAP_FOAM()
       if (water_flowmap_foam_sample_mask & FLOWMAP_CASCADE_2)
       {
         float2 flowmapUVAdd1 = worldPos.xz * world_to_flowmap_add_1.xy + world_to_flowmap_add_1.zw;
-        if (all(flowmapUVAdd1 >= 0 && flowmapUVAdd1 <= 1))
+        if (all(and(flowmapUVAdd1 >= 0, flowmapUVAdd1 <= 1)))
         {
           float flowmapStrengthAdd1 = useDistanceFading ? saturate(viewDist * water_flowmap_strength_add_1.x + water_flowmap_strength_add_1.y) : 1;
           flowmapStrengthAdd1 *= water_flowmap_strength_add_1.w;
@@ -258,7 +258,7 @@ macro USE_WATER_FLOWMAP_FOAM()
       if (water_flowmap_foam_sample_mask & FLOWMAP_CASCADE_3)
       {
         float2 flowmapUVAdd2 = worldPos.xz * world_to_flowmap_add_2.xy + world_to_flowmap_add_2.zw;
-        if (all(flowmapUVAdd2 >= 0 && flowmapUVAdd2 <= 1))
+        if (all(and(flowmapUVAdd2 >= 0, flowmapUVAdd2 <= 1)))
         {
           float flowmapSampleAdd2 = tex2Dlod(water_flowmap_tex_add_2, float4(flowmapUVAdd2, 0, 0)).z;
           flowmapSampleAdd2 *= saturate(2 - 2 * length(flowmapUVAdd2 * 2 - 1));

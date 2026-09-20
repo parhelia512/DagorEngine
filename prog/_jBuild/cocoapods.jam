@@ -25,7 +25,7 @@ actions together quietly fetch_cocoapod
 {
 #async
   echo * fetching CocoaPod $(pod)/$(pod_ver)
-  call $(PYTHON_EXE) $(Root)/prog/_jBuild/_scripts/fetch_cocoapod.py --pod $(pod) --pod-version $(pod_ver) --cache-dir $(cache_dir) --platform $(pod_plat) --arch $(pod_arch) $(pod_extra)
+  call $(PYTHON_EXE) $(Root)/prog/_jBuild/_scripts/fetch_cocoapod.py --pod $(pod) --pod-version $(pod_ver) --cache-dir $(cache_dir) --platform $(pod_plat) --arch $(pod_arch) --slice $(slice) $(pod_extra)
   if errorlevel 1 goto failed
   if not exist $(1) goto failed
   goto end
@@ -41,16 +41,17 @@ actions together quietly fetch_cocoapod
 # that will contain its frameworks/bundles/static libs;
 # source_url overrides the podspec 'source' (for pods with no binary archive
 # on the CocoaPods trunk, e.g. the Firebase distribution zip)
-#   params: ( pod : version : expected_framework_names : source_url )
+# linkage ("static"/"dynamic") forces the variant for pods that ship both a
+# Static/ and a Dynamic/ framework (e.g. FBAudienceNetwork); empty = "auto",
+# which prefers the Static framework. NOTE: "dynamic" only *links* the dylib
+# via CocoaPodFramework - it is NOT embedded into the app bundle, so a consumer
+# choosing "dynamic" must ALSO call CocoaPodEmbedFramework on it or the app will
+# fail to load at runtime (@rpath dyld error). Static needs no embedding.
+#   params: ( pod : version : expected_framework_names : source_url : linkage )
 rule MakeCocoaPodAvailable
 {
   CocoaPodsCacheDir ?= $(_OutputRoot)/cocoapods ;
-  # packages pre-downloaded to devtools are used instead of downloading;
-  # only prepared slice dirs are written to $(CocoaPodsCacheDir)
   CocoaPodsPrebuiltDir ?= $(_DEVTOOL)/ios_frameworks ;
-  # downloads are forbidden by default: builds must use packages from
-  # $(CocoaPodsPrebuiltDir); a developer can allow fetching from the pod
-  # repositories locally with jam -sCocoaPodsAllowDownload=yes
   CocoaPodsAllowDownload ?= no ;
 
   local plat = ios ;
@@ -63,6 +64,7 @@ rule MakeCocoaPodAvailable
 
   local slice = $(plat)-$(arch) ;
   if $(PlatformArch) = i386 { slice = $(slice)-simulator ; }
+  if $(5) = static || $(5) = dynamic { slice = $(slice)-$(5) ; }
 
   local fw_dir = $(CocoaPodsCacheDir)/$(1)/$(2)/$(slice) ;
   local stamp = $(fw_dir)/.jam-ready ;
@@ -73,6 +75,7 @@ rule MakeCocoaPodAvailable
 
     if $(3) { extra += --frameworks $(3) ; }
     if $(4) { extra += --source-url $(4) ; }
+    if $(5) { extra += --linkage $(5) ; }
 
     pod       on $(stamp) = $(1) ;
     pod_ver   on $(stamp) = $(2) ;
@@ -80,6 +83,9 @@ rule MakeCocoaPodAvailable
     pod_plat  on $(stamp) = $(plat) ;
     pod_arch  on $(stamp) = $(arch) ;
     pod_extra on $(stamp) = $(extra) ;
+    # the script takes the slice name from us (single source of truth) rather
+    # than recomputing it; platform/arch/variant still ride in $(extra)
+    slice     on $(stamp) = $(slice) ;
     fetch_cocoapod $(stamp) ;
   }
 
@@ -114,8 +120,11 @@ rule ProcessCocoaPods
       if $(s) { frameworks += $(s[1]) ; rest = $(s[2]) ; } else { frameworks += $(rest) ; rest = ; }
     }
 
-    # CocoaPodSourceUrl_<Pod> overrides the podspec source archive if set
-    local fw_dir = [ MakeCocoaPodAvailable $(m[1]) : $(m[2]) : $(frameworks) : $(CocoaPodSourceUrl_$(m[1])) ] ;
+    # CocoaPodSourceUrl_<Pod> overrides the podspec source archive if set;
+    # CocoaPodLinkage_<Pod> ("static"/"dynamic") forces the framework variant.
+    # "dynamic" is link-only here - it also needs CocoaPodEmbedFramework to ship
+    # in the app bundle (see the MakeCocoaPodAvailable note above).
+    local fw_dir = [ MakeCocoaPodAvailable $(m[1]) : $(m[2]) : $(frameworks) : $(CocoaPodSourceUrl_$(m[1])) : $(CocoaPodLinkage_$(m[1])) ] ;
 
     CPPopt += -F$(fw_dir) ;
 
@@ -162,7 +171,6 @@ rule CocoaPodEmbedFramework
 actions together quietly copy_pod_res_bundle
 {
 #async
-  if not exist $(src) echo * no resource bundle for $(1:B), skipped
   if exist $(src) echo * copy resource bundle to: $(1)
   if exist $(src) call $(PYTHON_EXE) $(Root)/prog/_jBuild/iOS/copy_framework.py $(src) $(1)
 }

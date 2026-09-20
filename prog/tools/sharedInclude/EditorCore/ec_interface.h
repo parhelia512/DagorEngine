@@ -940,6 +940,8 @@ public:
   virtual void restoreEditorColliders() const = 0;
   virtual float getMaxTraceDistance() const = 0;
   virtual const EditorWorkspace &getBaseWorkspace() = 0;
+  // Returns the named VFS mount for the test script directory of the app (e.g. "%asset_viewer_tests") or null.
+  virtual const char *getTestScriptMount() const { return nullptr; }
 
   virtual void setShowMessageAt(int x, int y, const SimpleString &msg) = 0;
   virtual void showMessageAt() = 0;

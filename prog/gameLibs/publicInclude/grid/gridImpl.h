@@ -41,7 +41,10 @@ struct GridConvexPlanesSoA
   // The normal is rotated as a vector, as v_transform_plane does, and then renormalized, which
   // v_transform_plane does not: testSphere weighs a distance against a radius, so a plane equation
   // still carrying a uniform scale s would measure every distance s times too large and reject
-  // spheres that do intersect. Non-uniform scale is unsupported here as it is there.
+  // spheres that do intersect. Input planes are unit-normalized first for the same reason: a scale
+  // already baked into them (e.g. a scaled tm given to construct_convex_from_frustum) would
+  // otherwise mis-scale d through the renormalization below, which compensates the query tm only.
+  // Non-uniform scale is unsupported here as it is in v_transform_plane.
   __forceinline void transformToWorld(mat44f_cref tm)
   {
     // mXY = column X, component Y; all 12 are loop invariant, so they are hoisted out of the batches
@@ -51,6 +54,14 @@ struct GridConvexPlanesSoA
     vec4f tx = v_splat_x(tm.col3), ty = v_splat_y(tm.col3), tz = v_splat_z(tm.col3);
     for (int i = 0; i < 2; ++i)
     {
+      vec4f llenSq = v_madd(nz[i], nz[i], v_madd(ny[i], ny[i], v_mul(nx[i], nx[i])));
+      // a degenerate zero-length normal keeps scale 1: the world-side eps clamp below then
+      // collapses its d, so the plane passes everything instead of rejecting everything
+      vec4f linvLen = v_sel(V_C_ONE, v_rsqrt(v_max(llenSq, V_C_EPS_VAL)), v_cmp_gt(llenSq, V_C_EPS_VAL));
+      nx[i] = v_mul(nx[i], linvLen);
+      ny[i] = v_mul(ny[i], linvLen);
+      nz[i] = v_mul(nz[i], linvLen);
+      pd[i] = v_mul(pd[i], linvLen);
       vec4f wx = v_madd(m20, nz[i], v_madd(m10, ny[i], v_mul(m00, nx[i])));
       vec4f wy = v_madd(m21, nz[i], v_madd(m11, ny[i], v_mul(m01, nx[i])));
       vec4f wz = v_madd(m22, nz[i], v_madd(m12, ny[i], v_mul(m02, nx[i])));
@@ -369,7 +380,8 @@ __forceinline auto grid_find_in_transformed_box_by_bounding_impl(const Holder &g
     __forceinline bool checkBoxBounding(bbox3f bbox, bbox3f query_box) const { return v_bbox3_test_box_intersect(bbox, query_box); }
     __forceinline bool checkObjectBounding(vec4f wbsph, bbox3f query_bbox) const
     {
-      if (DAGOR_UNLIKELY(v_bbox3_test_pt_inside(query_bbox, wbsph)))
+      vec4f objRad = v_splat_w(wbsph);
+      if (DAGOR_UNLIKELY(v_bbox3_test_sph_intersect(query_bbox, wbsph, v_mul_x(objRad, objRad))))
       {
         if (DAGOR_UNLIKELY(!itm))
         {
@@ -377,7 +389,6 @@ __forceinline auto grid_find_in_transformed_box_by_bounding_impl(const Holder &g
           v_mat44_inverse43(mat44, mat44);
         }
         vec3f lpos = v_mat44_mul_vec3p(mat44, wbsph);
-        vec4f objRad = v_splat_w(wbsph);
         vec4f distSq = v_length3_sq_x(v_add(v_max(v_sub(lbbox.bmin, lpos), v_zero()), v_max(v_sub(lpos, lbbox.bmax), v_zero())));
         return DAGOR_UNLIKELY(v_test_vec_x_le(distSq, v_mul_x(objRad, objRad)));
       }

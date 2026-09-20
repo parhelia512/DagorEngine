@@ -28,6 +28,9 @@
 #include <util/dag_delayedAction.h>
 #include <winGuiWrapper/wgw_dialogs.h>
 #include <imgui/imgui.h>
+#include <EASTL/sort.h>
+#include <EASTL/hash_map.h>
+#include <EASTL/hash_set.h>
 
 using PropPanel::DragAndDropResult;
 using PropPanel::ROOT_MENU_ITEM;
@@ -426,7 +429,9 @@ void CompositeEditor::fillCompositeTree()
     if (reloadRefreshType == CompositeEditorRefreshType::EntityAndCompositeEditor)
     {
       fillCompositeTreeInternal(true);
+      getSelectedTreeDataNodes(selectedTreeDataNodes);
       fillCompositePropPanel();
+      updateGizmo();
     }
     else if (reloadRefreshType == CompositeEditorRefreshType::EntityAndTransformation && compositePropPanel)
       compositePropPanel->updateTransformParams(treeData, selectedTreeDataNode);
@@ -468,76 +473,114 @@ bool CompositeEditor::canParentSelectedTreeDataNodes() const
   dag::Vector<PropPanel::TLeafHandle> items;
   tree->getSelectedItems(items);
   const unsigned int selectedDataBlockId = getSelectedTreeNodeDataBlockId();
+  bool hasReparentableNode = false;
   for (int i = 0; i < items.size(); ++i)
   {
     CompositeEditorTreeDataNode *multiSelectedNode = static_cast<CompositeEditorTreeDataNode *>(tree->getItemData(items[i]));
     if (multiSelectedNode && multiSelectedNode != selectedTreeDataNode)
+    {
       if (multiSelectedNode->isAncestorOfNode(selectedDataBlockId))
         return false;
+
+      if (!multiSelectedNode->isEntBlock())
+        hasReparentableNode = true;
+    }
   }
-  return true;
+  return hasReparentableNode;
 }
+
+namespace
+{
+
+struct NodeInfo
+{
+  CompositeEditorTreeDataNode *parent = nullptr;
+  int indexInParent = -1;
+};
+
+} // namespace
 
 void CompositeEditor::makeSelectedParentRelation()
 {
   if (!canParentSelectedTreeDataNodes())
     return;
 
-  dag::Vector<unsigned> dataBlockIds;
-  unsigned parentDataBlockId;
-  getSelectedTreeNodeDataBlockIds(dataBlockIds, parentDataBlockId);
-
-  CompositeEditorTreeDataNode *newParent = getTreeNodeByDataBlockId(parentDataBlockId);
+  CompositeEditorTreeDataNode *newParent = selectedTreeDataNode;
   if (!newParent)
     return;
+  int newIndex = newParent->nodeCount();
 
   beginUndo(true);
 
-  // Rebuild selection from scratch: old pointers become dangling after nodes are erased below.
-  selectedTreeDataNodes.clear();
-
-  int reparented = 0;
-  for (unsigned dataBlockId : dataBlockIds)
+  int count = selectedTreeDataNodes.size();
+  dag::Vector<CompositeEditorTreeDataNode *> nodesReparented(count, nullptr);
+  dag::Vector<NodeInfo> nodeInfo(count);
+  eastl::hash_map<CompositeEditorTreeDataNode *, int> nodeSelectionOrder;
+  for (int i = 0; i < count; ++i)
   {
-    if (dataBlockId == IDataBlockIdHolder::invalid_id || dataBlockId == parentDataBlockId)
+    CompositeEditorTreeDataNode *node = selectedTreeDataNodes[i];
+    if (!node || node == newParent || node->isEntBlock())
       continue;
 
-    CompositeEditorTreeDataNode *block = getTreeNodeByDataBlockId(dataBlockId);
-    if (!block)
+    int index = -1;
+    CompositeEditorTreeDataNode *parent = CompositeEditorTreeData::getTreeDataNodeParent(*node, treeData.rootNode, index);
+    if (!parent)
       continue;
 
-    int nodeIndex = -1;
-    CompositeEditorTreeDataNode *oldParent = CompositeEditorTreeData::getTreeDataNodeParent(*block, treeData.rootNode, nodeIndex);
-    if (!oldParent || oldParent == newParent)
-    {
-      selectedTreeDataNodes.push_back(block);
-      continue;
-    }
-
-    recalcMatrixInParentBase(oldParent, block, newParent);
-
-    DataBlock cloneDataBlock;
-    CompositeEditorTreeData::convertTreeDataToDataBlock(*block, cloneDataBlock);
-    eastl::unique_ptr<CompositeEditorTreeDataNode> clonedTreeDataNode = eastl::make_unique<CompositeEditorTreeDataNode>();
-
-    CompositeEditorTreeData::convertDataBlockToTreeData(cloneDataBlock, *clonedTreeDataNode);
-    newParent->nodes.insert(newParent->nodes.end(), std::move(clonedTreeDataNode));
-
-    selectedTreeDataNodes.push_back(newParent->nodes.back().get());
-
-    oldParent->nodes.erase(oldParent->nodes.begin() + nodeIndex);
-    oldParent->convertSingleRandomEntityNodeToRegularNode(oldParent == &treeData.rootNode);
-
-    reparented++;
+    nodesReparented[i] = node;
+    nodeInfo[i] = {parent, index};
+    nodeSelectionOrder[node] = i;
   }
 
-  const bool nodesReparented = reparented > 0;
-  if (nodesReparented)
-    updateAssetFromTree(CompositeEditorRefreshType::EntityAndCompositeEditor);
-  else
-    selectedTreeDataNodes.clear();
+  dag::Vector<int> reparentOrder;
+  CompositeEditorTreeData::traverseDepthFirst(treeData.rootNode, [&](CompositeEditorTreeDataNode &node, int /*order*/) {
+    auto it = nodeSelectionOrder.find(&node);
+    if (it != nodeSelectionOrder.end())
+      reparentOrder.push_back(it->second);
+  });
 
-  endUndo("Composit Editor: Making parent relation(s)", /*accept = */ nodesReparented);
+  dag::Vector<CompositeEditorTreeDataNode *> parentsToConvert;
+  int reparentCount = 0;
+  // Reverse pre-order: children and higher-index siblings first, keeping indexInParent valid for each erase.
+  for (int i = reparentOrder.size() - 1; i >= 0; --i)
+  {
+    int idx = reparentOrder[i];
+    CompositeEditorTreeDataNode *node = nodesReparented[idx];
+    CompositeEditorTreeDataNode *oldParent = nodeInfo[idx].parent;
+    if (oldParent == newParent)
+      continue;
+
+    int nodeIndex = nodeInfo[idx].indexInParent;
+
+    recalcMatrixInParentBase(oldParent, node, newParent);
+
+    // Move the node itself to its new parent, keeping the original pointer valid.
+    newParent->nodes.insert(newParent->nodes.begin() + newIndex, std::move(oldParent->nodes[nodeIndex]));
+
+    oldParent->nodes.erase(oldParent->nodes.begin() + nodeIndex);
+    parentsToConvert.push_back(oldParent);
+
+    reparentCount++;
+  }
+
+  for (CompositeEditorTreeDataNode *parent : parentsToConvert)
+  {
+    // Skip conversion if the sole remaining ent child is still selected.
+    if (parent->nodeCount() == 1 && parent->nodes[0]->isEntBlock())
+    {
+      const CompositeEditorTreeDataNode *entNode = parent->nodes[0].get();
+      if (selectedTreeDataNode == entNode ||
+          eastl::find(selectedTreeDataNodes.begin(), selectedTreeDataNodes.end(), entNode) != selectedTreeDataNodes.end())
+        continue;
+    }
+    parent->convertSingleRandomEntityNodeToRegularNode(parent == &treeData.rootNode);
+  }
+
+  const bool reparented = reparentCount > 0;
+  if (reparented)
+    updateAssetFromTree(CompositeEditorRefreshType::EntityAndCompositeEditor);
+
+  endUndo("Composit Editor: Making parent relation(s)", /*accept = */ reparented);
 }
 
 bool CompositeEditor::hasSelectedParentRelation() const
@@ -545,14 +588,12 @@ bool CompositeEditor::hasSelectedParentRelation() const
   if (selectedTreeDataNode == nullptr)
     return false;
 
-  dag::Vector<unsigned> dataBlockIds;
-  unsigned parentDataBlockId;
-  getSelectedTreeNodeDataBlockIds(dataBlockIds, parentDataBlockId);
-  if (parentDataBlockId != IDataBlockIdHolder::invalid_id)
+  for (CompositeEditorTreeDataNode *node : selectedTreeDataNodes)
   {
-    for (unsigned dataBlockId : dataBlockIds)
+    // TODO: entity parent relation limitation, it is a complicated case to remove an entity block!
+    if (node && node != &treeData.rootNode && !node->isEntBlock())
     {
-      if (selectedTreeDataNode->hasChildNode(dataBlockId))
+      if (!treeData.rootNode.hasChildTreeDataNode(node))
         return true;
     }
   }
@@ -564,68 +605,79 @@ void CompositeEditor::clearSelectedParentRelation()
   if (!hasSelectedParentRelation())
     return;
 
-  dag::Vector<unsigned> dataBlockIds;
-  unsigned parentDataBlockId;
-  getSelectedTreeNodeDataBlockIds(dataBlockIds, parentDataBlockId);
-
-  if (selectedTreeDataNode == nullptr)
-    return;
-
-  int nodeIndex = -1;
-  CompositeEditorTreeDataNode *newParent =
-    CompositeEditorTreeData::getTreeDataNodeParent(*selectedTreeDataNode, treeData.rootNode, nodeIndex);
-  G_ASSERT(newParent);
-  if (!newParent)
-    return;
-
   beginUndo(true);
 
-  // Rebuild selection from scratch: old pointers become dangling after nodes are erased below.
-  selectedTreeDataNodes.clear();
-
-  int reparented = 0;
-  for (unsigned dataBlockId : dataBlockIds)
+  int count = selectedTreeDataNodes.size();
+  dag::Vector<CompositeEditorTreeDataNode *> nodesReparented(count, nullptr);
+  dag::Vector<NodeInfo> nodeOldInfo(count);
+  dag::Vector<NodeInfo> nodeNewInfo(count);
+  eastl::hash_map<CompositeEditorTreeDataNode *, int> nodeSelectionOrder;
+  for (int i = 0; i < count; ++i)
   {
-    if (dataBlockId == IDataBlockIdHolder::invalid_id || dataBlockId == selectedTreeDataNode->dataBlockId)
+    CompositeEditorTreeDataNode *node = selectedTreeDataNodes[i];
+    if (!node || node->isEntBlock())
       continue;
 
-    CompositeEditorTreeDataNode *block = getTreeNodeByDataBlockId(dataBlockId);
-    if (!block)
+    int index = -1;
+    CompositeEditorTreeDataNode *parent = CompositeEditorTreeData::getTreeDataNodeParent(*node, treeData.rootNode, index);
+    if (!parent)
       continue;
 
-    int oldIndex = -1;
-    CompositeEditorTreeDataNode *oldParent = CompositeEditorTreeData::getTreeDataNodeParent(*block, treeData.rootNode, oldIndex);
-    if (oldParent != selectedTreeDataNode)
-    {
-      selectedTreeDataNodes.push_back(block);
+    int newIndex = -1;
+    CompositeEditorTreeDataNode *newParent = CompositeEditorTreeData::getTreeDataNodeParent(*parent, treeData.rootNode, newIndex);
+    if (!newParent)
       continue;
-    }
 
-    recalcMatrixInParentBase(oldParent, block, newParent);
-
-    DataBlock cloneDataBlock;
-    CompositeEditorTreeData::convertTreeDataToDataBlock(*block, cloneDataBlock);
-    eastl::unique_ptr<CompositeEditorTreeDataNode> clonedTreeDataNode = eastl::make_unique<CompositeEditorTreeDataNode>();
-
-    CompositeEditorTreeData::convertDataBlockToTreeData(cloneDataBlock, *clonedTreeDataNode);
-    nodeIndex++;
-    newParent->nodes.insert(newParent->nodes.begin() + nodeIndex, std::move(clonedTreeDataNode));
-
-    selectedTreeDataNodes.push_back(newParent->nodes[nodeIndex].get());
-
-    oldParent->nodes.erase(oldParent->nodes.begin() + oldIndex);
-    oldParent->convertSingleRandomEntityNodeToRegularNode(oldParent == &treeData.rootNode);
-
-    reparented++;
+    nodesReparented[i] = node;
+    nodeOldInfo[i] = {parent, index};
+    nodeNewInfo[i] = {newParent, newIndex};
+    nodeSelectionOrder[node] = i;
   }
 
-  const bool nodesReparented = reparented > 0;
-  if (nodesReparented)
-    updateAssetFromTree(CompositeEditorRefreshType::EntityAndCompositeEditor);
-  else
-    selectedTreeDataNodes.clear();
+  dag::Vector<int> reparentOrder;
+  CompositeEditorTreeData::traverseDepthFirst(treeData.rootNode, [&](CompositeEditorTreeDataNode &node, int /*order*/) {
+    auto it = nodeSelectionOrder.find(&node);
+    if (it != nodeSelectionOrder.end())
+      reparentOrder.push_back(it->second);
+  });
 
-  endUndo("Composit Editor: Clearing parent relation(s)", /*accept = */ nodesReparented);
+  dag::Vector<CompositeEditorTreeDataNode *> parentsToConvert;
+  // Reverse pre-order: children and higher-index siblings first, keeping indexInParent valid for each erase.
+  for (int i = reparentOrder.size() - 1; i >= 0; --i)
+  {
+    int idx = reparentOrder[i];
+    CompositeEditorTreeDataNode *node = nodesReparented[idx];
+    const NodeInfo &oldInf = nodeOldInfo[idx];
+    const NodeInfo &newInf = nodeNewInfo[idx];
+
+    recalcMatrixInParentBase(oldInf.parent, node, newInf.parent);
+
+    // Move the node itself to its new parent, keeping the original pointer valid.
+    int newParentIndex = newInf.indexInParent + 1;
+    newInf.parent->nodes.insert(newInf.parent->nodes.begin() + newParentIndex, std::move(oldInf.parent->nodes[oldInf.indexInParent]));
+
+    oldInf.parent->nodes.erase(oldInf.parent->nodes.begin() + oldInf.indexInParent);
+    parentsToConvert.push_back(oldInf.parent);
+  }
+
+  for (CompositeEditorTreeDataNode *parent : parentsToConvert)
+  {
+    // Skip conversion if the sole remaining ent child is still selected.
+    if (parent->nodeCount() == 1 && parent->nodes[0]->isEntBlock())
+    {
+      const CompositeEditorTreeDataNode *entNode = parent->nodes[0].get();
+      if (selectedTreeDataNode == entNode ||
+          eastl::find(selectedTreeDataNodes.begin(), selectedTreeDataNodes.end(), entNode) != selectedTreeDataNodes.end())
+        continue;
+    }
+    parent->convertSingleRandomEntityNodeToRegularNode(parent == &treeData.rootNode);
+  }
+
+  const bool reparented = reparentOrder.size() > 0;
+  if (reparented)
+    updateAssetFromTree(CompositeEditorRefreshType::EntityAndCompositeEditor);
+
+  endUndo("Composit Editor: Clearing parent relation(s)", /*accept = */ reparented);
 }
 
 bool CompositeEditor::isTreeDataNodeSelected(CompositeEditorTreeDataNode *treeDataNode)
@@ -702,16 +754,17 @@ TMatrix CompositeEditor::calcParentMatrix(CompositeEditorTreeDataNode *parentTre
 void CompositeEditor::recalcMatrixInParentBase(CompositeEditorTreeDataNode *oldParent, CompositeEditorTreeDataNode *treeDataNode,
   CompositeEditorTreeDataNode *newParent)
 {
+  recalcMatrixInParentBase(treeDataNode, calcParentMatrix(oldParent), calcParentMatrix(newParent));
+}
+
+void CompositeEditor::recalcMatrixInParentBase(CompositeEditorTreeDataNode *treeDataNode, const TMatrix &oldParentMatrix,
+  const TMatrix &newParentMatrix)
+{
   TMatrix matrix = TMatrix::IDENT;
   if (treeDataNode->getUseTransformationMatrix())
     matrix = treeDataNode->getTransformationMatrix();
 
-  TMatrix oldParentMatrix = calcParentMatrix(oldParent);
-  matrix = oldParentMatrix * matrix;
-
-  TMatrix newParentMatrix = calcParentMatrix(newParent);
-  newParentMatrix = inverse(newParentMatrix);
-  matrix = newParentMatrix * matrix;
+  matrix = inverse(newParentMatrix) * oldParentMatrix * matrix;
 
   treeDataNode->setIdentityTransformationMatrix();
   const int paramIndex = treeDataNode->params.findParam("tm");
@@ -1168,75 +1221,79 @@ bool CompositeEditor::areMultipleNodesSelected() const
   return selectionCount > 1;
 }
 
-void CompositeEditor::deleteSelectedNodes(bool needsConfirmation)
+void CompositeEditor::deleteSelectedNodes()
 {
   if (!selectedTreeDataNode || isTreeDataNodeSelected(&treeData.rootNode))
     return;
 
-  const bool isMultiSelection = areMultipleNodesSelected();
-
-  int nodeIndex = -1;
-  CompositeEditorTreeDataNode *nodeParent = nullptr;
-  if (!isMultiSelection)
-  {
-    nodeParent = CompositeEditorTreeData::getTreeDataNodeParent(*selectedTreeDataNode, treeData.rootNode, nodeIndex);
-    G_ASSERT(nodeParent);
-    if (!nodeParent)
-      return;
-  }
-
-  if (needsConfirmation)
-  {
-    int dialogResult;
-    if (isMultiSelection)
-    {
-      dialogResult = wingw::message_box(wingw::MBS_EXCL | wingw::MBS_YESNO, "Delete selected nodes?",
-        "Are you sure that you want to delete every selected node?");
-    }
-    else
-    {
-      dialogResult = wingw::message_box(wingw::MBS_EXCL | wingw::MBS_YESNO, "Delete node?",
-        "Are you sure that you want to delete the selected node?");
-    }
-
-    if (dialogResult != wingw::MB_ID_YES)
-      return;
-  }
-
   beginUndo();
   endUndo("Composit Editor: Deleting node");
 
-  if (isMultiSelection)
+  // Collect in pre-order DFS, then reverse: descendants before ancestors.
+  eastl::hash_set<const CompositeEditorTreeDataNode *> toDeleteSet;
+  for (const CompositeEditorTreeDataNode *node : selectedTreeDataNodes)
+    if (node)
+      toDeleteSet.insert(node);
+  dag::Vector<CompositeEditorTreeDataNode *> nodesToDelete;
+  CompositeEditorTreeData::traverseDepthFirst(treeData.rootNode, [&](CompositeEditorTreeDataNode &node, int) {
+    if (toDeleteSet.count(&node))
+      nodesToDelete.push_back(&node);
+  });
+  eastl::reverse(nodesToDelete.begin(), nodesToDelete.end());
+
+  const bool isMultiSelection = nodesToDelete.size() > 1;
+
+  // Save the cache index before the node pointer becomes dangling after deletion.
+  const int selectedNodeCacheIdx = !isMultiSelection ? getSelectedTreeDataNodeIndex(selectedTreeDataNode->dataBlockId) : -1;
+  G_ASSERT(isMultiSelection || selectedNodeCacheIdx > -1);
+
+  dag::Vector<CompositeEditorTreeDataNode *> parentsToConvert;
+  int nodeIndex = -1;
+  CompositeEditorTreeDataNode *nodeParent = nullptr;
+  for (CompositeEditorTreeDataNode *node : nodesToDelete)
   {
-    dag::Vector<CompositeEditorTreeDataNode *> nodesToDelete;
-    getSelectedTreeDataNodes(nodesToDelete);
-    for (CompositeEditorTreeDataNode *node : nodesToDelete)
+    nodeParent = CompositeEditorTreeData::getTreeDataNodeParent(*node, treeData.rootNode, nodeIndex);
+    if (!nodeParent)
+      continue;
+
+    // Reparent non-ent children into the parent right after this node.
+    // Selected children are already gone at this point (bottom-up sort ensures they are processed first).
+    if (!node->nodes.empty())
     {
-      if (!node)
-        continue;
-
-      nodeParent = CompositeEditorTreeData::getTreeDataNodeParent(*node, treeData.rootNode, nodeIndex);
-      if (!nodeParent)
-        continue;
-
-      nodeParent->nodes.erase(nodeParent->nodes.begin() + nodeIndex);
-      nodeParent->convertSingleRandomEntityNodeToRegularNode(nodeParent == &treeData.rootNode);
+      const TMatrix nodeParentMatrix = calcParentMatrix(node);
+      const TMatrix newParentMatrix = calcParentMatrix(nodeParent);
+      int insertOffset = 1;
+      for (auto &childPtr : node->nodes)
+      {
+        if (childPtr->isEntBlock())
+          continue;
+        recalcMatrixInParentBase(childPtr.get(), nodeParentMatrix, newParentMatrix);
+        nodeParent->nodes.insert(nodeParent->nodes.begin() + nodeIndex + insertOffset, std::move(childPtr));
+        ++insertOffset;
+      }
     }
 
+    nodeParent->nodes.erase(nodeParent->nodes.begin() + nodeIndex);
+    // Defer the conversion of non-deleted parents until every node is processed
+    // (converting mid-loop may free still-scheduled ent siblings).
+    if (!toDeleteSet.count(nodeParent))
+      parentsToConvert.push_back(nodeParent);
+  }
+
+  for (CompositeEditorTreeDataNode *parent : parentsToConvert)
+    parent->convertSingleRandomEntityNodeToRegularNode(parent == &treeData.rootNode);
+
+  if (isMultiSelection)
+  {
     selectedTreeDataNode = nullptr;
     selectedTreeDataNodes.clear();
   }
   else
   {
-    const unsigned dataBlockId = selectedTreeDataNode->dataBlockId;
-    const int idx = getSelectedTreeDataNodeIndex(dataBlockId);
-    if (idx > -1)
-      selectedTreeDataNodes.erase(selectedTreeDataNodes.begin() + idx);
+    if (selectedNodeCacheIdx > -1)
+      selectedTreeDataNodes.erase(selectedTreeDataNodes.begin() + selectedNodeCacheIdx);
 
-    nodeParent->nodes.erase(nodeParent->nodes.begin() + nodeIndex);
-    nodeParent->convertSingleRandomEntityNodeToRegularNode(nodeParent == &treeData.rootNode);
-
-    if (nodeParent->nodes.size() > 0)
+    if (nodeParent && nodeParent->nodes.size() > 0)
       selectedTreeDataNode = nodeParent->nodes[nodeIndex >= nodeParent->nodes.size() ? (nodeIndex - 1) : nodeIndex].get();
     else
       selectedTreeDataNode = nodeParent;
@@ -1588,7 +1645,7 @@ void CompositeEditor::onClick(int pcb_id, PropPanel::ContainerPropertyControl *p
     {
       const int action = compositePropPanel->getInt(pcb_id);
       if (action == PropPanel::EXT_BUTTON_REMOVE)
-        deleteSelectedNodes(false);
+        deleteSelectedNodes();
     }
     else
     {
@@ -1815,28 +1872,6 @@ void CompositeEditor::onImguiDelayedCallback(void *user_data)
   updateAssetFromTree(refreshType);
 }
 
-void CompositeEditor::updateSelectedNodeTransform(const TMatrix &tm)
-{
-  G_ASSERT(selectedTreeDataNode);
-  if (!selectedTreeDataNode)
-    return;
-
-  // This function is only used by CompositeEditorGizmoClient, and that handles undo.
-  UndoSystem *undoSystem = get_app().getUndoSystem();
-  G_ASSERT(undoSystem && undoSystem->is_holding());
-
-  G_ASSERT(selectedTreeDataNode->getUseTransformationMatrix());
-  selectedTreeDataNode->params.setTm("tm", tm);
-
-  // updateAssetFromTree(CompositeEditorRefreshType::EntityAndTransformation) would not work here, it
-  // would not update the transformation properties on the panel because when this function is called
-  // preventUiUpdatesWhileUsingGizmo is set to true.
-  if (compositePropPanel)
-    compositePropPanel->updateTransformParams(treeData, selectedTreeDataNode);
-
-  updateAssetFromTree(CompositeEditorRefreshType::Entity);
-}
-
 void CompositeEditor::updateMultipleNodesTransforms(const dag::Vector<CompositeEditorTreeDataNode *> &nodes,
   const dag::Vector<TMatrix> &tms)
 {
@@ -1860,39 +1895,113 @@ void CompositeEditor::updateMultipleNodesTransforms(const dag::Vector<CompositeE
   updateAssetFromTree(CompositeEditorRefreshType::Entity);
 }
 
-void CompositeEditor::cloneSelectedNodeInternal(CompositeEditorRefreshType refreshType)
+bool CompositeEditor::cloneSelectedNodesInternal(CompositeEditorRefreshType refreshType,
+  dag::Vector<CompositeEditorTreeDataNode *> *out_clones_by_selection_idx)
 {
   // This function is only used internally, and undo should be handled by the caller!
   UndoSystem *undoSystem = get_app().getUndoSystem();
   G_ASSERT(undoSystem && undoSystem->is_holding());
 
-  int nodeIndex = -1;
-  CompositeEditorTreeDataNode *nodeParent =
-    CompositeEditorTreeData::getTreeDataNodeParent(*selectedTreeDataNode, treeData.rootNode, nodeIndex);
-  G_ASSERT(nodeParent);
-  if (!nodeParent)
-    return;
+  // Capture originals before modifying selectedTreeDataNodes.
+  dag::Vector<CompositeEditorTreeDataNode *> originalNodes = selectedTreeDataNodes;
+  CompositeEditorTreeDataNode *savedSelectedNode = selectedTreeDataNode;
+  selectedTreeDataNode = nullptr;
+  selectedTreeDataNodes.clear();
 
-  DataBlock cloneDataBlock;
-  CompositeEditorTreeData::convertTreeDataToDataBlock(*selectedTreeDataNode, cloneDataBlock);
+  const int count = (int)originalNodes.size();
+  dag::Vector<CompositeEditorTreeDataNode *> clonesBySelectionIndex(count, nullptr);
+  dag::Vector<eastl::unique_ptr<CompositeEditorTreeDataNode>> cloneStorage(count);
 
-  eastl::unique_ptr<CompositeEditorTreeDataNode> clonedTreeDataNode = eastl::make_unique<CompositeEditorTreeDataNode>();
-  CompositeEditorTreeData::convertDataBlockToTreeData(cloneDataBlock, *clonedTreeDataNode);
+  // Shallow-clone each selected node (no children) and collect their original parent.
+  dag::Vector<NodeInfo> nodeInfos(count);
+  for (int i = 0; i < count; ++i)
+  {
+    CompositeEditorTreeDataNode *node = originalNodes[i];
+    if (!node)
+      continue;
+    int nodeIndex = -1;
+    CompositeEditorTreeDataNode *parent = CompositeEditorTreeData::getTreeDataNodeParent(*node, treeData.rootNode, nodeIndex);
+    if (!parent)
+      continue;
+    nodeInfos[i] = {parent, nodeIndex};
+    auto clone = eastl::make_unique<CompositeEditorTreeDataNode>();
+    clone->params = node->params;
+    const char *blockName = node->params.getBlockName();
+    if (blockName && *blockName)
+      clone->params.changeBlockName(blockName);
+    clonesBySelectionIndex[i] = clone.get();
+    cloneStorage[i] = std::move(clone);
+  }
 
-  selectedTreeDataNode = clonedTreeDataNode.get();
-  nodeParent->nodes.insert(nodeParent->nodes.begin() + nodeIndex + 1, std::move(clonedTreeDataNode));
+  // Record which parent clone (if any) owns given cloned nodes.
+  dag::Vector<CompositeEditorTreeDataNode *> clonedParent(count, nullptr);
+  for (int i = 0; i < count; ++i)
+  {
+    if (!clonesBySelectionIndex[i])
+      continue;
+    for (int j = 0; j < count; ++j)
+      if (originalNodes[j] == nodeInfos[i].parent)
+      {
+        clonedParent[i] = clonesBySelectionIndex[j];
+        break;
+      }
+  }
 
-  updateAssetFromTree(refreshType);
+  // Attach each clone to its parent (clone) in descending indexInParent order.
+  // This re-attach to parent ordering ensures proper positioning in cloned and original parents as well.
+  dag::Vector<int> intoParentOrder;
+  for (int i = 0; i < count; ++i)
+    if (clonesBySelectionIndex[i])
+      intoParentOrder.push_back(i);
+  eastl::sort(intoParentOrder.begin(), intoParentOrder.end(),
+    [&](int a, int b) { return nodeInfos[a].indexInParent > nodeInfos[b].indexInParent; });
+
+  int treeModifications = 0;
+  for (int i : intoParentOrder)
+  {
+    if (clonedParent[i])
+    {
+      clonedParent[i]->nodes.insert(clonedParent[i]->nodes.begin(), std::move(cloneStorage[i]));
+    }
+    else
+    {
+      nodeInfos[i].parent->nodes.insert(nodeInfos[i].parent->nodes.begin() + nodeInfos[i].indexInParent + 1,
+        std::move(cloneStorage[i]));
+      ++treeModifications;
+    }
+  }
+
+  for (int i = 0; i < count; ++i)
+  {
+    if (!clonesBySelectionIndex[i])
+      continue;
+    selectedTreeDataNodes.push_back(clonesBySelectionIndex[i]);
+    if (originalNodes[i] == savedSelectedNode)
+      selectedTreeDataNode = clonesBySelectionIndex[i];
+  }
+
+  if (out_clones_by_selection_idx)
+    *out_clones_by_selection_idx = clonesBySelectionIndex;
+
+  if (treeModifications > 0)
+    updateAssetFromTree(refreshType);
+  else
+  {
+    selectedTreeDataNode = savedSelectedNode;
+    selectedTreeDataNodes = originalNodes;
+  }
+
+  return treeModifications > 0;
 }
 
-void CompositeEditor::cloneSelectedNode()
+void CompositeEditor::cloneSelectedNodes(dag::Vector<CompositeEditorTreeDataNode *> &out_clones_by_selection_idx)
 {
   G_ASSERT(selectedTreeDataNode);
   if (!selectedTreeDataNode)
     return;
 
-  // This function is only used by CompositeEditorGizmoClient, and that handles undo.
-  cloneSelectedNodeInternal(CompositeEditorRefreshType::Entity);
+  // Undo is handled by the caller (CompositeEditorGizmoClient).
+  cloneSelectedNodesInternal(CompositeEditorRefreshType::Entity, &out_clones_by_selection_idx);
 }
 
 void CompositeEditor::copySelectedNodeParams()
@@ -1937,16 +2046,19 @@ void CompositeEditor::pasteParamsToSelectedNode()
   endUndo("Composit Editor: paste node params");
 }
 
-void CompositeEditor::duplicateSelectedNode()
+void CompositeEditor::duplicateSelectedNodes()
 {
   if (!selectedTreeDataNode)
     return;
 
+  if (selectedTreeDataNodes.size() == 1 && isTreeDataNodeRootNode(selectedTreeDataNode))
+    return;
+
   beginUndo(true);
 
-  cloneSelectedNodeInternal(CompositeEditorRefreshType::EntityAndCompositeEditor);
+  const bool cloned = cloneSelectedNodesInternal(CompositeEditorRefreshType::EntityAndCompositeEditor, nullptr);
 
-  endUndo("Composit Editor: duplicate node");
+  endUndo("Composit Editor: duplicate node", cloned);
 }
 
 void CompositeEditor::setGizmo(IEditorCoreEngine::ModeType mode)
@@ -1969,7 +2081,7 @@ void CompositeEditor::updateGizmo()
   if (get_app().isGizmoOperationStarted())
     return;
 
-  gizmoClient.refreshEffectedNodes(selectedTreeDataNodes);
+  gizmoClient.refreshAffectedNodes(selectedTreeDataNodes);
   const bool canTransform = gizmoClient.hasAnyTransformableNode();
   const IEditorCoreEngine::ModeType oldMode = IEditorCoreEngine::get()->getGizmoModeType();
   const IEditorCoreEngine::ModeType newMode = canTransform ? lastSelectedGizmoMode : IEditorCoreEngine::ModeType::MODE_None;
@@ -2029,7 +2141,7 @@ void CompositeEditor::beginUndo(bool save_selection)
   CompositeEditorUndoParams *undoParams = new CompositeEditorUndoParams();
   undoParams->saveUndo(save_selection);
 
-  undoSystem->begin();
+  undoSystem->begin(true);
   undoSystem->put(undoParams);
 }
 
@@ -2061,6 +2173,8 @@ void CompositeEditor::loadFromUndo(const DataBlock &dataBlock, unsigned selected
   selectedTreeDataNodes.clear();
   for (unsigned dataBlockId : multi_selected_tree_node_data_block_ids)
   {
+    if (dataBlockId == IDataBlockIdHolder::invalid_id)
+      continue;
     CompositeEditorTreeDataNode *multiSelectedNode =
       CompositeEditorTreeData::getTreeDataNodeByDataBlockId(treeData.rootNode, dataBlockId);
     if (multiSelectedNode)

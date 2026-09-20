@@ -105,6 +105,8 @@ hlsl(code) {
     bool isFoliage;
     bool isFacingSun; // Dummy
     bool isCamoNet; // Dummy
+    bool isSkinMaterial; // To be used in SSSS
+    bool isTranslucent; // foliageSSS + GI backlight
   };
 
   ProcessedGbuffer processGbuffer(UnpackedGbuffer gbuf)
@@ -135,6 +137,8 @@ hlsl(code) {
     gbuffer.isGrass = gbuffer.isLandscape && gbuffer.material == SHADING_FOLIAGE;
     gbuffer.isFoliage = gbuffer.material == SHADING_FOLIAGE;
     gbuffer.isGlass = gbuffer.isFacingSun = gbuffer.isCamoNet = false;
+    gbuffer.isSkinMaterial = gbuffer.material == SHADING_SUBSURFACE && isSubSurfaceProfileValid(gbuffer.sss_profile) && gbuffer.translucency > 1.0/255;
+    gbuffer.isTranslucent = (isFoliageShader(gbuffer.material) || (isSubSurfaceShader(gbuffer.material) && gbuffer.sss_profile == SSS_PROFILE_NEUTRAL_TRANSLUCENT)) && gbuffer.translucency > 1.0/255;
     return gbuffer;
   }
 
@@ -211,29 +215,6 @@ endmacro
 
 macro PACK_UNPACK_GBUFFER()
   PACK_UNPACK_GBUFFER_BASE(ps)
-endmacro
-
-macro WRITE_GBUFFER_ALBEDO_AO()
-  PACK_UNPACK_GBUFFER()
-  hlsl (ps)
-  {
-    struct GBUFFER_OUTPUT
-    {
-      float4 albedo_ao : SV_Target0;
-    };
-
-    GBUFFER_OUTPUT write_gbuffer(PackedGbuffer gbuf)
-    {
-      GBUFFER_OUTPUT gbufOut;
-      gbufOut.albedo_ao = gbuf.albedo_ao;
-      return gbufOut;
-    }
-
-    GBUFFER_OUTPUT encode_gbuffer(UnpackedGbuffer gbuffer, float3 xyz, float4 screenPos)
-    {
-      return write_gbuffer(pack_gbuffer(gbuffer));
-    }
-  }
 endmacro
 
 macro WRITE_GBUFFER()

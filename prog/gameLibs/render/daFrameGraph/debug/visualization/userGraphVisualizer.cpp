@@ -36,7 +36,8 @@ constexpr float NODE_MIN_X_SIZE = 300.f;
 constexpr float NODE_MIN_Y_SIZE = 350.f;
 constexpr float NODE_Y_ANCHORS_START = 100.f;
 constexpr float NODE_ANCHORS_MARGIN = 5.f;
-constexpr float NODE_FOCUS_BORDER_WIDTH = 5.f;
+constexpr float NODE_OUTLINE_WIDTH = 10.f;
+constexpr ImVec2 NODE_OUTLINE_OFFSET = ImVec2{NODE_OUTLINE_WIDTH, NODE_OUTLINE_WIDTH};
 constexpr ImVec2 NODE_BORDER_PADDING = ImVec2{10.f, 15.f};
 
 constexpr ImVec2 RES_BLOCK_BORDER_PADDING = ImVec2{10.f, 10.f};
@@ -50,8 +51,6 @@ constexpr ImVec2 NAMESPACE_BORDER_PADDING = ImVec2{50.f, 50.f};
 constexpr ImVec2 NAMETAG_PADDING = ImVec2{5.f, 5.f};
 
 constexpr float BASE_DEP_WIDTH = 10.f;
-constexpr float RES_FOCUS_WIDTH = 2.0f * BASE_DEP_WIDTH;
-constexpr float DEP_INSPECT_WIDTH = 1.8f * BASE_DEP_WIDTH;
 constexpr float CYCLED_DEP_WIDTH = 1.6f * BASE_DEP_WIDTH;
 constexpr float DISABLED_DEP_WIDTH = 1.4f * BASE_DEP_WIDTH;
 
@@ -93,6 +92,7 @@ constexpr auto NODE_RENDER_REQ_POPUP = "node_render_reqs";
 constexpr auto NODE_BINDINGS_POPUP = "node_bindings";
 constexpr auto NODE_IDX_VTX_POPUP = "node_iv_bufs";
 constexpr auto EDGE_RESOURCES_POPUP = "edge_resources";
+constexpr auto HISTORY_EDGE_POPUP = "history_edge";
 constexpr auto NODE_CAPTURE_POPUP = "node_capture_range";
 
 
@@ -153,14 +153,6 @@ static DependencyTypeInfo &dependency_info_by_type(const DependencyType type)
 }
 
 
-Visualizer::Visualizer(InternalRegistry &int_registry, const DependencyData &dep_data, const intermediate::Graph &ir_graph,
-  const PassColoring &coloring) :
-  registry(int_registry), depData(dep_data), intermediateGraph(ir_graph), intermediatePassColoring(coloring)
-{
-  REGISTER_IMGUI_WINDOW(IMGUI_WINDOW_GROUP_FG2, IMGUI_USG_WIN_NAME, [&]() { this->draw(); });
-  REGISTER_IMGUI_WINDOW(IMGUI_WINDOW_GROUP_FG2, IMGUI_GPU_CAPTURE_WIN_NAME, [&]() { this->drawGpuCaptureWindow(); });
-}
-
 void Visualizer::draw()
 {
   if (ImGui::IsWindowCollapsed())
@@ -172,27 +164,27 @@ void Visualizer::draw()
   if (check_user_node_focus_request())
   {
     const auto focusNameId = get_user_node_focus_request();
-    if (nodeIsPresented(focusNameId))
+    if (isPresented(focusNameId))
     {
-      setFocusedNode(regNodesRepresent[focusNameId]);
-      centerOnFocusedNode();
+      setFocus(focusNameId);
+      centerOnFocus();
     }
   }
 
   if (check_user_resource_focus_request())
   {
     const auto focusResId = get_user_resource_focus_request();
-    if (resIsPresented(focusResId))
+    if (isPresented(focusResId))
     {
-      setFocusedResource(regResRepresent[focusResId]);
-      centerOnFocusedRes();
+      setFocus(focusResId);
+      centerOnFocus();
     }
   }
 
 
   hoverState.reset();
-  gpuCapture.nodeRowPopupOpenedThisFrame = false;
   hoverState.window = ImGui::IsWindowHovered();
+  gpuCapture.nodeRowPopupOpenedThisFrame = false;
 
 
   drawUI();
@@ -214,21 +206,19 @@ void Visualizer::drawUI()
           "Search for node...") &&
         focusedNodeIndex != UNKNOWN_INDEX)
     {
-      resetFocusedResource();
-      setFocusedNode(regNodesRepresent[nsNodeNameIds[focusedNodeIndex]]);
-      centerOnFocusedNode();
+      setFocus(nsNodeNameIds[focusedNodeIndex]);
+      centerOnFocus();
     }
-    hoverState.searchBox |= ImGui::IsItemHovered();
 
-    if (focusedNode.valid())
+    if (focusState.nodeValid())
     {
       ImGui::SameLine();
       if (ImGui::Button("Center on node"))
-        centerOnFocusedNode();
+        centerOnFocus();
 
       ImGui::SameLine();
       if (ImGui::Button("Reset node focus"))
-        resetFocusedNode();
+        clearFocus();
     }
   }
 
@@ -237,25 +227,23 @@ void Visualizer::drawUI()
           "Search for resource...") &&
         focusedResourceIndex != UNKNOWN_INDEX)
     {
-      resetFocusedNode();
-      setFocusedResource(regResRepresent[nsResNameIds[focusedResourceIndex]]);
-      centerOnFocusedRes();
+      setFocus(nsResNameIds[focusedResourceIndex]);
+      centerOnFocus();
     }
-    hoverState.searchBox |= ImGui::IsItemHovered();
 
-    if (focusedResource.valid())
+    if (focusState.resValid())
     {
       ImGui::SameLine();
       if (ImGui::Button("Center on resource"))
-        centerOnFocusedRes();
+        centerOnFocus();
 
       ImGui::SameLine();
       if (ImGui::Button("Reset resource focus"))
-        resetFocusedResource();
+        clearFocus();
 
       ImGui::SameLine();
       ImGuiDagor::EnumCombo("##resourceRenamesCombo", ResourceFocusType::All,
-        focusedResource.hasRenames ? ResourceFocusType::ResourceAndRenames : ResourceFocusType::Resource, focusedResource.type,
+        focusState.hasRenames ? ResourceFocusType::ResourceAndRenames : ResourceFocusType::Resource, focusState.focusType,
         &res_focus_name_by_type, ImGuiComboFlags_WidthFitPreview);
     }
   }
@@ -305,7 +293,7 @@ void Visualizer::drawUI()
 
     ImGui::SameLine();
     if (deselect_button("Deselect"))
-      inspectedDependency.reset();
+      clearInspectedDependency();
 
     fg_texture_visualization_imgui_line(registry);
 
@@ -331,7 +319,6 @@ void Visualizer::drawCanvas()
   if (!canvas.Begin("##scrolling_region", ImVec2(0, 0)))
     return;
 
-  hoverState.canvas = canvas.ViewRect().Contains(ImGui::GetMousePos());
   checkHovering();
 
   // here, we will perform draw, based on precalculated positions
@@ -352,7 +339,7 @@ void Visualizer::drawCanvas()
       for (const auto depId : disabledDependencies)
       {
         const auto &dep = registryDependencies[depId];
-        const auto resNameId = nameIdByResId(dep.resource);
+        const auto resNameId = getNameId(dep.resource);
         auto [fromOffset, fromSize] = layoutToUse.nodes[dep.from];
         auto [toOffset, toSize] = layoutToUse.nodes[dep.to];
 
@@ -402,10 +389,19 @@ void Visualizer::drawCanvas()
               const ImCubicBezierPoints spline = {leftAnchor, leftAnchor - ImVec2{1.f * wavesThird, HISTORY_WAVE_HEIGHT},
                 leftAnchor - ImVec2{2.f * wavesThird, -HISTORY_WAVE_HEIGHT}, leftAnchor - ImVec2{3.f * wavesThird, 0.f}};
 
+              if (inspectedDependency.depId == depId)
+                drawList->AddBezierCubic(spline.P0, spline.P1, spline.P2, spline.P3, RES_INSPECT_COLOR, 2.f * BASE_DEP_WIDTH);
               drawList->AddBezierCubic(spline.P0, spline.P1, spline.P2, spline.P3, depColor, BASE_DEP_WIDTH);
 
-              if (ImProjectOnCubicBezier(ImGui::GetIO().MousePos, spline).Distance < BASE_DEP_WIDTH)
-                hoverState.tooltip.aprintf(0, "history of: %s\n", getName(nameIdByResId(resId)));
+              // History waves are the lowest hover priority: never override a node or layout edge.
+              if (hoverState.node == NodeId::Invalid && hoverState.resource == ResourceId::Invalid &&
+                  ImProjectOnCubicBezier(ImGui::GetIO().MousePos, spline).Distance < BASE_DEP_WIDTH)
+              {
+                hoverState.tooltip.aprintf(0, "history of: %s\n", getName(getNameId(resId)));
+                hoverState.historyEdge = true;
+                hoverState.deps = {depId};
+                hoverState.resource = resId;
+              }
             }
 
             leftAnchor.y -= 3.f * BASE_DEP_WIDTH;
@@ -420,10 +416,14 @@ void Visualizer::drawCanvas()
               const ImCubicBezierPoints spline = {rightAnchor, rightAnchor + ImVec2{1.f * wavesThird, HISTORY_WAVE_HEIGHT},
                 rightAnchor + ImVec2{2.f * wavesThird, -HISTORY_WAVE_HEIGHT}, rightAnchor + ImVec2{3.f * wavesThird, 0.f}};
 
+              if (inspectedDependency.depId == depId)
+                drawList->AddBezierCubic(spline.P0, spline.P1, spline.P2, spline.P3, RES_INSPECT_COLOR, 2.f * BASE_DEP_WIDTH);
               drawList->AddBezierCubic(spline.P0, spline.P1, spline.P2, spline.P3, depColor, BASE_DEP_WIDTH);
 
-              if (ImProjectOnCubicBezier(ImGui::GetIO().MousePos, spline).Distance < BASE_DEP_WIDTH)
-                hoverState.tooltip.aprintf(0, "to next frame: %s\n", getName(nameIdByResId(resId)));
+              // The "to next frame" write has no previous-frame content to inspect, so the wave only labels it.
+              if (hoverState.node == NodeId::Invalid && hoverState.resource == ResourceId::Invalid &&
+                  ImProjectOnCubicBezier(ImGui::GetIO().MousePos, spline).Distance < BASE_DEP_WIDTH)
+                hoverState.tooltip.aprintf(0, "to next frame: %s\n", getName(getNameId(resId)));
             }
 
             rightAnchor.y -= 3.f * BASE_DEP_WIDTH;
@@ -450,7 +450,7 @@ void Visualizer::drawNodes(ImDrawList *draw_list, const CanvasLayout &layout)
       continue;
 
     const auto &node = userNodes[nodeId];
-    const auto nodeNameId = nameIdByNodeId(nodeId);
+    const auto nodeNameId = getNameId(nodeId);
     const auto nodeName = getName(nodeNameId);
     auto &nodeData = registry.nodes[node.regId];
 
@@ -473,25 +473,24 @@ void Visualizer::drawNodes(ImDrawList *draw_list, const CanvasLayout &layout)
       if (!nodeData.enabled)
         nodeFillColor = apply_alpha_coeff(nodeFillColor, 0.5f);
 
-      if (nodeId == focusedNode.id)
-        draw_list->AddRect(leftTopPos - ImVec2{NODE_FOCUS_BORDER_WIDTH, NODE_FOCUS_BORDER_WIDTH},
-          rightBottomPos + ImVec2{NODE_FOCUS_BORDER_WIDTH, NODE_FOCUS_BORDER_WIDTH}, FOCUS_COLOR, 4.0f, 0, NODE_FOCUS_BORDER_WIDTH);
-
-      if (nodeNameId == gpuCapture.captureStart.nameId)
-        draw_list->AddRect(leftTopPos - ImVec2{NODE_FOCUS_BORDER_WIDTH, NODE_FOCUS_BORDER_WIDTH},
-          rightBottomPos + ImVec2{NODE_FOCUS_BORDER_WIDTH, NODE_FOCUS_BORDER_WIDTH}, CAPTURE_START_COLOR, 4.0f, 0,
-          NODE_FOCUS_BORDER_WIDTH);
-
-      if (nodeNameId == gpuCapture.captureEnd.nameId)
-        draw_list->AddRect(leftTopPos - ImVec2{NODE_FOCUS_BORDER_WIDTH, NODE_FOCUS_BORDER_WIDTH},
-          rightBottomPos + ImVec2{NODE_FOCUS_BORDER_WIDTH, NODE_FOCUS_BORDER_WIDTH}, CAPTURE_END_COLOR, 4.0f, 0,
-          NODE_FOCUS_BORDER_WIDTH);
-
-      if (node.cycled)
-        draw_list->AddRect(leftTopPos - ImVec2{DISABLED_DEP_WIDTH, DISABLED_DEP_WIDTH},
-          rightBottomPos + ImVec2{DISABLED_DEP_WIDTH, DISABLED_DEP_WIDTH}, CYCLED_DEP_COLOR, 4.0f, 0, DISABLED_DEP_WIDTH);
-
       draw_list->AddRectFilled(leftTopPos, rightBottomPos, nodeFillColor, 4.0f);
+
+
+      dag::RelocatableFixedVector<ImU32, 4> colorsToDraw;
+
+      if (nodeId == focusState.nodeId)
+        colorsToDraw.push_back(FOCUS_COLOR);
+      if (nodeNameId == gpuCapture.captureStart.nameId)
+        colorsToDraw.push_back(CAPTURE_START_COLOR);
+      if (nodeNameId == gpuCapture.captureEnd.nameId)
+        colorsToDraw.push_back(CAPTURE_END_COLOR);
+      if (node.cycled)
+        colorsToDraw.push_back(CYCLED_DEP_COLOR);
+
+      for (uint8_t i = 0; i < colorsToDraw.size(); ++i)
+        draw_list->AddRect(leftTopPos - NODE_OUTLINE_OFFSET * (0.5f + i), rightBottomPos + NODE_OUTLINE_OFFSET * (0.5f + i),
+          colorsToDraw[i], 4.0f, 0, NODE_OUTLINE_WIDTH);
+
 
       if (accumChangedNodes[nodeNameId])
       {
@@ -541,7 +540,7 @@ void Visualizer::drawNodes(ImDrawList *draw_list, const CanvasLayout &layout)
       ImGui::SetCursorScreenPos(leftTopPos + NODE_BORDER_PADDING);
       ImGui::BeginGroup();
       {
-        const auto conditionalPopup = [this, draw_list, mouseRclick, nodeId = nodeId](const char *label, const bool condition,
+        const auto conditionalPopup = [this, draw_list, mouseRclick](const char *label, const bool condition,
                                         const char *popup_name = nullptr, const char *hover_msg = "R-click for details") {
           ImGui::TextUnformatted(label);
           ImGui::SameLine();
@@ -554,7 +553,7 @@ void Visualizer::drawNodes(ImDrawList *draw_list, const CanvasLayout &layout)
             hoverState.tooltip.printf(0, hover_msg);
             if (popup_name && mouseRclick)
             {
-              popupNode = nodeId;
+              setPopupState(hoverState);
               draw_list->ChannelsSetCurrent(CanvasChannels::SUSPEND);
               canvas.Suspend();
               ImGui::OpenPopup(popup_name);
@@ -693,7 +692,7 @@ void Visualizer::drawEdges(ImDrawList *draw_list, const CanvasLayout &layout)
     if (resId == ResourceId::Invalid)
     {
       const bool cycled = registryDependencies[edgeDeps.front()].cycled;
-      const float alpha = focusedResource.valid() ? 0.2f : 1.0f;
+      const float alpha = focusState.resValid() ? 0.2f : 1.0f;
       for (const auto &spline : edgeSplines)
       {
         if (cycled)
@@ -703,33 +702,33 @@ void Visualizer::drawEdges(ImDrawList *draw_list, const CanvasLayout &layout)
       continue;
     }
 
-    const bool focusingThisRes = focusedResource.id == resId;
+    const bool focusingThisRes = focusState.resId == resId;
     bool edgeCycled = false;
     bool edgeInspected = false;
     for (const auto depId : edgeDeps)
     {
       edgeCycled |= registryDependencies[depId].cycled;
-      edgeInspected |= inspectedDependency.id == depId;
+      edgeInspected |= inspectedDependency.depId == depId;
     }
+
+    dag::RelocatableFixedVector<ImU32, 4> colorsToDraw;
+
+    colorsToDraw.push_back(depColor);
+    if (focusingThisRes)
+      colorsToDraw.push_back(FOCUS_COLOR);
+    if (edgeInspected)
+      colorsToDraw.push_back(RES_INSPECT_COLOR);
+    if (edgeCycled)
+      colorsToDraw.push_back(CYCLED_DEP_COLOR);
 
     for (const auto &spline : edgeSplines)
-    {
-      if (focusingThisRes)
-        drawSpline(spline, FOCUS_COLOR, RES_FOCUS_WIDTH);
-
-      if (edgeInspected)
-        drawSpline(spline, RES_INSPECT_COLOR, DEP_INSPECT_WIDTH);
-
-      if (edgeCycled)
-        drawSpline(spline, CYCLED_DEP_COLOR, CYCLED_DEP_WIDTH);
-
-      drawSpline(spline, depColor, BASE_DEP_WIDTH);
-    }
+      for (int i = colorsToDraw.size() - 1; i >= 0; --i)
+        drawSpline(spline, colorsToDraw[i], BASE_DEP_WIDTH * (i + 1));
   }
 
   if (hoverState.resource != ResourceId::Invalid)
   {
-    const auto hoveredResNameId = nameIdByResId(hoverState.resource);
+    const auto hoveredResNameId = getNameId(hoverState.resource);
     const auto origResNameId = depData.renamingRepresentatives[hoveredResNameId];
     const auto resData = registry.resources[origResNameId];
 
@@ -773,11 +772,13 @@ void Visualizer::drawNodeBoxes(ImDrawList *draw_list)
 
 void Visualizer::checkHovering()
 {
-  if (!hoverState.window)
+  const auto &canvasView = canvas.ViewRect();
+
+  hoverState.canvas = canvasView.Contains(ImGui::GetMousePos());
+  if (!hoverState.isActive())
     return;
 
   const auto &layout = hierarchicalView ? condensedLayout : generalLayout;
-  const ImRect canvasView = canvas.ViewRect();
 
   for (auto [nodeId, nodeRect] : layout.nodes.enumerate())
   {
@@ -811,65 +812,91 @@ void Visualizer::checkHovering()
 
 void Visualizer::processInput()
 {
-  if (hoverState.window && hoverState.canvas)
+  if (!hoverState.isActive())
+    return;
+
+  if (ImGui::IsMouseDragging(ImGuiMouseButton_Middle, 0.0f))
   {
-    if (ImGui::IsMouseDragging(ImGuiMouseButton_Middle, 0.0f))
-    {
-      canvasCamera.canvasOffset += ImGui::GetIO().MouseDelta;
-      canvas.SetView(canvasCamera.canvasOffset, canvasCamera.getZoom());
-    }
-    if (abs(ImGui::GetIO().MouseWheel) > 0.1 && !hoverState.searchBox)
-    {
-      ImGui::GetIO().MouseWheel > 0 ? canvasCamera.zoomIn() : canvasCamera.zoomOut();
+    canvasCamera.canvasOffset += ImGui::GetIO().MouseDelta;
+    canvas.SetView(canvasCamera.canvasOffset, canvasCamera.getZoom());
+  }
 
-      ImVec2 oldPos = canvas.ToLocal(ImGui::GetIO().MousePos);
-      canvas.SetView(canvasCamera.canvasOffset, canvasCamera.getZoom());
-      ImVec2 newPos = canvas.ToLocal(ImGui::GetIO().MousePos);
+  if (abs(ImGui::GetIO().MouseWheel) > 0.1)
+  {
+    ImGui::GetIO().MouseWheel > 0 ? canvasCamera.zoomIn() : canvasCamera.zoomOut();
 
-      canvasCamera.canvasOffset += canvas.FromLocalV(newPos - oldPos);
-      canvas.SetView(canvasCamera.canvasOffset, canvasCamera.getZoom());
-    }
+    ImVec2 oldPos = canvas.ToLocal(ImGui::GetIO().MousePos);
+    canvas.SetView(canvasCamera.canvasOffset, canvasCamera.getZoom());
+    ImVec2 newPos = canvas.ToLocal(ImGui::GetIO().MousePos);
+
+    canvasCamera.canvasOffset += canvas.FromLocalV(newPos - oldPos);
+    canvas.SetView(canvasCamera.canvasOffset, canvasCamera.getZoom());
   }
 
   if (hoverState.node != NodeId::Invalid && ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left))
   {
-    resetFocusedResource();
-    setFocusedNode(hoverState.node);
-    focusedNodeIndex =
-      eastl::find(nsNodeNameIds.begin(), nsNodeNameIds.end(), nameIdByNodeId(hoverState.node)) - nsNodeNameIds.begin();
-    nodeSearchInput = getName(nameIdByNodeId(hoverState.node));
+    setFocus(hoverState.node);
   }
 
-  if (hoverState.resource != ResourceId::Invalid)
+  // A history wave must not silence resource focus: double-click focuses the resource.
+  if (hoverState.resource != ResourceId::Invalid && ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left))
   {
-    if (ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left))
+    setFocus(hoverState.resource);
+  }
+
+  // Right-click opens one popup, by priority: history wave, resource edge, then node.
+  if (ImGui::IsMouseClicked(ImGuiMouseButton_Right))
+  {
+    if (hoverState.historyEdge)
     {
-      resetFocusedNode();
-      setFocusedResource(hoverState.resource);
-      focusedResourceIndex =
-        eastl::find(nsResNameIds.begin(), nsResNameIds.end(), nameIdByResId(hoverState.resource)) - nsResNameIds.begin();
-      resourceSearchInput = getName(nameIdByResId(hoverState.resource));
+      setPopupState(hoverState);
+      ImGui::OpenPopup(HISTORY_EDGE_POPUP);
     }
-    else if (ImGui::IsMouseClicked(ImGuiMouseButton_Right))
+    else if (hoverState.resource != ResourceId::Invalid)
     {
-      popupDeps = hoverState.deps;
+      setPopupState(hoverState);
       ImGui::OpenPopup(EDGE_RESOURCES_POPUP);
     }
-  }
-
-  if (hoverState.node != NodeId::Invalid && hoverState.resource == ResourceId::Invalid && !gpuCapture.nodeRowPopupOpenedThisFrame &&
-      ImGui::IsMouseClicked(ImGuiMouseButton_Right))
-  {
-    popupNode = hoverState.node;
-    ImGui::OpenPopup(NODE_CAPTURE_POPUP);
+    else if (hoverState.node != NodeId::Invalid && !gpuCapture.nodeRowPopupOpenedThisFrame)
+    {
+      setPopupState(hoverState);
+      ImGui::OpenPopup(NODE_CAPTURE_POPUP);
+    }
   }
 }
 
 void Visualizer::processPopup()
 {
+  static String label;
+
+#define CHECK_VALID_POPUP_NODE                \
+  if (!popupState.nodeValid())                \
+  {                                           \
+    ImGui::TextUnformatted("Invalid NodeId"); \
+    ImGui::EndPopup();                        \
+    return;                                   \
+  }
+
+#define CHECK_VALID_POPUP_RESOURCE                \
+  if (!popupState.resValid())                     \
+  {                                               \
+    ImGui::TextUnformatted("Invalid ResourceId"); \
+    ImGui::EndPopup();                            \
+    return;                                       \
+  }
+
+#define CHECK_VALID_POPUP_DEPENDENCIES                 \
+  if (popupState.deps.empty())                         \
+  {                                                    \
+    ImGui::TextUnformatted("No dependencies to show"); \
+    ImGui::EndPopup();                                 \
+    return;                                            \
+  }
+
+
   if (ImGui::BeginPopup(NODE_EXEX_REQ_POPUP))
   {
-    static String label;
+    CHECK_VALID_POPUP_NODE
 
     eastl::visit(
       [&](const auto &reqs) {
@@ -877,24 +904,34 @@ void Visualizer::processPopup()
         if constexpr (std::is_same_v<T, DispatchRequirements>)
         {
           const DispatchRequirements &dispReqs = reqs;
-          ImGui::Text("Shader: %s", registry.knownShaders.getName(dispReqs.shaderId).data());
+          ImGui::Text("Dispatch requirements:\n  Shader: %s", registry.knownShaders.getName(dispReqs.shaderId).data());
         }
         else if constexpr (std::is_same_v<T, DrawRequirements>)
         {
           const DrawRequirements &drawReqs = reqs;
-          ImGui::Text("Shader: %s", registry.knownShaders.getName(drawReqs.shaderId).data());
+          ImGui::Text("Draw requirements:\n  Shader: %s", registry.knownShaders.getName(drawReqs.shaderId).data());
+        }
+        else
+        {
+          ImGui::TextUnformatted("No execute requirements presented");
         }
       },
-      registry.nodes[userNodes[popupNode].regId].executeRequirements);
+      registry.nodes[popupState.nodeNameId].executeRequirements);
 
     ImGui::EndPopup();
   }
 
   if (ImGui::BeginPopup(NODE_RENDER_REQ_POPUP))
   {
-    static String label;
+    CHECK_VALID_POPUP_NODE
 
-    const auto &pass = *registry.nodes[userNodes[popupNode].regId].renderingRequirements;
+    if (!registry.nodes[popupState.nodeNameId].renderingRequirements.has_value())
+    {
+      ImGui::TextUnformatted("No render requirements presented");
+      ImGui::EndPopup();
+      return;
+    }
+    const auto &pass = *registry.nodes[popupState.nodeNameId].renderingRequirements;
 
     ImGui::TextUnformatted("(mip,layer) name");
 
@@ -908,10 +945,7 @@ void Visualizer::processPopup()
       label.printf(0, "   (%d,%d) %s", colorAtt.mipLevel, colorAtt.layer,
         resValid ? getName(colorAtt.nameId).data() : "Invalid name id");
       if (ImGui::Selectable(label) && resValid)
-      {
-        resetFocusedNode();
-        setFocusedResource(regResRepresent[colorAtt.nameId]);
-      }
+        setFocus(colorAtt.nameId);
     }
 
     ImGui::TextUnformatted("Depth attachment:");
@@ -922,10 +956,7 @@ void Visualizer::processPopup()
       label.printf(0, "%s (%d,%d) %s", pass.depthReadOnly ? "RO" : "RW", depthAtt.mipLevel, depthAtt.layer,
         resValid ? getName(depthAtt.nameId).data() : "Invalid name id");
       if (ImGui::Selectable(label) && resValid)
-      {
-        resetFocusedNode();
-        setFocusedResource(regResRepresent[depthAtt.nameId]);
-      }
+        setFocus(depthAtt.nameId);
     }
 
     if (pass.vrsRateAttachment.nameId != ResNameId::Invalid)
@@ -935,10 +966,7 @@ void Visualizer::processPopup()
       const auto &vrsAtt = pass.vrsRateAttachment;
       label.printf(0, "   (%d,%d) %s", vrsAtt.mipLevel, vrsAtt.layer, getName(vrsAtt.nameId).data());
       if (ImGui::Selectable(label))
-      {
-        resetFocusedNode();
-        setFocusedResource(regResRepresent[vrsAtt.nameId]);
-      }
+        setFocus(vrsAtt.nameId);
     }
 
     if (!pass.resolves.empty())
@@ -954,9 +982,9 @@ void Visualizer::processPopup()
 
   if (ImGui::BeginPopup(NODE_BINDINGS_POPUP))
   {
-    static String label;
+    CHECK_VALID_POPUP_NODE
 
-    const auto &nodeData = registry.nodes[userNodes[popupNode].regId];
+    const auto &nodeData = registry.nodes[popupState.nodeNameId];
 
     ImGui::TextUnformatted("idx: type (hist?)(reset?)(opt?) name");
     if (ImGui::IsItemHovered())
@@ -970,10 +998,7 @@ void Visualizer::processPopup()
       label.printf(0, "%d: %s %s%s%s %s", index, bind_type_name(binding.type), binding.history ? "+" : "-", binding.reset ? "+" : "-",
         binding.optional ? "+" : "-", resValid ? getName(resNameId).data() : "Invalid name id");
       if (ImGui::Selectable(label) && resValid)
-      {
-        resetFocusedNode();
-        setFocusedResource(regResRepresent[resNameId]);
-      }
+        setFocus(resNameId);
     }
 
     ImGui::EndPopup();
@@ -981,9 +1006,9 @@ void Visualizer::processPopup()
 
   if (ImGui::BeginPopup(NODE_IDX_VTX_POPUP))
   {
-    static String label;
+    CHECK_VALID_POPUP_NODE
 
-    const auto &nodeData = registry.nodes[userNodes[popupNode].regId];
+    const auto &nodeData = registry.nodes[popupState.nodeNameId];
 
     ImGui::TextUnformatted("Index source:");
     if (nodeData.indexSource)
@@ -993,10 +1018,7 @@ void Visualizer::processPopup()
 
       label.printf(0, "  %s", resValid ? getName(resNameId).data() : "Invalid name id");
       if (ImGui::Selectable(label) && resValid)
-      {
-        resetFocusedNode();
-        setFocusedResource(regResRepresent[resNameId]);
-      }
+        setFocus(resNameId);
     }
     else
     {
@@ -1015,10 +1037,7 @@ void Visualizer::processPopup()
         label.printf(0, "  %d: (%d) %s", i, nodeData.vertexSources[i]->stride,
           resValid ? getName(resNameId).data() : "Invalid name id");
         if (ImGui::Selectable(label) && resValid)
-        {
-          resetFocusedNode();
-          setFocusedResource(regResRepresent[resNameId]);
-        }
+          setFocus(resNameId);
       }
       else
       {
@@ -1030,25 +1049,27 @@ void Visualizer::processPopup()
 
   if (ImGui::BeginPopup(NODE_CAPTURE_POPUP))
   {
+    CHECK_VALID_POPUP_NODE
+
     if (ImGui::Selectable("Set as GPU capture START"))
     {
-      setCaptureBoundary(gpuCapture.captureStart, userNodes[popupNode].regId);
+      setCaptureBoundary(gpuCapture.captureStart, popupState.nodeNameId);
       imgui_window_set_visible(IMGUI_WINDOW_GROUP_FG2, IMGUI_GPU_CAPTURE_WIN_NAME, true);
       gpuCapture.focusGpuCaptureWindow = true;
     }
+
     if (ImGui::Selectable("Set as GPU capture END"))
     {
-      setCaptureBoundary(gpuCapture.captureEnd, userNodes[popupNode].regId);
+      setCaptureBoundary(gpuCapture.captureEnd, popupState.nodeNameId);
       imgui_window_set_visible(IMGUI_WINDOW_GROUP_FG2, IMGUI_GPU_CAPTURE_WIN_NAME, true);
       gpuCapture.focusGpuCaptureWindow = true;
     }
+
     ImGui::EndPopup();
   }
 
   if (ImGui::BeginPopup(EDGE_RESOURCES_POPUP))
   {
-    static String label;
-
     struct SubBlockHandler
     {
       ImVec2 &startPos;
@@ -1069,15 +1090,9 @@ void Visualizer::processPopup()
 #define SUBBLOCK_SCOPED auto sbh = SubBlockHandler(subBlockStart);
 
 
-    if (popupDeps.empty())
-      return;
+    CHECK_VALID_POPUP_RESOURCE
 
-    if (!registryDependencies.isMapped(popupDeps.front()))
-      return;
-
-    const auto &frontDep = registryDependencies[popupDeps.front()];
-
-    const auto resNameId = nameIdByResId(frontDep.resource);
+    const auto resNameId = popupState.resNameId;
     const auto resName = getName(resNameId).data();
     const auto &resData = registry.resources[depData.renamingRepresentatives[resNameId]];
 
@@ -1159,8 +1174,11 @@ void Visualizer::processPopup()
         }
         else if (auto blobDescr = eastl::get_if<BlobDescription>(&createdData.creationInfo))
         {
-          auto blobData = inspectedBlob.set(popupDeps.front(), blobDescr->typeTag);
-          print_blob_structured(blobDescr->typeTag, blobData);
+          if (!popupState.deps.empty())
+          {
+            auto blobData = inspectedBlob.set(popupState.deps.front(), blobDescr->typeTag);
+            print_blob_structured(blobDescr->typeTag, blobData);
+          }
         }
         else if (auto extResDescr = eastl::get_if<ExternalResourceProvider>(&createdData.creationInfo))
         {
@@ -1211,11 +1229,8 @@ void Visualizer::processPopup()
         {
           const auto clearResId = eastl::get<DynamicParameter>(createdData.clearValue).resource;
           label.printf(0, "%s##%zu", getName(clearResId).data(), static_cast<uint32_t>(resNameId));
-          if (ImGui::Selectable(label, focusedResource.id == regResRepresent[clearResId], 0, selectSize))
-          {
-            resetFocusedNode();
-            setFocusedResource(regResRepresent[clearResId]);
-          }
+          if (ImGui::Selectable(label, focusState.resId == getRepresentId(clearResId), 0, selectSize))
+            setFocus(clearResId);
         }
       }
     }
@@ -1227,30 +1242,27 @@ void Visualizer::processPopup()
     ImGui::EndGroup();
 
 
+    CHECK_VALID_POPUP_DEPENDENCIES
+
+    const auto &frontDep = registryDependencies[popupState.deps.front()];
     const auto fromNodeId = frontDep.from;
-    const auto fromNodeName = getName(nameIdByNodeId(fromNodeId)).data();
+    const auto fromNodeName = getName(getNameId(fromNodeId)).data();
     if (ImGui::Button(fromNodeName))
-    {
-      resetFocusedResource();
-      setFocusedNode(fromNodeId);
-    }
+      setFocus(fromNodeId);
     ImGui::SameLine();
 
     ImGui::BeginGroup();
-    for (const auto depId : popupDeps)
+    for (const auto depId : popupState.deps)
     {
       const auto &dep = registryDependencies[depId];
-      const bool inspectingThisDep = inspectedDependency.id == depId;
-      const auto toNodeName = getName(nameIdByNodeId(dep.to)).data();
+      const bool inspectingThisDep = inspectedDependency.depId == depId;
+      const auto toNodeName = getName(getNameId(dep.to)).data();
 
       ImGui::TextUnformatted(" -> ");
       ImGui::SameLine();
       label.printf(0, "%s##%u", toNodeName, static_cast<uint32_t>(depId));
       if (ImGui::Button(label))
-      {
-        resetFocusedResource();
-        setFocusedNode(dep.to);
-      }
+        setFocus(dep.to);
       ImGui::SameLine();
       if (inspectingThisDep)
       {
@@ -1260,24 +1272,48 @@ void Visualizer::processPopup()
       {
         label.printf(0, "Inspect##%u", static_cast<uint32_t>(depId));
         if (ImGui::Button(label))
-        {
-          inspectedDependency.set(depId);
-          resetFocusedNode();
-          resetFocusedResource();
-        }
+          setInspectedDependency(depId);
       }
     }
     ImGui::EndGroup();
 
     ImGui::EndPopup();
+
+#undef SUBBLOCK_SCOPED
   }
 
-  if (!hoverState.tooltip.empty() && !hoverState.searchBox)
+  if (ImGui::BeginPopup(HISTORY_EDGE_POPUP))
+  {
+    CHECK_VALID_POPUP_RESOURCE
+    CHECK_VALID_POPUP_DEPENDENCIES
+
+    ImGui::Text("history of: %s", getName(popupState.resNameId).data());
+
+    const auto depId = popupState.deps.front();
+    if (inspectedDependency.depId == depId)
+    {
+      ImGui::TextUnformatted("INSPECTING");
+    }
+    else
+    {
+      label.printf(0, "Inspect##%u", static_cast<uint32_t>(depId));
+      if (ImGui::Button(label))
+        setInspectedDependency(depId);
+    }
+
+    ImGui::EndPopup();
+  }
+
+  if (!hoverState.tooltip.empty())
   {
     ImGui::BeginTooltip();
     ImGui::TextUnformatted(hoverState.tooltip);
     ImGui::EndTooltip();
   }
+
+#undef CHECK_VALID_POPUP_NODE
+#undef CHECK_VALID_POPUP_RESOURCE
+#undef CHECK_VALID_POPUP_DEPENDENCIES
 }
 
 void Visualizer::processTextureDebug()
@@ -1286,14 +1322,9 @@ void Visualizer::processTextureDebug()
   {
     eastl::optional<Selection> resSelection = eastl::nullopt;
 
-    if (inspectedDependency.id != DependencyId::Invalid)
-    {
-      const auto &dep = registryDependencies[inspectedDependency.id];
-      const auto fromNodeNameId = userNodes[dep.from].regId;
-      const auto toNodeNameId = userNodes[dep.to].regId;
-      const auto resNameId = userResources[dep.resource].regId;
-      resSelection = Selection{PreciseTimePoint{fromNodeNameId, toNodeNameId}, resNameId};
-    }
+    if (inspectedDependency.depId != DependencyId::Invalid)
+      resSelection = Selection{PreciseTimePoint{inspectedDependency.fromNameId, inspectedDependency.toNameId},
+        inspectedDependency.resNameId, inspectedDependency.history};
 
     update_fg_debug_tex(resSelection, registry, depData);
   }
@@ -1316,8 +1347,7 @@ void Visualizer::receiveBlobData(NodeNameId node_id, ResNameId res_id, const Blo
   if (registryDependencies.isMapped(inspectedBlob.storedInst.depId))
   {
     const auto &dep = registryDependencies[inspectedBlob.storedInst.depId];
-    if (
-      nameIdByNodeId(dep.to) == node_id && nameIdByResId(dep.resource) == res_id && inspectedBlob.storedInst.tag == blob_view.typeTag)
+    if (getNameId(dep.to) == node_id && getNameId(dep.resource) == res_id && inspectedBlob.storedInst.tag == blob_view.typeTag)
       if (const auto rtti = typeDb.getRTTI(inspectedBlob.storedInst.tag))
       {
         if (inspectedBlob.dataStored)
@@ -1374,70 +1404,39 @@ void Visualizer::showResourcesInNameSpace(NameSpaceNameId namespace_id)
 }
 
 
-void Visualizer::setFocusedNode(NodeId node_id)
+void Visualizer::centerOnFocus()
 {
-  focusedNode = {
-    node_id,
-    true,
-  };
-}
-
-void Visualizer::centerOnFocusedNode()
-{
-  if (!focusedNode.valid())
-    return;
-
-  const auto nodeRect = (hierarchicalView ? condensedLayout : generalLayout).nodes[focusedNode.id];
-  const ImVec2 centerView = nodeRect.offset + nodeRect.size / 2.f;
-
-  canvas.CenterView(centerView);
-  canvasCamera.canvasOffset = canvas.ViewOrigin();
-}
-
-void Visualizer::setFocusedResource(ResourceId res_id, ResourceFocusType focus_type)
-{
-  focusedResource = {
-    res_id,
-    true,
-    false,
-    focus_type,
-  };
-
-  if (focusedResource.valid())
+  if (focusState.nodeValid())
   {
-    const auto focusedResNameId = nameIdByResId(focusedResource.id);
-    for (const auto [from, to] : depData.renamingChains.enumerate())
-      if ((from != focusedResNameId && to == focusedResNameId) || (from == focusedResNameId && to != focusedResNameId))
-      {
-        focusedResource.hasRenames = true;
-        return;
-      }
+    const auto nodeRect = (hierarchicalView ? condensedLayout : generalLayout).nodes[focusState.nodeId];
+    canvas.CenterView(nodeRect.offset + nodeRect.size / 2.f);
+    canvasCamera.canvasOffset = canvas.ViewOrigin();
+    return;
   }
-}
 
-void Visualizer::centerOnFocusedRes()
-{
-  if (!focusedResource.valid())
-    return;
+  if (focusState.resValid())
+  {
+    constexpr ImVec2 MAX_IMVEC2 = ImVec2{eastl::numeric_limits<float>::max(), eastl::numeric_limits<float>::max()};
 
-  constexpr ImVec2 MAX_IMVEC2 = ImVec2{eastl::numeric_limits<float>::max(), eastl::numeric_limits<float>::max()};
+    ImVec2 leftPos = MAX_IMVEC2;
+    ImVec2 rightPos = MAX_IMVEC2;
+    for (auto [edgeId, edge] : (hierarchicalView ? condensedLayout : generalLayout).edges.enumerate())
+      for (const auto depId : edge.carriedDeps)
+        if (registryDependencies[depId].resource == focusState.resId)
+          for (const auto &spline : edge.splines)
+            if (spline.P0.x < leftPos.x)
+            {
+              leftPos = spline.P0;
+              rightPos = spline.P3;
+              break;
+            }
 
-  ImVec2 leftPos = MAX_IMVEC2;
-  ImVec2 rightPos = MAX_IMVEC2;
-  for (auto [edgeId, edge] : (hierarchicalView ? condensedLayout : generalLayout).edges.enumerate())
-    if (registryDependencies[edge.carriedDeps.front()].resource == focusedResource.id)
-      for (const auto &spline : edge.splines)
-        if (spline.P0.x < leftPos.x)
-        {
-          leftPos = spline.P0;
-          rightPos = spline.P3;
-        }
+    if (leftPos == MAX_IMVEC2 || rightPos == MAX_IMVEC2)
+      return;
 
-  if (leftPos == MAX_IMVEC2 || rightPos == MAX_IMVEC2)
-    return;
-
-  canvas.CenterView((leftPos + rightPos) / 2.f);
-  canvasCamera.canvasOffset = canvas.ViewOrigin();
+    canvas.CenterView((leftPos + rightPos) / 2.f);
+    canvasCamera.canvasOffset = canvas.ViewOrigin();
+  }
 }
 
 
@@ -1451,11 +1450,14 @@ void Visualizer::updateVisualization(const IdIndexedFlags<NodeNameId, framemem_a
   for (const auto changedId : lastChangedNodes.trueKeys())
     accumChangedNodes[changedId] = true;
 
-  if (!imgui_window_is_visible(nullptr, IMGUI_USG_WIN_NAME) || imgui_window_is_collapsed(nullptr, IMGUI_USG_WIN_NAME))
+  const bool isImguiActive = imgui_get_state() != ImGuiState::OFF;
+  // imgui_window_is_visible returns info from blk and it doesn't care if imgui window is visible or not
+  const bool isWindowVisible = imgui_window_is_visible(nullptr, IMGUI_USG_WIN_NAME);
+  // imgui_window_is_collapsed can't be used if window is not visible
+  const bool isWindowCollapsed = isWindowVisible && imgui_window_is_collapsed(nullptr, IMGUI_USG_WIN_NAME);
+  if (!isImguiActive || !isWindowVisible || isWindowCollapsed)
     return;
 
-  popupDeps.clear();
-  inspectedDependency.reset();
   inspectedBlob.reset();
 
   updateNodesRess();
@@ -1473,6 +1475,10 @@ void Visualizer::updateVisualization(const IdIndexedFlags<NodeNameId, framemem_a
   calculateNodesColors();
   checkCycles();
   condenseGraph();
+
+  resolvePopupState();
+  resolveFocusState();
+  resolveInspectedDependency();
 
   performLayout();
   performCondensedLayout();
@@ -1515,9 +1521,9 @@ void Visualizer::updateIRInfo()
 
   uint32_t currExecTime = 0;
   for (auto [irIndex, irNode] : intermediateGraph.nodes.enumerate())
-    if (irNode.multiplexingIndex == 0 && irNode.frontendNode && nodeIsPresented(*irNode.frontendNode))
+    if (irNode.multiplexingIndex == 0 && irNode.frontendNode && isPresented(*irNode.frontendNode))
     {
-      auto &node = userNodes[regNodesRepresent[*irNode.frontendNode]];
+      auto &node = userNodes[getRepresentId(*irNode.frontendNode)];
       node.passColor = intermediatePassColoring[irIndex];
       node.executionTime = currExecTime;
       ++currExecTime;
@@ -1612,12 +1618,12 @@ void Visualizer::updateDependencies()
     const auto &nodeData = registry.nodes[node.regId];
 
     for (const auto prevNameId : nodeData.precedingNodeIds)
-      if (nodeIsPresented(prevNameId))
-        addDependency(regNodesRepresent[prevNameId], nodeId, DependencyType::EXPLICIT_PREVIOUS);
+      if (isPresented(prevNameId))
+        addDependency(getRepresentId(prevNameId), nodeId, DependencyType::EXPLICIT_PREVIOUS);
 
     for (const auto nextNameId : nodeData.followingNodeIds)
-      if (nodeIsPresented(nextNameId))
-        addDependency(nodeId, regNodesRepresent[nextNameId], DependencyType::EXPLICIT_FOLLOW);
+      if (isPresented(nextNameId))
+        addDependency(nodeId, getRepresentId(nextNameId), DependencyType::EXPLICIT_FOLLOW);
   }
 
   // filling resource dependencies
@@ -1667,19 +1673,19 @@ void Visualizer::updateDependencies()
     // clang-format on
     */
 
-    NodeId introducerId = lifetime.introducedBy != NodeNameId::Invalid ? regNodesRepresent[lifetime.introducedBy] : NodeId::Invalid;
-    NodeId consumerId = lifetime.consumedBy != NodeNameId::Invalid ? regNodesRepresent[lifetime.consumedBy] : NodeId::Invalid;
+    NodeId introducerId = getRepresentId(lifetime.introducedBy);
+    NodeId consumerId = getRepresentId(lifetime.consumedBy);
     NodeId readSourceId = introducerId;
 
     dag::Vector<NodeId, framemem_allocator> modifiers;
     for (const auto modifierNameId : lifetime.modificationChain)
-      if (nodeIsPresented(modifierNameId))
-        modifiers.push_back(regNodesRepresent[modifierNameId]);
+      if (isPresented(modifierNameId))
+        modifiers.push_back(getRepresentId(modifierNameId));
 
     dag::Vector<NodeId, framemem_allocator> readers;
     for (const auto readerNameId : lifetime.readers)
-      if (nodeIsPresented(readerNameId))
-        readers.push_back(regNodesRepresent[readerNameId]);
+      if (isPresented(readerNameId))
+        readers.push_back(getRepresentId(readerNameId));
 
     const bool resHasIntroducer = introducerId != NodeId::Invalid;
     const bool resHasModifiers = !modifiers.empty();
@@ -1707,20 +1713,20 @@ void Visualizer::updateDependencies()
     const bool readSourceValid = readSourceId != NodeId::Invalid;
 
     for (const auto readerNameId : lifetime.readers)
-      if (nodeIsPresented(readerNameId))
+      if (isPresented(readerNameId))
       {
         if (readSourceValid)
-          addDependency(readSourceId, regNodesRepresent[readerNameId], DependencyType::IMPLICIT_RES_READ, resourceId);
+          addDependency(readSourceId, getRepresentId(readerNameId), DependencyType::IMPLICIT_RES_READ, resourceId);
         if (resHasConsumer)
-          addDependency(regNodesRepresent[readerNameId], consumerId, DependencyType::IMPLICIT_RES_CONSUME, resourceId);
+          addDependency(getRepresentId(readerNameId), consumerId, DependencyType::IMPLICIT_RES_CONSUME, resourceId);
       }
     if (!resHasReaders && readSourceValid && resHasConsumer)
       addDependency(readSourceId, consumerId, DependencyType::IMPLICIT_RES_CONSUME, resourceId);
 
     if (!resHasConsumer && readSourceValid)
       for (const auto readerNameId : lifetime.historyReaders)
-        if (nodeIsPresented(readerNameId))
-          addHistoryRead(readSourceId, regNodesRepresent[readerNameId], resourceId);
+        if (isPresented(readerNameId))
+          addHistoryRead(readSourceId, getRepresentId(readerNameId), resourceId);
   }
 }
 
@@ -2987,7 +2993,7 @@ void Visualizer::drawTree(const dafg::NameSpaceNameId &namespace_id, int &res_id
   {
     auto cit = nsResNameIds.begin() + counter;
     for (uint16_t i = 0; i < totalResourcesInSubtree; ++i, ++cit)
-      userResources[regResRepresent[*cit]].hidden = !hiddenNameSpace;
+      userResources[getRepresentId(*cit)].hidden = !hiddenNameSpace;
     if (hiddenNameSpace)
       showResourcesInNameSpace(namespace_id);
     else
@@ -3013,7 +3019,7 @@ void Visualizer::drawTree(const dafg::NameSpaceNameId &namespace_id, int &res_id
   for (const auto &resData : nsContent.resources)
   {
     const bool isSelected = res_idx == counter;
-    const bool hidden = userResources[regResRepresent[resData]].hidden;
+    const bool hidden = userResources[getRepresentId(resData)].hidden;
     if (isSelected && (ImGui::IsWindowAppearing() || info.selectionChanged))
       ImGui::SetScrollHereY();
     if (isSelected && info.arrowScroll)
@@ -3051,7 +3057,7 @@ void Visualizer::drawTree(const dafg::NameSpaceNameId &namespace_id, int &res_id
     ImGui::SetCursorPosX(button_offset);
     if (ImGui::Button(buttonLabel.data()))
     {
-      userResources[regResRepresent[resData]].hidden = !userResources[regResRepresent[resData]].hidden;
+      userResources[getRepresentId(resData)].hidden = !userResources[getRepresentId(resData)].hidden;
       dafg::NameSpaceNameId updatedNS = namespace_id;
       bool rootNameSpace = false;
       while (!rootNameSpace)
@@ -3141,7 +3147,7 @@ static bool dafg_show_fg_tex_console_handler(const char *argv[], int argc)
         }
         set_manual_showtex_params(concatenatedParams.c_str());
 
-        update_fg_debug_tex(Selection{ReadTimePoint{}, resId}, registry, depData);
+        update_fg_debug_tex(Selection{ReadTimePoint{}, resId, false}, registry, depData);
       }
       else
       {

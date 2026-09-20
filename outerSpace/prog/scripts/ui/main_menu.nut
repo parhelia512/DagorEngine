@@ -1,23 +1,19 @@
 from "%darg/ui_imports.nut" import *
-from "%scripts/ui/widgets/simpleComponents.nut" import mkCombo, menuBtn, normalCursor, headerTxt
-from "json" import parse_json, object_to_json_string
-
-from "%sqstd/functools.nut" import tryCatch
+from "%scripts/ui/widgets/simpleComponents.nut" import mkCombo, menuBtn, headerTxt
+from "json" import object_to_json_string
 from "%sqstd/string.nut" import tostring_r
 from "string" import format
 from "%scripts/ui/widgets/msgbox.nut" import showWarning, showMsgbox
-from "%scripts/ui/http_task.nut" import HttpPostTask, mkJsonHttpReq
+from "%scripts/ui/http_task.nut" import mkJsonHttpReq
 from "%scripts/ui/backend_api.nut" import get_master_server_url
-from "dagor.workcycle" import defer
 from "dagor.time" import unixtime_to_local_timetbl, get_local_unixtime
 from "types" import String
-let DngBhv = require("dng.behaviors")
-let { setOfflineSessionParams, isInMainMenu, ulog, launch_network_session, launch_internal_dedicated_server } = require("%scripts/ui/app_state.nut")
-let { hardPersistWatched } = require("%sqstd/globalState.nut")
-let { mainLogin, userUid, isOfflineMode, desiredUserName, userName, reloginUI, logout } = require("%scripts/ui/login.nut")
-let { showGameMenu, gameMenu } = require("%scripts/ui/game_menu.nut")
-let { get_internal_server_url } = require("app")
-//let {get_user_system_info=@() null} = require_optional("sysinfo")
+import "dng.behaviors" as DngBhv
+from "%scripts/ui/app_state.nut" import setOfflineSessionParams, isInMainMenu, ulog, launch_network_session, launch_internal_dedicated_server
+from "%sqstd/globalState.nut" import hardPersistWatched
+from "%scripts/ui/login.nut" import mainLogin, userUid, isOfflineMode, desiredUserName, userName, reloginUI, logout
+from "%scripts/ui/game_menu.nut" import showGameMenu, gameMenu
+from "app" import get_internal_server_url
 
 let unused = @(...) null
 
@@ -598,7 +594,7 @@ function mkRoomsUi() {
       gap = hdpx(10)
     }
   }
-
+  const RequestCurRoomInfoId = "requestCurRoomInfo"
   function roomInfoNorm(){
     return {
       children = [sceneInfo, users]
@@ -607,12 +603,12 @@ function mkRoomsUi() {
       size = flex()
       onAttach = function() {
         gui_scene.resetTimeout(1, function() {
-          gui_scene.clearTimer(requestCurRoomInfo)
-          gui_scene.setInterval(0.9, requestCurRoomInfo)
-        })
+          gui_scene.clearTimer(RequestCurRoomInfoId)
+          gui_scene.setInterval(0.9, requestCurRoomInfo, RequestCurRoomInfoId)
+        }, RequestCurRoomInfoId)
       }
       onDetach = function() {
-        gui_scene.clearTimer(requestCurRoomInfo)
+        gui_scene.clearTimer(RequestCurRoomInfoId)
         clearRoom()
       }
     }
@@ -643,7 +639,7 @@ function mkRoomsUi() {
           log($"connecting to internally hosted server - overriding address: {connectTo}")
         }
       }
-      gui_scene.clearTimer(requestCurRoomInfo)
+      gui_scene.clearTimer(RequestCurRoomInfoId)
       println($"trying to connect to {connectTo}")
       let sessionParams = {sessionId=room_info?.sessionId ?? 0, host_urls = [connectTo]}
       if (room_info?.authKey)

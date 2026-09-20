@@ -85,6 +85,8 @@ public:
 
   void setPlaceholderText(const char *text) override { placeholderText = text; }
 
+  const char *getImguiTypeName() const override { return "EditBox"; }
+
   void updateImgui() override
   {
     const float controlScreenTopY = ImGui::GetCursorScreenPos().y;
@@ -164,6 +166,7 @@ public:
       const ImVec2 size(mW > 0 ? min((float)mW, ImGui::GetContentRegionAvail().x) : -FLT_MIN, height);
 
       textChanged = ImGuiDagor::InputTextMultilineWithHint(inputLabel, placeholderText, &controlValue, size);
+      setImguiTestItemInfo();
       textInputFocused = ImGui::IsItemFocused();
       deactivatedAfterEdit = ImGui::IsItemDeactivatedAfterEdit();
     }
@@ -270,6 +273,7 @@ protected:
   virtual void updateImguiInput(const char *input_label, bool &text_changed, bool &deactivated_after_edit)
   {
     text_changed = ImguiHelper::inputTextWithEnterWorkaround(input_label, placeholderText, &controlValue, textInputFocused);
+    setImguiTestItemInfo();
     textInputFocused = ImGui::IsItemFocused();
     deactivated_after_edit = ImGui::IsItemDeactivatedAfterEdit();
   }

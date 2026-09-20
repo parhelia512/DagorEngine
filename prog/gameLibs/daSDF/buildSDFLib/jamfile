@@ -14,10 +14,11 @@ AddIncludes =
 
 Sources =
   meshSDF.cpp
+  meshBLAS.cpp
 ;
 
 UseProgLibs +=
-  engine/sceneRay
+  engine/daBVH
   engine/math
 ;
 

@@ -11,6 +11,7 @@ let
     "math" => "%gameLibs/das/math";
     "daFrameGraph" => "%gameLibs/das/daFrameGraph";
     "daslib" => "%daslib";
+    "llvm" => "%dasLLVM";
     "danetlibs" => "%danetlibs";
     "gameLibs" => "%gameLibs";
     "imgui" => "%dasImgui";

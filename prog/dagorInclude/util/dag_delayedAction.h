@@ -53,6 +53,12 @@ KRNLIMP bool remove_delayed_action(DelayedAction *action);
 // This function is called from work_cycle().
 KRNLIMP void perform_delayed_actions();
 
+//! drains pending actions over several passes, for teardown paths where a single perform_delayed_actions()
+//! would leave buffered records unrun (and so silently drop whatever their callbacks were to free);
+//! best effort: it gives up after a bounded number of passes and logs whatever is still queued;
+//! runs the callbacks itself, so it has the same main-thread-only rule as perform_delayed_actions()
+KRNLIMP void flush_delayed_actions();
+
 // sets maximum time that perform_delayed_actions() may spend on one work cycle; default is 4000000 (4 sec)
 KRNLIMP void set_delayed_action_max_quota(int quota_usec);
 

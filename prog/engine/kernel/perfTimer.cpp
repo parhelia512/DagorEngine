@@ -116,7 +116,7 @@ void init_profile_timer()
   if (native_khz)
   {
     profiler_ticks_to_us = native_khz / 1000;
-    profiler_ticks_frequency = native_khz * 1000;
+    profiler_ticks_frequency = uint64_t(native_khz) * 1000;
     return;
   }
 #elif _TARGET_SIMD_NEON
@@ -223,7 +223,7 @@ static uint32_t native_tsc_khz()
   if (crystal_khz == 0)
     return 0;
 
-  return uint32_t(uint64_t(crystal_khz * ebx_numerator) / uint64_t(eax_denominator));
+  return uint32_t(uint64_t(crystal_khz) * ebx_numerator / eax_denominator);
 }
 #endif //_TARGET_SIMD_SSE
 

@@ -1,6 +1,7 @@
 // Copyright (C) Gaijin Games KFT.  All rights reserved.
 
 #include <asyncHTTPClient/curl_global.h>
+#include <asyncHTTPClient/asyncHTTPClient.h>
 #include <debug/dag_debug.h>
 
 #include <curl/curl.h>
@@ -34,6 +35,10 @@ void init()
 
 void shutdown()
 {
+  // the multi and share handles live on the globals, so the async client goes
+  // first; its own atexit shutdown would free them after this cleanup
+  httprequests::shutdown_async();
+
   if (!is_initialized_externally)
   {
     if (is_initialized)

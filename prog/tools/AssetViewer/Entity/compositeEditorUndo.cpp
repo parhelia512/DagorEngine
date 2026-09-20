@@ -38,12 +38,7 @@ void CompositeEditorUndoParams::loadUndo() const
   DataBlock dataBlock;
   dataBlock.loadFromStream(memoryLoad);
 
-  unsigned newSelection = IDataBlockIdHolder::invalid_id;
-  dag::Vector<unsigned> newMultiSelections;
-  if (containsSavedSelection())
-    compositeEditor.getSelectedTreeNodeDataBlockIds(newMultiSelections, newSelection);
-
-  compositeEditor.loadFromUndo(dataBlock, newSelection, newMultiSelections);
+  compositeEditor.loadFromUndo(dataBlock, selectedTreeNodeDataBlockId, selectedTreeNodeDataBlockIds);
 }
 
 void CompositeEditorUndoParams::saveUndo(bool save_selection)

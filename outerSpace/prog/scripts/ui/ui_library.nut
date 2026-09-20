@@ -1,11 +1,10 @@
 from "math" import min, max, clamp
 from "%sqstd/frp.nut" import WatchedRo
+from "%dngscripts/localizations.nut" import loc
+from "console" import register_command, command
+from "dagor.workcycle" import defer
 
-let { loc } = require("%dngscripts/localizations.nut")
-let { register_command, command } = require("console")
-let { defer } = require("dagor.workcycle")
-
-global enum Layers {
+enum Layers {
   Default
   ComboPopup
   MsgBox
@@ -18,6 +17,7 @@ let export = {
   console_register_command = register_command
   console_command = command
   defer
+  Layers
 }
 
 let log= require("%sqstd/log.nut")()

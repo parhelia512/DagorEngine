@@ -4,6 +4,7 @@ return {
   matching_logout = @() null
   matching_login = @(...) null
   matching_call = @(...) null
+  matching_call_fixed_event = @(...) null
   matching_notify = @(...) null
   matching_send_response = @(...) null
   get_mgates_count = @(...) 0

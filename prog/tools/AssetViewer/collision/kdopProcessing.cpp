@@ -33,7 +33,7 @@ void KdopProcessing::calcSelectedKdop()
 
 void KdopProcessing::calcKdop(const KdopSettings &settings)
 {
-  if (settings.preset == KdopPreset::SET_EMPTY)
+  if (settings.preset == KdopPreset::SET_EMPTY || !collisionRes)
     return;
 
   dag::Vector<Point3_vec4> verts;

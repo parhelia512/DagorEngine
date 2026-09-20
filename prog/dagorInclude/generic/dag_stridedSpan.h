@@ -6,6 +6,7 @@
 
 #include <debug/dag_assert.h>
 #include <EASTL/type_traits.h>
+#include <EASTL/memory.h>
 
 namespace dag
 {
@@ -34,7 +35,7 @@ class StridedSpan
   using ConstT = eastl::add_const_t<T>;
   using BasePtrType = eastl::conditional_t<is_constant, const uint8_t *, uint8_t *>;
   using ReferenceType = eastl::add_lvalue_reference_t<T>;
-  using ConstTeferenceType = eastl::add_lvalue_reference_t<ConstT>;
+  using ConstReferenceType = eastl::add_lvalue_reference_t<ConstT>;
   using PointerType = eastl::add_pointer_t<T>;
   using ConstPointerType = eastl::add_pointer_t<ConstT>;
 
@@ -51,7 +52,7 @@ public:
   using pointer = PointerType;
   using const_pointer = ConstPointerType;
   using reference = ReferenceType;
-  using const_reference = ConstTeferenceType;
+  using const_reference = ConstReferenceType;
 
   StridedSpan() = default;
   ~StridedSpan() = default;
@@ -112,9 +113,9 @@ public:
   }
 
   ReferenceType at(uint32_t index) { return *reinterpret_cast<PointerType>(base_ptr + (element_stride * index)); }
-  ConstTeferenceType at(uint32_t index) const { return *reinterpret_cast<ConstPointerType>(base_ptr + (element_stride * index)); }
+  ConstReferenceType at(uint32_t index) const { return *reinterpret_cast<ConstPointerType>(base_ptr + (element_stride * index)); }
   ReferenceType operator[](uint32_t index) { return at(index); }
-  ConstTeferenceType operator[](uint32_t index) const { return at(index); }
+  ConstReferenceType operator[](uint32_t index) const { return at(index); }
 
   // deliberately no data method, as it would break the spans whole concept
 
@@ -137,6 +138,7 @@ public:
     uint32_t index = 0;
 
     friend class const_iterator;
+    friend class StridedSpan;
 
     iterator(StridedSpan *p, uint32_t i) : parent{p}, index{i} {}
 
@@ -148,14 +150,19 @@ public:
     iterator &operator=(const iterator &) = default;
 
     ReferenceType operator*() const { return parent->at(index); }
-    PointerType operator->() const { return parent->at(index); }
+    PointerType operator->() const { return eastl::addressof(parent->at(index)); }
 
     iterator &operator++()
     {
       ++index;
       return *this;
     }
-    iterator operator++(int) const { return {parent, index + 1}; }
+    iterator operator++(int)
+    {
+      iterator old = *this;
+      ++index;
+      return old;
+    }
     iterator operator+(uint32_t value) const { return {parent, index + value}; }
 
     iterator &operator--()
@@ -163,7 +170,12 @@ public:
       --index;
       return *this;
     }
-    iterator operator--(int) const { return {parent, index - 1}; }
+    iterator operator--(int)
+    {
+      iterator old = *this;
+      --index;
+      return old;
+    }
     iterator operator-(uint32_t value) const { return {parent, index - value}; }
     bool operator==(const iterator &r) const { return parent == r.parent && index == r.index; }
     bool operator!=(const iterator &r) const { return !(*this == r); }
@@ -174,6 +186,8 @@ public:
   protected:
     const StridedSpan *parent = nullptr;
     uint32_t index = 0;
+
+    friend class StridedSpan;
 
     const_iterator(const StridedSpan *p, uint32_t i) : parent{p}, index{i} {}
 
@@ -193,15 +207,20 @@ public:
       return *this;
     }
 
-    ConstTeferenceType operator*() const { return parent->at(index); }
-    ConstPointerType operator->() const { return parent->at(index); }
+    ConstReferenceType operator*() const { return parent->at(index); }
+    ConstPointerType operator->() const { return eastl::addressof(parent->at(index)); }
 
     const_iterator &operator++()
     {
       ++index;
       return *this;
     }
-    const_iterator operator++(int) const { return {parent, index + 1}; }
+    const_iterator operator++(int)
+    {
+      const_iterator old = *this;
+      ++index;
+      return old;
+    }
     const_iterator operator+(uint32_t value) const { return {parent, index + value}; }
 
     const_iterator &operator--()
@@ -209,7 +228,12 @@ public:
       --index;
       return *this;
     }
-    const_iterator operator--(int) const { return {parent, index - 1}; }
+    const_iterator operator--(int)
+    {
+      const_iterator old = *this;
+      --index;
+      return old;
+    }
     const_iterator operator-(uint32_t value) const { return {parent, index - value}; }
     bool operator==(const const_iterator &r) const { return parent == r.parent && index == r.index; }
     bool operator!=(const const_iterator &r) const { return !(*this == r); }

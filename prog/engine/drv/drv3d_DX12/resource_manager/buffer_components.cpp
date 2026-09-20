@@ -124,6 +124,8 @@ BufferState BufferHeap::discardBuffer(DXGIAdapter *adapter, Device &device, Buff
       freeReason = FreeReason::DISCARD_SAME_FRAME;
     }
 
+    // allocateBuffer reported the failure already. An empty result is not an error here, the else
+    // branch below keeps the old buffer and restarts its discard cycle.
     result = allocateBuffer(adapter, device, to_discared.size, struct_size, nextDiscardRange, memory_class, flags, cflags, name,
       disable_sub_alloc)
                .value_or({});
@@ -261,7 +263,7 @@ BufferHeap::BufferAllocationResult BufferHeap::allocateBufferWithoutDefragmentat
       const auto initialState = propertiesToInitialState(D3D12_RESOURCE_DIMENSION_BUFFER, flags, memory_class);
       auto heapCreateResult = bufferHeapStateAccess->createBufferHeap(this, adapter, device.getDevice(),
         align_value<uint64_t>(payloadSize * discard_count, D3D12_DEFAULT_RESOURCE_PLACEMENT_ALIGNMENT), heap_properties, flags,
-        initialState, nullptr, true, allocation_flags);
+        initialState, {}, true, allocation_flags);
       if (!heapCreateResult.has_value())
       {
         return dag::Unexpected{heapCreateResult.error()};
@@ -276,11 +278,8 @@ BufferHeap::BufferAllocationResult BufferHeap::allocateBufferWithoutDefragmentat
         allocationRange = make_value_range<uint64_t>(0, payloadSize);
         selectedHeap->applyFirstAllocation(payloadSize);
 
-        char stringBuf[MAX_OBJECT_NAME_LENGTH];
-        // As buffers can supply multiple engine buffers, it make little sense to name it after
-        // one of them right now we simply name it by the heap index.
-        auto ln = sprintf_s(stringBuf, "Buffer#%u", heapIndex);
-        device.nameResource(selectedHeap->getResourcePtr(), {stringBuf, static_cast<size_t>(ln)});
+        char strBuf[32];
+        device.nameResource(selectedHeap->getResourcePtr(), make_buffer_heap_name(strBuf, heapIndex));
       }
     }
 
@@ -400,9 +399,8 @@ BufferHeap::BufferCloneResult BufferHeap::tryCloneBuffer(DXGIAdapter *adapter, I
   auto &memory = heap.getBufferMemory();
   if (heap.getFlags() & D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS)
     allocation_flags.isUav = true;
-  auto heapCreateResult =
-    bufferHeapStateAccess->createBufferHeap(this, adapter, device, buffer_resource_size, getPropertiesFromMemory(memory),
-      heap.getFlags(), D3D12_RESOURCE_STATE_COPY_DEST, nullptr, heap.hasSuballocator(), allocation_flags);
+  auto heapCreateResult = bufferHeapStateAccess->createBufferHeap(this, adapter, device, buffer_resource_size,
+    getPropertiesFromMemory(memory), heap.getFlags(), D3D12_RESOURCE_STATE_COPY_DEST, {}, heap.hasSuballocator(), allocation_flags);
 
   if (heapCreateResult.has_value())
   {
@@ -470,7 +468,6 @@ void BufferHeap::completeFrameExecution(const CompletedFrameExecutionInfo &info,
   {
     auto bufferHeapStateAccess = bufferHeapState.access();
 
-    char strBuf[MAX_OBJECT_NAME_LENGTH];
     for (auto &&freeInfo : data.deletedBuffers)
     {
       auto &buffer = freeInfo.buffer;
@@ -492,7 +489,7 @@ void BufferHeap::completeFrameExecution(const CompletedFrameExecutionInfo &info,
       {
         freeBufferSRVDescriptors({buffer.uavForClear.get(), buffer.uavForClear.get() + buffer.discardCount});
       }
-      bufferHeapStateAccess->freeBuffer(this, buffer, freeInfo.freeReason, get_resource_name(buffer.buffer, strBuf));
+      bufferHeapStateAccess->freeBuffer(this, buffer, freeInfo.freeReason, debug::get_object_name(buffer.buffer));
     }
   }
   data.deletedBuffers.clear();

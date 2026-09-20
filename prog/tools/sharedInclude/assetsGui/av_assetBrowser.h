@@ -30,6 +30,7 @@ public:
   int getThumbnailImageSize() const;
   void setThumbnailImageSize(int size);
   void updateImgui();
+  bool isContextMenuOpen() const;
 
   PropPanel::IMenu &createContextMenu();
 

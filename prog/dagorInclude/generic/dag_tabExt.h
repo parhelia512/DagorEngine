@@ -6,9 +6,10 @@
 
 #include <generic/dag_tab.h>
 #include <memory/dag_framemem.h>
+#include <util/dag_compilerDefs.h>
 
 template <class T>
-class FTab : public Tab<T>
+class DAGOR_WARN_IF_UNUSED FTab : public Tab<T>
 {
 public:
   FTab() : Tab<T>(framemem_ptr()) {}

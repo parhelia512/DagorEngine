@@ -9,36 +9,36 @@
 #endif
 
 #include <drv/3d/dag_driver.h>
+#include <drv/3d/dag_multi_interface.h>
 #include <generic/dag_tabFwd.h>
 
 class String;
 
-namespace d3d
-{
 #if _TARGET_PC_WIN
+namespace d3d _MULTI_INTERFACE
+{
 VPROG create_vertex_shader_hlsl(const char *hlsl_text, unsigned len, const char *entry, const char *profile, String *out_err = NULL);
 FSHADER create_pixel_shader_hlsl(const char *hlsl_text, unsigned len, const char *entry, const char *profile, String *out_err = NULL);
 bool compile_compute_shader_hlsl(const char *hlsl_text, unsigned len, const char *entry, const char *profile, Tab<uint8_t> &metadata,
   Tab<uint32_t> &shader_bin, String &out_err);
+} // namespace d3d _MULTI_INTERFACE
 #endif
 
 #if !_TARGET_D3D_MULTI
-bool set_vertex_shader(VPROG ps);
-bool set_pixel_shader(FSHADER ps);
 #if _TARGET_PC_WIN | _TARGET_PC_MACOSX
-namespace pcwin
+namespace d3d::pcwin _MULTI_INTERFACE
 {
 //! return D3DFORMAT for given texture
 unsigned get_texture_format(const BaseTexture *tex);
 //! return D3DFORMAT for given texture as string
 const char *get_texture_format_str(const BaseTexture *tex);
 void *get_native_surface(BaseTexture *tex);
-} // namespace pcwin
+} // namespace d3d::pcwin_MULTI_INTERFACE
 #endif
 
 #if _TARGET_PC_WIN | _TARGET_PC_MACOSX | _TARGET_PC_LINUX
 // additional d3d::pcwin interface (PC specific)
-namespace pcwin
+namespace d3d::pcwin _MULTI_INTERFACE
 {
 void set_present_wnd(void *hwnd);
 
@@ -48,13 +48,19 @@ void present_to_window(void *hwnd);
 
 // set capture whole framebuffer with capture_screen(), not only window data. returns previous state.
 bool set_capture_full_frame_buffer(bool ison);
-} // namespace pcwin
+} // namespace d3d::pcwin_MULTI_INTERFACE
 #endif
+
+namespace d3d _MULTI_INTERFACE
+{
+bool set_vertex_shader(VPROG ps);
+bool set_pixel_shader(FSHADER ps);
+
 //! returns current state of VSYNC
 bool get_vsync_enabled();
 //! enables or disables strong VSYNC (flips only on VBLANK); returns true on success
 bool enable_vsync(bool enable);
 //! retrieve list of available display modes
 void get_video_modes_list(Tab<String> &list);
+} // namespace d3d _MULTI_INTERFACE
 #endif
-}; // namespace d3d

@@ -117,12 +117,27 @@ public:
 
   void clearAccelerators() override { accelerators.clear(); }
 
-  unsigned processImguiAccelerator(bool has_active_viewport, bool &viewport_accelerator) override
+  unsigned processImguiAccelerator(ImGuiID active_viewport_canvas_id, bool &viewport_accelerator) override
   {
+    // Constraints:
+    // - ImGui reports a RouteGlobal shortcut as pressed even while an item is active
+    // - the viewport canvas is the active item for as long as fly mode lasts
+    // - ImGui reserves the chords that could be a character only for a focused text input
+    // - an accelerator such as the console toggle has to work from a text input.
+    const ImGuiID activeId = ImGui::GetActiveID();
+    const bool skipGlobalAccelerators = activeId != 0 && activeId != active_viewport_canvas_id && !ImGui::GetIO().WantTextInput;
+
     for (const Accelerator &accelerator : accelerators)
     {
-      if (accelerator.viewportAccelerator && !has_active_viewport)
+      if (accelerator.viewportAccelerator)
+      {
+        if (active_viewport_canvas_id == 0)
+          continue;
+      }
+      else if (skipGlobalAccelerators)
+      {
         continue;
+      }
 
       if (ImGui::Shortcut(accelerator.keyChord, accelerator.inputFlags | ImGuiInputFlags_RouteGlobal))
       {

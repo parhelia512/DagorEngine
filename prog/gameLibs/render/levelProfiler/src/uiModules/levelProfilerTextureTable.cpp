@@ -34,7 +34,6 @@ static constexpr float TEX_USAGE_FILTER_SPEED = 1.0f;
 
 // Default values
 static constexpr int DEFAULT_MAX_TEX_USAGE = 100; // Default to 100 if riModule is null for safety
-static constexpr int SHARED_TEX_MIN_DEFAULT = 2;
 
 // Color constants for UI
 static const ImVec4 ERROR_COLOR = ImVec4(1.0f, 0.0f, 0.0f, 1.0f);
@@ -668,7 +667,7 @@ void LpTextureTable::drawTextureUsageFilterContent()
   if (ImGui::Button("Clear"))
   {
     fm.setTextureUsageFilters(true, true, true);
-    filter.reset(UIConstants::SHARED_TEX_MIN_DEFAULT, static_cast<float>(maxTextureUsage));
+    filter.reset(SHARED_TEXTURE_USAGE_MIN, static_cast<float>(maxTextureUsage));
 
     if (riModule)
     {

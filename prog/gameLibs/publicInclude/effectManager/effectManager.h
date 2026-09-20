@@ -47,6 +47,8 @@ public:
   void setVelocityScaleMinMax(const Point2 &scale);
   void setSpawnRate(float rate);
   void setLightRadiusMultiplier(float multiplier);
+  void setLightFlags(uint32_t flags);
+  void setLightSourceRadius(float radius);
   void setColorMult(const Color4 &colorMult);
   void setVisibility(uint32_t visibility);
   void hide(bool hidden);
@@ -103,7 +105,7 @@ DAG_DECLARE_RELOCATABLE(AcesEffect);
 struct EffectManagerAsyncLoad : public cpujobs::IJob
 {
   EffectManager *mgr;
-  const char *getJobName(bool &) const override { return "EffectManagerAsyncLoad"; }
+  const char *getJobName(bool &) const override { return DAPROFILER_STRING("EffectManagerAsyncLoad"); }
   void doJob() override;
 };
 
@@ -245,6 +247,8 @@ private:
   void setFxSpawnRate(BaseEffect &fx, float value);
   void setFxWarmup(BaseEffect &fx, float time, float step_dt = 0.f);
   void setFxLightRadiusMultiplier(BaseEffect &fx, float multiplier);
+  void setFxLightFlags(BaseEffect &fx, uint32_t flags);
+  void setFxLightSourceRadius(BaseEffect &fx, float radius);
   void setFxLightIntensity(BaseEffect &fx, float intensity);
   void setFxLightFadeout(BaseEffect &fx, float fadeout);
   void setFxLightBox(BaseEffect &fx, const TMatrix &box);
@@ -270,6 +274,8 @@ private:
   void setFxSpawnRateBuff(AcesEffect::FxId fx_id, float value);
   void setFxWarmupBuff(AcesEffect::FxId fx_id, float time, float step_dt = 0.f);
   void setFxLightRadiusMultiplierBuff(AcesEffect::FxId fx_id, float multiplier);
+  void setFxLightFlagsBuff(AcesEffect::FxId fx_id, uint32_t flags);
+  void setFxLightSourceRadiusBuff(AcesEffect::FxId fx_id, float radius);
   void setFxLightIntensityBuff(AcesEffect::FxId fx_id, float intensity);
   void setFxLightFadeoutBuff(AcesEffect::FxId fx_id, float fadeout);
   void setFxLightBoxBuff(AcesEffect::FxId fx_id, const TMatrix &box);

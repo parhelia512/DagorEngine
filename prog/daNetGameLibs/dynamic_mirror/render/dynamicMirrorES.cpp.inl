@@ -12,7 +12,7 @@
 #include <render/daFrameGraph/nodeHandle.h>
 #include <ecs/render/updateStageRender.h>
 #include <animChar/dag_animCharacter2.h>
-#include <render/world/cameraParams.h>
+#include <render/cameraParams.h>
 #include <render/dag_cur_view.h>
 #include <render/world/gbufferConsts.h>
 #include <render/daFrameGraph/ecs/frameGraphNode.h>
@@ -38,6 +38,7 @@ static bool init_dynamic_mirrors_on_demand(DynamicMirrorRenderer &dynamic_mirror
   dafg::NodeHandle &dynamic_mirror_render_ground_node,
   dafg::NodeHandle &dynamic_mirror_resolve_gbuf_node,
   dafg::NodeHandle &dynamic_mirror_resolve_node,
+  dafg::NodeHandle &dynamic_mirror_prepare_envi_node,
   dafg::NodeHandle &dynamic_mirror_envi_node)
 {
   auto worldRenderer = static_cast<WorldRenderer *>(get_world_renderer());
@@ -72,6 +73,7 @@ static bool init_dynamic_mirrors_on_demand(DynamicMirrorRenderer &dynamic_mirror
   dynamic_mirror_render_ground_node = create_dynamic_mirror_render_ground_node();
   dynamic_mirror_resolve_gbuf_node = create_dynamic_mirror_gbuf_resolve_node(resolveShader);
   dynamic_mirror_resolve_node = create_dynamic_mirror_resolve_node(dynamic_mirror_renderer);
+  dynamic_mirror_prepare_envi_node = create_dynamic_mirror_prepare_envi_node(dynamic_mirror_renderer);
   dynamic_mirror_envi_node = create_dynamic_mirror_envi_node(dynamic_mirror_renderer);
   return true;
 }
@@ -89,6 +91,7 @@ static void prepare_mirror_es(const UpdateStageInfoBeforeRender &event,
   dafg::NodeHandle &dynamic_mirror_render_ground_node,
   dafg::NodeHandle &dynamic_mirror_resolve_gbuf_node,
   dafg::NodeHandle &dynamic_mirror_resolve_node,
+  dafg::NodeHandle &dynamic_mirror_prepare_envi_node,
   dafg::NodeHandle &dynamic_mirror_envi_node)
 {
   dynamic_mirror_renderer.clearCameraData();
@@ -96,7 +99,8 @@ static void prepare_mirror_es(const UpdateStageInfoBeforeRender &event,
     return;
   if (!init_dynamic_mirrors_on_demand(dynamic_mirror_renderer, dynamic_mirror_prepare_node, dynamic_mirror_prepass_node,
         dynamic_mirror_end_prepass_node, dynamic_mirror_render_dynamic_node, dynamic_mirror_render_static_node,
-        dynamic_mirror_render_ground_node, dynamic_mirror_resolve_gbuf_node, dynamic_mirror_resolve_node, dynamic_mirror_envi_node))
+        dynamic_mirror_render_ground_node, dynamic_mirror_resolve_gbuf_node, dynamic_mirror_resolve_node,
+        dynamic_mirror_prepare_envi_node, dynamic_mirror_envi_node))
     return;
   auto latestResolution = dynamic_mirror_renderer.getLatestResolution();
   if (latestResolution.x * latestResolution.y == 0)

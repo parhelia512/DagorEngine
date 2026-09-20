@@ -85,7 +85,9 @@ public:
           static constexpr int LARGE_LOD_CNT = RiGenExtraVisibility::LARGE_LOD_CNT;
           G_UNUSED(ni);
           const scene::pool_index poolId = scene::get_node_pool(m);
-          const auto &riPool = poolInfo[poolId];
+          const auto *riPool = get_pool_info_if_ready(poolInfo, poolId);
+          if (DAGOR_UNLIKELY(!riPool))
+            return;
 
           float poolRad = tiled_scene.getPoolSphereRad(poolId);
           float poolRad2 = poolRad * poolRad;
@@ -95,12 +97,12 @@ public:
           float distSqScaledNormalized = sdist * poolRad2; // = distSqScaled * (poolRad / rad)^2. Estimation of distSq where a
                                                            // non-scaled object of the pool has the same screensize as the node.
 
-          const unsigned llm = riPool.lodLimits >> ((ri_game_render_mode + 1) * 8);
+          const unsigned llm = riPool->lodLimits >> ((ri_game_render_mode + 1) * 8);
           const unsigned min_lod = llm & 0xF, max_lod = (llm >> 4) & 0xF;
-          if (riPool.distSqLOD[max_lod] <= distSqScaledNormalized * rendinst::render::riExtraLodsShiftDistMulForCulling)
+          if (riPool->distSqLOD[max_lod] <= distSqScaledNormalized * rendinst::render::riExtraLodsShiftDistMulForCulling)
             return;
 
-          unsigned lod = find_lod<rendinst::RiExtraPool::MAX_LODS>(riPool.distSqLOD, distSqScaledNormalized);
+          unsigned lod = find_lod<rendinst::RiExtraPool::MAX_LODS>(riPool->distSqLOD, distSqScaledNormalized);
           lod = clamp(lod, min_lod, max_lod);
           int cnt_idx = poolId * rendinst::RiExtraPool::MAX_LODS + lod;
           int new_sz = riexDataCnt[cnt_idx].fetch_add(RIEXTRA_VECS_COUNT) + RIEXTRA_VECS_COUNT;
@@ -127,7 +129,7 @@ public:
             interlocked_relaxed_store(*(uint32_t *)(v.minSqDistances[lod].data() + poolId), distI);
           }
           vec4f *addData = v.riexData[lod].data()[poolId].data() + (new_sz - RIEXTRA_VECS_COUNT);
-          rendinst::render::write_ri_extra_per_instance_data(addData, tiled_scene, poolId, ni, m, riPool.isDynamic);
+          rendinst::render::write_ri_extra_per_instance_data(addData, tiled_scene, poolId, ni, m, riPool->isDynamic);
 
           const uint32_t id = new_sz / RIEXTRA_VECS_COUNT - 1;
           if (sortLarge && lod < LARGE_LOD_CNT && (scene::check_node_flags(m, RendinstTiledScene::LARGE_OCCLUDER)))
@@ -170,7 +172,7 @@ public:
       G_FAST_ASSERT(ctx == &info->sceneContexts[++tiled_scene_idx]);
     }
   }
-  const char *getJobName(bool &) const override { return "parallel_ri_cull_job"; }
+  const char *getJobName(bool &) const override { return DAPROFILER_STRING("parallel_ri_cull_job"); }
   void doJob() override { perform_job(jobIdx, parent); }
 };
 

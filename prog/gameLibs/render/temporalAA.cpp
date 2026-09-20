@@ -147,8 +147,8 @@ void TemporalAA::applyImpl(Texture *currentFrameTex, Texture *target)
   if (targetInfo.w != historyResolution.x || targetInfo.h != historyResolution.y)
   {
     historyResolution = IPoint2(targetInfo.w, targetInfo.h);
-    historyTexPool = RTargetPool::get(historyResolution.x, historyResolution.y, historyFmt, 1);
     historyTex.forEach([](RTarget::Ptr &t) { t = nullptr; });
+    historyTexPool = RTargetPool::get(historyResolution.x, historyResolution.y, historyFmt, 1);
   }
 
   RTarget::Ptr nextHistory = historyTexPool->acquire();
@@ -163,7 +163,7 @@ void TemporalAA::applyImpl(Texture *currentFrameTex, Texture *target)
   if (nextWasDynamic)
     rts[rtCount++] = {nextWasDynamic->getTex2D(), 0, 0};
   d3d::set_render_target({}, DepthAccess::RW, dag::ConstSpan<RenderTarget>(rts.data(), rtCount));
-  d3d::clearview(CLEAR_DISCARD_TARGET, 0, 0, 0);
+  d3d::clearview(DISCARD_TARGET, 0, 0, 0);
 
   const TEXTUREID historyTexId = historyTex.current() ? historyTex.current()->getTexId() : BAD_TEXTUREID;
   const TEXTUREID wasDynamicTexId = wasDynamicTex.current() ? wasDynamicTex.current()->getTexId() : BAD_TEXTUREID;

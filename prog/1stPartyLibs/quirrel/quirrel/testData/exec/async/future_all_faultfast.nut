@@ -16,9 +16,9 @@ async function main() {
   settleOthers()
   try {
     let r = await f
-    print("UNEXPECTED fulfil: " + r[0] + "\n")
+    println($"UNEXPECTED fulfil: {r[0]}")
   } catch (e) {
-    print("all fail-fast: " + e + "\n")
+    println($"all fail-fast: {e}")
   }
   print("script done\n")
 }

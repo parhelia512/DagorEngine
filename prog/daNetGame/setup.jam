@@ -11,6 +11,8 @@ WError ?= yes ; # treat all warnings as errors
 Exceptions ?= no ;
 Config ?= dev ;
 NeedDasAotCompile ?= no ;   # optional usage of AoT (ahead-of-time) compilation for DAS scripts
+NeedDasLLVMAotCompile ?= no ;   # emit LLVM native .o AOT (self-registering SimNode_Jit) instead of C++ AOT stubs
+if $(NeedDasLLVMAotCompile) = yes { NeedDasAotCompile = yes ; }   # LLVM-AOT reuses the AOT tool + batched-DAS pipeline
 # HaveRenderer ?= yes ;     # include/skip renderer-related code
 # HaveDngInput ?= yes ;     # include/skip input-related code
 # HaveOverlayUI ?= yes ;    # include/skip UI/hud-related code
@@ -49,6 +51,7 @@ if $(Dedicated) != yes {
       SqVarTrace ?= no ;
     }
     UseSystemOpenSSL ?= yes ;
+    UseSyncAsyncRead ?= yes ;
   }
   if $(NetPeerAuth) = yes {
     if $(Platform) in windows xboxOne scarlett {
@@ -184,6 +187,18 @@ if $(NeedDasAotCompile) = yes && $(AotCompilerBaseName) {
     platform_spec_xx on $(jam:G=JAM) = \  ;
     nopdb on $(jam:G=JAM) = \  ;
     checkonly on $(jam:G=JAM) = \  ;
+    if $(NeedDasLLVMAotCompile) = yes {
+      # The tool compiles daScript.lib with DAS_LLVM_AOT, which das_config.h reads as
+      # DAS_BIND_EXTERNAL=1 (dasLLVM reaches the LLVM C API through [extern] FFI); the game builds
+      # that lib without the switch. The tool's own output tree keeps its daScript.lib from
+      # clobbering the game's, which otherwise rebuild each other in a loop and relink the tool
+      # with FFI disabled.
+      config on $(jam:G=JAM) += -sDasAotLLVM=yes -sOutputSuffix=llvmaot ;
+      DAS_AOT_LLVM_OBJ = yes ;
+      DAS_AOT_DRIVER = prog/1stPartyLibs/daScript/utils/aot/main_llvm_aot.das ;
+    } else {
+      DAS_AOT_DRIVER = prog/1stPartyLibs/daScript/utils/aot/main.das ;
+    }
     DAS_AOT_COMPILER = $(AotCompilerBaseName)-$(host_platform)-$(host_arch)-c-dev ;
     if $(Platform) = macOS { config on $(jam:G=JAM) += -sMacOSXMinVer=$(MacOSXMinVer) ; }
     config on $(jam:G=JAM) += -sOutDir=$(AotCompilerBaseName:D) -sTarget=$(AotCompilerBaseName:B) -sCheckedContainers=yes -sPlatformSpec=$(PlatformSpec) -sUseLLDLink=$(UseLLDLink) ;
@@ -282,6 +297,7 @@ AddIncludes =
   $(Root)/prog/daNetGame
   $(Root)/prog/gameLibs/publicInclude
   $(Root)/prog/gameLibs/publicInclude/quirrel
+  $(Root)/prog/gameLibs/render/screenSpaceReflection
   $(Root)/prog/commonFx/commonFxGame
   $(Root)/prog/3rdPartyLibs/recastnavigation/Detour/Include
   $(Root)/prog/3rdPartyLibs/recastnavigation/DetourTileCache/Include

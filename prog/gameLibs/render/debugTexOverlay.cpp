@@ -4,6 +4,7 @@
 #include <math/dag_Point2.h>
 #include <math/dag_Point4.h>
 #include <drv/3d/dag_viewScissor.h>
+#include <3d/dag_preRotation.h>
 #include <drv/3d/dag_driver.h>
 #include <drv/3d/dag_tex3d.h>
 #include <3d/dag_texMgr.h>
@@ -379,17 +380,20 @@ void DebugTexOverlay::TextureWrapper::setTexEx(const Point2 &target_size_, TEXTU
 
 void DebugTexOverlay::hideTex() { clear_and_shrink(textures); }
 
-void DebugTexOverlay::render()
+void DebugTexOverlay::render(int pre_rotation_angle)
 {
+  const int prevAngle = prerotation::get_current_angle();
+  prerotation::set_shader_var(pre_rotation_angle);
   shaders::overrides::set(scissor);
   for (TextureWrapper &texture : textures)
   {
-    texture.render(targetSize, *renderer);
+    texture.render(targetSize, *renderer, pre_rotation_angle);
   }
   shaders::overrides::reset();
+  prerotation::set_shader_var(prevAngle);
 }
 
-void DebugTexOverlay::TextureWrapper::render(const Point2 &target_size, const PostFxRenderer &renderer)
+void DebugTexOverlay::TextureWrapper::render(const Point2 &target_size, const PostFxRenderer &renderer, int pre_rotation_angle)
 {
   // handle invalid resource by id
   if (texId != BAD_TEXTUREID)
@@ -424,7 +428,6 @@ void DebugTexOverlay::TextureWrapper::render(const Point2 &target_size, const Po
 
 
   static int texVarId = get_shader_variable_id("swizzled_texture");
-  static int samplerVarId = get_shader_variable_id("swizzled_texture_samplerstate", true);
   static int texSizeVarId = get_shader_variable_id("swizzled_texture_size");
   static int texTypeVarId = get_shader_variable_id("swizzled_texture_type");
   static int texFaceMipVarId = get_shader_variable_id("swizzled_texture_face_mip");
@@ -441,7 +444,6 @@ void DebugTexOverlay::TextureWrapper::render(const Point2 &target_size, const Po
   size = mul(sizeF, csz);
 
   ShaderGlobal::set_texture_unsafe(texVarId, texPtr);
-  ShaderGlobal::set_sampler(samplerVarId, d3d::request_sampler({}));
 
   for (int i = 0; i < 4; ++i)
   {
@@ -490,12 +492,15 @@ void DebugTexOverlay::TextureWrapper::render(const Point2 &target_size, const Po
   }
   else
   {
-    d3d::setscissor(origOffset.x, origOffset.y, origSize.x, origSize.y);
+    const bool swapExtents = pre_rotation_angle == 90 || pre_rotation_angle == 270;
+    int l = origOffset.x, t = origOffset.y, w = origSize.x, h = origSize.y;
+    prerotation::rotate_rect(pre_rotation_angle, swapExtents ? target_size.y : target_size.x,
+      swapExtents ? target_size.x : target_size.y, l, t, w, h);
+    d3d::setscissor(l, t, w, h);
     renderer.render();
   }
 
   ShaderGlobal::set_texture(texVarId, BAD_TEXTUREID);
-  ShaderGlobal::set_sampler(samplerVarId, d3d::INVALID_SAMPLER_HANDLE);
 }
 
 void DebugTexOverlay::TextureWrapper::fixAspectRatio(const Point2 &targetSize)

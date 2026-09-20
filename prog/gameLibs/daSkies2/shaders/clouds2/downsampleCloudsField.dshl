@@ -81,7 +81,7 @@ shader downsample_cloud_field_ps
   }
   (ps) {
     clouds_field_res@f4 = (clouds_field_res.x, clouds_field_res.y, 1./clouds_field_res.x, 1./clouds_field_res.y);
-    clouds_field_volume@smp = clouds_field_volume hlsl { Texture3D<float> clouds_field_volume@smp; }
+    clouds_field_volume@tex = clouds_field_volume hlsl { Texture3D<float> clouds_field_volume@tex; }
     clouds_field_downsample_ratio@f1 = (clouds_field_downsample_ratio,0,0,0);
   }
   WRITE_TO_VOLTEX_TC()

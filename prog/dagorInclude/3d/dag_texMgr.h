@@ -56,6 +56,7 @@ public:
   //! \param id ID of the texture to load
   //! \param req_ql Required quality level
   //! \returns `true` when loading scheduled successfully
+  //! \note On `false` the manager reverts the pending reading state itself; the factory must not cancel it
   virtual bool scheduleTexLoading(TEXTUREID /*id*/, TexQL /*req_ql*/) { return false; }
 
   //! \brief Loads and returns contents of texture as DDSx data
@@ -75,6 +76,11 @@ public:
   virtual bool isPersistentTexName(const char * /*nm*/) { return false; }
 
   //! \brief When a texture factory instance is destroyed at runtime, this function **must** be called to notify the manager about it.
+  //! \details Unreferenced entries of \p f are removed. A still referenced entry is detached from \p f: shader vars bound
+  //! to it are reset, its d3d resource is leaked (only \p f could release it, and users may still hold the pointer) and its
+  //! name stays registered until the last release, so the name can not be added again before that.
+  //! \warning The owner must stop all users of \p f first: no texture of \p f may be acquired, held, loading or released
+  //! concurrently. The manager calls into \p f outside its lock, so it can not serialize this itself.
   //! \warning This should not be called from factories which are static
   //! singletons or are destroyed after the manager was already de-initialized.
   static void onTexFactoryDeleted(TextureFactory *f);

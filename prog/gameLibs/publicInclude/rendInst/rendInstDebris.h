@@ -12,6 +12,7 @@
 #include <util/dag_stdint.h>
 #include <generic/dag_carray.h>
 #include <EASTL/fixed_function.h>
+#include <generic/dag_functionRef.h>
 
 #include <rendInst/rendInstDesc.h>
 #include <rendInst/rendInstAccess.h>
@@ -31,7 +32,11 @@ using ri_damage_effect_cb = void (*)(int type, const TMatrix &emitter_tm, const 
 using damage_effect_cb = void (*)(int type, const TMatrix &emitter_tm, const TMatrix &fx_tm, int pool_idx, bool is_player,
   AcesEffect **locked_fx, const char *effect_template);
 
-void doRIGenDamage(const BSphere3 &sphere, unsigned frameNo, const Point3 &axis = Point3(0.f, 0.f, 0.f), bool create_debris = true);
+// Optional per-pool skip predicate for the sphere sweep: return true to spare that (layer, pool) from
+// being swept. Non-owning: the callable must outlive the call, do not bind a temporary.
+using RIGenPoolSkipCbType = dag::FunctionRef<bool(int layer, int pool) const>;
+void doRIGenDamage(const BSphere3 &sphere, unsigned frameNo, const Point3 &axis = Point3(0.f, 0.f, 0.f), bool create_debris = true,
+  RIGenPoolSkipCbType pool_skip_cb = {});
 void doRIGenDamage(const BBox3 &box, unsigned frameNo, const Point3 &axis = Point3(0.f, 0.f, 0.f), bool create_debris = true);
 void doRIGenDamage(const BBox3 &box, unsigned frameNo, const TMatrix &check_itm, const Point3 &axis = Point3(0.f, 0.f, 0.f),
   bool create_debris = true);

@@ -104,11 +104,11 @@ static bool get_dag_tex_and_proxymat_list(const char *dag_fn, Tab<String> &list,
   }
   return true;
 }
-void add_dag_texture_and_proxymat_refs(const char *dag_fn, Tab<IDagorAssetRefProvider::Ref> &tmpRefs, DagorAsset &a,
+bool add_dag_texture_and_proxymat_refs(const char *dag_fn, Tab<IDagorAssetRefProvider::Ref> &tmpRefs, DagorAsset &a,
   IProcessMaterialData *pm)
 {
   if (shadermeshbuilder_strip_d3dres)
-    return;
+    return true;
   static Tab<String> list(tmpmem);
   static Tab<String> proxyMatList(tmpmem);
   static String s, tmp_stor;
@@ -117,7 +117,9 @@ void add_dag_texture_and_proxymat_refs(const char *dag_fn, Tab<IDagorAssetRefPro
 
   list.clear();
   proxyMatList.clear();
-  if (get_dag_tex_and_proxymat_list(dag_fn, list, proxyMatList, pm, a))
+  if (!get_dag_tex_and_proxymat_list(dag_fn, list, proxyMatList, pm, a))
+    return false;
+
   {
     for (int i = 0; i < list.size(); i++)
     {
@@ -192,7 +194,25 @@ void add_dag_texture_and_proxymat_refs(const char *dag_fn, Tab<IDagorAssetRefPro
       }
     }
   }
+  return true;
 }
+
+void gather_model_lod_dags(const DagorAsset &a, Tab<SimpleString> &files)
+{
+  const int nid = a.props.getNameId("lod");
+  const char *basePath = a.getFolderPath();
+  String fn, sn;
+  int id = 0;
+
+  for (int i = 0; const DataBlock *blk = a.props.getBlock(i); i++)
+    if (blk->getBlockNameId() == nid)
+    {
+      sn.printf(260, "%s.lod%02d.dag", a.props.getStr("lod_fn_prefix", a.getName()), id++);
+      fn.printf(260, "%s/%s", basePath, blk->getStr("fname", sn));
+      files.push_back() = fn;
+    }
+}
+
 const DataBlock &get_process_mat_blk(const DataBlock &a_props, const char *asset_type)
 {
   static DataBlock processMat_stor;

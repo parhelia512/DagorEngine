@@ -89,13 +89,13 @@ void EnviCover::initRender(EnviCoverUseType envi_cover_type)
   }
 }
 
-void EnviCover::render(int x, int y, const eastl::array<BaseTexture *, ENVI_COVER_MAX_RW_TARGETS> &&gbufBaseTextures)
+void EnviCover::render(int x, int y, const GbufRtArray &gbufBaseTextures)
 {
   static int frame_idx = 0;
 
   ShaderGlobal::set_int(var::envi_cover_frame_idx, frame_idx++ % 4);
 
-  for (int i = 0; i < ENVI_COVER_MAX_RW_TARGETS; i++)
+  for (int i = 0; i < DeferredRT::MAX_NUM_MRT; i++)
   {
     d3d::set_rwtex(STAGE_CS, envi_cover_rw_gbuffer_slot + i, gbufBaseTextures[i], 0, 0);
   }
@@ -114,7 +114,7 @@ void EnviCover::render(int x, int y, const eastl::array<BaseTexture *, ENVI_COVE
     case EnviCoverUseType::NBS_COMBINED_PACKED_NORMS: enviCoverCombinedWithPackedNormsNBS->dispatch(threadX, threadY, threadZ); break;
     default: logerr("EnviCover::render was called without setting up initRender with a proper usage type!"); break;
   }
-  for (int i = 0; i < ENVI_COVER_MAX_RW_TARGETS; i++)
+  for (int i = 0; i < DeferredRT::MAX_NUM_MRT; i++)
   {
     if (gbufBaseTextures[i])
     {

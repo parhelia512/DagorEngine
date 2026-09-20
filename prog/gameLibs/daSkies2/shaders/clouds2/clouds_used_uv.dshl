@@ -1,0 +1,42 @@
+// Dynamic resolution: the clouds work on a [0,0] anchored sub-rect of targets that stay
+// allocated at the maximum size, so clouds2_resolution is the USED size. A texel index needs
+// no correction because the sub-rect starts at [0,0], a normalized uv does: xy scales a screen
+// uv onto the texture, zw is the last uv whose bilinear or gather footprint still stays inside
+// the used part.
+int4 clouds2_close_allocated_resolution;
+int4 clouds2_prev_resolution;
+float4 clouds2_used_uv_far = (1, 1, 1, 1);
+float4 clouds2_used_uv_far_prev = (1, 1, 1, 1);
+float4 clouds2_used_uv_close = (1, 1, 1, 1);
+
+macro INIT_CLOUDS_USED_UV(code)
+  (code) { clouds2_used_uv_far@f4 = clouds2_used_uv_far; }
+  hlsl(code) {
+    float2 clouds_uv_scale() { return clouds2_used_uv_far.xy; }
+    float2 clamp_clouds_uv(float2 clouds_uv) { return min(clouds_uv, clouds2_used_uv_far.zw); }
+    float2 screen_to_clouds_uv(float2 screen_uv) { return clamp_clouds_uv(screen_uv*clouds_uv_scale()); }
+  }
+endmacro
+
+macro INIT_CLOUDS_USED_UV_HISTORY(code)
+  (code) {
+    clouds2_used_uv_far_prev@f4 = clouds2_used_uv_far_prev;
+    clouds_color_prev_dimensions@f4 = (clouds2_prev_resolution.x, clouds2_prev_resolution.y,
+      1./clouds2_prev_resolution.x, 1./clouds2_prev_resolution.y);
+  }
+  hlsl(code) {
+    float2 screen_to_clouds_history_uv(float2 screen_uv)
+    { return min(screen_uv*clouds2_used_uv_far_prev.xy, clouds2_used_uv_far_prev.zw); }
+  }
+endmacro
+
+macro INIT_CLOUDS_USED_UV_CLOSE(code)
+  (code) {
+    clouds2_used_uv_close@f4 = clouds2_used_uv_close;
+    clouds2_close_allocated_res@f2 = (clouds2_close_allocated_resolution.x, clouds2_close_allocated_resolution.y, 0, 0);
+  }
+  hlsl(code) {
+    float2 screen_to_clouds_close_uv(float2 screen_uv)
+    { return min(screen_uv*clouds2_used_uv_close.xy, clouds2_used_uv_close.zw); }
+  }
+endmacro

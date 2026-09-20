@@ -86,7 +86,7 @@ static ecs::EntitySystemDesc physmap_patch_after_device_reset_es_event_handler_e
   empty_span(),
   empty_span(),
   empty_span(),
-  ecs::EventSetBuilder<AfterDeviceReset>::build(),
+  ecs::EventSetBuilder<EventAfterDeviceReset>::build(),
   0
 ,"render");
 static constexpr ecs::ComponentDesc gather_physmap_patch_updated_regions_es_comps[] =

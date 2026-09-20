@@ -21,6 +21,7 @@
 #include <resUpdateBufferGeneric.h>
 #include <util/dag_string.h>
 #include <resourceActivationGeneric.h>
+#include <texResizeGeneric.h>
 
 #if _TARGET_PC_MACOSX
 #include <drv/3d/dag_platform_pc.h>
@@ -137,6 +138,7 @@ void d3d::mark_render_start(uint32_t) {}
 void d3d::mark_render_end(uint32_t) {}
 
 IMPLEMENT_D3D_RESOURCE_ACTIVATION_API_USING_GENERIC();
+IMPLEMENT_D3D_TEX_RESIZE_API_USING_GENERIC();
 
 #include <legacyCaptureImpl.cpp.inl>
 

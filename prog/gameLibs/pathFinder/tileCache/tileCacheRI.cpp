@@ -135,7 +135,7 @@ void tilecache_ri_start(const ska::flat_hash_set<uint32_t> &res_name_hashes, flo
   });
 
   debug("tile cache: %d stationary obstacles registered (%d/%d/%d hashes/resIds/riExtra)", riHandle2obstacle.size(),
-    res_name_hashes.size(), riResourceIds.size(), rendinst::getRIExtraMapSize());
+    res_name_hashes.size(), riResourceIds.size(), rendinst::getRiGenExtraResCount());
 
   G_VERIFY(!rendinst::setRiExtraAddedFromGenDataCb(on_ri_extra_added_from_gen_data_in_thread)); // No prev CBs supported
   rendinst::registerRIGenExtraInvalidateHandleCb(on_ri_invalidate_cb);

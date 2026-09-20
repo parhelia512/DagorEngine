@@ -408,7 +408,7 @@ void CascadeShadowsPrivate::createMobileRP(uint32_t depth_fmt, uint32_t rt_fmt)
     {1, RenderPassExtraIndexes::RP_SUBPASS_EXTERNAL_END, 0, RP_TA_STORE_NO_CARE, RB_STAGE_PIXEL | RB_RO_SRV}};
 
   mobileAreaUpdateRP = d3d::create_render_pass(
-    {"shadowCascadeAreaUpdateRP", sizeof(targets) / sizeof(targets[0]), sizeof(binds) / sizeof(binds[0]), targets, binds, 0});
+    {"shadowCascadeAreaUpdateRP", sizeof(targets) / sizeof(targets[0]), sizeof(binds) / sizeof(binds[0]), targets, binds});
 }
 
 void CascadeShadowsPrivate::createDepthShadow(int splits_w, int splits_h, int width, int height, bool high_precision_depth)
@@ -435,7 +435,6 @@ void CascadeShadowsPrivate::createDepthShadow(int splits_w, int splits_h, int wi
       smpInfo.mip_map_mode = d3d::MipMapMode::Point;
       smpInfo.address_mode_u = smpInfo.address_mode_v = smpInfo.address_mode_w = d3d::AddressMode::Clamp;
       internalCascadesSampler = d3d::request_sampler(smpInfo);
-      ShaderGlobal::set_sampler(get_shader_variable_id("shadow_cascade_depth_tex_samplerstate", true), internalCascadesSampler);
     }
 
     // sometimes we use this target as SRV while not writing something to it
@@ -978,10 +977,10 @@ void CascadeShadowsPrivate::buildShadowProjectionMatrix(const Point3 &dir_to_sun
   v_stu(&shadowProjectionBox[0].x, v_frustumInLSBox.bmin);
   v_stu_p3(&shadowProjectionBox[1].x, v_frustumInLSBox.bmax);
 
+  const Point3 anchorPoint = shadowViewMatrix3 * anchor;
   bool isAnchored = anchor_radius > 0.0f;
   if (isAnchored)
   {
-    Point3 anchorPoint = shadowViewMatrix3 * anchor;
     shadowProjectionBox.lim[0].x = anchorPoint.x - anchor_radius;
     shadowProjectionBox.lim[0].y = anchorPoint.y - anchor_radius;
     shadowProjectionBox.lim[1].x = anchorPoint.x + anchor_radius;
@@ -1000,6 +999,10 @@ void CascadeShadowsPrivate::buildShadowProjectionMatrix(const Point3 &dir_to_sun
   {
     if (!split.viewport.isEmpty())
     {
+      auto snapDownwards = [](const float coord, const float anchor_point_coord, const float step) -> float {
+        return anchor_point_coord + floorf((coord - anchor_point_coord) / step) * step;
+      };
+
       if (settings.constantCascadeSize)
       {
         const int borderPixels = 4;
@@ -1024,13 +1027,10 @@ void CascadeShadowsPrivate::buildShadowProjectionMatrix(const Point3 &dir_to_sun
         const float texelWidth = boxSide / mapWidth;
         const float texelHeight = boxSide / mapHeight;
 
-        const Point3 camInLightSpace = shadowViewMatrix3 * camera_pos;
-        const Point3 originInLightSpace = shadowViewMatrix3 * anchor;
-        const Point3 deltaInLightSpace = camInLightSpace - originInLightSpace;
-        float centerX = 0.5f * (shadowProjectionBox.lim[0].x + shadowProjectionBox.lim[1].x) + deltaInLightSpace.x;
-        float centerY = 0.5f * (shadowProjectionBox.lim[0].y + shadowProjectionBox.lim[1].y) + deltaInLightSpace.y;
-        centerX = floorf(centerX / texelWidth) * texelWidth - deltaInLightSpace.x;
-        centerY = floorf(centerY / texelHeight) * texelHeight - deltaInLightSpace.y;
+        const float centerX =
+          snapDownwards(0.5f * (shadowProjectionBox.lim[0].x + shadowProjectionBox.lim[1].x), anchorPoint.x, texelWidth);
+        const float centerY =
+          snapDownwards(0.5f * (shadowProjectionBox.lim[0].y + shadowProjectionBox.lim[1].y), anchorPoint.y, texelHeight);
 
         shadowProjectionBox.lim[0].x = centerX - halfSize;
         shadowProjectionBox.lim[1].x = centerX + halfSize;
@@ -1056,17 +1056,18 @@ void CascadeShadowsPrivate::buildShadowProjectionMatrix(const Point3 &dir_to_sun
         shadowProjectionBox.lim[1].x = step * ceilf(shadowProjectionBox.lim[1].x / step);
         shadowProjectionBox.lim[1].y = step * ceilf(shadowProjectionBox.lim[1].y / step);
 
-        Point3 anchorPoint = shadowViewMatrix3 * anchor;
         texelWidth = shadowProjectionBox.width().x / split.viewport.width().x; // Box size was changed, recalculate the exact texel
                                                                                // size to snap to pixel.
         texelHeight = shadowProjectionBox.width().y / split.viewport.width().y;
-        shadowProjectionBox.lim[0].x =
-          anchorPoint.x + floorf((shadowProjectionBox.lim[0].x - anchorPoint.x) / texelWidth) * texelWidth;
-        shadowProjectionBox.lim[0].y =
-          anchorPoint.y + floorf((shadowProjectionBox.lim[0].y - anchorPoint.y) / texelHeight) * texelHeight;
-        shadowProjectionBox.lim[1].x = anchorPoint.x + ceilf((shadowProjectionBox.lim[1].x - anchorPoint.x) / texelWidth) * texelWidth;
-        shadowProjectionBox.lim[1].y =
-          anchorPoint.y + ceilf((shadowProjectionBox.lim[1].y - anchorPoint.y) / texelHeight) * texelHeight;
+
+        auto snapUpwards = [](const float coord, const float anchor_point_coord, const float step) -> float {
+          return anchor_point_coord + ceilf((coord - anchor_point_coord) / step) * step;
+        };
+
+        shadowProjectionBox.lim[0].x = snapDownwards(shadowProjectionBox.lim[0].x, anchorPoint.x, texelWidth);
+        shadowProjectionBox.lim[0].y = snapDownwards(shadowProjectionBox.lim[0].y, anchorPoint.y, texelHeight);
+        shadowProjectionBox.lim[1].x = snapUpwards(shadowProjectionBox.lim[1].x, anchorPoint.x, texelWidth);
+        shadowProjectionBox.lim[1].y = snapUpwards(shadowProjectionBox.lim[1].y, anchorPoint.y, texelHeight);
       }
     }
   }

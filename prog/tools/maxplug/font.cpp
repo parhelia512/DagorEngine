@@ -2,7 +2,7 @@
 
 #include <max.h>
 #include <utilapi.h>
-#include <locale.h>
+#include <format>
 #include "dagor.h"
 #include "enumnode.h"
 #include "common.h"
@@ -226,25 +226,25 @@ public:
     if (n->GetVisibility(time) < 0)
       return ECB_CONT;
     const TCHAR *nm = n->GetName();
-    if (_tcsnicmp(nm, _T("hdiv"), 4) == 0)
+    if (istarts_with(nm, L"hdiv"))
     {
       float v;
       getuv(n, NULL, &v);
       hdiv.Append(1, &v);
     }
-    else if (_tcsnicmp(nm, _T("base"), 4) == 0)
+    else if (istarts_with(nm, L"base"))
     {
       float v;
       getuv(n, NULL, &v);
       base.Append(1, &v);
     }
-    else if (_tcsnicmp(nm, _T("vdiv"), 4) == 0)
+    else if (istarts_with(nm, L"vdiv"))
     {
       VDiv d;
       getuv(n, &d.u, &d.v);
       vdiv.Append(1, &d);
     }
-    else if (_tcsnicmp(nm, _T("chars"), 4) == 0)
+    else if (istarts_with(nm, L"chars"))
     {
       Chars c;
       getuv(n, NULL, &c.v);
@@ -319,36 +319,31 @@ public:
       ip->DisplayTempPrompt(GetString(IDS_FILE_CREATE_ERR), ERRMSG_DELAY);
       return 0;
     }
-    setlocale(LC_NUMERIC, "C");
     for (int i = 0; i < hdiv.Count(); ++i)
     {
-      fprintf(h, "\nhdiv %g %g \"", hdiv[i], base[i]);
-      for (TCHAR *s = chars[i].s; *s; ++s)
+      fputs(std::format("\nhdiv {:g} {:g} \"", hdiv[i], base[i]).c_str(), h);
+      for (char c : wideToStr(chars[i].s))
       {
-        if (*s == '\"')
-          fprintf(h, "~\"");
-        else if (*s == '~')
-          fprintf(h, "~~");
+        if (c == '\"')
+          fputs("~\"", h);
+        else if (c == '~')
+          fputs("~~", h);
         else
-        {
-          std::string s1 = wideToStr(s);
-          fputc(*s1.c_str(), h);
-        }
+          fputc(c, h);
       }
-      fprintf(h, "\" {\n");
+      fputs("\" {\n", h);
       char f = 1;
       for (int j = 0; j < vdiv.Count(); ++j)
         if (vdiv[j].d == i)
         {
           if (f)
-            fprintf(h, "%g\n", vdiv[j].u);
+            fputs(std::format("{:g}\n", vdiv[j].u).c_str(), h);
           else
-            fprintf(h, "%g ", vdiv[j].u);
+            fputs(std::format("{:g} ", vdiv[j].u).c_str(), h);
           f = !f;
         }
-      fprintf(h, "}\n");
+      fputs("}\n", h);
     }
-    setlocale(LC_NUMERIC, "");
     fclose(h);
     return 1;
   }

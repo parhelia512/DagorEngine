@@ -80,6 +80,16 @@ static bool profiler_console_handler(const char *argv[], int argc)
     da_profiler::request_dump();
     da_profiler::remove_mode(da_profiler::CONTINUOUS);
   }
+  CONSOLE_CHECK_NAME("profiler", "dump_dir", 1, 2)
+  {
+    static String dumpDir;
+    if (!dumpDir.empty())
+      da_profiler::stop_file_dump_server(dumpDir);
+    dumpDir = (argc > 1) ? argv[1] : "";
+    if (!dumpDir.empty())
+      da_profiler::start_file_dump_server(dumpDir);
+    console::print_d("profiler dump_dir: %s", dumpDir.empty() ? "none" : dumpDir.c_str());
+  }
   CONSOLE_CHECK_NAME("profiler", "stop", 1, 2)
   {
     if (uint32_t mode = (argc > 1) ? da_profiler::find_profiler_mode(argv[1]) : 0)

@@ -71,7 +71,7 @@ struct LoadGameResJob : public cpujobs::IJob
 {
   ecs::gameres_list_t resnm;
   eastl::vector<EntityId> entities;
-  const char *getJobName(bool &) const override { return "LoadGameResJob"; }
+  const char *getJobName(bool &) const override { return DAPROFILER_STRING("LoadGameResJob"); }
   virtual void doJob()
   {
     debug("doJob");

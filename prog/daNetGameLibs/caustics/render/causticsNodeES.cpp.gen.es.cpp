@@ -31,12 +31,10 @@ static ecs::EntitySystemDesc caustics_water_quality_changed_es_es_desc
 ,"render","render_settings__antialiasing_mode,render_settings__rayReconstruction,render_settings__waterQuality");
 static constexpr ecs::ComponentDesc caustics_render_features_changed_es_comps[] =
 {
-//start of 4 rw components at [0]
+//start of 2 rw components at [0]
   {ECS_HASH("caustics__active"), ecs::ComponentTypeInfo<bool>()},
   {ECS_HASH("caustics__indoor_probe_mask"), ecs::ComponentTypeInfo<UniqueTexWithShaderVar>()},
-  {ECS_HASH("needs_water_heightmap"), ecs::ComponentTypeInfo<bool>()},
-  {ECS_HASH("combined_shadows__use_additional_textures"), ecs::ComponentTypeInfo<bool>()},
-//start of 1 ro components at [4]
+//start of 1 ro components at [2]
   {ECS_HASH("dafg_camera_registrator__name"), ecs::ComponentTypeInfo<ecs::string>()}
 };
 static void caustics_render_features_changed_es_all_events(const ecs::Event &__restrict evt, const ecs::QueryView &__restrict components)
@@ -46,8 +44,6 @@ static void caustics_render_features_changed_es_all_events(const ecs::Event &__r
         , ECS_RO_COMP(caustics_render_features_changed_es_comps, "dafg_camera_registrator__name", ecs::string)
     , ECS_RW_COMP(caustics_render_features_changed_es_comps, "caustics__active", bool)
     , ECS_RW_COMP(caustics_render_features_changed_es_comps, "caustics__indoor_probe_mask", UniqueTexWithShaderVar)
-    , ECS_RW_COMP(caustics_render_features_changed_es_comps, "needs_water_heightmap", bool)
-    , ECS_RW_COMP(caustics_render_features_changed_es_comps, "combined_shadows__use_additional_textures", bool)
     );
   while (++comp != compE);
 }
@@ -56,8 +52,8 @@ static ecs::EntitySystemDesc caustics_render_features_changed_es_es_desc
   "caustics_render_features_changed_es",
   "prog/daNetGameLibs/caustics/render/causticsNodeES.cpp.inl",
   ecs::EntitySystemOps(nullptr, caustics_render_features_changed_es_all_events),
-  make_span(caustics_render_features_changed_es_comps+0, 4)/*rw*/,
-  make_span(caustics_render_features_changed_es_comps+4, 1)/*ro*/,
+  make_span(caustics_render_features_changed_es_comps+0, 2)/*rw*/,
+  make_span(caustics_render_features_changed_es_comps+2, 1)/*ro*/,
   empty_span(),
   empty_span(),
   ecs::EventSetBuilder<ChangeRenderFeatures>::build(),
@@ -65,9 +61,12 @@ static ecs::EntitySystemDesc caustics_render_features_changed_es_es_desc
 ,"render");
 static constexpr ecs::ComponentDesc caustics_view_nodes_es_comps[] =
 {
-//start of 1 ro components at [0]
+//start of 2 rw components at [0]
+  {ECS_HASH("needs_water_heightmap"), ecs::ComponentTypeInfo<bool>()},
+  {ECS_HASH("combined_shadows__use_additional_textures"), ecs::ComponentTypeInfo<bool>()},
+//start of 1 ro components at [2]
   {ECS_HASH("caustics__active"), ecs::ComponentTypeInfo<bool>()},
-//start of 1 rq components at [1]
+//start of 1 rq components at [3]
   {ECS_HASH("caustics_nodes_registrator"), ecs::ComponentTypeInfo<ecs::Tag>()}
 };
 static void caustics_view_nodes_es_all_events(const ecs::Event &__restrict evt, const ecs::QueryView &__restrict components)
@@ -82,6 +81,8 @@ if (evt.is<OnCameraPerViewNodeConstruction>()) {
     auto comp = components.begin(), compE = components.end(); G_ASSERT(comp!=compE); do
       caustics_view_nodes_es(static_cast<const OnCameraMainViewNodeConstruction&>(evt)
             , ECS_RO_COMP(caustics_view_nodes_es_comps, "caustics__active", bool)
+      , ECS_RW_COMP(caustics_view_nodes_es_comps, "needs_water_heightmap", bool)
+      , ECS_RW_COMP(caustics_view_nodes_es_comps, "combined_shadows__use_additional_textures", bool)
       );
     while (++comp != compE);
     } else {G_ASSERTF(0, "Unexpected event type <%s> in caustics_view_nodes_es", evt.getName());}
@@ -91,9 +92,9 @@ static ecs::EntitySystemDesc caustics_view_nodes_es_es_desc
   "caustics_view_nodes_es",
   "prog/daNetGameLibs/caustics/render/causticsNodeES.cpp.inl",
   ecs::EntitySystemOps(nullptr, caustics_view_nodes_es_all_events),
-  empty_span(),
-  make_span(caustics_view_nodes_es_comps+0, 1)/*ro*/,
-  make_span(caustics_view_nodes_es_comps+1, 1)/*rq*/,
+  make_span(caustics_view_nodes_es_comps+0, 2)/*rw*/,
+  make_span(caustics_view_nodes_es_comps+2, 1)/*ro*/,
+  make_span(caustics_view_nodes_es_comps+3, 1)/*rq*/,
   empty_span(),
   ecs::EventSetBuilder<OnCameraMainViewNodeConstruction,
                        OnCameraPerViewNodeConstruction>::build(),
@@ -190,19 +191,17 @@ inline void water_quality_medium_or_high_ecs_query(ecs::EntityManager &manager, 
 }
 static constexpr ecs::ComponentDesc create_caustics_node_ecs_query_comps[] =
 {
-//start of 4 rw components at [0]
+//start of 2 rw components at [0]
   {ECS_HASH("caustics__active"), ecs::ComponentTypeInfo<bool>()},
   {ECS_HASH("caustics__indoor_probe_mask"), ecs::ComponentTypeInfo<UniqueTexWithShaderVar>()},
-  {ECS_HASH("needs_water_heightmap"), ecs::ComponentTypeInfo<bool>()},
-  {ECS_HASH("combined_shadows__use_additional_textures"), ecs::ComponentTypeInfo<bool>()},
-//start of 1 ro components at [4]
+//start of 1 ro components at [2]
   {ECS_HASH("dafg_camera_registrator__name"), ecs::ComponentTypeInfo<ecs::string>()}
 };
 static ecs::CompileTimeQueryDesc create_caustics_node_ecs_query_desc
 (
   "create_caustics_node_ecs_query",
-  make_span(create_caustics_node_ecs_query_comps+0, 4)/*rw*/,
-  make_span(create_caustics_node_ecs_query_comps+4, 1)/*ro*/,
+  make_span(create_caustics_node_ecs_query_comps+0, 2)/*rw*/,
+  make_span(create_caustics_node_ecs_query_comps+2, 1)/*ro*/,
   empty_span(),
   empty_span());
 template<typename Callable>
@@ -217,8 +216,6 @@ inline void create_caustics_node_ecs_query(ecs::EntityManager &manager, Callable
               ECS_RO_COMP(create_caustics_node_ecs_query_comps, "dafg_camera_registrator__name", ecs::string)
             , ECS_RW_COMP(create_caustics_node_ecs_query_comps, "caustics__active", bool)
             , ECS_RW_COMP(create_caustics_node_ecs_query_comps, "caustics__indoor_probe_mask", UniqueTexWithShaderVar)
-            , ECS_RW_COMP(create_caustics_node_ecs_query_comps, "needs_water_heightmap", bool)
-            , ECS_RW_COMP(create_caustics_node_ecs_query_comps, "combined_shadows__use_additional_textures", bool)
             );
 
         }while (++comp != compE);

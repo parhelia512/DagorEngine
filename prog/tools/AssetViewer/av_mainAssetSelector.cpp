@@ -2,11 +2,13 @@
 
 #include "av_mainAssetSelector.h"
 #include "av_tree.h"
+#include "av_cm.h"
 #include <assets/assetMgr.h>
 #include <assetsGui/av_allAssetsTree.h>
 #include <assetsGui/av_assetSelectorCommon.h>
 #include <assetsGui/av_favoritesTab.h>
 #include <assetsGui/av_recentlyUsedTab.h>
+#include <assetsGui/av_ids.h>
 #include <ioSys/dag_dataBlock.h>
 #include <propPanel/colors.h>
 #include <de3_interface.h>
@@ -67,6 +69,13 @@ void MainAssetSelector::addAssetToFavorites(const DagorAsset &asset)
   favoritesFilledGenerationId = -1;
 }
 
+void MainAssetSelector::removeAssetFromFavorites(const DagorAsset &asset)
+{
+  if (!AssetSelectorGlobalState::removeFavorite(asset.getNameTypified()))
+    AssetSelectorGlobalState::removeFavorite(String(asset.getName()));
+  favoritesFilledGenerationId = -1;
+}
+
 void MainAssetSelector::goToAsset(const DagorAsset &asset)
 {
   mainAllAssetsTab.selectAsset(asset);
@@ -81,12 +90,7 @@ void MainAssetSelector::addAssetToRecentlyUsed(const DagorAsset &asset)
   else
     added = AssetSelectorGlobalState::addRecentlyUsed(asset.getNameTypified());
 
-  if (!added)
-    return;
-
-  if (activeTab == ActiveTab::RecentlyUsed)
-    recentlyUsedTab->fillTree(recentlyUsedTab->getSelectedAsset());
-  else
+  if (added)
     recentlyUsedFilledGenerationId = -1;
 }
 
@@ -155,6 +159,19 @@ DagorAsset *MainAssetSelector::getSelectedAsset() const
   return nullptr;
 }
 
+DagorAssetFolder *MainAssetSelector::getSelectedAssetFolder() const
+{
+  if (activeTab == ActiveTab::All)
+    return mainAllAssetsTab.getSelectedAssetFolder();
+  else if (activeTab == ActiveTab::Favorites)
+    return favoritesTab->getSelectedAssetFolder();
+  else if (activeTab == ActiveTab::RecentlyUsed)
+    return nullptr;
+
+  G_ASSERT(false);
+  return nullptr;
+}
+
 void MainAssetSelector::onAvClose() { client.onAvClose(); }
 
 void MainAssetSelector::onAvAssetDblClick(DagorAsset *asset, const char *asset_name)
@@ -189,19 +206,36 @@ void MainAssetSelector::onAvSelectFolder(DagorAssetFolder *asset_folder, const c
 
 bool MainAssetSelector::onAssetSelectorContextMenu(PropPanel::IMenu &menu, DagorAsset *asset, DagorAssetFolder *asset_folder)
 {
+  using PropPanel::ROOT_MENU_ITEM;
+
+  if (asset)
+  {
+    if (activeTab == ActiveTab::All)
+    {
+      menu.addItem(ROOT_MENU_ITEM, CM_ADD_ASSET_TO_FAVORITES, "Add to favorites");
+    }
+    else if (activeTab == ActiveTab::Favorites)
+    {
+      menu.addItem(ROOT_MENU_ITEM, CM_REMOVE_ASSET_FROM_FAVORITES, "Remove from favorites");
+      menu.addItem(ROOT_MENU_ITEM, CM_GO_TO_ASSET, "Go to asset");
+    }
+    else if (activeTab == ActiveTab::RecentlyUsed)
+    {
+      menu.addItem(ROOT_MENU_ITEM, CM_ADD_ASSET_TO_FAVORITES, "Add to favorites");
+      menu.addItem(ROOT_MENU_ITEM, CM_GO_TO_ASSET, "Go to asset");
+    }
+
+    menu.addSeparator(ROOT_MENU_ITEM);
+
+    return menuEventHandler.onAssetSelectorContextMenu(menu, asset, nullptr);
+  }
+
   if (activeTab == ActiveTab::All)
+    return menuEventHandler.onAssetSelectorContextMenu(menu, nullptr, asset_folder);
+
+  if (activeTab == ActiveTab::Favorites && asset_folder && favoritesTab)
   {
-    menuEventHandler.onAssetSelectorContextMenu(menu, asset, asset_folder);
-    return true;
-  }
-  else if (activeTab == ActiveTab::Favorites)
-  {
-    favoritesTab->fillContextMenu(menu, asset, asset_folder);
-    return true;
-  }
-  else if (activeTab == ActiveTab::RecentlyUsed)
-  {
-    recentlyUsedTab->fillContextMenu(menu, asset);
+    favoritesTab->fillContextMenu(menu, nullptr, asset_folder);
     return true;
   }
 
@@ -239,6 +273,36 @@ bool MainAssetSelector::tabPage(const char *title, bool selected)
     ImGui::PopStyleColor();
 
   return pressed;
+}
+
+void MainAssetSelector::refreshRecentlyUsedIfSafe()
+{
+  if (activeTab != ActiveTab::RecentlyUsed || !recentlyUsedTab)
+    return;
+
+  const int generation = AssetSelectorGlobalState::getRecentlyUsedGenerationId();
+  if (recentlyUsedFilledGenerationId == generation)
+    return;
+
+  if (recentlyUsedTab->isContextMenuOpen())
+    return;
+
+  if (assetBrowserOpen && assetBrowser.isContextMenuOpen())
+    return;
+
+  // Updating on the RMB press or even just release updates the tab before context menu is open
+  if (ImGui::IsMouseDown(ImGuiMouseButton_Right) || ImGui::IsMouseReleased(ImGuiMouseButton_Right))
+    return;
+
+  G_ASSERT(allowChangingRecentlyUsedList);
+  allowChangingRecentlyUsedList = false;
+
+  recentlyUsedTab->fillTree(lastSelectedAsset);
+
+  G_ASSERT(!allowChangingRecentlyUsedList); //-V547 Ignore expression is always true.
+  allowChangingRecentlyUsedList = true;
+
+  recentlyUsedFilledGenerationId = generation;
 }
 
 void MainAssetSelector::assetBrowserFill()
@@ -340,18 +404,7 @@ void MainAssetSelector::updateImgui()
   }
   else if (activeTab == ActiveTab::RecentlyUsed)
   {
-    if (recentlyUsedFilledGenerationId != AssetSelectorGlobalState::getRecentlyUsedGenerationId())
-    {
-      recentlyUsedFilledGenerationId = AssetSelectorGlobalState::getRecentlyUsedGenerationId();
-
-      G_ASSERT(allowChangingRecentlyUsedList);
-      allowChangingRecentlyUsedList = false;
-
-      recentlyUsedTab->fillTree(lastSelectedAsset);
-
-      G_ASSERT(!allowChangingRecentlyUsedList); //-V547 Ignore expression is always true.
-      allowChangingRecentlyUsedList = true;
-    }
+    refreshRecentlyUsedIfSafe();
 
     recentlyUsedTab->updateImgui();
   }

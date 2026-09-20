@@ -1,8 +1,9 @@
 mountPoint:t=".."
 incDir:t="../../../prog/daNetGameLibs"
+incDir:t="../../../prog/gameLibs"
 
 "@override:source" {
-  file:t = "loading.dshl"
+  file:t = "loading/watery.dshl"
   include "libs_shaders.blk"
   include "model_shaders_list.blk"
 

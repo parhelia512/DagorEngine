@@ -47,6 +47,14 @@ void CloudsRendererData::clearTemporalData(uint32_t gen)
   clear_black(*prevWeight);
 }
 
+void CloudsRendererData::setUsedResolution(const IPoint2 &res) { pendingUsedRes = res; }
+
+void CloudsRendererData::advanceUsedResolution()
+{
+  prevUsedRes = usedRes;
+  usedRes = pendingUsedRes.x > 0 && pendingUsedRes.y > 0 ? min(pendingUsedRes, cloudTexRes) : cloudTexRes;
+}
+
 void CloudsRendererData::ensureCheckerColor(bool wanted)
 {
   if (!wanted)
@@ -83,17 +91,14 @@ void CloudsRendererData::close()
   cloudsColorBlurPoolRT = nullptr;
   cloudsTextureWeight = nullptr;
   cloudsIndirectBuffer.close();
-  cloudTexRes = IPoint2::ZERO;
+  cloudTexRes = usedRes = prevUsedRes = pendingUsedRes = IPoint2::ZERO;
 }
 
-void CloudsRendererData::initTiledDist(const char *prefix) // only needed when it is not 100% cloudy. todo: calc pixels count
-                                                           // allocation
+void CloudsRendererData::initTiledDist(const char *prefix)
 {
   clouds_tile_distance.close();
   clouds_tile_distance_tmp.close();
-  int dw = (cloudTexRes.x + tileX - 1) / tileX, dh = (cloudTexRes.y + tileY - 1) / tileY;
-  if (dw * dh < 1920 * 720 / 4 / tileX / tileY)
-    return;
+  int dw = div_ceil(cloudTexRes.x, tileX), dh = div_ceil(cloudTexRes.y, tileY);
   uint32_t flg = useCompute ? TEXCF_UNORDERED : TEXCF_RTARGET;
   String tn;
   tn.printf(64, "%s_tile_dist", prefix);
@@ -102,15 +107,29 @@ void CloudsRendererData::initTiledDist(const char *prefix) // only needed when i
   clouds_tile_distance_tmp = dag::create_tex(NULL, dw, dh, flg | TEXFMT_L16, 1, tn.c_str(), RESTAG_DASKIES2);
 }
 
+// See clouds_used_uv.dshl for the layout. zw gives up `margin` texels so that the widest
+// footprint at the last used texel still lands inside the used part: one covers a gather
+// pre-offset, two the 4x4 that the close bicubic rebuilds on the allocated grid
+static Color4 used_uv_scale_clamp(const IPoint2 &used, const IPoint2 &allocated, int margin = 1)
+{
+  G_ASSERT(allocated.x > 0 && allocated.y > 0);
+  auto lastUv = [margin](int u, int a) { return u >= a ? 1.f : (u - float(margin)) / a; };
+  return Color4(float(used.x) / allocated.x, float(used.y) / allocated.y, lastUv(used.x, allocated.x), lastUv(used.y, allocated.y));
+}
+
 void CloudsRendererData::setVars(const bool is_main_view)
 {
-  const int dw = bool(clouds_tile_distance) ? (cloudTexRes.x + tileX - 1) / tileX : 0;
-  const int dh = dw != 0 ? (cloudTexRes.y + tileY - 1) / tileY : 0;
   G_ASSERT(cloudTexRes.x > 0 && cloudTexRes.y > 0);
-  ShaderGlobal::set_int4(clouds_tiled_resVarId, dw, dh, 0, 0);
-  ShaderGlobal::set_int4(clouds2_resolutionVarId, cloudTexRes.x, cloudTexRes.y, lowresCloseClouds ? cloudTexRes.x / 2 : cloudTexRes.x,
-    lowresCloseClouds ? cloudTexRes.y / 2 : cloudTexRes.y);
-  ShaderGlobal::set_int4(clouds2_far_res_last_texel_indexVarId, cloudTexRes.x - 1, cloudTexRes.y - 1, 0, 0);
+  const IPoint2 tiled = clouds_tile_distance ? getUsedTiledRes() : IPoint2::ZERO;
+  const IPoint2 closeUsed = getCloseRes(usedRes), closeAllocated = getCloseRes(cloudTexRes);
+  ShaderGlobal::set_int4(clouds_tiled_resVarId, tiled.x, tiled.y, 0, 0);
+  ShaderGlobal::set_int4(clouds2_resolutionVarId, usedRes.x, usedRes.y, closeUsed.x, closeUsed.y);
+  ShaderGlobal::set_int4(clouds2_close_allocated_resolutionVarId, closeAllocated.x, closeAllocated.y, 0, 0);
+  ShaderGlobal::set_int4(clouds2_prev_resolutionVarId, prevUsedRes.x, prevUsedRes.y, 0, 0);
+  ShaderGlobal::set_int4(clouds2_far_res_last_texel_indexVarId, usedRes.x - 1, usedRes.y - 1, 0, 0);
+  ShaderGlobal::set_float4(clouds2_used_uv_farVarId, used_uv_scale_clamp(usedRes, cloudTexRes));
+  ShaderGlobal::set_float4(clouds2_used_uv_far_prevVarId, used_uv_scale_clamp(prevUsedRes, cloudTexRes));
+  ShaderGlobal::set_float4(clouds2_used_uv_closeVarId, used_uv_scale_clamp(closeUsed, closeAllocated, 2));
   ShaderGlobal::set_texture(clouds_colorVarId, cloudsBlurTextureColor ? cloudsBlurTextureColor->getTexId() : BAD_TEXTUREID);
   ShaderGlobal::set_texture(clouds_color_closeVarId, clouds_color_close);
   ShaderGlobal::set_texture(clouds_tile_distanceVarId, clouds_tile_distance);
@@ -156,6 +175,8 @@ void CloudsRendererData::init(const IPoint2 &resolution, const char *prefix, boo
   }
   if (changedSize)
   {
+    // together with the pools below, so prevUsedRes never claims a history they do not hold
+    usedRes = prevUsedRes = resolution;
     uint32_t taaRtflg = taaUseCompute ? TEXCF_UNORDERED : TEXCF_RTARGET; //
     cloudsTextureColor = nullptr;
     prevCloudsColor = nullptr;
@@ -198,8 +219,9 @@ void CloudsRendererData::init(const IPoint2 &resolution, const char *prefix, boo
     if (can_be_in_clouds)
     {
       tn.printf(64, "%s_clouds_close", prefix);
-      clouds_color_close = dag::create_tex(NULL, lowresCloseClouds ? cloudTexRes.x / 2 : cloudTexRes.x,
-        lowresCloseClouds ? cloudTexRes.y / 2 : cloudTexRes.y, rtflg | fmt | TEXCF_CLEAR_ON_CREATE, 1, tn.c_str(), RESTAG_DASKIES2);
+      const IPoint2 closeRes = getCloseRes(cloudTexRes);
+      clouds_color_close =
+        dag::create_tex(NULL, closeRes.x, closeRes.y, rtflg | fmt | TEXCF_CLEAR_ON_CREATE, 1, tn.c_str(), RESTAG_DASKIES2);
     }
   }
 

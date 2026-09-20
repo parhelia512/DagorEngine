@@ -8,7 +8,20 @@
 #include <daNet/bitStream.h>
 #include <util/dag_string.h>
 #include <gameMath/quantization.h>
+#include <debug/dag_debug.h>
 
+
+//! Ends a data walk and reports why, instead of unwinding the das call the way
+//! DataWalker::error does. For a walk over data this program did not produce - a peer's frame, a
+//! file - the caller reads the outcome back through cancel() and decides.
+inline void abort_data_walk(das::DataWalker &walker, das::LineInfo *at, const char *message)
+{
+  walker._cancel = true;
+  if (walker.context)
+    walker.context->to_err(at, message);
+  else
+    logerr("%s", message);
+}
 
 enum class BitStreamWalkerMode
 {
@@ -26,12 +39,15 @@ struct BitStreamWalker : das::DataWalker
   das::LineInfo *debugInfo;
   bool compressNext = false;
   int packedUnitVectorNext = -1;
-  int quantizedPosNext = -1;
+  float quantizedRange = 0.f; // @quantized32|64 = range: the float3 lies in [-range, range] per axis; 0 = raw
+  int quantizedBits = 0;      // the wire size the annotation named
 
   BitStreamWalker(BitStreamType *stream, das::Context *context, das::LineInfo *debugInfo) : stream(stream), debugInfo(debugInfo)
   {
     this->context = context;
   }
+
+  void abortWalk(const char *message) { abort_data_walk(*this, debugInfo, message); }
 
   bool canVisitHandle(char *, das::TypeInfo *) override { return false; }  // TODO
   bool canVisitVariant(char *, das::TypeInfo *) override { return false; } // TODO
@@ -65,7 +81,7 @@ struct BitStreamWalker : das::DataWalker
     {
       const bool typeIsCompressible = isCompressible(vi);
       const bool typeIsPackable = isPackableUnitVector(vi);
-      const bool typeIsQuantizedPos = typeIsPackable; // currently only float3 is supported
+      const bool typeIsQuantized = typeIsPackable; // currently only float3 is supported
       for (uint32_t ai = 0; ai < vi->annotation_argument_count; ++ai)
       {
         const das::AnnotationArgumentInfo &ann = vi->annotation_arguments[ai];
@@ -74,58 +90,84 @@ struct BitStreamWalker : das::DataWalker
           if (!typeIsPackable)
           {
             class String err(0, "packedUnitVector can only be used with float3 type (%s)", vi->name);
-            error(err.c_str());
+            abortWalk(err.c_str());
             return;
           }
           if (DAGOR_UNLIKELY(ann.type != das::Type::tInt))
           {
             class String err(0, "packedUnitVector value must be int (%s)", vi->name);
-            error(err.c_str());
+            abortWalk(err.c_str());
             return;
           }
           packedUnitVectorNext = ann.iValue;
           if (!(packedUnitVectorNext == 16 || packedUnitVectorNext == 24 || packedUnitVectorNext == 32))
           {
             class String err(0, "packedUnitVector value must be 16, 24 or 32 bits (%d)", packedUnitVectorNext);
-            error(err.c_str());
+            abortWalk(err.c_str());
             return;
           }
-          break;
+          continue;
         }
         if (strcmp(ann.name, "compressed") == 0)
         {
           if (!typeIsCompressible)
           {
             class String err(0, "compressed can only be used with signed and unsigned int types (%s)", vi->name);
-            error(err.c_str());
+            abortWalk(err.c_str());
             return;
           }
           if (DAGOR_UNLIKELY(ann.type != das::Type::tBool))
           {
             class String err(0, "compressed value must be bool (%s)", vi->name);
-            error(err.c_str());
+            abortWalk(err.c_str());
             return;
           }
           compressNext = ann.bValue;
-          break;
+          continue;
         }
-        if (typeIsQuantizedPos && strcmp(ann.name, "quantizedPos") == 0)
+        const int bits = strcmp(ann.name, "quantized32") == 0 ? 32 : strcmp(ann.name, "quantized64") == 0 ? 64 : 0;
+        if (bits != 0)
         {
-          if (DAGOR_UNLIKELY(ann.type != das::Type::tInt))
+          if (!typeIsQuantized)
           {
-            class String err(0, "quantizedPos value must be int (%s)", vi->name);
-            error(err.c_str());
+            class String err(0, "%s can only be used with float3 type (%s)", ann.name, vi->name);
+            abortWalk(err.c_str());
             return;
           }
-          quantizedPosNext = ann.iValue;
-          if (!(quantizedPosNext == 32 || quantizedPosNext == 64))
+          if (quantizedBits != 0)
           {
-            class String err(0, "quantizedPos value must be 34 or 64 bits (%d)", quantizedPosNext);
-            error(err.c_str());
+            class String err(0, "one quantized annotation per field (%s)", vi->name);
+            abortWalk(err.c_str());
             return;
           }
-          break;
+          if (ann.type == das::Type::tFloat)
+            quantizedRange = ann.fValue;
+          else if (ann.type == das::Type::tInt)
+            quantizedRange = float(ann.iValue);
+          else
+          {
+            class String err(0,
+              "%s value must be the range in world units, a number; a module constant needs a [net_command] or a "
+              "[replicated] component, whose macro folds it (%s)",
+              ann.name, vi->name);
+            abortWalk(err.c_str());
+            return;
+          }
+          if (!(quantizedRange > 0.f))
+          {
+            class String err(0, "%s range must be positive (%s)", ann.name, vi->name);
+            abortWalk(err.c_str());
+            return;
+          }
+          quantizedBits = bits;
+          continue;
         }
+      }
+      if (packedUnitVectorNext >= 0 && quantizedBits != 0)
+      {
+        class String err(0, "packedUnitVector and quantized32/64 cannot share a field (%s)", vi->name);
+        abortWalk(err.c_str());
+        return;
       }
     }
   }
@@ -133,7 +175,8 @@ struct BitStreamWalker : das::DataWalker
   {
     compressNext = false;
     packedUnitVectorNext = -1;
-    quantizedPosNext = -1;
+    quantizedRange = 0.f;
+    quantizedBits = 0;
   }
   void beforeArray(das::Array *pa, das::TypeInfo *ti) override
   {
@@ -148,7 +191,15 @@ struct BitStreamWalker : das::DataWalker
       {
         class String err(0, "Failed to read array size %@bits (%@/%@)", bytes2bits(sizeof(size)), stream->GetReadOffset(),
           stream->GetNumberOfBitsUsed());
-        error(err.c_str());
+        abortWalk(err.c_str());
+        return;
+      }
+      // the count comes off the stream, and array_resize throws on a negative or oversized one:
+      // no array can hold more elements than the stream has bits left to describe them
+      if (size > stream->GetNumberOfUnreadBits())
+      {
+        class String err(0, "array of %@ elements, with %@bits left to read", size, stream->GetNumberOfUnreadBits());
+        abortWalk(err.c_str());
         return;
       }
       builtin_array_clear(*pa, context, nullptr);
@@ -169,7 +220,7 @@ struct BitStreamWalker : das::DataWalker
       {
         class String err(0, "Failed to read %@bits (%@/%@)", bytes2bits(sizeof(data)), stream->GetReadOffset(),
           stream->GetNumberOfBitsUsed());
-        error(err.c_str());
+        abortWalk(err.c_str());
         return;
       }
     }
@@ -188,7 +239,7 @@ struct BitStreamWalker : das::DataWalker
       {
         class String err(0, "Failed to read %@bits (%@/%@)", bytes2bits(sizeof(data)), stream->GetReadOffset(),
           stream->GetNumberOfBitsUsed());
-        error(err.c_str());
+        abortWalk(err.c_str());
         return;
       }
     }
@@ -208,60 +259,50 @@ struct BitStreamWalker : das::DataWalker
     }
   }
 
+  // x | z << XBits | y << (XBits + ZBits), each axis packed as value / quantizedRange in [-1, 1];
+  // a layout that leaves the top bit free (the 64-bit one) flags a clamped input there.
+  template <typename RT, size_t XBits, size_t YBits, size_t ZBits>
+  void processQuantized(Point3 &pos)
+  {
+    static constexpr RT CLAMPED_BIT = (XBits + YBits + ZBits < sizeof(RT) * 8) ? (RT(1) << (sizeof(RT) * 8 - 1)) : RT(0);
+    if constexpr (mode == BitStreamWalkerMode::Write)
+    {
+      bool clamped = false;
+      RT q = RT(gamemath::pack_scalar_signed<RT, float>(pos.x, XBits, quantizedRange, &clamped));
+      q |= RT(gamemath::pack_scalar_signed<RT, float>(pos.z, ZBits, quantizedRange, &clamped)) << XBits;
+      q |= RT(gamemath::pack_scalar_signed<RT, float>(pos.y, YBits, quantizedRange, &clamped)) << (XBits + ZBits);
+      if (clamped)
+        q |= CLAMPED_BIT;
+      stream->Write(q);
+    }
+    else
+    {
+      RT q;
+      if (!stream->Read(q))
+      {
+        class String err(0, "Failed to read %@bits (%@/%@)", bytes2bits(sizeof(q)), stream->GetReadOffset(),
+          stream->GetNumberOfBitsUsed());
+        abortWalk(err.c_str());
+        return;
+      }
+      q &= ~CLAMPED_BIT;
+      pos.x = gamemath::unpack_scalar_signed<RT, float>(q & FVAL_BITS_MASK(RT, XBits), XBits, quantizedRange);
+      pos.z = gamemath::unpack_scalar_signed<RT, float>((q >> XBits) & FVAL_BITS_MASK(RT, ZBits), ZBits, quantizedRange);
+      pos.y = gamemath::unpack_scalar_signed<RT, float>((q >> (XBits + ZBits)) & FVAL_BITS_MASK(RT, YBits), YBits, quantizedRange);
+    }
+  }
+
   template <int dim, typename TT>
   void processPackableVector(TT &data)
   {
-    if (quantizedPosNext >= 0)
+    if (quantizedBits != 0)
     {
-      G_ASSERTF(dim == 3, "packedUnitVector can only be 3D");
-      if constexpr (mode == BitStreamWalkerMode::Write)
-      {
-        if (quantizedPosNext == 32)
-        {
-          gamemath::QuantizedPos<12, 8, 12, gamemath::NoScale, gamemath::NoScale, gamemath::NoScale> quant;
-          quant.packPos(reinterpret_cast<Point3 &>(data));
-          stream->Write(quant);
-        }
-        else // quantizedPosNext == 64
-        {
-          static constexpr uint64_t POS_CLAMPED_BIT = 1ULL << 63;
-          bool posClamped = false;
-          gamemath::QuantizedPos<22, 19, 22, gamemath::NoScale, gamemath::NoScale, gamemath::NoScale> quant;
-          quant.packPos(reinterpret_cast<Point3 &>(data), &posClamped);
-          if (posClamped)
-            quant.qpos |= POS_CLAMPED_BIT;
-          stream->Write(quant);
-        }
-        return;
-      }
+      G_ASSERTF(dim == 3, "quantized32/64 can only be 3D");
+      if (quantizedBits == 32)
+        processQuantized<uint32_t, 12, 8, 12>(reinterpret_cast<Point3 &>(data));
       else
-      {
-        if (quantizedPosNext == 32)
-        {
-          gamemath::QuantizedPos<12, 8, 12, gamemath::NoScale, gamemath::NoScale, gamemath::NoScale> quant;
-          if (!stream->Read(quant))
-          {
-            class String err(0, "Failed to read %@bits (%@/%@)", bytes2bits(sizeof(quant)), stream->GetReadOffset(),
-              stream->GetNumberOfBitsUsed());
-            error(err.c_str());
-            return;
-          }
-          reinterpret_cast<Point3 &>(data) = quant.unpackPos();
-        }
-        else // quantizedPosNext == 64
-        {
-          gamemath::QuantizedPos<22, 19, 22, gamemath::NoScale, gamemath::NoScale, gamemath::NoScale> quant;
-          if (!stream->Read(quant))
-          {
-            class String err(0, "Failed to read %@bits (%@/%@)", bytes2bits(sizeof(quant)), stream->GetReadOffset(),
-              stream->GetNumberOfBitsUsed());
-            error(err.c_str());
-            return;
-          }
-          reinterpret_cast<Point3 &>(data) = quant.unpackPos();
-        }
-        return;
-      }
+        processQuantized<uint64_t, 22, 19, 22>(reinterpret_cast<Point3 &>(data));
+      return;
     }
     if (packedUnitVectorNext >= 0)
     {
@@ -289,7 +330,7 @@ struct BitStreamWalker : das::DataWalker
           {
             class String err(0, "Failed to read %@bits (%@/%@)", bytes2bits(sizeof(val)), stream->GetReadOffset(),
               stream->GetNumberOfBitsUsed());
-            error(err.c_str());
+            abortWalk(err.c_str());
             return;
           }
           reinterpret_cast<Point3 &>(data) = gamemath::unpack_unit_vec<uint16_t>(val, packedUnitVectorNext);
@@ -301,7 +342,7 @@ struct BitStreamWalker : das::DataWalker
           {
             class String err(0, "Failed to read %@bits (%@/%@)", bytes2bits(sizeof(val)), stream->GetReadOffset(),
               stream->GetNumberOfBitsUsed());
-            error(err.c_str());
+            abortWalk(err.c_str());
             return;
           }
           reinterpret_cast<Point3 &>(data) = gamemath::unpack_unit_vec<uint32_t>(val, packedUnitVectorNext);
@@ -331,7 +372,7 @@ struct BitStreamWalker : das::DataWalker
       if (!stream->Read(str))
       {
         class String err(0, "Failed to read string %@/%@", stream->GetReadOffset(), stream->GetNumberOfBitsUsed());
-        error(err.c_str());
+        abortWalk(err.c_str());
         return;
       }
       data = context->allocateString(str.c_str(), str.size(), debugInfo);

@@ -608,7 +608,7 @@ static ecs::EntitySystemDesc biome_query_calculate_replacement_id_es_es_desc
   make_span(biome_query_calculate_replacement_id_es_comps+1, 1)/*ro*/,
   empty_span(),
   empty_span(),
-  ecs::EventSetBuilder<OnLevelLoaded,
+  ecs::EventSetBuilder<EventRenderSceneLoaded,
                        ecs::EventEntityCreated,
                        ecs::EventComponentsAppear>::build(),
   0

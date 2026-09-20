@@ -8,6 +8,7 @@
 #include <EASTL/optional.h>
 #include <osApiWrappers/dag_miscApi.h>
 #include <drv/hid/dag_hiXInputMappings.h>
+#include <util/dag_strUtil.h>
 
 
 // We can't have dynamic action sets in OpenXr, so we make only one "everything" action set
@@ -38,6 +39,18 @@ static void patch_thumbstick_legacy_id(dainput::DigitalActionBinding &obj)
   }
 }
 
+static void link_exclusive_action_sets(dainput::action_set_handle_t a, dainput::action_set_handle_t b)
+{
+  using namespace dainput;
+  if (find_value_idx(actionSets[a].exclusiveWith, b) < 0)
+  {
+    actionSets[a].exclusiveWith.push_back(b);
+    exclusiveSetLinks++;
+  }
+  if (find_value_idx(actionSets[b].exclusiveWith, a) < 0)
+    actionSets[b].exclusiveWith.push_back(a);
+}
+
 void dainput::reset_actions()
 {
   {
@@ -55,6 +68,8 @@ void dainput::reset_actions()
   actionsNativeOrdered.clear();
   actionNameIdx.reset();
   actionSetNameIdx.reset();
+  exclusiveSetLinks = 0;
+  reset_exclusive_sets_reports();
   customPropsScheme.clearData();
 
   if (dev5_vr && dev5_vr->canCustomizeBindings())
@@ -62,6 +77,7 @@ void dainput::reset_actions()
 }
 void dainput::init_actions(const DataBlock &blk)
 {
+  reset_actions_binding();
   dainput::set_control_thread_id(get_main_thread_id());
   configVer = blk.getInt("configVer", 0);
   agData.longPressDur = blk.getInt("longPressDur", 300);
@@ -69,6 +85,9 @@ void dainput::init_actions(const DataBlock &blk)
 
 
   eastl::vector<eastl::pair<eastl::string, int>> actToNid;
+  // the strings belong to <blk> and outlive this function; a name may point at an action added later, so they resolve below
+  Tab<const char *> useBindingName[3];
+  int newActionsStart[3] = {(int)agData.ad.size(), (int)agData.aa.size(), (int)agData.as.size()};
 
   if (const DataBlock *b = blk.getBlockByName("actionSets"))
   {
@@ -146,6 +165,7 @@ void dainput::init_actions(const DataBlock &blk)
           int exclTag = 0, flags = 0, grpTag = 0;
           const char *etag = bAct->getStr("exclusive_tag", "");
           const char *gtag = bAct->getStr("group_tag", bSet->getStr("group_tag", ""));
+          const char *useBinding = bAct->getStr("useBinding", nullptr);
           if (*etag)
             exclTag = tagNames.addNameId(etag) + 1;
           if (*gtag)
@@ -181,6 +201,15 @@ void dainput::init_actions(const DataBlock &blk)
               agData.as[act_nid & ~TYPEGRP__MASK].gaScaleY = bAct->getReal("gpadAxisScaleY", bAct->getReal("gpadAxisScale", 1));
               agData.as[act_nid & ~TYPEGRP__MASK].smoothValue = bAct->getReal("smoothValue", 0.f);
               break;
+          }
+
+          if (useBinding)
+          {
+            Tab<const char *> &at = useBindingName[act_nid >> 14];
+            int idx = act_nid & ~TYPEGRP__MASK;
+            if (at.size() <= idx)
+              at.resize(idx + 1, nullptr);
+            at[idx] = useBinding;
           }
 
           actToNid.emplace_back(bAct->getBlockName(), act_nid);
@@ -224,6 +253,85 @@ void dainput::init_actions(const DataBlock &blk)
     }
   }
 
+  for (int t = 0; t < 3; t++)
+  {
+    if (agData.useBindingOf[t].size() < useBindingName[t].size()) // a later call adds actions, it does not redeclare the ones before
+      agData.useBindingOf[t].resize(useBindingName[t].size(), BAD_ACTION_HANDLE);
+    for (int i = newActionsStart[t]; i < useBindingName[t].size(); i++)
+    {
+      const char *name = useBindingName[t][i];
+      if (!name)
+        continue;
+      const action_handle_t a = action_handle_t((t << 14) | i);
+      int used_nid = actionNameIdx.getStrId(name);
+      // debug("dainput: %s useBinding=%s", get_action_name_fast(action_handle_t(a)), name);
+
+      // type and stateful decide how the row is read: minBtn only for a steerwheel or a stateful axis,
+      // incBtn and decBtn only for a stateful one, and invAxis on a trigger means 1-x instead of -x
+      const char *bad_reason_desc = nullptr;
+      if (used_nid < 0)
+        bad_reason_desc = "not found";
+      else if (used_nid == a)
+        bad_reason_desc = "self";
+      else if (get_action_type(action_handle_t(used_nid)) != get_action_type(a))
+        bad_reason_desc = "wrong type";
+      else if ((get_action_flags(action_handle_t(used_nid)) ^ get_action_flags(a)) & ACTIONF_stateful)
+        bad_reason_desc = "wrong stateful";
+      if (bad_reason_desc)
+      {
+        logerr("dainput: bad useBinding <%s> for action <%s> (%s)", name, get_action_name_fast(a), bad_reason_desc);
+        continue;
+      }
+      agData.useBindingOf[t][i] = used_nid & ~TYPEGRP__MASK; // the types are equal, so the group matches and the index is enough
+    }
+  }
+  // a name resolved above may itself read a binding, so the chain is unwound to the row it ends at:
+  // every user stays one hop from the row it fires. A cycle is an error, so links are discarded at all
+  for (int t = 0; t < 3; t++)
+  {
+    // first, find cycles and mark all actions ending with cycles as invalid useBinding
+    for (int i = newActionsStart[t]; i < agData.useBindingOf[t].size(); i++)
+      if (uint16_t owner = agData.useBindingOf[t][i]; owner != BAD_ACTION_HANDLE)
+        for (int hops = 0; owner < agData.useBindingOf[t].size() && agData.useBindingOf[t][owner] != BAD_ACTION_HANDLE; hops++)
+        {
+          if (hops < agData.useBindingOf[t].size())
+            owner = agData.useBindingOf[t][owner];
+          else // no chain is longer than the table, a cycle is
+          {
+            logerr("dainput: useBinding of <%s> is a cycle, so it keeps its own binding",
+              get_action_name_fast(action_handle_t((t << 14) | i)));
+            useBindingName[t][i] = nullptr;
+            break;
+          }
+        }
+    // next, clean all invalid useBinding (marked due to cycles)
+    for (int i = newActionsStart[t]; i < useBindingName[t].size(); i++)
+      if (uint16_t &owner = agData.useBindingOf[t][i]; owner != BAD_ACTION_HANDLE && !useBindingName[t][i])
+        owner = BAD_ACTION_HANDLE;
+    // finally, unwind chain to the row it ends at
+    for (int i = newActionsStart[t]; i < agData.useBindingOf[t].size(); i++)
+    {
+      uint16_t &owner = agData.useBindingOf[t][i];
+      if (owner == BAD_ACTION_HANDLE)
+        continue;
+      for (int hops = 0; owner < agData.useBindingOf[t].size() && agData.useBindingOf[t][owner] != BAD_ACTION_HANDLE; hops++)
+      {
+        G_ASSERT(hops < agData.useBindingOf[t].size()); // no chain is longer than the table, a cycle is; can't fire after pre-clean
+        owner = agData.useBindingOf[t][owner];
+      }
+      // it shares the row of the action it ends at, and the controls UI shows one action per row
+      switch (t << 14)
+      {
+        case TYPEGRP_DIGITAL: agData.ad[i].flags |= ACTIONF_internal; break;
+        case TYPEGRP_AXIS: agData.aa[i].flags |= ACTIONF_internal; break;
+        case TYPEGRP_STICK: agData.as[i].flags |= ACTIONF_internal; break;
+      }
+      // debug("dainput: <%s> resolved useBinding='%s' -> <%s>",
+      //   get_action_name_fast(action_handle_t((t << 14) | i)), useBindingName[t][i], get_action_name_fast((t << 14) | owner));
+    }
+    agData.useBindingOf[t].shrink_to_fit();
+  }
+
   if (const DataBlock *b = blk.getBlockByName("actionSetsOrder"))
   {
     for (int i = 0; i < actionSets.size(); i++)
@@ -245,6 +353,16 @@ void dainput::init_actions(const DataBlock &blk)
       action_set_handle_t h = get_action_set_handle(bSet->getBlockName());
       if (h == BAD_ACTION_SET_HANDLE)
         continue;
+      str_split(bSet->getStr("exclusive_with", ""), ',', [&](const char *nm, uint32_t len) {
+        if (len && *nm && *nm != ',') // an empty list, a trailing comma and a doubled one arrive as no name at all
+        {
+          if (int set_nid = actionSetNameIdx.getNameId(nm, len); set_nid < 0)
+            logerr("dainput: bad action set <%.*s> (referenced by exclusive_with in %s)", len, nm, bSet->getBlockName());
+          else if (action_set_handle_t(set_nid) != h)
+            link_exclusive_action_sets(h, action_set_handle_t(set_nid));
+        }
+        return true;
+      });
       const char *ref_set = nullptr;
       int ref_pos = 0;
       if ((ref_set = bSet->getStr("before", nullptr)) != nullptr)
@@ -311,9 +429,14 @@ void dainput::init_actions(const DataBlock &blk)
             }
             dev5_vr->addAction(VR_DUMMY_ACTN_SET, actionNid, type, actionName.c_str(), actionName.c_str());
             if (vrBindingsBlock.has_value())
-              if (const DataBlock *binds = vrBindingsBlock->getBlockByName(actionName.c_str()))
+            {
+              const DataBlock *binds = vrBindingsBlock->getBlockByName(actionName.c_str());
+              if (!binds && is_use_binding_action(actionNid))
+                binds = vrBindingsBlock->getBlockByName(get_action_name_fast(get_use_binding_action(actionNid)));
+              if (binds)
                 for (int i = 0; i < binds->paramCount(); ++i)
                   dev5_vr->suggestBinding(actionNid, binds->getParamName(i), binds->getStr(i));
+            }
           }
         }
 
@@ -367,6 +490,29 @@ void dainput::append_actions_binding(const DataBlock &blk)
 
   load_actions_binding(blk, agData.bindingsColumnCount - 1);
 }
+// an action that declares useBinding keeps a copy of the row it names, and nothing else ever fills such a row,
+// so every path that changes a row must end here
+static void copy_binding_row(int type_grp, int dst, int src, int column)
+{
+  using namespace dainput;
+  const int dst_idx = agData.get_binding_idx(dst, column), src_idx = agData.get_binding_idx(src, column);
+  switch (type_grp << 14)
+  {
+    case TYPEGRP_DIGITAL: agData.adb[dst_idx] = agData.adb[src_idx]; break;
+    case TYPEGRP_AXIS: agData.aab[dst_idx] = agData.aab[src_idx]; break;
+    case TYPEGRP_STICK: agData.asb[dst_idx] = agData.asb[src_idx]; break;
+  }
+}
+
+static void update_use_binding_rows(int column)
+{
+  using namespace dainput;
+  for (int t = 0; t < 3; t++)
+    for (int i = 0; i < agData.useBindingOf[t].size(); i++)
+      if (int src = agData.useBindingOf[t][i]; src != BAD_ACTION_HANDLE) // it declares a useBinding
+        copy_binding_row(t, i, src, column);
+}
+
 void dainput::clear_actions_binding(int column)
 {
   if (column < 0 || column >= agData.bindingsColumnCount)
@@ -413,6 +559,13 @@ void dainput::load_actions_binding(const DataBlock &blk, int column,
       continue;
     }
 
+    if (is_use_binding_action(action_handle_t(act_nid)))
+    {
+      logwarn("skipping stored binding of <%s>, it uses the binding of <%s>", //
+        bAct->getBlockName(), get_action_name_fast(get_use_binding_action(action_handle_t(act_nid))));
+      continue;
+    }
+
     int b_idx = agData.get_binding_idx(act_nid, column);
     switch (act_nid & TYPEGRP__MASK)
     {
@@ -422,6 +575,7 @@ void dainput::load_actions_binding(const DataBlock &blk, int column,
       default: logerr("inconsistent act_nid=%X (%d:%d)", act_nid, act_nid & 0x7F0000, act_nid & 0xFFFF);
     }
   }
+  update_use_binding_rows(column);
 }
 void dainput::save_actions_binding(DataBlock &blk, int column) { dainput::save_actions_binding_ex(blk, column, nullptr); }
 bool dainput::save_actions_binding_ex(DataBlock &blk, int column, const DataBlock *base_preset)
@@ -431,9 +585,10 @@ bool dainput::save_actions_binding_ex(DataBlock &blk, int column, const DataBloc
     logerr("bad column=%d for %s (agData.bindingsColumnCount=%d)", column, __FUNCTION__, agData.bindingsColumnCount);
     return false;
   }
-
   for (int i = 0; i < agData.ad.size(); i++)
   {
+    if (is_use_binding_action(action_handle_t(TYPEGRP_DIGITAL | i)))
+      continue;
     int b_idx = agData.get_binding_idx(i, column);
     const char *a_name = get_action_name_fast(agData.ad[i].nameId);
     if (agData.adb[b_idx].devId == DEV_none)
@@ -450,6 +605,8 @@ bool dainput::save_actions_binding_ex(DataBlock &blk, int column, const DataBloc
   }
   for (int i = 0; i < agData.aa.size(); i++)
   {
+    if (is_use_binding_action(action_handle_t(TYPEGRP_AXIS | i)))
+      continue;
     int b_idx = agData.get_binding_idx(i, column);
     const char *a_name = get_action_name_fast(agData.aa[i].nameId);
     if (agData.aab[b_idx].devId == DEV_none)
@@ -466,6 +623,8 @@ bool dainput::save_actions_binding_ex(DataBlock &blk, int column, const DataBloc
   }
   for (int i = 0; i < agData.as.size(); i++)
   {
+    if (is_use_binding_action(action_handle_t(TYPEGRP_STICK | i)))
+      continue;
     int b_idx = agData.get_binding_idx(i, column);
     const char *a_name = get_action_name_fast(agData.as[i].nameId);
     if (agData.asb[b_idx].devId == DEV_none)
@@ -519,6 +678,12 @@ void dainput::set_action_binding(action_handle_t action, int column, const DataB
   }
   if (action == BAD_ACTION_HANDLE)
     return;
+  if (is_use_binding_action(action))
+  {
+    logerr("cannot set binding of <%s>, it uses the binding of <%s>", //
+      get_action_name_fast(action), get_action_name_fast(get_use_binding_action(action)));
+    return;
+  }
 
   int b_idx = agData.get_binding_idx(action, column);
   switch (action & TYPEGRP__MASK)
@@ -527,6 +692,7 @@ void dainput::set_action_binding(action_handle_t action, int column, const DataB
     case TYPEGRP_AXIS: load_action_binding_axis(binding, agData.aab[b_idx]); break;
     case TYPEGRP_STICK: load_action_binding_stick(binding, agData.asb[b_idx]); break;
   }
+  update_use_binding_rows(column);
 }
 void dainput::reset_action_binding(action_handle_t action, int column)
 {
@@ -535,12 +701,55 @@ void dainput::reset_action_binding(action_handle_t action, int column)
     logerr("bad column=%d for %s (agData.bindingsColumnCount=%d)", column, __FUNCTION__, agData.bindingsColumnCount);
     return;
   }
+  if (action == BAD_ACTION_HANDLE)
+    return;
+  if (is_use_binding_action(action))
+  {
+    logerr("cannot reset binding of <%s>, it uses the binding of <%s>", //
+      get_action_name_fast(action), get_action_name_fast(get_use_binding_action(action)));
+    return;
+  }
   int b_idx = agData.get_binding_idx(action, column);
   switch (action & TYPEGRP__MASK)
   {
     case TYPEGRP_DIGITAL: agData.adb[b_idx].devId = 0; break;
     case TYPEGRP_AXIS: agData.aab[b_idx].devId = 0; break;
     case TYPEGRP_STICK: agData.asb[b_idx].devId = 0; break;
+  }
+  update_use_binding_rows(column);
+}
+// the accessors below hand out the live row, so a caller that writes through one says here that it is done;
+// the sweeps of the other entry points cannot see such a write, and a reader that swept for itself pays for a feature it does not use
+void dainput::action_binding_changed(action_handle_t action, int column)
+{
+  if (column < -1 || column >= agData.bindingsColumnCount)
+  {
+    logerr("bad column=%d for %s (agData.bindingsColumnCount=%d)", column, __FUNCTION__, agData.bindingsColumnCount);
+    return;
+  }
+  const bool allColumns = (column == -1);
+  if (action != BAD_ACTION_HANDLE)
+  {
+    if (!is_action_handle_valid(action))
+      return;
+    if (is_use_binding_action(action))
+    {
+      logerr("<%s> copies the binding of <%s>, so an edit of its row is not published but overwritten", //
+        get_action_name_fast(action), get_action_name_fast(get_use_binding_action(action)));
+      return;
+    }
+  }
+  for (int c = allColumns ? 0 : column, ce = allColumns ? agData.bindingsColumnCount : column + 1; c < ce; c++)
+  {
+    if (action == BAD_ACTION_HANDLE)
+    {
+      update_use_binding_rows(c);
+      continue;
+    }
+    const int type_grp = action >> 14, src = action & ~TYPEGRP__MASK;
+    for (int i = 0; i < agData.useBindingOf[type_grp].size(); i++)
+      if (agData.useBindingOf[type_grp][i] == src)
+        copy_binding_row(type_grp, i, src, c);
   }
 }
 dainput::DigitalActionBinding *dainput::get_digital_action_binding(dainput::action_handle_t action, int column)

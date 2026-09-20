@@ -9,10 +9,11 @@
 #include <debug/dag_assert.h>
 #include <math/dag_intrin.h>
 #include "dag_reverseView.h"
+#include <util/dag_compilerDefs.h>
 
 
 template <size_t N, typename WordType = EASTL_BITSET_WORD_TYPE_DEFAULT>
-class Bitset : public eastl::bitset<N, WordType>
+class DAGOR_WARN_IF_UNUSED Bitset : public eastl::bitset<N, WordType>
 {
 public:
   using base_type = eastl::bitset<N, WordType>;

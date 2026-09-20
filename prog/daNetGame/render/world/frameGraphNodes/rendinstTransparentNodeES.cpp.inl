@@ -8,7 +8,7 @@
 
 #include <render/renderEvent.h>
 #include <render/rendererFeatures.h>
-#include <render/world/cameraParams.h>
+#include <render/cameraParams.h>
 #include <render/world/frameGraphHelpers.h>
 #include <render/world/frameGraphNodes/prevFrameTexRequests.h>
 #include <render/world/renderPrecise.h>

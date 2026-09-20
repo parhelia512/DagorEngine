@@ -30,7 +30,11 @@ void BackBufferHolder::init()
   }
 }
 
-void BackBufferHolder::close() { srgbFrame.releaseAndEvictTexId(); }
+void BackBufferHolder::close()
+{
+  backbuffer.close();
+  srgbFrame.releaseAndEvictTexId();
+}
 
 BackBufferHolder::BackBufferHolder() { init(); }
 
@@ -66,30 +70,22 @@ const TextureIDPair BackBufferHolder::getTex()
   if (hdrrender::is_hdr_enabled())
     return TextureIDPair(hdrrender::get_render_target_tex(), hdrrender::get_render_target_tex_id());
 
-  if (!holder->readable)
+  if (holder->readable)
   {
-    SCOPE_RENDER_TARGET;
-    d3d::set_render_target();
-    d3d::copy_from_current_render_target(holder->srgbFrame.getTex2D());
-  }
-  else
-  {
-    G_ASSERT(holder->srgbFrame.getId() == BAD_TEXTUREID && !holder->srgbFrame.getTex2D());
     Texture *backBuffer = d3d::get_backbuffer_tex();
     G_ASSERT(backBuffer);
-    // \x7f\x7f\x7f_ prefix is here to put the name at the end of the name list, so
-    // unregistering it is faster.
-    TEXTUREID texId = register_managed_tex("\x7f\x7f\x7f_tmp_backbuffer", backBuffer);
-    holder->srgbFrame = TextureIDPair(backBuffer, texId);
+    if (holder->backbuffer.getBaseTex() != backBuffer)
+    {
+      holder->backbuffer.close();
+      holder->backbuffer = dag::get_backbuffer();
+    }
+    return TextureIDPair(holder->backbuffer.getTex2D(), holder->backbuffer.getTexId());
   }
 
+  SCOPE_RENDER_TARGET;
+  d3d::set_render_target();
+  d3d::copy_from_current_render_target(holder->srgbFrame.getTex2D());
   return holder->srgbFrame;
-}
-
-void BackBufferHolder::releaseTex()
-{
-  if (holder && !hdrrender::is_hdr_enabled() && holder->readable)
-    holder->srgbFrame.releaseAndEvictTexId();
 }
 
 BackBufferHolder::~BackBufferHolder() { close(); }
@@ -103,4 +99,11 @@ void BackBufferHolder::d3dReset(bool)
   }
 }
 
+void BackBufferHolder::beforeD3dReset(bool)
+{
+  if (holder)
+    holder->backbuffer.close();
+}
+
+REGISTER_D3D_BEFORE_RESET_FUNC(BackBufferHolder::beforeD3dReset);
 REGISTER_D3D_AFTER_RESET_FUNC(BackBufferHolder::d3dReset);

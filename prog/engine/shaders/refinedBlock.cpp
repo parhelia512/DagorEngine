@@ -11,6 +11,7 @@
 #include <drv/3d/dag_rwResource.h>
 #include <3d/dag_resMgr.h>
 #include <3d/dag_lockSbuffer.h>
+#include <perfMon/dag_statDrv.h>
 #include <EASTL/fixed_vector.h>
 #include <generic/dag_enumerate.h>
 
@@ -396,6 +397,7 @@ void PassBlockHandle::setState() const
 
 void flush()
 {
+  TIME_PROFILE(refined_block_flush);
   auto stcode = get_stcode();
   if (DAGOR_UNLIKELY(!stcode))
   {

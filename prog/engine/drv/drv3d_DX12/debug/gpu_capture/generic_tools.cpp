@@ -1,7 +1,7 @@
 // Copyright (C) Gaijin Games KFT.  All rights reserved.
 
 #include "generic_tools.h"
-#include <d3d12_utils.h>
+#include <debug/names.h>
 
 #if USE_PIX
 #include <pix3.h> // not self-contained, has to be iuncluded after driver.h

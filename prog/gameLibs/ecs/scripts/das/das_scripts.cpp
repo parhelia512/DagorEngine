@@ -5,6 +5,8 @@
 #include <startup/dag_globalSettings.h>
 #include <osApiWrappers/dag_vromfs.h>
 #include <memory/dag_dbgMem.h>
+#include <dasModules/dasAotErrorsLog.h>
+#include <util/dag_finally.h>
 #if _TARGET_PC_WIN
 #include <direct.h> // getcwd
 #elif _TARGET_PC_LINUX || _TARGET_PC_MACOSX
@@ -13,6 +15,7 @@
 
 namespace bind_dascript
 {
+
 extern thread_local ecs::EntityManager *g_das_entity_mgr;
 
 static bool ends_with_suffix(const eastl::string_view &fname, const char **suffixes_begin, const char **suffixes_end)
@@ -59,6 +62,7 @@ bool Scripts::unloadScript(const char *fname, bool strict)
   }
 
   debug("daScript: unload %s", fname);
+  preserveSharedQueries(it->second);
   it->second.unload();
   scripts.erase(it);
 
@@ -323,6 +327,12 @@ void Scripts::storeSharedQueries(das::ModuleGroup &group)
       sharedQueries.emplace_back(eastl::move(queryData));
     return isShared;
   });
+}
+
+void Scripts::preserveSharedQueries(LoadedScript &script)
+{
+  if (script.moduleGroup)
+    storeSharedQueries(*script.moduleGroup);
 }
 static bool contains_all_tags(const ecs::TagsSet &src, const ecs::TagsSet &filter_data)
 {
@@ -780,6 +790,14 @@ bool Scripts::loadScriptInternal(const das::string &fname, das::smart_ptr<DagFil
   DebugPrinter tout;
   auto dummyLibGroup = eastl::make_unique<das::ModuleGroup>();
   processModuleGroupUserData(fname, *dummyLibGroup);
+  // promoted modules keep pointers to these descs
+  FINALLY([&] {
+    if (dummyLibGroup)
+    {
+      das::lock_guard<das::recursive_mutex> guard(mutex);
+      storeSharedQueries(*dummyLibGroup);
+    }
+  });
   das::CodeOfPolicies policies;
   policies.aot = ldr_ctx.aotMode == AotMode::AOT;
   policies.fail_on_lack_of_aot_export = true;
@@ -797,6 +815,9 @@ bool Scripts::loadScriptInternal(const das::string &fname, das::smart_ptr<DagFil
   // force rtti to prevent crashes on reload when rtti is enabled in one of the scripts
   policies.rtti = forceReloadWithRtti;
   policies.strict_unsafe_delete = true;
+#if defined(DAS_LLVM_AOT)
+  policies.jit_enabled = true;
+#endif
   policies.gen2_make_syntax = ldr_ctx.syntax == DasSyntax::V1_5;
   policies.version_2_syntax = ldr_ctx.syntax == DasSyntax::V2_0;
   policies.heap_size_hint = DAS_INITIAL_HEAP_SIZE;
@@ -917,12 +938,7 @@ bool Scripts::loadScriptInternal(const das::string &fname, das::smart_ptr<DagFil
     if (ldr_ctx.aotMode == AotMode::AOT && !program->aotErrors.empty())
     {
       linkAotErrorsCount += uint32_t(program->aotErrors.size());
-      logwarn("daScript: failed to link cpp aot <%s>\n", fname.c_str());
-      if (ldr_ctx.logAotErrors == LogAotErrors::YES)
-        for (auto &err : program->aotErrors)
-        {
-          logwarn(das::reportError(err.at, err.what, err.extra, err.fixme, err.cerr).c_str());
-        }
+      das_log_aot_link_errors(fname.c_str(), program->aotErrors, ldr_ctx.logAotErrors == LogAotErrors::YES);
     }
     const AotMode aotModeOverride = program->options.getBoolOption("no_aot", false) ? AotMode::NO_AOT : AotMode::AOT;
     if (debugScript)
@@ -1021,6 +1037,7 @@ bool Scripts::loadScriptInternal(const das::string &fname, das::smart_ptr<DagFil
     if (it != scripts.end())
     {
       debug("daScript: unload %s", fname.c_str());
+      preserveSharedQueries(it->second);
       it->second.unload();
     }
 

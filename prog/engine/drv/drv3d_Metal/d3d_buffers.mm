@@ -47,6 +47,7 @@ Sbuffer *d3d::create_vb(int size, int flg, const char* name, ResourceTagType)
 {
   flg |= SBCF_BIND_VERTEX;
   validate_sbuffer_flags(flg, name);
+  D3D_CONTRACT_ASSERT(((flg & SBCF_BIND_MASK) & ~(SBCF_BIND_VERTEX | SBCF_BIND_SHADER_RES)) == 0);
   return new Buffer(size, 0, flg, 0, name);
 }
 
@@ -54,6 +55,7 @@ Sbuffer *d3d::create_ib(int size, int flg, const char *name, ResourceTagType)
 {
   flg |= SBCF_BIND_INDEX;
   validate_sbuffer_flags(flg, name);
+  D3D_CONTRACT_ASSERT(((flg & SBCF_BIND_MASK) & ~(SBCF_BIND_INDEX | SBCF_BIND_SHADER_RES)) == 0);
   return new Buffer(size, 0, flg, 0, name);
 }
 
@@ -79,6 +81,15 @@ bool d3d::setvsrc_ex(int slot, Sbuffer *vb, int offset, int stride)
 {
   D3D_CONTRACT_ASSERTF_RETURN(!vb || (vb->getFlags() & SBCF_BIND_VERTEX), false,
     "Metal: setvsrc_ex vb '%s' in slot %d does not have the SBCF_BIND_VERTEX flag", vb->getBufName(), slot);
+  if (vb)
+  {
+    const int bufSize = vb->getSize();
+    D3D_CONTRACT_ASSERTF_RETURN(offset >= 0 && offset < bufSize, false,
+      "Metal: setvsrc_ex offset (%d) not within buffer range (%d)", offset, bufSize);
+    D3D_CONTRACT_ASSERTF_RETURN(stride > 0, false, "Metal: setvsrc_ex stride must be greater than zero");
+    D3D_CONTRACT_ASSERTF_RETURN(stride <= bufSize, false,
+      "Metal: setvsrc_ex stride (%d) must not exceed buffer size (%d)", stride, bufSize);
+  }
   return set_buffer_ex(STAGE_VS, GEOM_BUFFER, slot, (Buffer*)vb, offset, stride);
 }
 
@@ -235,7 +246,7 @@ ResUpdateBuffer *allocate_update_buffer_for_tex_region(BaseTexture *dest_base_te
 
   String name;
   name.printf(0, "upload for %s %llu", rub->texture->getName(), render.frame);
-  rub->buffer = render.createBuffer(slice_pitch, MTLResourceStorageModeShared, name);
+  rub->buffer = render.createBuffer(slice_pitch * depth, MTLResourceStorageModeShared, name);
 
   return rub;
 }
@@ -249,29 +260,28 @@ ResUpdateBuffer *allocate_update_buffer_for_tex(BaseTexture *dest_tex, int dest_
 
   ResUpdateBuffer *rub = new ResUpdateBuffer;
   rub->texture = (drv3d_metal::Texture *)dest_tex;
+  const bool isVol = rub->texture->type == D3DResourceType::VOLTEX;
   rub->level = dest_mip;
-  rub->face = dest_slice;
+  rub->face = isVol ? 0 : dest_slice;
   rub->x = 0;
   rub->y = 0;
-  rub->z = 0;
+  rub->z = isVol ? dest_slice : 0;
   rub->w = base_ti.w;
   rub->h = base_ti.h;
-  rub->d = base_ti.d;
+  rub->d = 1;
 
   G_ASSERT_RETURN(dest_mip < base_ti.mipLevels, nullptr);
-  G_ASSERT_RETURN(dest_slice < base_ti.a, nullptr);
+  G_ASSERT_RETURN(dest_slice < (isVol ? base_ti.d : base_ti.a), nullptr);
 
   int row_pitch = 0, slice_pitch = 0;
   rub->texture->getStride(rub->texture->base_format, rub->w, rub->h, 0, row_pitch, slice_pitch);
-
-  int d = rub->texture->type == D3DResourceType::VOLTEX ? rub->d : 1;
 
   rub->pitch = row_pitch;
   rub->slicePitch = slice_pitch;
 
   String name;
   name.printf(0, "upload for %s %llu", rub->texture->getName(), render.frame);
-  rub->buffer = render.createBuffer(slice_pitch * d, MTLResourceStorageModeShared, name);
+  rub->buffer = render.createBuffer(slice_pitch, MTLResourceStorageModeShared, name);
 
   return rub;
 }
@@ -294,7 +304,7 @@ char *get_update_buffer_addr_for_write(ResUpdateBuffer *rub)
 
 size_t get_update_buffer_size(ResUpdateBuffer *rub)
 {
-  return rub && rub->buffer ? rub->slicePitch : 0;
+  return rub && rub->buffer ? rub->buffer.length : 0;
 }
 
 size_t get_update_buffer_pitch(ResUpdateBuffer *rub)

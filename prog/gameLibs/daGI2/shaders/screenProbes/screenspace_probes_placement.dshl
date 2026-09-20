@@ -146,7 +146,7 @@ shader initial_probes_placement_cs
         uint2 cOfs = uint2(curSCI - screen_tile_coord*screenspace_probe_res.z);
 
         //if (all(abs(curSCI - screen_tile_coord*screenspace_probe_res.z - (uint(screenspace_probe_res.z)/2)) < maxAllowed))
-        if (all(cOfs < uint(screenspace_probe_res.z-1) && cOfs > 0))
+        if (all(and(cOfs < uint(screenspace_probe_res.z-1), cOfs > 0)))
         {
           //fixme: redundant load! we later like to load exactly same value if we reprojected
           float rawDepthCenter = loadClampedGbufferDepth(curSCI);

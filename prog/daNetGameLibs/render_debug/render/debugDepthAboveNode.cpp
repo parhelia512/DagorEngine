@@ -1,14 +1,10 @@
 // Copyright (C) Gaijin Games KFT.  All rights reserved.
 
 #include <render/daFrameGraph/ecs/frameGraphNode.h>
+#include <render/daFrameGraph/singleShaders.h>
 #include <render/world/frameGraphHelpers.h>
 #include <shaders/dag_postFxRenderer.h>
 #include <shaders/dag_DynamicShaderHelper.h>
-
-namespace var
-{
-static ShaderVariableInfo dao_show_mode("dao_show_mode", true);
-}
 
 // show_mode: 0 = plain, 1 = normals, 2 = texel-size chessboard (see dao_show_mode in debugDepthAbove.dshl)
 void set_up_show_depth_above_entity(bool render, int show_mode)
@@ -23,12 +19,10 @@ void set_up_show_depth_above_entity(bool render, int show_mode)
       read_gbuffer(registry);
       registry.readTexture("depth_for_postfx").atStage(dafg::Stage::POST_RASTER).bindToShaderVar("depth_gbuf").optional();
       registry.requestRenderPass().color({colorTarget});
-      return [render, show_mode, debugRenderer = PostFxRenderer("debug_depth_above")]() {
-        if (!render)
-          return;
-        ShaderGlobal::set_int(var::dao_show_mode, show_mode);
-        debugRenderer.render();
-      };
+      if (!render)
+        return;
+      registry.create("dao_show_mode").blob<int>(show_mode).bindToShaderVar("dao_show_mode");
+      dafg::postFx("debug_depth_above", registry);
     });
   g_entity_mgr->createEntityAsync("debug_show_depth_above", eastl::move(init));
 }

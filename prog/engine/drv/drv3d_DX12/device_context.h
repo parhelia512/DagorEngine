@@ -11,6 +11,7 @@
 #include "debug/device_context_state.h"
 #include "debug/frame_command_logger.h"
 #include "device_context_cmd.h"
+#include "device_features_config.h"
 #include "device_queue.h"
 #include "events_pool.h"
 #include "extra_data_arrays.h"
@@ -1234,8 +1235,10 @@ struct FrameInfo
   SamplerDescriptorHeapManager samplerHeaps;
   BackendQueryManager backendQueryManager;
   uint32_t frameIndex = 0;
+  uint32_t frameSlot = 0;
 
-  void init(ID3D12Device *device);
+  void init(ID3D12Device *device, uint32_t frame_slot);
+  void initCommandStreams(ID3D12Device *device);
   void shutdown(Device &device, DeviceQueueGroup &queue_group, PipelineManager &pipe_man);
   // returns ticks waiting for gpu
   int64_t beginFrame(DeviceQueueGroup &queue_group, PipelineManager &pipe_man, uint32_t frame_idx);
@@ -1760,8 +1763,6 @@ class DeviceContext : protected ResourceUsageHistoryDataSetDebugger,
 #if _TARGET_XBOX
     void swapchainOnFrameBegin(FRAME_PIPELINE_TOKEN frame_token);
 #endif
-    void updateVertexShaderName(ShaderID shader, StringIndexRef::RangeType name);
-    void updatePixelShaderName(ShaderID shader, StringIndexRef::RangeType name);
     void clearUAVTextureI(Image *image, ImageViewState view, D3D12_CPU_DESCRIPTOR_HANDLE view_descriptor, const uint32_t values[4]);
     void clearUAVTextureF(Image *image, ImageViewState view, D3D12_CPU_DESCRIPTOR_HANDLE view_descriptor, const float values[4]);
     void setRootConstants(unsigned stage, eastl::span<uint32_t> values);
@@ -1790,7 +1791,10 @@ class DeviceContext : protected ResourceUsageHistoryDataSetDebugger,
     void executeDlss(const nv::DlssParams<Image> &dlss_params, int view_index);
     void executeDlssG(const nv::DlssGParams<Image> &dlss_g_params, int view_index);
     void setDlssGEnabled(int frames_to_generate, int view_index);
+    void publishPresentedFrameCount();
     void setDlssOptions(const nv::DlssOptions &options, int view_index);
+    void executeDlssNR(const nv::DlssNRParams<Image> &dlss_nr_params, int view_index);
+    void setDlssNROptions(const nv::DlssNROptions &options, int view_index);
     void prepareExecuteAA(std::initializer_list<Image *> inputs, std::initializer_list<Image *> outputs);
     void executeXess(const XessParamsDx12 &params);
     void executeXeFg(const XessFgParamsDx12 &params);
@@ -1927,10 +1931,6 @@ class DeviceContext : protected ResourceUsageHistoryDataSetDebugger,
 #if D3D_HAS_RAY_TRACING
     void setComputeOnRayTraceShaderBindingTableConstBuffer(uint32_t stage, uint32_t slot, ProgramID program);
 #endif
-
-  private:
-    static void validate_globals_size(const dxil::ShaderHeader &header, const PipelineStageStateBase &stage_state, ShaderStage stage,
-      ID3D12PipelineState *pipeline);
   };
 
   struct FrontendFrameLatchedData
@@ -2035,6 +2035,7 @@ class DeviceContext : protected ResourceUsageHistoryDataSetDebugger,
 #endif
 
   alignas(std::hardware_constructive_interference_size) std::atomic_uint32_t presentedFrameId = 0;
+  std::atomic_uint32_t lastPresentedFrameCount = 1;
 
 #if DX12_FIXED_EXECUTION_MODE
   constexpr bool isImmediateMode() const { return false; }
@@ -2132,7 +2133,7 @@ public:
   void clearRenderTargets(ViewportState vp, uint32_t clear_mask, const E3DCOLOR *clear_color, float clear_depth,
     uint8_t clear_stencil);
 
-  void pushConstRegisterData(uint32_t stage, eastl::span<const ConstRegisterType> data);
+  bool pushConstRegisterData(uint32_t stage, eastl::span<const ConstRegisterType> data);
 
   void setSRVTexture(uint32_t stage, size_t unit, BaseTex *texture, ImageViewState view, bool as_const_ds);
   void setSampler(uint32_t stage, size_t unit, D3D12_CPU_DESCRIPTOR_HANDLE sampler);
@@ -2250,8 +2251,6 @@ public:
   void removeProgram(ProgramID program);
 
   void placeAftermathMarker(const char *name);
-  void updateVertexShaderName(ShaderID shader, const char *name);
-  void updatePixelShaderName(ShaderID shader, const char *name);
   void setImageResourceState(D3D12_RESOURCE_STATES state, ValueRange<ExtendedImageGlobalSubresourceId> range);
   void setImageResourceStateNoLock(D3D12_RESOURCE_STATES state, ValueRange<ExtendedImageGlobalSubresourceId> range);
   void clearUAVTexture(Image *image, ImageViewState view, const unsigned values[4]);
@@ -2329,7 +2328,6 @@ public:
   void enableXeFG(bool enable) { xessWrapper.enableFrameGeneration(enable); }
   void suppressXeFG(bool suppress) { xessWrapper.suppressFrameGeneration(suppress); }
   void scheduleXeFG(const XessFgParams &params);
-  int getXeFgPresentedFrameCount() { return xessWrapper.getPresentedFrameCount(); }
 
   bool isFsrLoaded() const { return fsrWrapper.isLoaded(); }
   bool isFsrUpscalingSupported() const { return fsrWrapper.isUpscalingSupported(); }
@@ -2340,7 +2338,7 @@ public:
   bool isFsrFGSuppressed() const { return fsrWrapper.isFrameGenerationSuppressed(); }
   void enableFsrFG(bool enable) { fsrWrapper.enableFrameGeneration(enable); }
   void suppressFsrFG(bool suppress) { fsrWrapper.suppressFrameGeneration(suppress); }
-  int getFsrFgPresentedFrameCount() { return fsrWrapper.getPresentedFrameCount(); }
+  uint32_t getLastPresentedFrameCount() const { return lastPresentedFrameCount.load(std::memory_order_relaxed); }
 
   void shutdownInternalSwapchain();
   bool adoptUserSwapchain(DXGISwapChain *swapchain, SwapchainCreateInfo &&sci);
@@ -2373,6 +2371,8 @@ public:
   void executeDlssG(const nv::DlssGParams<BaseTexture> &dlss_g_params, int view_index);
   void setDlssGEnabled(int frames_to_generate, int view_index);
   void setDlssOptions(const nv::DlssOptions &options, int view_index);
+  void executeDlssNR(const nv::DlssNRParams<BaseTexture> &dlss_nr_params, int view_index);
+  void setDlssNROptions(const nv::DlssNROptions &options, int view_index);
   void executeXess(const XessParams &params);
   void executeFSR(const amd::FSR::UpscalingArgs &params);
   void executeFSRFG(const amd::FSR::FrameGenArgs &params);

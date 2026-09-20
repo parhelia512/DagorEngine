@@ -16,6 +16,7 @@
 #include <perfMon/dag_statDrv.h>
 #include <shaders/dag_bindumpReloadListener.h>
 #include <shaders/dag_shaderVariableInfo.h>
+#include <shaders/shader_name_format.h>
 #include <drv/3d/dag_commands.h>
 #include <util/dag_watchdog.h>
 #include <generic/dag_align.h>
@@ -272,23 +273,24 @@ bool ScriptedShadersBinDumpOwner::loadFromData(uint8_t const *dump, int size, ch
   return true;
 }
 
-ShaderSource ScriptedShadersBinDumpOwner::getCode(uint32_t id, ShaderCodeType type) const
+ShaderSourceExt ScriptedShadersBinDumpOwner::getCode(uint32_t id, ShaderCodeType type) const
 {
-  id += type == ShaderCodeType::VERTEX ? 0 : vprId.size();
+  id += type == ShaderCodeType::VERTEX ? 0 : mShaderDump->vprCount;
   return getCodeById(id);
 }
 
-ShaderSource ScriptedShadersBinDumpOwner::getCodeById(uint32_t id) const
+ShaderSourceExt ScriptedShadersBinDumpOwner::getCodeById(uint32_t id) const
 {
   TIME_PROFILE(decompress_shader);
 
   const auto &compressed_data = mShaderDump->shaders[id];
   const auto &metadata = mShaderDump->shaders_metadata[id];
   uint32_t size = dag::align_up(mShaderDump->uncompressed_shader_sizes[id], sizeof(uint32_t));
-  return {.compressedData = make_span_const(compressed_data.data(), compressed_data.size()),
+  return {{//
+    .compressedData = make_span_const(compressed_data.data(), compressed_data.size()),
     .metadata = make_span_const(metadata.data(), metadata.size()),
     .uncompressedSize = size,
-    .dictionary = mDictionary.get()};
+    .dictionary = mDictionary.get()}};
 }
 
 void ScriptedShadersBinDumpOwner::initAfterLoad(bool is_main)
@@ -320,6 +322,10 @@ void ScriptedShadersBinDumpOwner::initAfterLoad(bool is_main)
     // If shader-dump V5 is not mapped, don't logerr here. We might never ask for any stub textures and then it won't matter
   }
 
+  shader_name_format::read_compilation_settings_from_blk( //
+    shaderNameFormatSettings,                             //
+    *::dgs_get_settings()->getBlockByNameEx("shaderNameFormat"));
+
   ++generation;
 }
 
@@ -340,6 +346,7 @@ void ScriptedShadersBinDumpOwner::clear()
   shaderMats = {};
   shaderMatElems = {};
   assertionCtx.close();
+  shaderNameFormatSettings = {};
 }
 
 void ScriptedShadersGlobalData::initAfterLoad(ScriptedShadersBinDumpOwner const *backing_dump, bool is_main)

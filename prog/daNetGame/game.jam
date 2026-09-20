@@ -130,6 +130,10 @@ rule AddGamePullsToSources {
   }
 }
 
+# gameMain compiles daNetGame's main/main.cpp inside the game target, so the
+# game context needs the lib's public_api include path (and the lib itself)
+include $(Root)/prog/gameLibs/render/animatedSplashScreen/_lib.jam ;
+
 Sources +=
   gameMain.jamvar
   gameVersion.jamvar

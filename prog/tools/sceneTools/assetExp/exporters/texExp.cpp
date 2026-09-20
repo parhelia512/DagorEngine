@@ -534,13 +534,11 @@ public:
     }
     return buildTexAsset(a, cwr, log);
   }
-  bool getAssetSourceHash(SimpleString &dest_hash, DagorAsset &a, void *cache_shared_data_ptr, unsigned target_code) override
+  bool getAssetSourceHash(SimpleString &dest_hash, DagorAsset &a, unsigned target_code) override
   {
-    AssetExportCache::setSharedDataPtr(cache_shared_data_ptr);
     unsigned char hash[15];
     memset(hash, 0, sizeof(hash));
     bool ret = AssetExportCache::sharedDataGetFileHash(a.getTargetFilePath(), hash);
-    AssetExportCache::setSharedDataPtr(nullptr);
     if (ret)
     {
       String fmt_spec;
@@ -574,7 +572,7 @@ public:
         b->removeBlock(a.getName());
     }
   }
-  bool updateBuildResultsBlk(DagorAsset &a, void *cache_shared_data_ptr, unsigned tc) override
+  bool updateBuildResultsBlk(DagorAsset &a, unsigned tc) override
   {
     G_ASSERT_RETURN(buildResultsBlk, true);
     if (const char *p = strrchr(a.getName(), '$'))
@@ -591,7 +589,7 @@ public:
     }
 
     SimpleString hash;
-    if (getAssetSourceHash(hash, a, cache_shared_data_ptr, tc))
+    if (getAssetSourceHash(hash, a, tc))
     {
       uint64_t tc_storage = 0;
       const char *pkname = a.getCustomPackageName(mkbindump::get_target_str(tc, tc_storage), nullptr);
@@ -865,7 +863,7 @@ public:
     }
 
     if (buildResultsBlk)
-      updateBuildResultsBlk(a, nullptr, cwr.getTarget());
+      updateBuildResultsBlk(a, cwr.getTarget());
 
 #define GET_PROP(TYPE, PROP, DEF) props.get##TYPE(PROP, &props != &a.props ? a.props.get##TYPE(PROP, DEF) : DEF)
     G_ASSERT(!cwr.WRITE_BE);

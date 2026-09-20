@@ -15,7 +15,6 @@ float rtsm_sun_angle_multiplier = 0.5;
 
 int rt_debug_rt_shadow = 1;
 interval rt_debug_rt_shadow: off < 1, on;
-int rt_debug_use_csm = 0;
 
 float bvh_debug_intersection_count_threshold = 16.0;
 
@@ -23,7 +22,13 @@ float bvh_debug_min_t = 0;
 
 int bvh_debug_back_view = 0;
 
+float4 bvh_debug_view_rotation = (0, 0, 0, 0);
+
 int bvh_disable_ahs_with_omm = 0;
+
+// the view cannot read the active value from grid_size.w: that is zeroed while the debug
+// freeze pauses marking, and the frozen volume must stay visible
+int bvh_debug_voxel_activity_active_value = 0;
 
 // Debug-only meta-index -> (RI LOD + 1) table, rebuilt on the CPU while the LOD view is active.
 // 0 means "not a rendinst". Keeps LOD out of the production meta struct.
@@ -35,10 +40,11 @@ shader bvh_debug
   {
     dont_render;
   }
-  supports global_const_block;
 
   (cs)
   {
+    from_sun_direction@f3 = from_sun_direction;
+    sun_color_0@f3 = sun_color_0;
     debug_target@uav = bvh_debug_target hlsl { RWTexture2D<float4> debug_target@uav; }
     world_view_pos@f3 = world_view_pos;
     bvh_debug_mode@i1 = bvh_debug_mode;
@@ -47,7 +53,9 @@ shader bvh_debug
     bvh_debug_intersection_count_threshold@f1 = bvh_debug_intersection_count_threshold;
     bvh_debug_min_t@f1 = bvh_debug_min_t;
     bvh_debug_back_view@i1 = bvh_debug_back_view;
+    bvh_debug_view_rotation@f2 = bvh_debug_view_rotation;
     bvh_disable_ahs_with_omm@u1 = bvh_disable_ahs_with_omm;
+    bvh_debug_voxel_activity_active_value@i1 = bvh_debug_voxel_activity_active_value;
     bvh_debug_lod_by_meta@buf = bvh_debug_lod_by_meta hlsl { StructuredBuffer<uint> bvh_debug_lod_by_meta@buf; }
   }
 
@@ -80,13 +88,14 @@ shader bvh_debug
     #define BVH_DEBUG_MODE_NAN 11
     #define BVH_DEBUG_MODE_LOD 12
     #define BVH_DEBUG_MODE_LRU_COLLISION 13
+    #define BVH_DEBUG_MODE_VOXEL_ACTIVITY 14
 
     #define RAY_FLAG_FORCE_OMM_2_STATE_MANUAL 1
   }
 
   INIT_BVH(cs, 0, true)
   USE_BVH_FOR_DEBUG(cs)
-  USE_BVH_FX_RENDER(cs)
+  USE_BVH_FX_RENDER(cs, false)
 
   USE_EMISSION_DECODE_COLOR_MAP_STUB(cs)
   INIT_PACK_UNPACK_DYNSTCODE(cs)
@@ -95,7 +104,7 @@ shader bvh_debug
 
   USE_ADAPTIVE_RAY_OFFSET(cs)
 
-  INIT_RT_LIGHTING(cs, false, true, true, rt_debug_rt_shadow == on, rt_debug_use_csm, false)
+  INIT_RT_LIGHTING(cs, false, true, true, rt_debug_rt_shadow == on, false)
   USE_RT_LIGHTING(cs, 0, false)
   INIT_BVH_ATMOSPHERE(cs)
   USE_BVH_ATMOPHERE(cs)
@@ -116,6 +125,13 @@ shader bvh_debug
       if (!bvhMainValid)
         return false;
       return trace_ray(bvhMain, origin, direction, tmin, tmax, bias, group, hitInfo, extra_flags);
+    }
+
+    float3 bvh_debug_rotate_axis(float3 v, float3 axis, float angle)
+    {
+      float s, c;
+      sincos(angle, s, c);
+      return v * c + cross(axis, v) * s + axis * dot(axis, v) * (1 - c);
     }
 
     float3 bvh_debug_ray_dir(float2 pixel, float2 resolution)
@@ -141,6 +157,17 @@ shader bvh_debug
         {
           direction = float3(0, 1, 0);
         }
+      }
+      if (any(bvh_debug_view_rotation != 0))
+      {
+        // horizontal right, not the camera right: the offset stays a pure
+        // azimuth/elevation change even when the base camera rolls
+        float3 forward = view_vecLT + view_vecRT + view_vecLB + view_vecRB;
+        float3 right = cross(float3(0, 1, 0), forward);
+        float rightLenSq = dot(right, right);
+        right = rightLenSq > 1e-6f ? right * rsqrt(rightLenSq) : normalize(view_vecRT - view_vecLT);
+        direction = bvh_debug_rotate_axis(direction, right, bvh_debug_view_rotation.y);
+        direction = bvh_debug_rotate_axis(direction, float3(0, 1, 0), bvh_debug_view_rotation.x);
       }
       return direction;
     }
@@ -259,6 +286,10 @@ shader bvh_debug
           if (get_material_type(hitInfo.material) == bvhMaterialRendinst && !hitInfo.isLayered && hitInfo.albedoTextureIndex != 0xFFFF && has_material_painted(hitInfo.material))
             result = hitSurface.albedo;
         }
+        else if (bvh_debug_mode == BVH_DEBUG_MODE_VOXEL_ACTIVITY)
+        {
+          result = dot(hitSurface.albedo, float3(0.299, 0.587, 0.114)) * 0.5;
+        }
         ##if hardware.pc
         else if (bvh_debug_mode == BVH_DEBUG_MODE_INTERSECTION_COUNT)
         {
@@ -345,10 +376,86 @@ shader bvh_debug
         {
           result = texCUBElod(envi_probe_specular, float4(direction, 0)).rgb;
         }
-        else if (bvh_debug_mode != BVH_DEBUG_MODE_LOD) // LOD view shows only RI; sky/miss stays black
+        else if (bvh_debug_mode != BVH_DEBUG_MODE_LOD && bvh_debug_mode != BVH_DEBUG_MODE_VOXEL_ACTIVITY)
         {
+          // LOD and voxel activity views keep the sky/miss black
           result = float3(0, 0, 1);
         }
+      }
+
+      BRANCH
+      if (bvh_debug_mode == BVH_DEBUG_MODE_VOXEL_ACTIVITY && bvh_debug_voxel_activity_active_value != 0)
+      {
+        // DDA through the volume up to the traced surface. Voxels at zero are skipped: the
+        // volume alone cannot tell dead content from empty air.
+        float tEnd = isHit ? hitInfo.t : INF;
+        float3 bmin = bvh_voxel_activity_grid_origin.xyz;
+        float invVoxel = bvh_voxel_activity_grid_origin.w;
+        float voxelSize = 1.0 / invVoxel;
+        int3 dims = bvh_voxel_activity_grid_size.xyz;
+        float3 bmax = bmin + float3(dims) * voxelSize;
+
+        float3 dir = direction;
+        dir.x = abs(dir.x) < 1e-6 ? (dir.x >= 0 ? 1e-6 : -1e-6) : dir.x;
+        dir.y = abs(dir.y) < 1e-6 ? (dir.y >= 0 ? 1e-6 : -1e-6) : dir.y;
+        dir.z = abs(dir.z) < 1e-6 ? (dir.z >= 0 ? 1e-6 : -1e-6) : dir.z;
+        float3 invDir = 1.0 / dir;
+
+        // the ray starts at the camera, which is the origin in bvh space
+        float3 tLo = bmin * invDir;
+        float3 tHi = bmax * invDir;
+        float3 tMinV = min(tLo, tHi);
+        float3 tMaxV = max(tLo, tHi);
+        float t0 = max(max(tMinV.x, tMinV.y), max(tMinV.z, 0.0));
+        float t1 = min(min(tMaxV.x, tMaxV.y), min(tMaxV.z, tEnd));
+
+        float3 acc = 0;
+        float accA = 0;
+        if (t0 < t1)
+        {
+          int3 cell = clamp(int3(floor((dir * (t0 + voxelSize * 1e-3) - bmin) * invVoxel)), 0, dims - 1);
+          int3 stepDir = int3(dir.x >= 0 ? 1 : -1, dir.y >= 0 ? 1 : -1, dir.z >= 0 ? 1 : -1);
+          float3 boundary = bmin + (float3(cell) + step(0, dir)) * voxelSize;
+          float3 tMaxAxis = boundary * invDir;
+          float3 tDelta = voxelSize * abs(invDir);
+
+          for (int i = 0; i < 1024; ++i)
+          {
+            uint life = bvh_voxel_activity[cell];
+            if (life > 0)
+            {
+              float heat = saturate(life / float(bvh_debug_voxel_activity_active_value));
+              float3 col = lerp(float3(1, 0.15, 0), float3(0, 1, 0.1), heat);
+              float a = lerp(0.45, 0.2, heat); // dying voxels pop, steadily hit ones stay see-through
+              acc += (1 - accA) * a * col;
+              accA += (1 - accA) * a;
+              if (accA > 0.97)
+                break;
+            }
+
+            float tNext = min(tMaxAxis.x, min(tMaxAxis.y, tMaxAxis.z));
+            if (tNext > t1)
+              break;
+            if (tMaxAxis.x <= tMaxAxis.y && tMaxAxis.x <= tMaxAxis.z)
+            {
+              cell.x += stepDir.x;
+              tMaxAxis.x += tDelta.x;
+            }
+            else if (tMaxAxis.y <= tMaxAxis.z)
+            {
+              cell.y += stepDir.y;
+              tMaxAxis.y += tDelta.y;
+            }
+            else
+            {
+              cell.z += stepDir.z;
+              tMaxAxis.z += tDelta.z;
+            }
+            if (any(cell < 0) || any(cell >= dims))
+              break;
+          }
+        }
+        result = result * (1 - accA) + acc;
       }
 
       if (bvh_debug_mode == BVH_DEBUG_MODE_LIT)

@@ -4,10 +4,18 @@
 
 #include <render/daFrameGraph/daFG.h>
 #include <render/world/defaultVrsSettings.h>
-#include <render/world/cameraParams.h>
+#include <render/cameraParams.h>
 #include <render/motionVectorAccess.h>
-#include <shaders/dag_computeShaders.h>
+#include <shaders/dag_shaderVariableInfo.h>
+#include <drv/3d/dag_driverDesc.h>
 #include <ioSys/dag_dataBlock.h>
+
+struct VrsParams
+{
+  TMatrix4 prevFrameUvzToUvz = TMatrix4::IDENT;
+  Point4 znZfar = Point4(0, 0, 0, 0);
+  float frameUpscaleFactor = 1;
+};
 
 static motion_vector_access::CameraParams dng_to_mva(const CameraParams &dngCam)
 {
@@ -34,15 +42,19 @@ static void setup_driver_cap_shadervars()
 
 static ShaderVariableInfo motion_vrs_strength("motion_vrs_strength", true);
 
-eastl::fixed_vector<dafg::NodeHandle, 4> makeCreateVrsTextureNode(bool force_dummy_nodes)
+bool has_motion_vrs_strength() { return motion_vrs_strength.get_float() > 0; }
+
+eastl::fixed_vector<dafg::NodeHandle, 5> makeCreateVrsTextureNode(bool motion_vrs, bool motion_vrs_dispatches)
 {
+  G_ASSERT(!motion_vrs_dispatches || motion_vrs); // Dispatches are a sub-mode of motion VRS
+
   const bool vrsSupported = d3d::get_driver_desc().caps.hasVariableRateShadingTexture;
   if (!vrsSupported)
     return {};
 
-  eastl::fixed_vector<dafg::NodeHandle, 4> result;
+  eastl::fixed_vector<dafg::NodeHandle, 5> result;
 
-  if (!can_use_motion_vrs() || force_dummy_nodes)
+  if (!motion_vrs)
   {
     result.push_back(dafg::register_node("create_vrs_texture_node", DAFG_PP_NODE_SRC, [](dafg::Registry registry) {
       registry.create(VRS_RATE_TEXTURE_NAME)
@@ -72,69 +84,77 @@ eastl::fixed_vector<dafg::NodeHandle, 4> makeCreateVrsTextureNode(bool force_dum
 
     registry.read("frame_after_postfx").texture().atStage(dafg::Stage::COMPUTE).bindToShaderVar("final_frame");
 
-    return [halfMainViewResolution, shader = ComputeShader("gen_downsampled_luminance")]() {
-      auto [w, h] = halfMainViewResolution.get();
-      shader.dispatchThreads(w, h, 1);
-    };
+    registry.dispatchThreads("gen_downsampled_luminance")
+      .x<&IPoint2::x>(halfMainViewResolution)
+      .y<&IPoint2::y>(halfMainViewResolution)
+      .z(1);
   }));
 
-  result.push_back(dafg::register_node("gen_tile_motion_statistics", DAFG_PP_NODE_SRC, [](dafg::Registry registry) {
-    auto makeStatisticsTex = [&](const char *name, uint32_t fmt, uint32_t init) {
-      return registry.create(name)
-        .texture(dafg::Texture2dCreateInfo{fmt | TEXCF_UNORDERED, registry.getResolution<2>("texel_per_vrs_tile")})
-        .atStage(dafg::Stage::COMPUTE)
-        .clear(make_clear_value(init, 0u, 0u, 0u))
-        .bindToShaderVar()
-        .handle();
-    };
+  result.push_back(dafg::register_node("vrs_params_setup", DAFG_PP_NODE_SRC, [](dafg::Registry registry) {
+    auto paramsHndl = registry.createBlob<VrsParams>("vrs_params").handle();
 
-    // all of these are AT LEAST in 1/8 resolution so it's ok to have so many of them
-    makeStatisticsTex("tile_motion_x_sum", TEXFMT_R32SI, 0);
-    makeStatisticsTex("tile_motion_y_sum", TEXFMT_R32SI, 0);
-    makeStatisticsTex("tile_luma_sum", TEXFMT_R32UI, 0);
-    makeStatisticsTex("tile_luma_squares_sum", TEXFMT_R32UI, 0);
-    makeStatisticsTex("tile_motion_sample_count", TEXFMT_R32UI, 0);
-    makeStatisticsTex("tile_luma_min", TEXFMT_R32UI, 0xFFFFFFFF);
-    makeStatisticsTex("tile_luma_max", TEXFMT_R32UI, 0);
-
-    registry.historyFor("close_depth").texture().atStage(dafg::Stage::COMPUTE).bindToShaderVar("prev_close_depth");
-    registry.historyFor("downsampled_luminance").texture().atStage(dafg::Stage::COMPUTE).bindToShaderVar("prev_downsampled_luminance");
-    registry.historyFor("downsampled_motion_vectors_tex")
-      .texture()
-      .atStage(dafg::Stage::COMPUTE)
-      .optional()
-      .bindToShaderVar("prev_downsampled_motion_vecs");
-
-    setup_driver_cap_shadervars();
-
-    const auto halfMainViewResolution = registry.getResolution<2>("main_view", 0.5f);
     const auto mainViewResolution = registry.getResolution<2>("main_view");
     const auto postFxResolution = registry.getResolution<2>("post_fx");
 
     auto camHndl = registry.read("current_camera").blob<CameraParams>().handle();
     auto prevCamHndl = registry.historyFor("current_camera").blob<CameraParams>().handle();
 
-    return [halfMainViewResolution, mainViewResolution, postFxResolution, camHndl, prevCamHndl,
-             shader = ComputeShader("gen_motion_statistics")]() {
-      if (motion_vrs_strength.get_float() == 0)
-        return;
-
-      const float frameUpscaleFactor = float(mainViewResolution.get().x) / float(postFxResolution.get().x);
-
-      static ShaderVariableInfo frame_upscale_factor("frame_upscale_factor", true);
-      frame_upscale_factor.set_float(frameUpscaleFactor);
-
-      static ShaderVariableInfo zn_zfar("zn_zfar");
-      zn_zfar.set_float4(camHndl.ref().znear, camHndl.ref().zfar, 0, 0);
-
-      motion_vector_access::set_reprojection_params_prev_to_curr(dng_to_mva(camHndl.ref()), dng_to_mva(prevCamHndl.ref()));
-
-      auto [w, h] = halfMainViewResolution.get();
-      shader.dispatchThreads(w, h, 1);
+    return [paramsHndl, mainViewResolution, postFxResolution, camHndl, prevCamHndl]() {
+      const CameraParams &cam = camHndl.ref();
+      paramsHndl.ref() = VrsParams{
+        .prevFrameUvzToUvz = motion_vector_access::calc_prev_frame_uvz_to_uvz(dng_to_mva(cam), dng_to_mva(prevCamHndl.ref())),
+        .znZfar = Point4(cam.znear, cam.zfar, 0, 0),
+        .frameUpscaleFactor = float(mainViewResolution.get().x) / float(postFxResolution.get().x),
+      };
     };
   }));
 
-  result.push_back(dafg::register_node("create_vrs_texture_node", DAFG_PP_NODE_SRC, [](dafg::Registry registry) {
+  result.push_back(
+    dafg::register_node("gen_tile_motion_statistics", DAFG_PP_NODE_SRC, [motion_vrs_dispatches](dafg::Registry registry) {
+      auto makeStatisticsTex = [&](const char *name, uint32_t fmt, uint32_t init) {
+        return registry.create(name)
+          .texture(dafg::Texture2dCreateInfo{fmt | TEXCF_UNORDERED, registry.getResolution<2>("texel_per_vrs_tile")})
+          .atStage(dafg::Stage::COMPUTE)
+          .clear(make_clear_value(init, 0u, 0u, 0u))
+          .bindToShaderVar()
+          .handle();
+      };
+
+      // all of these are AT LEAST in 1/8 resolution so it's ok to have so many of them
+      makeStatisticsTex("tile_motion_x_sum", TEXFMT_R32SI, 0);
+      makeStatisticsTex("tile_motion_y_sum", TEXFMT_R32SI, 0);
+      makeStatisticsTex("tile_luma_sum", TEXFMT_R32UI, 0);
+      makeStatisticsTex("tile_luma_squares_sum", TEXFMT_R32UI, 0);
+      makeStatisticsTex("tile_motion_sample_count", TEXFMT_R32UI, 0);
+      makeStatisticsTex("tile_luma_min", TEXFMT_R32UI, 0xFFFFFFFF);
+      makeStatisticsTex("tile_luma_max", TEXFMT_R32UI, 0);
+
+      registry.historyFor("close_depth").texture().atStage(dafg::Stage::COMPUTE).bindToShaderVar("prev_close_depth");
+      registry.historyFor("downsampled_luminance")
+        .texture()
+        .atStage(dafg::Stage::COMPUTE)
+        .bindToShaderVar("prev_downsampled_luminance");
+      registry.historyFor("downsampled_motion_vectors_tex")
+        .texture()
+        .atStage(dafg::Stage::COMPUTE)
+        .optional()
+        .bindToShaderVar("prev_downsampled_motion_vecs");
+
+      setup_driver_cap_shadervars();
+
+      if (!motion_vrs_dispatches)
+        return;
+
+      registry.readBlob<VrsParams>("vrs_params").bindToShaderVar<&VrsParams::prevFrameUvzToUvz>("prev_frame_uvz_to_uvz");
+
+      const auto halfMainViewResolution = registry.getResolution<2>("main_view", 0.5f);
+      registry.dispatchThreads("gen_motion_statistics")
+        .x<&IPoint2::x>(halfMainViewResolution)
+        .y<&IPoint2::y>(halfMainViewResolution)
+        .z(1);
+    }));
+
+  result.push_back(dafg::register_node("create_vrs_texture_node", DAFG_PP_NODE_SRC, [motion_vrs_dispatches](dafg::Registry registry) {
     auto tilesResolution = registry.getResolution<2>("texel_per_vrs_tile");
     registry.create(VRS_RATE_TEXTURE_NAME)
       .texture({TEXFMT_R8UI | TEXCF_VARIABLE_RATE | TEXCF_UNORDERED, tilesResolution})
@@ -153,16 +173,15 @@ eastl::fixed_vector<dafg::NodeHandle, 4> makeCreateVrsTextureNode(bool force_dum
     // & migration to igpu, so leave them inside the declaration callback.
     setup_driver_cap_shadervars();
 
-    auto tileRes = registry.getResolution<2>("texel_per_vrs_tile");
+    // Leave a way to turn it off via a config update in case issues come up.
+    if (!motion_vrs_dispatches)
+      return;
 
-    return [tileRes, shader = ComputeShader("gen_motion_vrs")]() {
-      // Leave a way to turn it off via a config update in case issues come up.
-      if (motion_vrs_strength.get_float() == 0)
-        return;
+    registry.readBlob<VrsParams>("vrs_params")
+      .bindToShaderVar<&VrsParams::znZfar>("zn_zfar")
+      .bindToShaderVar<&VrsParams::frameUpscaleFactor>("frame_upscale_factor");
 
-      auto [w, h] = tileRes.get();
-      shader.dispatchThreads(w, h, 1);
-    };
+    registry.dispatchThreads("gen_motion_vrs").x<&IPoint2::x>(tilesResolution).y<&IPoint2::y>(tilesResolution).z(1);
   }));
 
   result.push_back(dafg::register_node("create_shading_vrs_texture", DAFG_PP_NODE_SRC, [](dafg::Registry registry) {
@@ -175,6 +194,10 @@ eastl::fixed_vector<dafg::NodeHandle, 4> makeCreateVrsTextureNode(bool force_dum
     registry.read("close_depth").texture().atStage(dafg::Stage::COMPUTE).bindToShaderVar();
     registry.read("far_downsampled_depth").texture().atStage(dafg::Stage::COMPUTE).bindToShaderVar();
     registry.read("downsampled_motion_vectors_tex").texture().atStage(dafg::Stage::COMPUTE).bindToShaderVar().optional();
+
+    registry.readBlob<VrsParams>("vrs_params")
+      .bindToShaderVar<&VrsParams::prevFrameUvzToUvz>("prev_frame_uvz_to_uvz")
+      .bindToShaderVar<&VrsParams::znZfar>("zn_zfar");
 
     // Driver caps don't change at runtime, but can change after a device reset
     // & migration to igpu, so leave them inside the declaration callback.

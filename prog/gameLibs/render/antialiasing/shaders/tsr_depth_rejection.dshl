@@ -1,0 +1,34 @@
+include "shader_global.dshl"
+
+// rejects reprojected history whose depth landed outside the depth range of the input
+// neighborhood - it is describing different geometry, so its accumulated confidence must not carry
+
+float tsr_depth_overhang_sigma = 0.0004;
+
+int tsr_depth_rejection = 1;
+interval tsr_depth_rejection : off < 1, on;
+// to allow assuming per project
+assume_if_not_assumed tsr_depth_rejection = on;
+
+macro INIT_TSR_DEPTH_REJECTION(code)
+  (code) {
+    depthOverhangSigmaInv@f1 = 1.0/tsr_depth_overhang_sigma;
+  }
+endmacro
+
+macro USE_TSR_DEPTH_REJECTION(code)
+  hlsl(code) {
+    // exponential decay past the near/far ends of the range, with the tolerance scaled by depth so
+    // that it stays a relative rather than an absolute depth distance
+    float calcTsrDepthRejection(float expected_depth, float min_depth, float max_depth)
+    {
+    ##if tsr_depth_rejection == off
+      return 1;
+    ##else
+      float overhang = max3(0, expected_depth - max_depth, min_depth - expected_depth);
+      float exponentTerm = overhang * depthOverhangSigmaInv * rcp(max(1e-9, expected_depth));
+      return exp(-0.5 * exponentTerm * exponentTerm);
+    ##endif
+    }
+  }
+endmacro

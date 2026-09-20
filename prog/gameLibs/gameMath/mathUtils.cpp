@@ -5,9 +5,6 @@
 #include <math/random/dag_random.h>
 #include <math/dag_mathUtils.h>
 
-const Point3 VEC_UNIT_UP = Point3(0.f, 1.f, 0.f);
-const Point3 VEC_UNIT_FWD = Point3(1.f, 0.f, 0.f);
-
 float distance_to_triangle(const Point3 &p, const Point3 &a, const Point3 &b, const Point3 &c, Point3 &out_contact, Point3 &out_normal)
 {
   Point3 edge0 = b - a;

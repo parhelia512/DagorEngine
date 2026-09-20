@@ -30,6 +30,7 @@
 
 #if _TARGET_PC_WIN
 #include <windows.h>
+#include <winioctl.h>
 #include <rpc.h>
 #include <iphlpapi.h>
 #include <Sddl.h>
@@ -67,15 +68,20 @@ extern const char *macosx_get_os_ver();
 extern int64_t macosx_get_phys_mem();
 extern int64_t macosx_get_virt_mem();
 extern const char *macosx_get_location();
+extern int macosx_get_disk_rotational(const char *path);
 
 #include <mach/mach.h>
 
 #include <sys/param.h>
 #include <sys/mount.h>
+#include <sys/statvfs.h>
 
 #elif _TARGET_PC_LINUX || _TARGET_ANDROID
 
 #include <sys/sysinfo.h>
+#include <sys/stat.h>
+#include <sys/statvfs.h>
+#include <sys/sysmacros.h>
 #include <sys/utsname.h>
 #include <sys/socket.h>
 #include <sys/ioctl.h>
@@ -85,6 +91,7 @@ extern const char *macosx_get_location();
 #include <ctype.h>
 #include <locale.h>
 #if _TARGET_ANDROID
+#include <limits.h>
 #include <sys/system_properties.h>
 #include <unistd.h>
 #include <supp/dag_android_native_app_glue.h>
@@ -102,10 +109,12 @@ static bool check_token(const char *str, const char *token) { return strstr(str,
 
 #elif _TARGET_C1 | _TARGET_C2
 
+
 #elif _TARGET_XBOX
 #include "systemInfo_xbox.h"
 #elif _TARGET_IOS
 #include <sys/sysctl.h>
+#include <sys/statvfs.h>
 #include <ioSys/dag_dataBlock.h>
 
 #include <EASTL/optional.h>
@@ -119,6 +128,9 @@ extern float ios_get_battery_level();
 extern int ios_get_battery_status();
 extern int ios_get_network_connection_type();
 extern void ios_get_os_version(int &major, int &minor, int &patch);
+#elif _TARGET_C3
+
+
 #endif
 
 
@@ -236,6 +248,180 @@ bool get_cpu_features(String &cpu_arch, String & /*cpu_uarch*/, Tab<String> & /*
 bool get_cpu_features(String & /*cpu_arch*/, String & /*cpu_uarch*/, Tab<String> & /*cpu_features*/) { return false; }
 
 #endif // USE_CPU_FEATURES
+
+
+bool get_disk_type(const char *path, DiskType &disk_type)
+{
+  disk_type = DiskType::Unknown;
+  if (!path || !*path)
+    return false;
+
+#if _TARGET_PC_WIN
+  wchar_t widePath[MAX_PATH + 1];
+  if (::MultiByteToWideChar(CP_UTF8, 0, path, -1, widePath, MAX_PATH + 1) <= 0)
+    return false;
+
+  wchar_t volumePath[MAX_PATH + 1];
+  if (::GetVolumePathNameW(widePath, volumePath, MAX_PATH + 1) == 0)
+    return false;
+
+  switch (::GetDriveTypeW(volumePath))
+  {
+    case DRIVE_REMOTE: disk_type = DiskType::Remote; return true;
+    case DRIVE_RAMDISK: disk_type = DiskType::RamDisk; return true;
+    case DRIVE_FIXED:
+    case DRIVE_REMOVABLE: break; // external drives answer the seek penalty query too
+    default: return false;
+  }
+
+  wchar_t volumeName[MAX_PATH + 1];
+  if (!::GetVolumeNameForVolumeMountPointW(volumePath, volumeName, MAX_PATH + 1))
+    return false;
+  size_t nameLen = ::wcslen(volumeName);
+  if (nameLen > 0 && volumeName[nameLen - 1] == L'\\')
+    volumeName[nameLen - 1] = 0;
+
+  HANDLE volume = ::CreateFileW(volumeName, 0, FILE_SHARE_READ | FILE_SHARE_WRITE, NULL, OPEN_EXISTING, 0, NULL);
+  if (volume == INVALID_HANDLE_VALUE)
+    return false;
+
+  // VOLUME_DISK_EXTENTS declares a single extent; a few more cover spanned volumes
+  alignas(VOLUME_DISK_EXTENTS) char extentsBuf[sizeof(VOLUME_DISK_EXTENTS) + 3 * sizeof(DISK_EXTENT)] = {};
+  VOLUME_DISK_EXTENTS &extents = *(VOLUME_DISK_EXTENTS *)extentsBuf;
+
+  DWORD bytesReturned = 0;
+  bool hasSeekPenalty = false;
+  bool determined = false;
+  if (::DeviceIoControl(volume, IOCTL_VOLUME_GET_VOLUME_DISK_EXTENTS, NULL, 0, extentsBuf, sizeof(extentsBuf), &bytesReturned, NULL))
+  {
+    for (DWORD i = 0; i < extents.NumberOfDiskExtents; ++i)
+    {
+      wchar_t deviceName[64];
+      _snwprintf(deviceName, countof(deviceName), L"\\\\.\\PhysicalDrive%u", extents.Extents[i].DiskNumber);
+      HANDLE device = ::CreateFileW(deviceName, 0, FILE_SHARE_READ | FILE_SHARE_WRITE, NULL, OPEN_EXISTING, 0, NULL);
+      if (device == INVALID_HANDLE_VALUE)
+        continue;
+
+      STORAGE_PROPERTY_QUERY query = {};
+      query.PropertyId = StorageDeviceSeekPenaltyProperty;
+      query.QueryType = PropertyStandardQuery;
+      DEVICE_SEEK_PENALTY_DESCRIPTOR seekPenalty = {};
+      if (::DeviceIoControl(device, IOCTL_STORAGE_QUERY_PROPERTY, &query, sizeof(query), &seekPenalty, sizeof(seekPenalty),
+            &bytesReturned, NULL))
+      {
+        determined = true;
+        if (seekPenalty.IncursSeekPenalty)
+        {
+          hasSeekPenalty = true;
+          ::CloseHandle(device);
+          break;
+        }
+      }
+      ::CloseHandle(device);
+    }
+  }
+  ::CloseHandle(volume);
+
+  if (!determined)
+    return false;
+  disk_type = hasSeekPenalty ? DiskType::Hdd : DiskType::Ssd;
+  return true;
+#elif _TARGET_PC_LINUX
+  struct stat st;
+  if (::stat(path, &st) != 0)
+    return false;
+
+  // sysfs keeps queue/ on the whole-disk node only, so a partition has to ask its parent
+  char filePath[64];
+  SNPRINTF(filePath, sizeof(filePath), "/sys/dev/block/%u:%u/queue/rotational", major(st.st_dev), minor(st.st_dev));
+  FILE *file = ::fopen(filePath, "r");
+  if (!file)
+  {
+    SNPRINTF(filePath, sizeof(filePath), "/sys/dev/block/%u:%u/../queue/rotational", major(st.st_dev), minor(st.st_dev));
+    file = ::fopen(filePath, "r");
+  }
+  if (!file)
+    return false;
+
+  int rotational = 1;
+  bool found = ::fscanf(file, "%d", &rotational) == 1;
+  ::fclose(file);
+  if (found)
+    disk_type = rotational ? DiskType::Hdd : DiskType::Ssd;
+  return found;
+#elif _TARGET_PC_MACOSX
+  int rotational = macosx_get_disk_rotational(path);
+  if (rotational < 0)
+    return false;
+  disk_type = rotational ? DiskType::Hdd : DiskType::Ssd;
+  return true;
+#else
+  return false;
+#endif
+}
+
+
+bool get_disk_space(const char *path, uint64_t &free_bytes, uint64_t &total_bytes)
+{
+  free_bytes = total_bytes = 0;
+
+  // consoles report the storage the game writes to and ignore the path, which is empty on nswitch
+#if !(_TARGET_XBOX | _TARGET_C1 | _TARGET_C2 | _TARGET_C3)
+  if (!path || !*path)
+    return false;
+#else
+  G_UNUSED(path);
+#endif
+
+#if _TARGET_PC_WIN
+  wchar_t widePath[MAX_PATH + 1];
+  if (::MultiByteToWideChar(CP_UTF8, 0, path, -1, widePath, MAX_PATH + 1) <= 0)
+    return false;
+
+  ULARGE_INTEGER freeAvailable = {};
+  ULARGE_INTEGER total = {};
+  if (!::GetDiskFreeSpaceExW(widePath, &freeAvailable, &total, NULL))
+    return false;
+  free_bytes = freeAvailable.QuadPart;
+  total_bytes = total.QuadPart;
+  return true;
+#elif _TARGET_PC_LINUX || _TARGET_PC_MACOSX || _TARGET_IOS || _TARGET_ANDROID
+  struct statvfs statv;
+  if (::statvfs(path, &statv) != 0)
+    return false;
+  unsigned long blockSize = statv.f_frsize ? statv.f_frsize : statv.f_bsize;
+  free_bytes = uint64_t(statv.f_bavail) * blockSize;
+  total_bytes = uint64_t(statv.f_blocks) * blockSize;
+  return true;
+#elif _TARGET_XBOX
+  XPersistentLocalStorageSpaceInfo info = {};
+  if (FAILED(XPersistentLocalStorageGetSpaceInfo(&info)))
+    return false;
+  free_bytes = info.availableFreeBytes;
+  total_bytes = info.totalBytes;
+  return true;
+#elif _TARGET_C1 | _TARGET_C2
+
+
+
+
+
+
+
+#elif _TARGET_C3
+
+
+
+
+
+
+
+
+
+#else
+  return false;
+#endif
+}
 
 
 #if _TARGET_PC
@@ -1377,24 +1563,49 @@ int get_gpu_freq()
 {
   static const char *clockFiles[] = // 'opendir' doesn't work without some additional permissions, so simply list the files.
     {"/sys/class/misc/mali0/device/clock", "/sys/class/kgsl/kgsl-3d0/clock_mhz", "/sys/class/kgsl/kgsl-3d0/gpuclk",
+      "/sys/kernel/gpu/gpu_clock", "/sys/class/kgsl/kgsl-3d0/devfreq/cur_freq",
       // Legacy fallbacks:
       "/sys/devices/platform/11500000.mali/clock", "/sys/devices/platform/13000000.mali/clock",
-      "/sys/devices/platform/18500000.mali/clock"};
+      "/sys/devices/platform/18500000.mali/clock", "/sys/class/devfreq/34f00000.gpu0/cur_freq"};
 
   static bool initialized = false;
   static file_ptr_t file = NULL;
   if (!initialized)
   {
     initialized = true;
-    for (const char *clockFileName : clockFiles)
+    const char *deviceLinks[] = {"/sys/class/drm/renderD128/device", "/sys/class/drm/renderD129/device"};
+    for (const char *deviceLink : deviceLinks)
     {
+      char devicePath[PATH_MAX];
+      ssize_t len = readlink(deviceLink, devicePath, sizeof(devicePath));
+      if (len <= 0 || size_t(len) >= sizeof(devicePath))
+        continue;
+      devicePath[len] = 0;
+
+      const char *deviceName = strrchr(devicePath, '/');
+      deviceName = deviceName ? deviceName + 1 : devicePath;
+      if (!*deviceName)
+        continue;
+
+      String clockFileName(0, "/sys/class/devfreq/%s/cur_freq", deviceName);
       file = df_open(clockFileName, DF_READ | DF_REALFILE_ONLY | DF_IGNORE_MISSING);
       if (file)
       {
-        debug("get_gpu_freq found '%s'", clockFileName);
+        debug("get_gpu_freq found '%s'", clockFileName.str());
         break;
       }
     }
+
+    if (!file)
+      for (const char *clockFileName : clockFiles)
+      {
+        file = df_open(clockFileName, DF_READ | DF_REALFILE_ONLY | DF_IGNORE_MISSING);
+        if (file)
+        {
+          debug("get_gpu_freq found '%s'", clockFileName);
+          break;
+        }
+      }
   }
 
   if (file)

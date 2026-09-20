@@ -101,6 +101,22 @@ void activate_ui_elem_action_set(dainput::action_set_handle_t ash, bool on)
 }
 
 
+static int visuallog_logerrs = -1;
+static void apply_visuallog_max_items()
+{
+  visuallog::setMaxItems(visuallog_logerrs > 0
+                           ? min(visuallog_logerrs, 10)
+                           : ::dgs_get_settings()->getBlockByNameEx("debug")->getInt("visualLogItems", DEFAULT_VISUALLOG_MAX_ITEMS));
+}
+
+void set_visuallog_logerrs(int count)
+{
+  visuallog_logerrs = count;
+  visuallog::setDrawDisabled(
+    count == 0 || ::dgs_get_settings()->getBool("disableVisualLog", false) || circuit::get_conf()->getBool("disableVisualLog", false));
+  apply_visuallog_max_items();
+}
+
 static bool is_inited_once = false;
 void init_early()
 {
@@ -114,8 +130,7 @@ void init_early()
   joystick_handler.reset(new darg::JoystickHandler());
 
   visuallog::setFont("small_text");
-  visuallog::setDrawDisabled(
-    ::dgs_get_settings()->getBool("disableVisualLog", false) || circuit::get_conf()->getBool("disableVisualLog", false));
+  set_visuallog_logerrs(-1);
 }
 
 
@@ -127,7 +142,7 @@ void init()
   TIME_PROFILE(ui_shared_init);
   term();
 
-  visuallog::setMaxItems(::dgs_get_settings()->getBlockByNameEx("debug")->getInt("visualLogItems", DEFAULT_VISUALLOG_MAX_ITEMS));
+  apply_visuallog_max_items();
 
   apply_resolution_change_after_reset = false;
   need_initial_dev_type_notify = true;

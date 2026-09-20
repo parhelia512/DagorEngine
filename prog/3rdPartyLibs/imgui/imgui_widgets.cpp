@@ -7450,7 +7450,7 @@ bool ImGui::Selectable(const char* label, bool selected, ImGuiSelectableFlags fl
         {
             // Between 1.91.0 and 1.91.4 we made selected Selectable use an arbitrary lerp between _Header and _HeaderHovered. Removed that now. (#8106)
             ImU32 col = GetColorU32((held && highlighted) ? ImGuiCol_HeaderActive : highlighted ? ImGuiCol_HeaderHovered : ImGuiCol_Header);
-            RenderFrame(bb.Min, bb.Max, col, false, 0.0f);
+            RenderFrame(bb.Min, bb.Max, col, false, style.SelectableRounding);
         }
         if (g.NavId == id)
         {
@@ -9207,7 +9207,7 @@ bool ImGui::BeginMenuEx(const char* label, const char* icon, bool enabled)
         return false;
 
     ImGuiContext& g = *GImGui;
-    const ImGuiStyle& style = g.Style;
+    ImGuiStyle& style = g.Style;
     const ImGuiID id = window->GetID(label);
     bool menu_is_open = IsPopupOpen(id, ImGuiPopupFlags_None);
 
@@ -9251,6 +9251,8 @@ bool ImGui::BeginMenuEx(const char* label, const char* icon, bool enabled)
     const ImGuiMenuColumns* offsets = &window->DC.MenuColumns;
     bool pressed;
 
+    const float backup_rounding = style.SelectableRounding;
+    style.SelectableRounding = style.MenuItemRounding;
     // We use ImGuiSelectableFlags_NoSetKeyOwner to allow down on one menu item, move, up on another.
     const ImGuiSelectableFlags selectable_flags = ImGuiSelectableFlags_NoHoldingActiveID | ImGuiSelectableFlags_NoSetKeyOwner | ImGuiSelectableFlags_SelectOnClick | ImGuiSelectableFlags_NoAutoClosePopups;
     if (window->DC.LayoutType == ImGuiLayoutType_Horizontal)
@@ -9287,6 +9289,7 @@ bool ImGui::BeginMenuEx(const char* label, const char* icon, bool enabled)
         RenderArrow(window->DrawList, ImVec2(text_pos.x + offsets->OffsetMark + extra_w + g.FontSize * 0.30f, text_pos.y), GetColorU32(ImGuiCol_Text), ImGuiDir_Right);
         popup_pos = ImVec2(pos.x, text_pos.y - style.WindowPadding.y);
     }
+    style.SelectableRounding = backup_rounding;
     if (!enabled)
         EndDisabled();
 
@@ -9460,6 +9463,8 @@ bool ImGui::MenuItemEx(const char* label, const char* icon, const char* shortcut
     if (!enabled)
         BeginDisabled();
 
+    const float backup_rounding = style.SelectableRounding;
+    style.SelectableRounding = style.MenuItemRounding;
     // We use ImGuiSelectableFlags_NoSetKeyOwner to allow down on one menu item, move, up on another.
     const ImGuiSelectableFlags selectable_flags = ImGuiSelectableFlags_SelectOnRelease | ImGuiSelectableFlags_NoSetKeyOwner | ImGuiSelectableFlags_SetNavIdOnHover;
     const ImGuiMenuColumns* offsets = &window->DC.MenuColumns;
@@ -9505,6 +9510,7 @@ bool ImGui::MenuItemEx(const char* label, const char* icon, const char* shortcut
                 RenderCheckMark(window->DrawList, text_pos + ImVec2(offsets->OffsetMark + stretch_w + g.FontSize * 0.40f, g.FontSize * 0.134f * 0.5f), GetColorU32(ImGuiCol_Text), g.FontSize * 0.866f);
         }
     }
+    style.SelectableRounding = backup_rounding;
     IMGUI_TEST_ENGINE_ITEM_INFO(g.LastItemData.ID, label, g.LastItemData.StatusFlags | ImGuiItemStatusFlags_Checkable | (selected ? ImGuiItemStatusFlags_Checked : 0));
     if (!enabled)
         EndDisabled();

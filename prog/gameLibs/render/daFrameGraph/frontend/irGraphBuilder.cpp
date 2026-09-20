@@ -9,6 +9,7 @@
 #include <generic/dag_fixedVectorSet.h>
 #include <perfMon/dag_statDrv.h>
 #include <EASTL/stack.h>
+#include <EASTL/heap.h>
 
 #include <runtime/runtime.h>
 #include <frontend/multiplexingInternal.h>
@@ -162,7 +163,7 @@ static constexpr auto DESTINATION_SENTINEL_NODE_ID_IN_RAW_GRAPH = intermediate::
 
 IrGraphBuilder::Changes IrGraphBuilder::build(intermediate::Graph &graph, multiplexing::Extents extents,
   multiplexing::Extents prev_extents, const intermediate::Mapping &old_mapping, const ResourcesChanged &resources_changed,
-  const NodesChanged &nodes_changed)
+  const ResourcesChanged &resource_requests_changed, const NodesChanged &nodes_changed)
 {
   // Fake source/destination nodes, see below
   constexpr size_t INTERNAL_FAKE_NODES = 2;
@@ -176,6 +177,7 @@ IrGraphBuilder::Changes IrGraphBuilder::build(intermediate::Graph &graph, multip
   // Double the capacity for gaps
   result.irNodesChanged.reserve(2 * max(irNodeMaxCount, rawGraph.nodes.totalKeys()));
   result.irResourcesChanged.reserve(irResMaxCount);
+  result.irResourceRequestsChanged.reserve(irResMaxCount);
 
   FRAMEMEM_REGION;
 
@@ -195,7 +197,6 @@ IrGraphBuilder::Changes IrGraphBuilder::build(intermediate::Graph &graph, multip
     rawIrNodesChanged.resize(safeChangedNodesCount, true);
 
   addNodesToGraph(rawGraph, mapping, extents, prev_extents, rawMapping, nodes_changed, rawIrNodesChanged);
-  rawMapping = mapping;
 
   addEdgesToIrGraph(rawGraph, mapping, rawIrNodesChanged);
 
@@ -203,8 +204,11 @@ IrGraphBuilder::Changes IrGraphBuilder::build(intermediate::Graph &graph, multip
   G_ASSERT_DO_AND_LOG(!sinks.empty(), dumpRawUserGraph(),
     "All specified frame graph sinks were skipped due to broken resource pruning! "
     "No rendering will be done! Report this to programmers!");
+  const auto rawPrevPositions = rawNodePreviousPositions(rawMapping);
+  rawMapping = mapping;
+
   // Pruning (this makes mappings out of date)
-  auto [displacement, edgesToBreak] = pruneGraph(rawGraph, mapping, sinks);
+  auto [displacement, edgesToBreak] = pruneGraph(rawGraph, mapping, rawPrevPositions, sinks);
   if (!edgesToBreak.empty())
   {
     dumpRawUserGraph();
@@ -229,10 +233,6 @@ IrGraphBuilder::Changes IrGraphBuilder::build(intermediate::Graph &graph, multip
         rawGraph.nodes[from].predecessors.insert(SOURCE_SENTINEL_NODE_ID_IN_RAW_GRAPH);
   }
 
-  // Save dst sentinel's predecessors before apply_node_remap clears them.
-  // apply_node_remap rebuilds all predecessors from rawGraph, but the dst
-  // sentinel's rawGraph predecessors are always empty (they are set only in
-  // the output graph below), so apply_node_remap would lose them.
   dag::FixedVectorSet<intermediate::NodeIndex, 16> savedDstSentinelPreds;
   if (!oldDisplacement.empty())
   {
@@ -277,7 +277,7 @@ IrGraphBuilder::Changes IrGraphBuilder::build(intermediate::Graph &graph, multip
   IrResourcesChanged &irResourcesChanged = result.irResourcesChanged;
   irResourcesChanged.resize(mapping.mappedResourceIndexCount(), false);
   graph.resources.reserve(mapping.mappedResourceIndexCount());
-  addResourcesToGraph(graph, mapping, old_mapping, resources_changed, irResourcesChanged, extents);
+  addResourcesToGraph(graph, mapping, old_mapping, resources_changed, resource_requests_changed, irResourcesChanged, extents);
 
   // Fixup requests for resources that moved.
   for (auto [nodeIdx, node] : graph.nodes.enumerate())
@@ -306,6 +306,15 @@ IrGraphBuilder::Changes IrGraphBuilder::build(intermediate::Graph &graph, multip
   for (auto resIdx : irResourcesChanged.trueKeys())
     if (!graph.resources.isMapped(resIdx))
       irResourcesChanged.set(resIdx, false);
+
+  IrResourcesChanged &irResourceRequestsChanged = result.irResourceRequestsChanged;
+  irResourceRequestsChanged.resize(graph.resources.totalKeys(), false);
+  if (multiplexing_extents_to_ir(extents) != old_mapping.multiplexingExtent())
+    irResourceRequestsChanged.assign(irResourceRequestsChanged.size(), true);
+  for (auto resId : resource_requests_changed.trueKeys())
+    for (auto midx : IdRange<intermediate::MultiplexingIndex>(mapping.multiplexingExtent()))
+      if (mapping.wasResMapped(resId, midx) && graph.resources.isMapped(mapping.mapRes(resId, midx)))
+        irResourceRequestsChanged.set(mapping.mapRes(resId, midx), true);
 
   addNodeStatesToGraph(graph, mapping, extents, irNodesChanged);
 
@@ -527,47 +536,48 @@ auto IrGraphBuilder::findFirstUsageAndUpdatedCreationFlags(ResNameId res_id, uin
 }
 
 
-void IrGraphBuilder::addResourcesToGraph(intermediate::Graph &graph, intermediate::Mapping &mapping,
-  const intermediate::Mapping &old_mapping, const ResourcesChanged &resource_changed, IrResourcesChanged &ir_resources_changed,
-  multiplexing::Extents extents) const
+static void flagResourceChanged(intermediate::Graph &graph, IrGraphBuilder::IrResourcesChanged &ir_resources_changed,
+  intermediate::ResourceIndex idx)
 {
+  ir_resources_changed.set(idx, true);
+  if (graph.resourceNames.isMapped(idx))
+    graph.resourceNames.erase(idx);
+}
+
+void IrGraphBuilder::addResourcesToGraph(intermediate::Graph &graph, intermediate::Mapping &mapping,
+  const intermediate::Mapping &old_mapping, const ResourcesChanged &resources_changed,
+  const ResourcesChanged &resource_requests_changed, IrResourcesChanged &ir_resources_changed, multiplexing::Extents extents) const
+{
+  const auto declarationOrLifetimeChanged = [&](ResNameId res_id) {
+    return resources_changed[res_id] || resource_requests_changed[res_id];
+  };
+
   TIME_PROFILE(addResourcesToGraph);
 
   FRAMEMEM_VALIDATE;
 
   if (multiplexing_extents_to_ir(extents) != old_mapping.multiplexingExtent())
-    ir_resources_changed.assign(ir_resources_changed.size(), true);
-
-  // First, get rid of all resources that might have changed.
-  if (multiplexing_extents_to_ir(extents) != old_mapping.multiplexingExtent())
   {
     // No point in trying to be incremental here, EVERYTHING has changed.
+    ir_resources_changed.assign(ir_resources_changed.size(), true);
     graph.resources.clear();
     graph.resourceNames.clear();
   }
-  else
-  {
-    for (auto it = graph.resources.enumerate().begin(); it != graph.resources.enumerate().end();)
-    {
-      auto [idx, res] = *it;
-      bool shouldErase = false;
-      for (auto frontendRes : res.frontendResources)
-        if (resource_changed[frontendRes] && old_mapping.wasResMapped(frontendRes, res.multiplexingIndex) &&
-            graph.resources.isMapped(old_mapping.mapRes(frontendRes, res.multiplexingIndex)))
-        {
-          shouldErase = true;
-          break;
-        }
-      if (shouldErase)
+
+  IdIndexedFlags<intermediate::ResourceIndex, framemem_allocator> stale(graph.resources.totalKeys(), false);
+  size_t staleCount = 0;
+  for (auto [idx, res] : graph.resources.enumerate())
+    for (auto frontendRes : res.frontendResources)
+      if (declarationOrLifetimeChanged(frontendRes) && old_mapping.wasResMapped(frontendRes, res.multiplexingIndex) &&
+          graph.resources.isMapped(old_mapping.mapRes(frontendRes, res.multiplexingIndex)))
       {
-        ir_resources_changed[idx] = true;
-        graph.resourceNames.erase(idx);
-        it = graph.resources.erase(idx);
+        stale.set(idx, true);
+        ++staleCount;
+        break;
       }
-      else
-        ++it;
-    }
-  }
+
+  dag::Vector<eastl::pair<intermediate::ResourceIndex, intermediate::Resource>, framemem_allocator> rebuiltResources;
+  rebuiltResources.reserve(staleCount);
 
   const auto &nodeValid = validityInfo.nodeValid;
   const auto &resourceValid = validityInfo.resourceValid;
@@ -576,15 +586,38 @@ void IrGraphBuilder::addResourcesToGraph(intermediate::Graph &graph, intermediat
   for (auto resId : registry.resources.keys())
   {
     // Can only reuse valid & unchanged resources
-    if (!resourceValid[resId] || resource_changed[resId])
+    if (!resourceValid[resId] || declarationOrLifetimeChanged(resId))
       continue;
 
     // And only if it was not prunned or invalid on PREVIOUS compilation.
-    if (!old_mapping.wasResMapped(resId, {}) || !graph.resources.isMapped(old_mapping.mapRes(resId, {})))
+    if (!old_mapping.wasResMapped(resId, {}))
+      continue;
+
+    const auto oldIdx = old_mapping.mapRes(resId, {});
+    if (!graph.resources.isMapped(oldIdx) || stale.test(oldIdx, false))
       continue;
 
     canReuse[resId] = true;
   }
+
+  const auto acquireIrResource = [&](ResNameId res_id, intermediate::MultiplexingIndex ir_multiplexing_index) {
+    if (old_mapping.wasResMapped(res_id, ir_multiplexing_index))
+    {
+      const auto oldIdx = old_mapping.mapRes(res_id, ir_multiplexing_index);
+      if (stale.test(oldIdx, false))
+      {
+        stale.set(oldIdx, false);
+        rebuiltResources.push_back({oldIdx, graph.resources[oldIdx]});
+        return oldIdx;
+      }
+
+      flagResourceChanged(graph, ir_resources_changed, oldIdx);
+    }
+
+    const auto idx = graph.resources.appendNew().first;
+    flagResourceChanged(graph, ir_resources_changed, idx);
+    return idx;
+  };
 
   for (auto [nodeId, nodeData] : registry.nodes.enumerate())
   {
@@ -595,7 +628,7 @@ void IrGraphBuilder::addResourcesToGraph(intermediate::Graph &graph, intermediat
     const auto nodeMultiplexingExtents =
       extents_for_node(nodeData.multiplexingMode.value_or(registry.defaultMultiplexingMode), extents);
 
-    auto processResource = [&extents, &nodeMultiplexingExtents, &graph, &mapping, &ir_resources_changed](ResNameId resId,
+    auto processResource = [&extents, &nodeMultiplexingExtents, &graph, &mapping, &acquireIrResource](ResNameId resId,
                              const multiplexing::Index &midx, const intermediate::ConcreteResource &variant) {
       const auto irMultiplexingIndex = multiplexing_index_to_ir(midx, extents);
 
@@ -610,12 +643,12 @@ void IrGraphBuilder::addResourcesToGraph(intermediate::Graph &graph, intermediat
 
       // Correct multiindex for this frontend node, multiplex the
       // resource (unique physical resource per index)
-      auto [idx, irRes] = graph.resources.appendNew();
+      const auto idx = acquireIrResource(resId, irMultiplexingIndex);
+      auto &irRes = graph.resources[idx];
       mapping.mapRes(resId, irMultiplexingIndex) = idx;
       irRes.resource = variant;
       irRes.frontendResources = {resId};
       irRes.multiplexingIndex = irMultiplexingIndex;
-      ir_resources_changed[idx] = true;
     };
 
     for (auto resId : nodeData.createdResources)
@@ -740,6 +773,12 @@ void IrGraphBuilder::addResourcesToGraph(intermediate::Graph &graph, intermediat
     }
   }
 
+  for (auto idx : stale.trueKeys())
+  {
+    flagResourceChanged(graph, ir_resources_changed, idx);
+    graph.resources.erase(idx);
+  }
+
   // Fill in mappings for resources produced via renaming
   for (auto [nodeId, nodeData] : registry.nodes.enumerate())
   {
@@ -758,20 +797,7 @@ void IrGraphBuilder::addResourcesToGraph(intermediate::Graph &graph, intermediat
         const auto irMultiplexingIndex = multiplexing_index_to_ir(i, extents);
         G_ASSERT(mapping.wasResMapped(originalRes, irMultiplexingIndex));
 
-        const auto originalIndex = mapping.mapRes(originalRes, irMultiplexingIndex);
-        mapping.mapRes(toResId, irMultiplexingIndex) = originalIndex;
-
-        auto &originalRes = graph.resources[originalIndex];
-
-        // When renaming resources, the history flag is specified on
-        // the last renamee, because it makes sense. Here, we need
-        // to propagate it to the first rename. This code is not ideal,
-        // as it will propagate a flag even for a resource in the middle,
-        // of a chain, but it's ok cuz we validate that no resources in
-        // the middle have history, so it will work only for the
-        // last resource in a chain.
-        if (originalRes.isScheduled() && registry.resources[toResId].history != History::No)
-          originalRes.asScheduled().history = registry.resources[toResId].history;
+        mapping.mapRes(toResId, irMultiplexingIndex) = mapping.mapRes(originalRes, irMultiplexingIndex);
       }
     }
   }
@@ -813,6 +839,15 @@ void IrGraphBuilder::addResourcesToGraph(intermediate::Graph &graph, intermediat
 
       res.frontendResources.push_back(current);
     }
+  }
+
+  for (const auto &[idx, oldValue] : rebuiltResources)
+  {
+    auto &rebuilt = graph.resources[idx];
+    if (rebuilt.isScheduled() && oldValue.isScheduled())
+      rebuilt.asScheduled().history = oldValue.asScheduled().history;
+    if (rebuilt != oldValue)
+      flagResourceChanged(graph, ir_resources_changed, idx);
   }
 }
 
@@ -1097,9 +1132,7 @@ void IrGraphBuilder::fixupFalseHistoryFlags(intermediate::Graph &graph, IrResour
       if (res.asScheduled().history != correctHistory)
       {
         res.asScheduled().history = correctHistory;
-        ir_resources_changed.set(resIdx, true);
-        if (graph.resourceNames.isMapped(resIdx))
-          graph.resourceNames.erase(resIdx);
+        flagResourceChanged(graph, ir_resources_changed, resIdx);
       }
     }
 }
@@ -1334,22 +1367,44 @@ auto IrGraphBuilder::findSinkIrNodes(const intermediate::Mapping &mapping, eastl
   return result;
 }
 
+IrGraphBuilder::DisplacementFmem IrGraphBuilder::rawNodePreviousPositions(const intermediate::Mapping &old_raw_mapping) const
+{
+  DisplacementFmem result(rawGraph.nodes.totalKeys(), intermediate::NODE_NOT_MAPPED);
+  for (auto [idx, node] : rawGraph.nodes.enumerate())
+  {
+    auto prevIdx = idx;
+    if (node.frontendNode)
+      prevIdx = old_raw_mapping.wasNodeMapped(*node.frontendNode, node.multiplexingIndex)
+                  ? old_raw_mapping.mapNode(*node.frontendNode, node.multiplexingIndex)
+                  : intermediate::NODE_NOT_MAPPED;
+    if (prevIdx != intermediate::NODE_NOT_MAPPED && oldDisplacement.isMapped(prevIdx))
+      result[idx] = oldDisplacement[prevIdx];
+  }
+  return result;
+}
+
 eastl::pair<IrGraphBuilder::DisplacementFmem, IrGraphBuilder::EdgesToBreakFmem> IrGraphBuilder::pruneGraph(
-  const intermediate::Graph &graph, const intermediate::Mapping &mapping, eastl::span<const intermediate::NodeIndex> sinksNodes) const
+  const intermediate::Graph &graph, const intermediate::Mapping &mapping, const DisplacementFmem &prev_positions,
+  eastl::span<const intermediate::NodeIndex> sinksNodes) const
 {
   TIME_PROFILE(pruneGraph);
 
-  // We prune the nodes using a dfs from the set of sink nodes, changing
-  // the ir graph to be topsorted in the process. This not the actual
-  // order that will be used when executing the graph, having a
-  // topsort is just convenient for doing algorithms on the graph.
+  // We prune the nodes using a dfs from the set of sink nodes, and then
+  // topsort the survivors with Kahn. This not the actual order that will be used
+  // when executing the graph, having a stable topsort is just convenient for
+  // doing algorithms on the graph and for incrementality.
   static constexpr intermediate::NodeIndex NOT_VISITED = MINUS_ONE_SENTINEL_FOR<intermediate::NodeIndex>;
 
   eastl::pair<DisplacementFmem, EdgesToBreakFmem> result;
 
-  auto &[outTime, edgesToBreak] = result;
-  outTime.assign(graph.nodes.totalKeys(), NOT_VISITED);
+  auto &displacement = result.first;
+  auto &edgesToBreak = result.second;
+  displacement.assign(graph.nodes.totalKeys(), NOT_VISITED);
   edgesToBreak.reserve(graph.nodes.totalKeys());
+
+  const auto isBrokenEdge = [&edgesToBreak](intermediate::NodeIndex from, intermediate::NodeIndex to) {
+    return eastl::find(edgesToBreak.begin(), edgesToBreak.end(), eastl::make_pair(from, to)) != edgesToBreak.end();
+  };
 
   FRAMEMEM_VALIDATE;
 
@@ -1360,6 +1415,8 @@ eastl::pair<IrGraphBuilder::DisplacementFmem, IrGraphBuilder::EdgesToBreakFmem> 
     BLACK
   };
   dag::Vector<Color, framemem_allocator> colors(graph.nodes.totalKeys(), Color::WHITE);
+  dag::Vector<uint32_t, framemem_allocator> successorsLeft(graph.nodes.totalKeys(), 0);
+  uint32_t survivorCount = 0;
 
   // It is not enough to simply launch a DFS from every sink node, we
   // might have nodes the are not reachable from any sink, but whose
@@ -1370,9 +1427,6 @@ eastl::pair<IrGraphBuilder::DisplacementFmem, IrGraphBuilder::EdgesToBreakFmem> 
   dag::Vector<intermediate::NodeIndex, framemem_allocator> wave;
   wave.reserve(graph.nodes.totalKeys());
   wave.assign(sinksNodes.begin(), sinksNodes.end());
-
-  // Incremented each time DFS leaves a node
-  eastl::underlying_type_t<intermediate::NodeIndex> timer = 0;
 
   while (!wave.empty())
   {
@@ -1459,13 +1513,13 @@ eastl::pair<IrGraphBuilder::DisplacementFmem, IrGraphBuilder::EdgesToBreakFmem> 
 
       // After all children of a node have been completely visited,
       // we will find this node at the top of the stack again,
-      // this time with gray mark. Mark it black and record out time.
-      // Conceptually our algorithm is "leaving" this node,
-      // so we record the leaving time.
       if (colors[curr] == Color::GRAY)
       {
-        outTime[curr] = static_cast<intermediate::NodeIndex>(timer++);
         colors[curr] = Color::BLACK;
+        ++survivorCount;
+        for (auto pred : graph.nodes[curr].predecessors)
+          if (colors[pred] == Color::BLACK && !isBrokenEdge(curr, pred))
+            ++successorsLeft[eastl::to_underlying(pred)];
       }
 
       // The node might have been added multiple time to the stack,
@@ -1488,14 +1542,51 @@ eastl::pair<IrGraphBuilder::DisplacementFmem, IrGraphBuilder::EdgesToBreakFmem> 
     }
   }
 
-  // Sentinel destination node isn't supposed to be visited, but must still remain after pruning.
-  outTime[DESTINATION_SENTINEL_NODE_ID_IN_RAW_GRAPH] = static_cast<intermediate::NodeIndex>(timer++);
+  {
+    TIME_PROFILE(pruneGraph_topsort);
 
-  if (pedantic.get() && eastl::find(outTime.begin(), outTime.end(), NOT_VISITED) != outTime.end())
+    displacement[DESTINATION_SENTINEL_NODE_ID_IN_RAW_GRAPH] = static_cast<intermediate::NodeIndex>(survivorCount);
+
+    const auto heapKey = [&prev_positions](intermediate::NodeIndex idx) {
+      return (static_cast<uint64_t>(eastl::to_underlying(prev_positions[idx])) << 32) | eastl::to_underlying(idx);
+    };
+    dag::Vector<uint64_t, framemem_allocator> heap;
+    heap.reserve(survivorCount);
+    const auto push = [&heap](uint64_t key) {
+      heap.push_back(key);
+      eastl::push_heap(heap.begin(), heap.end());
+    };
+    const auto pop = [&heap]() {
+      eastl::pop_heap(heap.begin(), heap.end());
+      const auto idx = static_cast<intermediate::NodeIndex>(heap.back() & 0xFFFFFFFFu);
+      heap.pop_back();
+      return idx;
+    };
+
+    for (auto idx : graph.nodes.keys())
+      if (colors[idx] == Color::BLACK && successorsLeft[eastl::to_underlying(idx)] == 0)
+        push(heapKey(idx));
+
+    for (uint32_t timer = survivorCount; timer > 0;)
+    {
+      G_ASSERT_BREAK(!heap.empty());
+      const auto curr = pop();
+      displacement[curr] = static_cast<intermediate::NodeIndex>(--timer);
+      for (auto pred : graph.nodes[curr].predecessors)
+      {
+        if (isBrokenEdge(curr, pred))
+          continue;
+        if (--successorsLeft[eastl::to_underlying(pred)] == 0)
+          push(heapKey(pred));
+      }
+    }
+  }
+
+  if (pedantic.get() && eastl::find(displacement.begin(), displacement.end(), NOT_VISITED) != displacement.end())
   {
     dumpRawUserGraph();
 
-    for (auto [nodeId, time] : outTime.enumerate())
+    for (auto [nodeId, time] : displacement.enumerate())
       if (time == NOT_VISITED)
         logerr("daFG: Node '%s' is pruned. See above for full user graph dump.", frontendNodeName(graph.nodes[nodeId]));
   }

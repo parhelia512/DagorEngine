@@ -27,6 +27,11 @@ define_macro_if_not_defined PROJECT_VOLUMETRIC_GI_IRRADIANCE(code)
     void project_gi_modify_sh1_lighting(inout half3 ambient, inout half4 directional, float3 worldPos, float3 cameraPos, float froxelLinearDepth, float2 screenTC){}
   }
 endmacro
+define_macro_if_not_defined PROJECT_VOLUMETRIC_GI_IRRADIANCE_CONFIG(code)
+  hlsl(code) {
+    #define GI_FROXELS_JITTERED_IRRADIANCE 0
+  }
+endmacro
 
 macro GI_VOLUMETRIC_TRACE_USE(code)
   GI_VOLUMETRIC_COMMON_USE(code)
@@ -96,11 +101,9 @@ shader calc_current_gi_froxels_cs
   GI_VOLUMETRIC_TRACE(cs)
   GI_VOLUMETRIC_JITTER(cs)
   DAGI_RAD_GRID_SAMPLE(cs)
-  local float4 gi_froxels_temporal_framef = gi_froxels_temporal_frame;
   local float4 gi_froxels_size = gi_froxels_sizei;
   (cs) {
     gi_froxels_atlas_sizei@i4 = gi_froxels_atlas_sizei;
-    gi_froxels_temporal_frame_ofs@f1=(gi_froxels_temporal_framef.x/8,0,0,0);
     inv_gi_froxels_size@f3 = (1./max(gi_froxels_size.x, 1), 1./max(gi_froxels_size.y, 1), 1./max(gi_froxels_size.z, 1),0);
     radiance_hit@uav : register(0) hlsl {
       RWTexture3D<float3> radiance_hit@uav;
@@ -362,6 +365,7 @@ shader calc_gi_froxels_irradiance_cs
   ENVI_ENCODED_SH1(cs)
   DIFFUSE_SH1(cs)
   PROJECT_VOLUMETRIC_GI_IRRADIANCE(cs)
+  PROJECT_VOLUMETRIC_GI_IRRADIANCE_CONFIG(cs)
   hlsl(cs) {
     ##if gi_current_froxels_radiance != NULL
     #define USE_TRACED_RADIANCE 1
@@ -388,8 +392,11 @@ shader calc_gi_froxels_irradiance_cs
       float3 unjitteredCoord = volumeProbeCoordinates.xyz + 0.5;
       float2 screenTC = unjitteredCoord.xy/gi_froxels_sizei.xy;//fixme: one madd
       float froxelLinearDepth = volumetric_gi_get_linear_w(unjitteredCoord.z);
-      float froxelLinearDepthJittered = volumetric_gi_get_linear_w(unjitteredCoord.z + gi_froxels_temporal_frame_ofs.x - 0.5);//
-      //froxelLinearDepthJittered = froxelLinearDepth;
+      #if GI_FROXELS_JITTERED_IRRADIANCE
+      float froxelLinearDepthJittered = volumetric_gi_get_linear_w(unjitteredCoord.z + gi_froxels_temporal_frame_ofs.x - 0.5);
+      #else
+      float froxelLinearDepthJittered = froxelLinearDepth;
+      #endif
       float3 viewVec = gi_froxels_getViewVecOptimized(screenTC.xy);
       float3 cameraPosUnjittered = froxelLinearDepth*viewVec;
       float3 historyNDC = get_gi_froxels_history_ndc(cameraPosUnjittered);
@@ -470,7 +477,9 @@ shader calc_gi_froxels_irradiance_cs
         float3 historyAmbient;
         float4 historyDirectional;
         float3 uvWOfs = gi_froxels_history_blur_ofs;
+        #if GI_FROXELS_JITTERED_IRRADIANCE
         uvWOfs.x = (gi_froxels_temporal_frame.x&1) ? -uvWOfs.x : uvWOfs.x;
+        #endif
         uvWOfs.z *= saturate(historyUVW.z*4);
         float3 uvWOfs2 = float3(uvWOfs.xy, farOccluded ? 0 : uvWOfs.z);//prevent blurring over occluded surfaces in z dir
         historyAmbient = lerp(tex3Dlod(gi_prev_froxels_sph0, float4(saturate(historyUVW - uvWOfs),0)).xyz, tex3Dlod(gi_prev_froxels_sph0, float4(saturate(historyUVW + uvWOfs2),0)).xyz, 0.5);

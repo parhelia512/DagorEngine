@@ -5,12 +5,13 @@
 #pragma once
 
 #include <generic/dag_tab.h>
+#include <util/dag_compilerDefs.h>
 #include <util/dag_tabHlp.h>
 
 #ifdef __cplusplus
 
 template <class T>
-class TabSortedFast : public Tab<T>
+class DAGOR_WARN_IF_UNUSED TabSortedFast : public Tab<T>
 {
 public:
   TabSortedFast() = default;

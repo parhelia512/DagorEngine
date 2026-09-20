@@ -52,6 +52,7 @@
 
 #include <dag/dag_relocatable.h>
 #include <dag/dag_config.h>
+#include <util/dag_compilerDefs.h>
 #include <EASTL/memory.h>
 #include <EASTL/allocator.h>
 #include <EASTL/type_traits.h>
@@ -104,7 +105,7 @@ template <typename T,
           typename Allocator = EASTLAllocatorType,
           bool init_constructing = is_type_init_constructing<T>::value,
           typename Counter = uint32_t>
-class Vector
+class DAGOR_WARN_IF_UNUSED Vector
 {
   public:
 

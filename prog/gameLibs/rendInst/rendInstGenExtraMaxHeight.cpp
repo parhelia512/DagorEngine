@@ -17,6 +17,7 @@ static eastl::vector_map<int, float> variableIdToMaxHeight;
 
 static bool ri_extra_max_height_check_pool_variable_set(rendinst::RiExtraPool &pool, int variableId)
 {
+  G_ASSERT_RETURN(pool.res, false);
   for (int i = 0; i < pool.res->lods.size(); ++i)
   {
     ShaderMesh *m = pool.res->lods[i].scene->getMesh()->getMesh()->getMesh();

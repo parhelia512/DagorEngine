@@ -41,5 +41,21 @@ folder {
   wildcard:t=init.nut
 }
 
+folder {
+  path:t="gamebase/browser"
+  dest_path:t="browser"
+  scan_folder:b=true
+  scan_subfolders:b=true
+  wildcard:t=*.*
+}
+
+folder {
+  path:t="gamebase/samples_prog/_basic/components"
+  dest_path:t="samples_prog/_basic/components"
+  scan_folder:b=true
+  scan_subfolders:b=true
+  wildcard:t=*.nut
+}
+
 exclude {
 }

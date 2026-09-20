@@ -1,9 +1,21 @@
 // Copyright (C) Gaijin Games KFT.  All rights reserved.
 
+#include "debug/names.h"
 #include "device.h"
 
 namespace drv3d_dx12
 {
+
+static const char *query_heap_kind_name(D3D12_QUERY_HEAP_TYPE type)
+{
+  switch (type)
+  {
+    case D3D12_QUERY_HEAP_TYPE_TIMESTAMP: return "TimestampQueryHeap";
+    case D3D12_QUERY_HEAP_TYPE_OCCLUSION: return "OcclusionQueryHeap";
+    case D3D12_QUERY_HEAP_TYPE_PIPELINE_STATISTICS: return "PipelineStatisticsQueryHeap";
+    default: return "QueryHeap";
+  }
+}
 
 ComPtr<ID3D12QueryHeap> BackendQueryManager::createQueryHeap(Device &device, D3D12_QUERY_HEAP_TYPE type, uint32_t count)
 {
@@ -17,6 +29,7 @@ ComPtr<ID3D12QueryHeap> BackendQueryManager::createQueryHeap(Device &device, D3D
   {
     return {};
   }
+  debug::name_object(heap.Get(), debug::make_pool_object_name(query_heap_kind_name(type)));
   return heap;
 }
 
@@ -57,6 +70,7 @@ ComPtr<ID3D12Resource> BackendQueryManager::createQueryReadBackBuffer(Device &de
   {
     return {};
   }
+  debug::name_resource(readBackBuffer.Get(), debug::make_pool_object_name("QueryReadBackBuffer"));
 
   device.recordCommittedResourceAllocated(read_back_buffer_size, false);
 

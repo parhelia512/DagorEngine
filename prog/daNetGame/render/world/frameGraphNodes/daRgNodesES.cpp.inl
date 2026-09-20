@@ -7,7 +7,7 @@
 #include <render/renderEvent.h>
 #include <render/rendererFeatures.h>
 #include <render/world/defaultVrsSettings.h>
-#include <render/world/cameraParams.h>
+#include <render/cameraParams.h>
 #include <render/world/frameGraphHelpers.h>
 #include <daRg/dag_panelRenderer.h>
 #include <3d/dag_render.h>
@@ -48,11 +48,19 @@ dafg::NodeHandle makeTranslucentInWorldPanelsNode()
   return dafg::register_node("darg_in_world_panels_trans_node", DAFG_PP_NODE_SRC, [](dafg::Registry registry) {
     registry.requestState().setFrameBlock("global_frame");
     auto cameraHndl = registry.readBlob<CameraParams>("current_camera").handle();
-    return [cameraHndl] {
+    auto cameraHndlHistory = registry.readBlobHistory<CameraParams>("current_camera").handle();
+    return [cameraHndl, cameraHndlHistory] {
       auto uiScenes = uirender::get_all_scenes();
+
+      const auto &camera = cameraHndl.ref();
+      const auto &prevCamera = cameraHndlHistory.ref();
+
+      TMatrix4_vec4 prevProjCurrentJitter = prevCamera.noJitterProjTm;
+      matrix_perspective_add_jitter(prevProjCurrentJitter, camera.jitterPersp.ox, camera.jitterPersp.oy);
+
       for (darg::IGuiScene *scn : uiScenes)
-        darg_panel_renderer::render_panels_in_world(*scn, darg_panel_renderer::RenderPass::Translucent,
-          cameraHndl.ref().viewItm.getcol(3), cameraHndl.ref().viewTm);
+        darg_panel_renderer::render_panels_in_world(*scn, darg_panel_renderer::RenderPass::Translucent, camera.viewItm.getcol(3),
+          camera.viewTm, &prevCamera.viewTm, &prevProjCurrentJitter);
     };
   });
 }

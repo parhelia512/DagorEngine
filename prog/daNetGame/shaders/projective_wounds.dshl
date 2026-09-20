@@ -144,7 +144,7 @@ hlsl(vs) {
     ##if num_bones != no_bones
     boneWeights = input.boneWeights;
     ##endif
-    apply_wound_vertex_deform(wounds_time, unpack_unit_vector(input.normal.xyz), skin_pos, boneWeights);
+    apply_wound_vertex_deform(wounds_time, wound_hole_cut_radius, unpack_unit_vector(input.normal.xyz), skin_pos, boneWeights);
     ##if num_bones != no_bones
     input.boneWeights = boneWeights;
     ##endif
@@ -165,18 +165,37 @@ hlsl(vs) {
     uint holes_count = (uint)count.z;
     uint offset = 1 + project_wounds_count * DECAL_WOUND_SIZE;
 
+    float splashStrength = 0;
+    float3 tornWoundParams = 0;
+    float nearestHoleTag = 0;
+    float3 nearestNormalizedHolePos = 0;
+    float nearestNormalizedDistToHole = 1e6;
+##if dyn_model_render_pass == render_pass_normal
+    const float rejectVertexTo = wound_hole_cut_radius * wound_hole_vertex_cut_ratio;
+##else
+    const float rejectVertexTo = 1;
+##endif
     for (uint h = 0; h < holes_count; h++)
     {
-      if (is_inside_wound_hole(dataOffsetCount, offset + h * HOLE_WOUND_SIZE, pos, wounds_time))
+      WoundHole holeData = load_wound_hole(dataOffsetCount, offset + h * HOLE_WOUND_SIZE);
+      float3 holeSpacePos = mul(holeData.worldToUnitSphere, pos - holeData.center);
+      float holeRadius = max(animated_wound_hole_radius(holeData, wounds_time), 1e-6);
+      float3 normalizedHolePos = holeSpacePos / holeRadius;
+      float normalizedDistToHole = length(normalizedHolePos);
+      if (normalizedDistToHole < rejectVertexTo)
       {
         output.pos.xyz = NaN;
         return;
       }
+      if (normalizedDistToHole < nearestNormalizedDistToHole)
+      {
+        nearestNormalizedDistToHole = normalizedDistToHole;
+        nearestNormalizedHolePos = normalizedHolePos;
+        nearestHoleTag = -(float)(h + 1);
+      }
     }
     offset += holes_count * HOLE_WOUND_SIZE;
 
-    float splashStrength = 0;
-    float3 tornWoundParams = 0;
     for (uint i = 0; i < cuts_count; i++)
     {
       TornWound woundData = load_torn_wound(dataOffsetCount, offset + i * TORN_WOUND_SIZE);
@@ -196,6 +215,12 @@ hlsl(vs) {
         splashStrength = 1 - distToWound;
         tornWoundParams = woundData.params.xzw;
       }
+    }
+    if (nearestHoleTag < 0 && nearestNormalizedDistToHole < wound_hole_edge_reach)
+    {
+      output.fragPos = pos;
+      output.tornWoundParams = float4(nearestHoleTag, nearestNormalizedHolePos);
+      return;
     }
     output.tornWoundParams.x = splashStrength;
     output.tornWoundParams.yzw = tornWoundParams;
@@ -220,6 +245,47 @@ hlsl (ps) {
         return -1;
     }
     return bloodTex;
+  }
+
+  float sample_splatter_mask(Texture2D tex, SamplerState tex_samplerstate, float2 uv)
+  {
+    return tex2D(tex, uv).r;
+  }
+
+  float cut_wound_hole(float4 hole_param)
+  {
+    const float holeId = -hole_param.x;
+    const float eps = 0.0001;
+    if (holeId < 1 - eps || abs(floor(holeId + eps) - holeId) > eps)
+      return -1;
+
+    const float3 normalizedHolePos = hole_param.yzw;
+    const float normalizedDistToHole = length(normalizedHolePos);
+    const float splatterMask = sample_splatter_mask(teared_wounds_decal, samperName,
+                                                    normalizedHolePos.xy * (0.5 / wound_hole_edge_reach) + 0.5);
+    if (normalizedDistToHole < wound_hole_cut_radius ||
+        (normalizedDistToHole < 1 && splatterMask > wound_hole_splatter_cut_threshold))
+      discard;
+    return splatterMask;
+  }
+
+  void apply_wound_hole(float4 hole_param, float micro_detail_layer, bool skip_blood,
+                        inout float3 diffuse_color, inout float smoothness)
+  {
+    const float splatterMask = cut_wound_hole(hole_param);
+
+##if dyn_model_render_pass == render_pass_normal
+    BRANCH
+    if (splatterMask < 0 || skip_blood)
+      return;
+    const float normalizedDistToHole = length(hole_param.yzw);
+    const float edgeFade = saturate((wound_hole_edge_reach - normalizedDistToHole) / (wound_hole_edge_reach - 1.0));
+    float alpha = saturate(splatterMask * blood_brightness) * edgeFade;
+    diffuse_color = lerp(diffuse_color, diffuse_color * blood_wound_color_low_intensity, alpha);
+    float porosity = micro_detail_layer != -1 ? get_porosity_by_microdetail_base(micro_detail_layer)
+                                              : 1.0;
+    smoothness = lerp(smoothness, 0.9, (1.0 - porosity) * alpha);
+##endif
   }
 
   void apply_blood_splash(float4 wound_param, float3 frag_pos, float3 frag_norm,
@@ -506,8 +572,13 @@ hlsl(ps) {
     #if HAS_TORN_WOUNDS_DEBUG
       apply_debug_colormap(input.tornWoundParams, input.fragPos, input.fragNormal, input.debugColor, diffuse_color);
     #else
-      apply_blood_splash(input.tornWoundParams, input.fragPos, input.fragNormal,
-        micro_detail_layer, skip_blood, diffuse_color, smoothness);
+      BRANCH
+      if (input.tornWoundParams.x < 0)
+        apply_wound_hole(input.tornWoundParams, micro_detail_layer, skip_blood,
+          diffuse_color, smoothness);
+      else
+        apply_blood_splash(input.tornWoundParams, input.fragPos, input.fragNormal,
+          micro_detail_layer, skip_blood, diffuse_color, smoothness);
     #endif
   #endif
   #if HAS_BLOOD_DECAL

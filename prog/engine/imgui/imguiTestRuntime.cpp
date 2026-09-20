@@ -43,6 +43,20 @@ struct ImGuiTestItemNode
   ImRect bbFull{0, 0, 0, 0};
   ImRect bbNav{0, 0, 0, 0};
   ImRect bbDisplay{0, 0, 0, 0}; // Display rectangle. ONLY VALID IF (StatusFlags & ImGuiItemStatusFlags_HasDisplayRect) is set.
+
+  // Set through imgui_test_runtime_set_item_info().
+  // displayName is our own copy in ImGuiTestItemTree::desc.
+  // controlType is the caller's pointer with static storage.
+  // subcomponentName is always null here.
+  ImGuiTestItemExternalInfo external;
+
+  // If the external display name is set then it is more user friendly than the label.
+  const char *displayName() const { return external.displayName ? external.displayName : label; }
+
+  bool matchesName(const char *name) const
+  {
+    return (external.displayName && strcmp(name, external.displayName) == 0) || (label && strcmp(name, label) == 0);
+  }
 };
 
 class ImGuiTestItemTree
@@ -188,7 +202,7 @@ public:
           auto it = nodes.find(id);
           if (it != nodes.end())
           {
-            if (it->second.label != nullptr && (strcmp(token.c_str(), it->second.label) == 0))
+            if (it->second.matchesName(token.c_str()))
             {
               match = &it->second;
               break;
@@ -214,6 +228,39 @@ public:
     return current;
   }
 
+  int queryChildren(const char *path, OnTestChildItemInfoFoundFunc func) const
+  {
+    if (path == nullptr)
+      return -1;
+
+    const Tab<ImGuiID> *level;
+    if (!path[0])
+    {
+      if (roots.empty())
+        return -1;
+      level = &roots;
+    }
+    else
+    {
+      const ImGuiTestItemNode *node = query(path);
+      if (node == nullptr)
+        return -1;
+      level = &node->children;
+    }
+
+    int count = 0;
+    for (ImGuiID child_id : *level)
+    {
+      auto it = nodes.find(child_id);
+      if (it != nodes.end())
+      {
+        func(it->second.label, it->second.id, it->second.bb, it->second.parentId, it->second.external);
+        ++count;
+      }
+    }
+    return count;
+  }
+
   const char *queryDebugLabel(ImGuiID id)
   {
     String labelBuilder;
@@ -226,7 +273,7 @@ public:
       if (current->parentId != NO_PARENT)
         sep = "/";
 
-      String label(current->label != nullptr ? current->label : "");
+      String label(current->displayName());
       label.replaceAll("/", "\\/");
 
       labelBuilder.setStr(debugLabel.c_str());
@@ -256,7 +303,7 @@ private:
     for (int i = 0; i < indent; ++i)
       indentStr += "  ";
 
-    const char *label = node->label != nullptr ? node->label : "<NULL>";
+    const char *label = node->displayName() ? node->displayName() : "<NULL>";
     debug("%s%s [%f, %f, %f, %f]", indentStr.c_str(), label, node->bb.Min.x, node->bb.Min.y, node->bb.GetWidth(),
       node->bb.GetHeight());
 
@@ -551,7 +598,49 @@ bool imgui_test_runtime_set(bool enabled, ImGuiTestRuntimeOptions *options)
   return changed;
 }
 
-bool imgui_test_runtime_query_item(const char *path, uint32_t &id, ImRect &bb, uint32_t &parent_id)
+void imgui_test_runtime_set_item_info(uint32_t item_id, const ImGuiTestItemExternalInfo &ext)
+{
+  G_STATIC_ASSERT(sizeof(item_id) == sizeof(ImGuiID));
+
+  ImGuiContext *g = ImGui::GetCurrentContext();
+  if (!g || !g->TestEngineHookItems || !treeCurr)
+    return;
+
+  ImGuiTestItemNode *node = treeCurr->getNode(item_id);
+  if (node == nullptr) // No node means ItemAdd() never ran for this ID this frame.
+    return;
+
+  G_ASSERT(!node->external.subcomponentName);
+
+  if (ext.displayName == nullptr || *ext.displayName == 0)
+  {
+    node->external.displayName = nullptr;
+  }
+  else
+  {
+    // The tree outlives the caller by a frame, so its own copy is the only safe one.
+    if (ext.subcomponentName == nullptr || *ext.subcomponentName == 0)
+      node->external.displayName = treeCurr->createDesc(ext.displayName);
+    else
+      node->external.displayName = treeCurr->createDesc(String(0, "%s.%s", ext.displayName, ext.subcomponentName).c_str());
+  }
+
+  node->external.controlType = ext.controlType;
+  node->external.controlId = ext.controlId;
+}
+
+void imgui_test_runtime_set_last_item_info(const ImGuiTestItemExternalInfo &ext)
+{
+  ImGuiContext *g = ImGui::GetCurrentContext();
+  // With SkipItems the caller submitted no item at all, so the last item belongs to somebody else.
+  if (!g || !g->CurrentWindow || g->CurrentWindow->SkipItems)
+    return;
+
+  imgui_test_runtime_set_item_info(ImGui::GetItemID(), ext);
+}
+
+bool imgui_test_runtime_query_item(const char *path, uint32_t &id, ImRect &bb, uint32_t &parent_id, const char **label,
+  ImGuiTestItemExternalInfo *ext)
 {
   const ::ImGuiTestItemNode *node = ::treeCurr->query(path);
   if (node == nullptr)
@@ -559,12 +648,24 @@ bool imgui_test_runtime_query_item(const char *path, uint32_t &id, ImRect &bb, u
 
   if (node != nullptr)
   {
+    if (label)
+      *label = node->label;
+    if (ext)
+      *ext = node->external;
     id = node->id;
     bb = node->bb;
     parent_id = node->parentId;
     return true;
   }
   return false;
+}
+
+int imgui_test_runtime_query_children(const char *path, OnTestChildItemInfoFoundFunc func)
+{
+  int count = ::treeCurr->queryChildren(path, func);
+  if (count < 0)
+    count = ::treePrev->queryChildren(path, func);
+  return count;
 }
 
 static bool imgui_test_runtime_console_handler(const char *argv[], int argc)
@@ -637,13 +738,19 @@ static bool imgui_test_runtime_console_handler(const char *argv[], int argc)
       path.append(argv[i]);
     }
 
+    const char *label;
     ImGuiID id;
     ImGuiID parentId;
     ImRect bb;
-    if (imgui_test_runtime_query_item(path.c_str(), id, bb, parentId))
+    ImGuiTestItemExternalInfo ext;
+    if (imgui_test_runtime_query_item(path.c_str(), id, bb, parentId, &label, &ext))
     {
       console::print("Id = 0x%08X", id);
       console::print("BB = [%f, %f, %f, %f]", bb.Min.x, bb.Min.y, bb.GetWidth(), bb.GetHeight());
+      console::print("Label = %s", label != nullptr ? label : "<NULL>");
+      console::print("Display Name = %s", ext.displayName != nullptr ? ext.displayName : "<NULL>");
+      console::print("Control Type = %s", ext.controlType != nullptr ? ext.controlType : "<NULL>");
+      console::print("Control Id = %d", ext.controlId);
       console::print("Parent Id = 0x%08X", parentId);
     }
   }

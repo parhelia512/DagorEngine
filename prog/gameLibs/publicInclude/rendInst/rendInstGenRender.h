@@ -45,6 +45,8 @@ void useImpostorDepthPrepass(bool use);
 void setRIGenRenderMode(int mode);
 int getRIGenRenderMode();
 
+void setTreeHorizontalCull(bool on);
+
 bool enableSecLayerRender(bool en);
 bool enablePrimaryLayerRender(bool en);
 bool enableRiExtraRender(bool en);
@@ -82,7 +84,8 @@ bool notRenderedClipmapShadowsBBox(BBox2 &box, int cascadeNo);
 bool notRenderedStaticShadowsBBoxes(Tab<BBox3> &boxes, bool add_instance_box = true);
 bool notRenderedStaticShadowsBBox(BBox3 &box, bool add_instance_box = true);
 void setClipmapShadowsRendered(int cascadeNo);
-void renderRIGenShadowsToClipmap(const BBox2 &region, int renderNewForCascadeNo); //-1 - render all, not only new
+//-1 - render all, not only new
+int tryRenderRIGenShadowsToClipmap(const BBox2 &region, int renderNewForCascadeNo, int max_draws, int &required_draw_count);
 bool renderRIGenGlobalShadowsToTextures(const Point3 &sunDir0, bool force_update = true, bool use_compression = true,
   bool free_temp_resources = false);
 bool isRIGenGlobalShadowTexturesReady();

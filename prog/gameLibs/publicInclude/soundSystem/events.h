@@ -24,6 +24,7 @@ class ChannelGroup;
 namespace sndsys
 {
 bool has_event(const char *name, const char *path = nullptr);
+bool is_valid_event_banks(const char *name, const char *path = nullptr);
 int get_num_event_instances(const char *name, const char *path = nullptr);
 int get_num_event_instances(EventHandle event_handle);
 

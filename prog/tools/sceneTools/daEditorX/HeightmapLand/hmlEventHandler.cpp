@@ -277,7 +277,9 @@ bool HmapLandPlugin::onPluginMenuClick(unsigned id)
     case CM_BUILD_NAVMESH:
     {
       BinDumpSaveCB cwr(1 << 10, _MAKE4C('PC'), false);
+      objEd.showHiddenObjectsForBuild();
       buildAndWriteNavMesh(cwr);
+      objEd.restoreHiddenObjectsAfterBuild();
       return true;
     }
 
@@ -379,10 +381,14 @@ bool HmapLandPlugin::onPluginMenuClick(unsigned id)
           DAEDITOR3.setEntityLayerHiddenMask(layers_hide_mask);
         }
 
+        objEd.showHiddenObjectsForBuild();
+
         exportLoftMasks(lastExpLoftFolder, lastExpLoftMain ? lastExpLoftMainSz : 0, lastExpLoftDet ? lastExpLoftDetSz : 0,
           panel.getFloat(31), panel.getFloat(31) + panel.getFloat(32), panel.getBool(51) ? panel.getInt(52) : -1);
 
         DAEDITOR3.setEntityLayerHiddenMask(prev_layers_hide_mask);
+
+        objEd.restoreHiddenObjectsAfterBuild();
       }
       del_it(dlg);
     }

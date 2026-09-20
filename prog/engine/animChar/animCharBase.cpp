@@ -138,7 +138,7 @@ bool AnimcharBaseComponent::resetFastPhysSystem()
   mat44f tm = nodeTree->getRootTm();
   vec3f wofs = nodeTree->getWtmOfs();
 
-  *nodeTree = *originalNodeTree;
+  nodeTree->replaceContentFrom(*originalNodeTree);
   nodeTree->getRootTm() = tm;
   nodeTree->setWtmOfs(wofs);
   nodeTree->invalidateWtm();

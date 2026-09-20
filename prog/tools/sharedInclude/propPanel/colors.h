@@ -154,6 +154,9 @@ struct ColorOverride
     // Color for short highlight blink animations to draw attention to something
     BLINK_HIGHTLIGHT_ANIMATION_COLOR,
 
+    // Color for AV daBuild panel to highlight which packs are currently building
+    DABUILD_PANEL_CURRENTLY_BUILDING,
+
     COUNT
   };
 

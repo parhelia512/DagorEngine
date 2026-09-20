@@ -132,6 +132,10 @@ here. The ellipsis is shown by default on vertical overflow and hidden via
 * ``lowLineCount`` — int, minimum line count for alignment (default 0).
 * ``lowLineCountAlign`` — enum alignment when there are few lines (default ``PLACE_DEFAULT``).
 * ``spacing`` — int, extra character spacing.
+* ``breakLongWords`` — bool, break a word that is wider than the text area
+  across lines, at any character (default true; set false to let it overflow).
+  Has no effect with ``FMT_NO_WRAP``, and is always off for the editable
+  text area.
 * ``preformatted`` - bool or combination of the following flags:
 
   * ``FMT_NO_WRAP`` - disable auto wrapping of lines.

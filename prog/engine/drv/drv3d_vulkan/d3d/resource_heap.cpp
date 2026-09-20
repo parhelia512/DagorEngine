@@ -210,6 +210,10 @@ Sbuffer *d3d::place_buffer_in_resource_heap(ResourceHeap *heap, const ResourceDe
   const ResourceAllocationProperties &alloc_info, const char *name)
 {
   D3D_CONTRACT_ASSERTF(desc.type == D3DResourceType::SBUF, "vulkan: non buffer description supplied for buffer heap placement");
+  D3D_CONTRACT_ASSERTF(!(desc.asBufferRes.cFlags & SBCF_MISC_DRAWINDIRECT) || desc.asBufferRes.elementSizeInBytes == 4,
+    "vulkan: SBCF_MISC_DRAWINDIRECT requires 4 byte elements, got %u", desc.asBufferRes.elementSizeInBytes);
+  D3D_CONTRACT_ASSERTF(!(desc.asBufferRes.cFlags & SBCF_MISC_ALLOW_RAW) || desc.asBufferRes.elementSizeInBytes == 4,
+    "vulkan: SBCF_MISC_ALLOW_RAW requires 4 byte elements, got %u", desc.asBufferRes.elementSizeInBytes);
   MemoryHeapResource *dHeap = reinterpret_cast<MemoryHeapResource *>(heap);
   verifyAllocProps(alloc_info, dHeap, offset);
 

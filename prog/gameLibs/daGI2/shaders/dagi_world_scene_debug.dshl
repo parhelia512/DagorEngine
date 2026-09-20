@@ -9,7 +9,7 @@ include "dagi_albedo_scene_common.dshl"
 
 macro DEPTH_OUTPUT_DX11()
   cull_mode = none;
-  z_write = true;
+  z_write = false;
   z_test = true;
   USE_AND_INIT_VIEW_VEC_VS()
   POSTFX_VS_TEXCOORD_VIEWVEC(1, tc, viewvec)

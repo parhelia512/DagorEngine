@@ -55,7 +55,9 @@ inline bool das_query_entities_intersections_in_grid(uint32_t grid_name_hash,
     convex.size > 0 ? dag::ConstSpan<plane3f>((plane3f *)convex.data, convex.size) : dag::ConstSpan<plane3f>();
 
   IntersectedEntities entities;
-  const bool res = ::query_entities_intersections_in_grid(grid_name_hash, planes, tm, rad, rayhit, entities, do_sort);
+  // the das API takes a radius; it spans a cube in tm's local space, the planes only narrow further
+  const BBox3 bbox(BSphere3(Point3(), rad));
+  const bool res = ::query_entities_intersections_in_grid(grid_name_hash, planes, tm, bbox, rayhit, entities, do_sort);
 
   das::Array arr;
   das::array_mark_locked(arr, entities.data(), entities.size());

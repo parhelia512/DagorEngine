@@ -1,0 +1,57 @@
+include "shader_global.dshl"
+
+// clips the reprojected history into the AABB of the input neighborhood's color distribution, so
+// history that no longer describes the scene is pulled to the current color instead of ghosting
+
+float tsr_scale_base = 1.5;
+float tsr_scale_motion_steepness = 1e2;
+float tsr_scale_motion_max = 0.1;
+
+int tsr_variance_clipping = 1;
+interval tsr_variance_clipping : off < 1, on;
+// to allow assuming per project
+assume_if_not_assumed tsr_variance_clipping = on;
+
+macro INIT_TSR_VARIANCE_CLIPPING(code)
+  (code) {
+    aabbScaleBase@f1 = tsr_scale_base;
+    aabbScaleMotionSteepness@f1 = tsr_scale_motion_steepness;
+    aabbScaleMotionMax@f1 = tsr_scale_motion_max;
+  }
+endmacro
+
+macro USE_TSR_VARIANCE_CLIPPING(code)
+  hlsl(code) {
+    // the box opens up on near-static pixels, where history is still good evidence, and closes to
+    // the base scale in motion or on reactive content, where it goes stale within a few frames
+    float calculateAabbScale(float motionVectorLength, float reactive)
+    {
+      return aabbScaleBase * (1 + rcp(motionVectorLength * aabbScaleMotionSteepness + aabbScaleMotionMax) * (1 - reactive));
+    }
+
+    float3 clipHistory(float3 history, float3 current, float3 mean, float3 variance, float aabbScale)
+    {
+    ##if tsr_variance_clipping == off
+      return history;
+    ##else
+      float3 boxExtents = sqrt(variance) * aabbScale;
+
+      float3 rayDir = current - history;
+      float3 rayOrg = history - mean;
+
+      float clipLength = 1.0;
+
+      if (dot(rayDir, rayDir) > 1e-12)
+      {
+        // Intersection using slabs
+        float3 rcpDir = rcp(rayDir);
+        float3 tNeg = ( boxExtents - rayOrg) * rcpDir;
+        float3 tPos = (-boxExtents - rayOrg) * rcpDir;
+        clipLength = saturate(max(max(min(tNeg.x, tPos.x), min(tNeg.y, tPos.y)), min(tNeg.z, tPos.z)));
+      }
+
+      return lerp(history, current, clipLength);
+    ##endif
+    }
+  }
+endmacro

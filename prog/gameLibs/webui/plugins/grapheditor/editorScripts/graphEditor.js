@@ -100,6 +100,20 @@ function safeHtmlStr(s)
 }
 
 
+function formatGraphWarnings(warnings)
+{
+  if (!warnings || warnings.length === 0)
+    return null;
+
+  var s = warnings[0].text;
+  if (warnings.length > 1)
+    s += " (+" + (warnings.length - 1) + " more)";
+  if (s.length > 160)
+    s = s.substring(0, 157) + "...";
+  return s;
+}
+
+
 function Connection()
 {
   this.myIndex = -1;
@@ -2460,6 +2474,9 @@ function GraphEditor()
           }
         }
 
+        if (this.warningUids && e.uid && this.warningUids[e.uid] && this.selected.indexOf(i) == -1)
+          classType = "warningElemRectClass";
+
         e.svgRect.setAttributeNS(null, "class", classType);
       }
     }
@@ -4087,7 +4104,7 @@ function GraphEditor()
         }
         else if (graph.branchNodesIncompletDescs[j].layout === "layer-branch" && graph.branchNodesIncompletDescs[j].nodeId === from)
         {
-          graph.branchNodesIncompletDescs[j].outputPinIdx = fromPin;
+          insertIfNotInArray(graph.branchNodesIncompletDescs[j].outputPinIdxs, fromPin);
         }
       }
 
@@ -4214,6 +4231,7 @@ function GraphEditor()
           groupIds:[],
           properties: propList,
           uid: e.uid,
+          srcUid: e.srcUid,
           view: {x: e.x, y: e.y},
           pinComments: e.pinComments.length > 0 ? e.pinComments.slice(0) : undefined,
         };
@@ -4630,7 +4648,7 @@ function GraphEditor()
         offGroup: [],
         layerGroup: [],
         ctrlGroup: [],
-        outputPinIdx: [],
+        outputPinIdxs: [],
         processed:false
       };
       if (element && element.descName === "medium quality filter")
@@ -5018,6 +5036,7 @@ function GraphEditor()
     this.selecting = false;
     this.connecting = false;
     this.resizing = false;
+    this.warningUids = {};
     this.graphId = graph.graphId ? graph.graphId : "[[GID:0A-" + Date.now() + "]]";
 
     if (renderEnabled)
@@ -5215,6 +5234,7 @@ function GraphEditor()
           {
             permSubGroup.subGroup.push(idx);
             this.elems[idx].permutationId = globalPermutationGroupCount;
+            this.elems[idx].srcUid = e.uid; // pasted elems get new uids; warnings need the source graph's uid to highlight
           }
           var newElem = this.elems[idx];
           this._copyElem(e, newElem, false);
@@ -5806,6 +5826,7 @@ function GraphEditor()
           if (inessential)
           {
             var obj = editor.stringifyGraph(S_FULL_INFO | S_RETURN_AS_OBJECT | S_INOUT_PINS);
+            delete obj.warnings;
             obj.code = editor.lastCode;
             if (editor.lastDesc)
               obj.description = editor.lastDesc;
@@ -5834,6 +5855,15 @@ function GraphEditor()
       this.statusElemCount.innerText = this.countElems();
   }
 
+  this.setWarningHighlights = function(warnings)
+  {
+    this.warningUids = {};
+    if (warnings)
+      for (var i = 0; i < warnings.length; i++)
+        if (warnings[i].uid)
+          this.warningUids[warnings[i].uid] = true;
+  }
+
   this.compileRoot = function()
   {
     var rootGraph = this.stringifyGraph(S_FULL_INFO | S_RETURN_AS_OBJECT | S_INOUT_PINS);
@@ -5847,18 +5877,25 @@ function GraphEditor()
 
         if (!ok)
         {
+          lastGraphWarnings = []
+          lastWarningString = ""
+          editor.setWarningHighlights(null);
           editor.rollBackAndEndCodegen();
           return;
         }
 
         var explodedGraph = editor.stringifyGraph(S_FULL_INFO | S_RETURN_AS_OBJECT | S_INOUT_PINS);
+        lastGraphWarnings = explodedGraph.warnings || [];
+        lastWarningString = formatGraphWarnings(lastGraphWarnings);
         rootGraph.code = explodedGraph.code; // For offline compilation we need to have full code saved
         editor.lastCode = explodedGraph.code;
         editor.lastDesc = JSON.parse(JSON.stringify(rootGraph.description));
+        delete rootGraph.warnings; // No need to preserve it on disk
         var rootBuf = JSON.stringify(rootGraph, null, "  ");
         var explodedBuf = JSON.stringify(explodedGraph, null, "  ")
 
         editor.rollBackAndEndCodegen();
+        editor.setWarningHighlights(lastGraphWarnings); // after rollback: parseGraph clears warningUids
 
         query("save_graph&" + clientId, null, rootBuf);
         query("compile_graph&" + clientId, null, explodedBuf)
@@ -5871,6 +5908,7 @@ function GraphEditor()
     var k = this.editedPermutationIdx;
 
     var permGraph = this.stringifyGraph(S_FULL_INFO | S_RETURN_AS_OBJECT | S_INOUT_PINS);
+    delete permGraph.warnings;
     var permBuf = JSON.stringify(permGraph, null, "  ");
 
     var savedInclude = this.additionalIncludes[k];
@@ -5887,6 +5925,7 @@ function GraphEditor()
 
         if (!ok)
         {
+          editor.setWarningHighlights(null);
           restore();
           return;
         }
@@ -5895,6 +5934,8 @@ function GraphEditor()
         editor.keepOnlySingleExternals_();
 
         var explodedGraph = editor.stringifyGraph(S_FULL_INFO | S_RETURN_AS_OBJECT | S_INOUT_PINS);
+        lastGraphWarnings = explodedGraph.warnings || [];
+        lastWarningString = formatGraphWarnings(lastGraphWarnings);
         var compileBuf = JSON.stringify(explodedGraph, null, "  ");
 
         editor.lastCode = permGraph.code;
@@ -5902,6 +5943,7 @@ function GraphEditor()
           editor.lastDesc = JSON.parse(JSON.stringify(permGraph.description));
 
         restore();
+        editor.setWarningHighlights(lastGraphWarnings);
 
         query("save_graph&" + clientId, null, permBuf);
         query("compile_graph&" + clientId, null, compileBuf);

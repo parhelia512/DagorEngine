@@ -373,9 +373,9 @@ shader dagi_fix_empty_alpha_cs
       for (uint i = 0; i < 6; ++i)
       {
         uint axis = i>>1, sign = i&1;
-        int3 ofs = bool3(axis == 0, axis == 1, axis == 2) ? (int(sign*2)-1) : 0;
+        int3 ofs = select(bool3(axis == 0, axis == 1, axis == 2), (int(sign*2)-1), 0);
         //int3 ofs = int3(uint3(i, i/3, i/9)%3) - 1;
-        ofs = uint3(ofs + int3(inBlockCoord)) >= DAGI_ALBEDO_BLOCK_SIZE ? 0 : ofs;
+        ofs = select(uint3(ofs + int3(inBlockCoord)) >= DAGI_ALBEDO_BLOCK_SIZE, 0, ofs);
         FLATTEN
         if (any(ofs != 0))
         {

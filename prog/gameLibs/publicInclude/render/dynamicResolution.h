@@ -35,6 +35,8 @@ public:
   {
     w = targetResolutionWidth * maxResolutionScale;
     h = targetResolutionHeight * maxResolutionScale;
+    w &= ~1;
+    h &= ~1;
   }
   int getTargetFrameRate() { return targetFrameRate; }
   void setMinimumMsPerFrame(float ms) { minimumMsPerFrame = ms; }

@@ -20,7 +20,8 @@ class NodeScheduler
 public:
   // old index -> new index mapping
   using NodePermutation = IdIndexedMapping<intermediate::NodeIndex, intermediate::NodeIndex, framemem_allocator>;
-  NodePermutation schedule(const intermediate::Graph &graph, const PassColoring &pass_coloring);
+  NodePermutation schedule(const intermediate::Graph &graph, const PassColoring &pass_coloring,
+    const IdIndexedMapping<intermediate::NodeIndex, intermediate::NodeIndex> &prev_positions);
 };
 
 } // namespace dafg

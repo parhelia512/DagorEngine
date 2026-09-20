@@ -429,46 +429,90 @@ public:
       return finalColorTargetMask ^ (finalColorTargetMask & pipeline_output_mask);
     }
 
+    enum BlendVisitMode
+    {
+      InvokePrimaryTargetOnlyForUniformBlend,
+      InvokeEachTargetForUniformBlend,
+    };
+
     D3D12_BLEND_DESC getBlendDesc(uint32_t frame_buffer_render_target_mask) const
     {
-      auto finalColorTargetMask = adjustColorTargetMask(frame_buffer_render_target_mask);
       D3D12_BLEND_DESC result = {
         .AlphaToCoverageEnable = 0 != enableAlphaToCoverage,
-        // dual source blending requires blending to be enabled on render target 0 only,
-        // so it must never use the independent blend path that replicates its params
-        .IndependentBlendEnable =
-          !enableDualSourceBlending && (!has_uniform_color_mask(finalColorTargetMask) || enableIndependentBlend),
-      };
-      const auto RTCount = result.IndependentBlendEnable ? Driver3dRenderTarget::MAX_SIMRT : 1;
-
-      auto fillRtBlendDesc = [&finalColorTargetMask](D3D12_RENDER_TARGET_BLEND_DESC &dst, const auto &src) {
-        dst = {
-          .BlendEnable = 0 != src.enableBlending,
-          .LogicOpEnable = FALSE,
-          .SrcBlend = static_cast<D3D12_BLEND>(D3D12_BLEND_ZERO + src.blendFactors.Source),
-          .DestBlend = static_cast<D3D12_BLEND>(D3D12_BLEND_ZERO + src.blendFactors.Destination),
-          .BlendOp = static_cast<D3D12_BLEND_OP>(D3D12_BLEND_OP_ADD + src.blendFunction),
-          .SrcBlendAlpha = static_cast<D3D12_BLEND>(D3D12_BLEND_ZERO + src.blendAlphaFactors.Source),
-          .DestBlendAlpha = static_cast<D3D12_BLEND>(D3D12_BLEND_ZERO + src.blendAlphaFactors.Destination),
-          .BlendOpAlpha = static_cast<D3D12_BLEND_OP>(D3D12_BLEND_OP_ADD + src.blendAlphaFunction),
-          .LogicOp = D3D12_LOGIC_OP_NOOP,
-          .RenderTargetWriteMask = static_cast<UINT8>(finalColorTargetMask & 15),
-        };
+        .IndependentBlendEnable = needsIndependentBlend(frame_buffer_render_target_mask),
       };
 
-      for (uint32_t i = 0; i < RTCount; ++i)
-      {
-        const auto blendParamsId = i < shaders::RenderState::NumIndependentBlendParameters && enableIndependentBlend ? i : 0;
-
-        if (enableDualSourceBlending)
-          fillRtBlendDesc(result.RenderTarget[i], dualSourceBlend.params);
-        else
-          fillRtBlendDesc(result.RenderTarget[i], blendParams[blendParamsId]);
-
-        finalColorTargetMask >>= 4;
-      }
+      visitBlendSettings(frame_buffer_render_target_mask, BlendVisitMode::InvokePrimaryTargetOnlyForUniformBlend,
+        [&](auto index, const auto &info, bool mask_based_blend, uint32_t mask) {
+          result.RenderTarget[index] = {
+            .BlendEnable = mask_based_blend,
+            .LogicOpEnable = FALSE,
+            .SrcBlend = static_cast<D3D12_BLEND>(D3D12_BLEND_ZERO + info.blendFactors.Source),
+            .DestBlend = static_cast<D3D12_BLEND>(D3D12_BLEND_ZERO + info.blendFactors.Destination),
+            .BlendOp = static_cast<D3D12_BLEND_OP>(D3D12_BLEND_OP_ADD + info.blendFunction),
+            .SrcBlendAlpha = static_cast<D3D12_BLEND>(D3D12_BLEND_ZERO + info.blendAlphaFactors.Source),
+            .DestBlendAlpha = static_cast<D3D12_BLEND>(D3D12_BLEND_ZERO + info.blendAlphaFactors.Destination),
+            .BlendOpAlpha = static_cast<D3D12_BLEND_OP>(D3D12_BLEND_OP_ADD + info.blendAlphaFunction),
+            .LogicOp = D3D12_LOGIC_OP_NOOP,
+            .RenderTargetWriteMask = static_cast<UINT8>(mask & 15),
+          };
+        });
 
       return result;
+    }
+
+    uint32_t getBlendUseMask(uint32_t frame_buffer_render_target_mask) const
+    {
+      uint32_t result = 0;
+      visitBlendSettings(frame_buffer_render_target_mask, BlendVisitMode::InvokeEachTargetForUniformBlend,
+        [&result](auto index, const auto &, bool mask_based_blend, uint32_t) { result |= (mask_based_blend ? 1u : 0u) << index; });
+      return result;
+    }
+
+    bool needsIndependentBlend(uint32_t frame_buffer_render_target_mask) const
+    {
+      // dual source blending requires blending to be enabled on render target 0 only,
+      // so it must never use the independent blend path that replicates its params
+      return !enableDualSourceBlending &&
+             (!has_uniform_color_mask(adjustColorTargetMask(frame_buffer_render_target_mask)) || enableIndependentBlend);
+    }
+
+    void visitBlendSettings(uint32_t frame_buffer_render_target_mask, BlendVisitMode mode, auto &&visitor) const
+    {
+      auto finalColorTargetMask = adjustColorTargetMask(frame_buffer_render_target_mask);
+
+      auto getMaskBasedBlend = [](const auto &state, auto mask) { return (0 != state.enableBlending) && (0 != (mask & 15)); };
+
+      if (enableDualSourceBlending)
+      {
+        return visitor(0, dualSourceBlend.params, getMaskBasedBlend(dualSourceBlend.params, finalColorTargetMask),
+          finalColorTargetMask & 15);
+      }
+
+      if (!needsIndependentBlend(frame_buffer_render_target_mask))
+      {
+        if (BlendVisitMode::InvokeEachTargetForUniformBlend == mode)
+        {
+          for (uint32_t i = 0; i < Driver3dRenderTarget::MAX_SIMRT; ++i, finalColorTargetMask >>= 4)
+          {
+            visitor(i, blendParams[0], getMaskBasedBlend(blendParams[0], finalColorTargetMask), finalColorTargetMask & 15);
+          }
+        }
+        else // if (BlendVisitMode::InvokePrimaryTargetOnlyForUniformBlend == mode)
+        {
+          visitor(0, blendParams[0], getMaskBasedBlend(blendParams[0], finalColorTargetMask), finalColorTargetMask & 15);
+        }
+      }
+      else
+      {
+        for (uint32_t i = 0; i < Driver3dRenderTarget::MAX_SIMRT && finalColorTargetMask; ++i, finalColorTargetMask >>= 4)
+        {
+          const auto blendParamsId = i < shaders::RenderState::NumIndependentBlendParameters && enableIndependentBlend ? i : 0;
+
+          visitor(i, blendParams[blendParamsId], getMaskBasedBlend(blendParams[blendParamsId], finalColorTargetMask),
+            finalColorTargetMask & 15);
+        }
+      }
     }
 
     D3D12_RASTERIZER_DESC getRasterizerDesc(D3D12_FILL_MODE fill_mode) const

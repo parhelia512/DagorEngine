@@ -3,6 +3,7 @@
 
 #include <propPanel/control/container.h>
 #include <imgui/imgui.h>
+#include "../changeFinishTracker.h"
 
 namespace PropPanel
 {
@@ -58,6 +59,7 @@ public:
       else
         childSize[sizeAxis] = contentRegionAvailableSpacingRemoved[sizeAxis] * splitRatios[i];
 
+      const ImGuiID activeIdWasAlive = ImGui::GetCurrentContext()->ActiveIdIsAlive;
       ImGui::PushID(control);
 
       if (ImGui::BeginChild("c", childSize, ImGuiChildFlags_None, ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoBackground))
@@ -65,6 +67,7 @@ public:
       ImGui::EndChild();
 
       ImGui::PopID();
+      note_held_active_imgui_item(*control, activeIdWasAlive);
 
       // Just a safety check after updateImgui().
       G_ASSERT(mControlArray.size() >= 2);

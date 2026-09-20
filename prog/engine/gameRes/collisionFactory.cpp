@@ -17,7 +17,6 @@ public:
 
   Tab<ResData> resData;
 
-  CollisionGameResFactory() { CollisionResource::check_avx_mesh_api_support(); }
 
   int findResData(int res_id) const
   {

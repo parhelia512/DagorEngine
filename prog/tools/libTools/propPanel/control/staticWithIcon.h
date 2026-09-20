@@ -38,6 +38,8 @@ public:
     iconWithNameAndSize.setFileName(fname);
   }
 
+  const char *getImguiTypeName() const override { return "StaticWithIcon"; }
+
   void updateImgui() override
   {
     ScopedImguiBeginDisabled scopedDisabled(!controlEnabled);

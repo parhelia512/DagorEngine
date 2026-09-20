@@ -5,6 +5,7 @@
 #include <daECS/core/entityManager.h>
 #include <daECS/core/componentTypes.h>
 #include <ecs/render/updateStageRender.h>
+#include <game/gameEvents.h>
 
 #include <render/dynmodelRenderer/animCharRenderAdditionalData.h>
 
@@ -29,6 +30,13 @@ PortalRenderer *portal_renderer_mgr::query_portal_renderer()
   //   logerr("PortalRenderer not found");
 
   return result;
+}
+
+
+ECS_TAG(render)
+static inline void portal_wait_visibility_job_es(const EventWaitBeforeAct &, const PortalRenderer &portal_renderer)
+{
+  portal_renderer.waitVisibilityJob();
 }
 
 

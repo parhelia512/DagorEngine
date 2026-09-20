@@ -3,7 +3,7 @@ include "global_consts.dshl"
 include "tree_ellipsoid_normal.dshl"
 
 int impostor_normal_mip = 0;
-int treeCrown_buf_slot = 20;
+int treeCrown_buf_slot = 21;
 
 int use_simplified_vegetation = 0;
 interval use_simplified_vegetation: no<1, yes;
@@ -193,7 +193,6 @@ hlsl{
 }
 
 macro VEGETATION_PS(is_render_depth_pass, atest_is_on, alpha_clip_is_separate, alpha_clip_is_on, need_tree_burning, order)
-  supports global_const_block;
   hlsl(ps) {
   #include <interleavedGradientNoise.hlsl>
   void alpha_clip(float alpha, float3 tc, float leaves_fade_vert)

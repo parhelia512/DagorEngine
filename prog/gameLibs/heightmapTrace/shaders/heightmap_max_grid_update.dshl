@@ -1,0 +1,64 @@
+include "shader_global.dshl"
+include "heightmap_max_grid.dshl"
+
+// maintains the max grid; list this file once per project, the macro header
+// (heightmap_max_grid.dshl) is safe to include from anywhere
+shader heightmap_max_grid_update_cs
+{
+  if (tex_hmap_low == NULL)
+  {
+    dont_render;
+  }
+  INIT_WORLD_HEIGHTMAP_BASE(cs)
+  USE_HEIGHTMAP_COMMON_BASE(cs)
+  (cs) {
+    heightmap_max_grid_uav@uav = heightmap_max_grid hlsl { RWByteAddressBuffer heightmap_max_grid_uav@uav; };
+    heightmap_max_grid_lt@i4 = heightmap_max_grid_lt;
+    heightmap_max_grid_cell@f4 = heightmap_max_grid_cell;
+    heightmap_max_grid_update@i4 = heightmap_max_grid_update;
+    // the real size from stcode: tex_hmap_inv_sizes is repurposed by game
+    // shader configs (heightmap_common.dshl)
+    tex_hmap_low_size@f4 = (get_dimensions(tex_hmap_low, 0).xy,
+                            1.0 / max(get_dimensions(tex_hmap_low, 0).x, 1),
+                            1.0 / max(get_dimensions(tex_hmap_low, 0).y, 1));
+  }
+  hlsl(cs) {
+    // conservative vs any bilinear read: the max over every texel whose
+    // filtering support touches the cell
+    [numthreads(8, 8, 1)]
+    void heightmap_max_grid_update_cs(uint2 dtid : SV_DispatchThreadID)
+    {
+      if (any(dtid >= uint2(heightmap_max_grid_update.zw)))
+        return;
+      int2 cell = heightmap_max_grid_update.xy + int2(dtid);
+      float cellSize = heightmap_max_grid_cell.x;
+      float2 texSizeF = tex_hmap_low_size.xy;
+      float2 invTexel = tex_hmap_low_size.zw;
+      int2 texels = int2(texSizeF);
+      float2 tcA = calcTcLow(cell*cellSize) - invTexel;
+      float2 tcB = calcTcLow((cell + 1)*cellSize) + invTexel;
+      int2 t0 = int2(floor(min(tcA, tcB)*texSizeF));
+      int2 t1 = int2(ceil(max(tcA, tcB)*texSizeF));
+      // a range past the map edge also covers what a mirror sampler reflects
+      // there; under clamp the extra texels only widen the bound
+      int2 lo = clamp(select(t1 > texels - 1, min(t0, 2*texels - 1 - t1), t0), int2(0, 0), texels - 1);
+      int2 hi = clamp(select(t0 < 0, max(t1, -t0 - 1), t1), int2(0, 0), texels - 1);
+      // a stride would drop peaks and the loop must stay bounded: a cell
+      // spanning over 128 texels stores no bound at all, the march samples it
+      float h = -1e9;
+      if (any(hi - lo > 127))
+        h = 1e9;
+      hi = min(hi, lo + 127);
+      LOOP
+      for (int ty = lo.y; ty <= hi.y; ++ty)
+      {
+        LOOP
+        for (int tx = lo.x; tx <= hi.x; ++tx)
+          h = max(h, decode_height(getHeightLowLod((int2(tx, ty) + 0.5)*invTexel, 0)));
+      }
+      uint2 w = uint2(cell) & uint(heightmap_max_grid_lt.w);
+      storeBuffer(heightmap_max_grid_uav, (w.y*uint(heightmap_max_grid_lt.z) + w.x)*4, asuint(h));
+    }
+  }
+  compile("target_cs", "heightmap_max_grid_update_cs");
+}

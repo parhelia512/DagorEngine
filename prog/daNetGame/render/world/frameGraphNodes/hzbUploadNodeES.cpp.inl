@@ -3,7 +3,7 @@
 #include <daECS/core/entityManager.h>
 #include <daECS/core/entitySystem.h>
 
-#include <render/world/cameraInCamera.h>
+#include <render/cameraInCamera/cameraInCamera.h>
 #include <render/world/frameGraphHelpers.h>
 #include <render/world/cameraViewVisibilityManager.h>
 #include <math/dag_occlusionZBuffer.h>
@@ -13,6 +13,7 @@
 
 #define INSIDE_RENDERER 1
 #include <render/world/private_worldRenderer.h>
+#include <drv/3d/dag_texture.h>
 
 
 constexpr static int hzb_mips_count = OcclusionZBuffer::mip_chain_count;
@@ -51,7 +52,7 @@ static void upload_hzb(CameraViewVisibilityMgr &view_jobs_mgr, BaseTexture *dst,
     const size_t mipH = OcclusionZBuffer::HEIGHT >> mip;
     const size_t mipXOffset = mip > 0 ? OcclusionZBuffer::WIDTH : 0;
     const size_t mipYOffset = mip > 0 ? mipH : 0;
-    dst->updateSubRegion(staging, 0, mipXOffset, mipYOffset, 0, mipW, mipH, 1, mip, 0, 0, 0);
+    d3d::update_sub_region(staging, 0, mipXOffset, mipYOffset, 0, mipW, mipH, 1, dst, mip, 0, 0, 0);
   }
 }
 

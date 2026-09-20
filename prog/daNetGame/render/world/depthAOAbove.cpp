@@ -83,8 +83,6 @@ public:
     if (wr.lmeshMgr && (type & RenderDepthAOType::Terrain))
     {
       const float heightmap_size = 4096;
-      const int HEIGTHMAP_VS_CONST_BUFFFER_SIZE = 522;
-      d3d::set_vs_constbuffer_register_count(HEIGTHMAP_VS_CONST_BUFFFER_SIZE);
 
       BBox3 box(Point3::xVz(origin, 0), 2 * distace_around);
       wr.lmeshRenderer->prepare(*wr.lmeshMgr, HmapOrigin(Point3::xVz(origin, 0)));
@@ -97,8 +95,6 @@ public:
       wr.lmeshRenderer->render(culling_view_proj, TMatrix4::IDENT, Frustum{culling_view_proj}, *wr.lmeshMgr,
         LandMeshRenderer::RENDER_ONE_SHADER, desc, origin, HmapOrigin(Point3::xVz(origin, 0)));
       shaders::overrides::reset();
-
-      d3d::set_vs_constbuffer_register_count(0);
     }
   }
 

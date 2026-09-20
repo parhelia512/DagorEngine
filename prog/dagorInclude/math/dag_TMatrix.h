@@ -36,7 +36,7 @@ public:
   static const TMatrix IDENT, ZERO;
 
   INLINE TMatrix() = default;
-  INLINE explicit TMatrix(real);
+  constexpr INLINE explicit TMatrix(real);
 
   INLINE void identity();
   INLINE void zero();
@@ -324,11 +324,10 @@ INLINE TMatrix rotzTM(real a)
   return m;
 }
 
-INLINE TMatrix::TMatrix(real a)
-{
-  memset(m, 0, sizeof(m));
-  m[0][0] = m[1][1] = m[2][2] = a;
-}
+constexpr INLINE TMatrix::TMatrix(real a) : m{{a, 0, 0}, {0, a, 0}, {0, 0, a}, {0, 0, 0}} {}
+
+inline constexpr TMatrix TMatrix::IDENT(1);
+inline constexpr TMatrix TMatrix::ZERO(0);
 
 INLINE void TMatrix::zero() { memset(m, 0, sizeof(m)); }
 

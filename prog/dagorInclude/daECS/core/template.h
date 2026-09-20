@@ -29,6 +29,7 @@ namespace ecs
 class TemplateDB;
 struct TemplateRefs;
 struct TemplatesData;
+struct TemplateDBInfo;
 
 struct HashedLenConstString
 {
@@ -159,6 +160,9 @@ private:
     setInstantiatable(calcValidDependencies(db));
   }
   bool calcValidDependencies(const TemplatesData &db) const;
+  // dev check at instantiate time: set names must name known components; ancestors
+  // validate against the instantiating template's full hierarchy view
+  void validateSets(const TemplatesData &db, const TemplateDBInfo *info, const Template *instantiated = nullptr) const;
   void setParentsInternal(const uint32_t *pb, const uint32_t *pe);
 
   friend class TemplateDB;
@@ -170,6 +174,9 @@ private:
   const char *name = ""; // todo: remove me, we have nameId by index of template
 #if DAGOR_DBGLEVEL > 0
   const char *path = "";
+#endif
+#if DAECS_EXTENSIVE_CHECKS && DAGOR_DBGLEVEL > 0
+  mutable bool setsValidated = false; // validateSets ran for this template
 #endif
   ComponentsMap components;
   mutable dag::RelocatableFixedVector<component_index_t, 7, true, MidmemAlloc, uint16_t> dependencies; // cache for dependencies

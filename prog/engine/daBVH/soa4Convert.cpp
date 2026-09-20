@@ -19,7 +19,8 @@ static inline uint16_t ld16(const uint8_t *p, int o) { return *(const uint16_t *
 // ============================================================================
 // Stackless -> SoA4. Two passes: a linear sizing walk, then one resize_noinit + a PRE-ORDER emit at
 // a running offset -- a parent node is written immediately before its children subtrees (better
-// locality for nearest-first descent than post-order append), W1 apex bases are re-pointed inline
+// locality for nearest-first descent than post-order append). Child subtrees follow the node in lane order
+// and tile its range (CollisionBlasShape decodes its ids by that). W1 apex bases are re-pointed inline
 // (vertsOfs is known upfront), and there is no per-node realloc/zero-fill or patch pass. Verts are
 // copied verbatim. All structural violations set `failed` instead of asserting: conversion runs in
 // release builds on load-time data, so a bad tree must degrade to "no conversion", not UB.
@@ -40,6 +41,7 @@ struct Builder
   dag::Vector<uint8_t> &buf;
   int vertsOfs = 0;
   bool shortEnabled = true; // set by build(): short bodies need the [tree][verts] span within 23-bit base reach
+  bool withFlags = true;    // false: no edge flags tails (a chunk whose consumers never read flags)
   bool failed = false;
 
   Builder(dag::Vector<uint8_t> &out) : buf(out) {}
@@ -64,16 +66,33 @@ struct Builder
            srcLeafApexValid(src_leaf_hdr);
   }
 
-  // Pass 1, LINEAR (no recursion): SoA4 tree bytes = 16*slots + 12*Lfull + 4*Lshort, where slots =
-  // L + I - P1 (16 = box + word per child slot; 12/4 = inline leaf body): every leaf/internal is a
-  // child slot of exactly one span, except the single child of a 1-child span (promoted, no slot). A
-  // 1-child internal span shows locally: its first child's subtree size equals the whole span (skip);
-  // the top span is checked by its child count. slots == 0 (whole BLAS is one leaf) degenerates to a
-  // lone 16B [W0..W3] block.
+  // Direct children of the span [b, e): one per subtree, hopping skip words; a corrupt skip stops the
+  // count (the emit walk refuses the input).
+  int spanChildren(int b, int e, int end) const
+  {
+    int kids = 0;
+    for (int c = b; c < e && c + BVH_BLAS_NODE_SIZE <= end; ++kids)
+    {
+      const uint32_t skip = ld32(src, c + 12);
+      const int next = c + ((skip & BLAS_LEAF_FLAG) ? BVH_BLAS_LEAF_SIZE : BVH_BLAS_NODE_SIZE + (int)skip);
+      if (next <= c)
+        break;
+      c = next;
+    }
+    return kids;
+  }
+
+  // Pass 1, LINEAR (no recursion): SoA4 tree bytes = 16*slots + 12*Lfull + 4*Lshort + the flags words
+  // (nodeFlagsBytes per emitted node; bvhIO's deserializer derives the same counts from its parsed
+  // table), where slots = L + I - P1 (16 = box + word per child slot;
+  // 12/4 = inline leaf body): every leaf/internal is a child slot of exactly one span, except the
+  // single child of a 1-child span (promoted, no slot). A 1-child internal span shows locally: its
+  // first child's subtree size equals the whole span (skip); the top span is checked by its child
+  // count. slots == 0 (whole BLAS is one leaf) degenerates to a lone LEAF_BYTES [W0..W3][flags] block.
   int sizeTree(int blasStart, int blasSize)
   {
     const int end = blasStart + blasSize;
-    int L = 0, Ls = 0, I = 0, P1 = 0;
+    int L = 0, Ls = 0, I = 0, P1 = 0, flagsBytes = 0;
     for (int c = blasStart; c < end;)
     {
       if (c + BVH_BLAS_NODE_SIZE > end) // truncated header: corrupt input
@@ -97,6 +116,8 @@ struct Builder
       else
       {
         ++I;
+        const int kids = spanChildren(c + BVH_BLAS_NODE_SIZE, c + BVH_BLAS_NODE_SIZE + (int)skip, end);
+        flagsBytes += withFlags && kids >= 2 ? nodeFlagsBytes(kids) : 0; // a 1-child span emits no node
         if ((int)skip > 0 && c + 2 * BVH_BLAS_NODE_SIZE <= end)
         {
           const uint32_t cs = ld32(src, c + BVH_BLAS_NODE_SIZE + 12); // first child's skip word
@@ -124,8 +145,9 @@ struct Builder
       c = next;
     }
     P1 += nTop == 1;
+    flagsBytes += withFlags && nTop >= 2 ? nodeFlagsBytes(nTop) : 0;
     const int slots = L + I - P1;
-    return slots > 0 ? 16 * slots + 12 * (L - Ls) + 4 * Ls : 16;
+    return slots > 0 ? 16 * slots + 12 * (L - Ls) + 4 * Ls + flagsBytes : LEAF_BYTES;
   }
 
   // Resolve a child through 1-child chains to the leaf or multi-child node behind them (SAH never emits
@@ -218,13 +240,13 @@ struct Builder
         return QUAD_LEAF_FLAG | (uint32_t)childSrc[0]; // lone leaf: bubble to the parent node
       return emitSpan(childSrc[0] + BVH_BLAS_NODE_SIZE, childSrc[0] + BVH_BLAS_NODE_SIZE + (int)childSkip[0], cur, depth + 1);
     }
-    const int size = 16 * n + 12 * fullK + 4 * shortK;
+    const int size = 16 * n + 12 * fullK + 4 * shortK + (withFlags ? nodeFlagsBytes(n) : 0);
     const int nodeOfs = cur;
     // Node offsets must fit the child-ref [25:2] field and the 23-bit LeafRef parent field, and the
     // block must fit the SIZED output region: on corrupt input the emit walk can visit nodes the
     // linear sizing pass never counted, and this guard keeps those from writing past the allocation
     // (the cur != treeBytes reconciliation in build() only runs after the fact).
-    if (DAGOR_UNLIKELY((uint32_t)nodeOfs >= (1u << 25) || nodeOfs + size > treeBytesLimit))
+    if (DAGOR_UNLIKELY((uint32_t)nodeOfs >= NODE_OFS_LIMIT || nodeOfs + size > treeBytesLimit))
     {
       failed = true;
       return 0;
@@ -236,12 +258,9 @@ struct Builder
     for (int i = 0; i < n; ++i)
     {
       const uint8_t *h = src + childSrc[i]; // [min.x|max.x<<16][min.y|max.y<<16][min.z|max.z<<16][skip]
-      *(uint16_t *)(p + 0 * s2 + i * 2) = *(const uint16_t *)(h + 0);
-      *(uint16_t *)(p + 1 * s2 + i * 2) = *(const uint16_t *)(h + 4);
-      *(uint16_t *)(p + 2 * s2 + i * 2) = *(const uint16_t *)(h + 8);
-      *(uint16_t *)(p + 3 * s2 + i * 2) = *(const uint16_t *)(h + 2);
-      *(uint16_t *)(p + 4 * s2 + i * 2) = *(const uint16_t *)(h + 6);
-      *(uint16_t *)(p + 5 * s2 + i * 2) = *(const uint16_t *)(h + 10);
+      const uint16_t mn[3] = {*(const uint16_t *)(h + 0), *(const uint16_t *)(h + 4), *(const uint16_t *)(h + 8)};
+      const uint16_t mx[3] = {*(const uint16_t *)(h + 2), *(const uint16_t *)(h + 6), *(const uint16_t *)(h + 10)};
+      storeLaneBoxU16(p, n, i, mn, mx);
       uint32_t word;
       if (childSkip[i] & BLAS_LEAF_FLAG)
       {
@@ -265,6 +284,12 @@ struct Builder
         }
         else if (srcLeafApexValid(childSrc[i]))
         {
+          // the flags words can grow vertsOfs past the caller's stackless-sized base gates
+          if (DAGOR_UNLIKELY((uint32_t)(newRelBase >> QUAD_BASE_ALIGN_SHIFT) > QUAD_BASE_MASK))
+          {
+            failed = true;
+            return 0;
+          }
           b[0] = (W1 & ~QUAD_BASE_MASK) | ((uint32_t)(newRelBase >> QUAD_BASE_ALIGN_SHIFT) & QUAD_BASE_MASK);
           b[1] = ld32(src, srcBody + 4);
           b[2] = ld32(src, srcBody + 8);
@@ -290,7 +315,9 @@ struct Builder
         word = emitSpan(childSrc[i] + BVH_BLAS_NODE_SIZE, childSrc[i] + BVH_BLAS_NODE_SIZE + (int)childSkip[i], cur, depth + 1);
       *(uint32_t *)(p + 6 * s2 + i * 4) = word;
     }
-    return (uint32_t)nodeOfs | (uint32_t)(n - 1) | (shortMask << PTR_SHORT_SHIFT);
+    if (withFlags)
+      memset(buf.data() + bodyOfs, 0, nodeFlagsBytes(n)); // the flags words, zeroed; the consumer's builder fills them
+    return makeNodeRef((uint32_t)nodeOfs, n, shortMask);
   }
 
   ConvertResult build(int blasStart, int blasSize, int vertBytes)
@@ -319,7 +346,7 @@ struct Builder
       return res;
     if (rootRef & QUAD_LEAF_FLAG)
     {
-      // Degenerate whole-BLAS-is-one-leaf (never for real meshes): a lone 16B [W0 W1 W2 W3] block,
+      // Degenerate whole-BLAS-is-one-leaf (never for real meshes): a lone [W0 W1 W2 W3][flags] block,
       // referenced with tag 0 and handled by the dedicated pop path in rayClosest/rayAnyHit.
       const int srcLeafHdr = (int)(rootRef & ~QUAD_LEAF_FLAG);
       // A no-hit/invalid-apex root is refused outright: the boxless root block would hand its body
@@ -347,11 +374,17 @@ struct Builder
         return res;
       }
       const int newRelBase = (vertsOfs + apexByteInVertRegion) - (cur + 4);
+      if (DAGOR_UNLIKELY((uint32_t)(newRelBase >> QUAD_BASE_ALIGN_SHIFT) > QUAD_BASE_MASK)) // see the in-node guard
+      {
+        failed = true;
+        return res;
+      }
       uint32_t *w = (uint32_t *)(buf.data() + cur);
       w[0] = ld32(src, srcLeafHdr + 12);
       w[1] = (W1 & ~QUAD_BASE_MASK) | ((uint32_t)(newRelBase >> QUAD_BASE_ALIGN_SHIFT) & QUAD_BASE_MASK);
       w[2] = ld32(src, srcBody + 4);
       w[3] = ld32(src, srcBody + 8);
+      w[4] = 0;                // the flags word slot and its pad, present in both layouts
       rootRef = (uint32_t)cur; // tag 0
       cur += LEAF_BYTES;
     }
@@ -367,12 +400,13 @@ struct Builder
 } // namespace
 
 ConvertResult buildFromStackless(const uint8_t *src, int blas_start, int blas_size, int src_verts_ofs, int vert_bytes,
-  dag::Vector<uint8_t> &out)
+  dag::Vector<uint8_t> &out, bool with_flags)
 {
   G_ASSERT_RETURN(src && blas_size > 0 && vert_bytes >= 0, ConvertResult());
   Builder b(out);
   b.src = src;
   b.srcVertsOfs = src_verts_ofs;
+  b.withFlags = with_flags;
   return b.build(blas_start, blas_size, vert_bytes);
 }
 
@@ -390,16 +424,28 @@ struct ToStackless
   const uint8_t *src = nullptr; // SoA4 buffer
   int srcVertsOfs = 0;          // also the end of the source tree region (tree precedes verts)
   int srcVertBytes = 0;
+  uint64_t keepMask = ~0ull; // bit per 6-bit leaf user value; all-ones = no filter
   dag::Vector<uint8_t> &buf;
   int vertsOfs = 0;
   bool failed = false;
+  bool carved = false; // the sizing walk saw a dropped leaf
 
   ToStackless(dag::Vector<uint8_t> &out) : buf(out) {}
 
-  // Stackless bytes of the subtree behind an internal child ref: 28 per leaf child, 16 + recursion
-  // per internal child. Also the validation pass: child refs are data, so every node span (boxes +
-  // words + inline bodies) is bounded to the source tree region before emitNodeChildren re-walks the
-  // same refs and dereferences them.
+  // Per-leaf keep verdict through the ONE user-bits reader (leafUserBits), so the carve and the
+  // trace-time gate that reads through it cannot diverge. body_ofs points at the leaf's W1
+  // (12 B inline body / the [W0..W3] root block + 4).
+  bool leafKept(int body_ofs, bool is_short) const
+  {
+    const LeafLoc l{body_ofs, 0u, is_short};
+    return ((keepMask >> leafUserBits(src, l)) & 1u) != 0;
+  }
+
+  // Stackless bytes of the KEPT part of the subtree behind an internal child ref: 28 per kept leaf
+  // child, 16 + recursion per internal child with a surviving subtree (an emptied one is pruned
+  // whole). Also the validation pass: child refs are data, so every node span (boxes + words +
+  // inline bodies) is bounded to the source tree region before the filter reads a body and before
+  // emitNodeChildren re-walks the same refs and dereferences them.
   int sizeSubtree(uint32_t ptr, int depth)
   {
     const int N = (int)(ptr & TAG_MASK) + 1;
@@ -411,20 +457,28 @@ struct ToStackless
     }
     const uint32_t *w = (const uint32_t *)(src + nodeOfs + 12 * N);
     const unsigned shortMask = (ptr >> PTR_SHORT_SHIFT) & 15u;
-    int bytes = 0, bodyBytes = 0;
+    int bytes = 0, bodyOfs = nodeOfs + 16 * N;
     for (int i = 0; i < N; ++i)
       if (w[i] & QUAD_LEAF_FLAG)
       {
-        bytes += BVH_BLAS_LEAF_SIZE;
-        bodyBytes += ((shortMask >> i) & 1) ? 4 : 12;
+        const bool isShort = ((shortMask >> i) & 1) != 0;
+        const int bodyBytes = isShort ? 4 : 12;
+        if (DAGOR_UNLIKELY(bodyOfs + bodyBytes > srcVertsOfs)) // the body must stay in the tree region
+        {
+          failed = true;
+          return 0;
+        }
+        if (leafKept(bodyOfs, isShort))
+          bytes += BVH_BLAS_LEAF_SIZE;
+        else
+          carved = true;
+        bodyOfs += bodyBytes;
       }
       else
-        bytes += BVH_BLAS_NODE_SIZE + sizeSubtree(w[i], depth + 1);
-    if (DAGOR_UNLIKELY(nodeOfs + 16 * N + bodyBytes > srcVertsOfs)) // inline bodies must stay in the tree region
-    {
-      failed = true;
-      return 0;
-    }
+      {
+        const int sub = sizeSubtree(w[i], depth + 1);
+        bytes += sub > 0 ? BVH_BLAS_NODE_SIZE + sub : 0;
+      }
     return bytes;
   }
 
@@ -438,7 +492,7 @@ struct ToStackless
     *(uint32_t *)(buf.data() + at + 8) = (uint32_t)mnz | ((uint32_t)mxz << 16);
   }
 
-  // Emit a leaf body at `at` from the degenerate-root 16B [W0 W1 W2 W3] block at `leaf`.
+  // Emit a leaf body at `at` from the [W0 W1 W2 W3] head of the degenerate root block at `leaf`.
   void emitLeafBody(int at, int leaf)
   {
     const uint32_t W0 = ld32(src, leaf + 0), W1 = ld32(src, leaf + 4), W2 = ld32(src, leaf + 8), W3 = ld32(src, leaf + 12);
@@ -478,13 +532,17 @@ struct ToStackless
       const int at = cur;
       if (w[i] & QUAD_LEAF_FLAG) // leaf child
       {
+        const bool isShort = ((shortMask >> i) & 1) != 0;
+        const int leafBody = bodyOfs;
+        bodyOfs += isShort ? 4 : 12;
+        if (!leafKept(leafBody, isShort))
+          continue; // carved leaf: no record (the sizing pass agreed)
         cur += BVH_BLAS_LEAF_SIZE;
         writeBox(at, n, i, s2);
-        const bool isShort = (shortMask >> i) & 1;
-        const uint32_t W1 = ld32(src, bodyOfs + 0);
+        const uint32_t W1 = ld32(src, leafBody + 0);
         const uint32_t baseMask = isShort ? (QUAD_BASE_MASK & ~SHORT_W1_FLIP) : QUAD_BASE_MASK;
         const uint32_t relBase = (W1 & baseMask) << QUAD_BASE_ALIGN_SHIFT;
-        const int apex = (bodyOfs + (int)relBase) - srcVertsOfs;
+        const int apex = (leafBody + (int)relBase) - srcVertsOfs;
         // A degenerate no-hit leaf (invalid apex; always a full body) is carried verbatim -- see
         // Builder::srcLeafApexValid.
         const bool apexValid = apexByteValid(apex, srcVertBytes);
@@ -492,12 +550,13 @@ struct ToStackless
         uint32_t *o = (uint32_t *)(buf.data() + at + 12);
         o[0] = w[i]; // W0
         o[1] = apexValid ? (W1 & ~QUAD_BASE_MASK) | ((uint32_t)(newRelBase >> QUAD_BASE_ALIGN_SHIFT) & QUAD_BASE_MASK) : W1;
-        o[2] = isShort ? ((W1 & SHORT_W1_FLIP) ? QUAD_FLIPA_FLAG : 0u) : ld32(src, bodyOfs + 4);
-        o[3] = isShort ? 0u : ld32(src, bodyOfs + 8);
-        bodyOfs += isShort ? 4 : 12;
+        o[2] = isShort ? ((W1 & SHORT_W1_FLIP) ? QUAD_FLIPA_FLAG : 0u) : ld32(src, leafBody + 4);
+        o[3] = isShort ? 0u : ld32(src, leafBody + 8);
       }
       else
       {
+        if (keepMask != ~0ull && sizeSubtree(w[i], depth + 1) == 0)
+          continue;                // the whole subtree carved away: pruned (validated in the sizing pass)
         cur += BVH_BLAS_NODE_SIZE; // box header; skip stored once the children's extent is known
         writeBox(at, n, i, s2);
         emitNodeChildren(w[i], cur, depth + 1);
@@ -513,9 +572,19 @@ struct ToStackless
     const bool rootIsNode = ((uint32_t)root.v & TAG_MASK) != 0;
     if (!rootIsNode && (int)((uint32_t)root.v & PTR_OFS_MASK) + LEAF_BYTES > srcVertsOfs)
       return res; // degenerate-root block must sit inside the tree region
+    if (!rootIsNode && !leafKept((int)((uint32_t)root.v & PTR_OFS_MASK) + 4, /*is_short*/ false))
+    {
+      res.status = StacklessResult::Status::AllCarved; // the lone leaf is carved: no model
+      return res;
+    }
     const int treeBytes = rootIsNode ? sizeSubtree((uint32_t)root.v, 0) : BVH_BLAS_LEAF_SIZE;
     if (failed)
       return res;
+    if (treeBytes == 0) // every leaf carved: no model, and no structural fault
+    {
+      res.status = StacklessResult::Status::AllCarved;
+      return res;
+    }
     vertsOfs = (treeBytes + 7) & ~7;
     buf.resize_noinit(vertsOfs + srcVertBytes);
     if (vertsOfs > treeBytes)
@@ -534,8 +603,12 @@ struct ToStackless
       cur = BVH_BLAS_LEAF_SIZE;
     }
     if (failed || cur != treeBytes) // emit/sizing mismatch: structural corruption, refuse the buffer
+    {
+      buf.clear();
       return res;
+    }
     memcpy(buf.data() + vertsOfs, src + srcVertsOfs, srcVertBytes);
+    res.status = carved ? StacklessResult::Status::EmittedCarved : StacklessResult::Status::Emitted;
     res.treeBytes = treeBytes;
     res.vertsOfs = vertsOfs;
     return res;
@@ -543,12 +616,15 @@ struct ToStackless
 };
 } // namespace
 
-StacklessResult buildStackless(const uint8_t *src, RootRef root, int src_verts_ofs, int vert_bytes, dag::Vector<uint8_t> &out)
+StacklessResult buildStackless(const uint8_t *src, RootRef root, int src_verts_ofs, int vert_bytes, dag::Vector<uint8_t> &out,
+  uint64_t keep_mask)
 {
+  out.clear(); // a non-emitted result leaves out empty: no stale or partial bytes in a reused vector
   G_ASSERT_RETURN(src && root.valid() && vert_bytes >= 0, StacklessResult());
   ToStackless t(out);
   t.src = src;
   t.srcVertsOfs = src_verts_ofs;
+  t.keepMask = keep_mask;
   return t.build(root, vert_bytes);
 }
 

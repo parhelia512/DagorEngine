@@ -2,6 +2,7 @@
 
 #include <animChar/dag_animCharacter2.h>
 #include <anim/dag_animPureInterface.h>
+#include <render/animCharIconAdditionalData.h>
 #include <gameRes/dag_gameResources.h>
 #include <gameRes/dag_stdGameResId.h>
 #include <EASTL/unique_ptr.h>
@@ -52,11 +53,12 @@
 
 #include <render/icon_render.hlsli>
 
-#if DAGOR_DBGLEVEL > 0
+#if DAGOR_DBGLEVEL > 0 && _TARGET_PC
 #define ICON_3D_RENDER_DEBUG 1
 #endif
 
 #if ICON_3D_RENDER_DEBUG
+#include <EASTL/optional.h>
 #include <imgui/imgui.h>
 #include <gui/dag_imgui.h>
 #endif
@@ -511,7 +513,7 @@ struct LoadOneGameResForIconJob : public cpujobs::IJob
   {
     interlocked_increment(loadingResourcesInFlight);
   }
-  const char *getJobName(bool &) const override { return "LoadOneGameResForIconJob"; }
+  const char *getJobName(bool &) const override { return DAPROFILER_STRING("LoadOneGameResForIconJob"); }
   virtual void doJob()
   {
     // debug("do job %s", name->c_str());
@@ -843,6 +845,7 @@ RenderAnimCharIconBase::AnimcharPrefetch RenderAnimCharIconBase::prepareAnimchar
         }
       }
 
+      animchar_icon::fill_additional_data(*ia.blk, ia.additionalData);
       ia.blk = nullptr;
     }
 
@@ -1167,23 +1170,23 @@ DataBlock RenderAnimCharIconBase::applyDebugInfo(const DataBlock &info) const
 
 bool RenderAnimCharIconBase::render(const PictureManager::PictureRenderContext &pic_ctx)
 {
-  auto picCtx = pic_ctx;
-
+  const bool forceRenderEveryFrame = DAGOR_DBGLEVEL > 0 ? pic_ctx.props.getBool("forceRenderEveryFrame", false) : false;
 #if ICON_3D_RENDER_DEBUG
-  bool forceRenderEveryFrame = picCtx.props.getBool("forceRenderEveryFrame", false);
+  eastl::optional<PictureManager::PictureRenderContext> dbgCtx;
   if (debugEnabled)
-    picCtx.props = applyDebugInfo(picCtx.props);
+  {
+    dbgCtx.emplace(pic_ctx);
+    dbgCtx->props = applyDebugInfo(pic_ctx.props);
+  }
+  const PictureManager::PictureRenderContext &picCtx = dbgCtx ? *dbgCtx : pic_ctx;
+#else
+  const PictureManager::PictureRenderContext &picCtx = pic_ctx;
 #endif
 
   IconPrepareStatus status = renderInternal(picCtx);
 
-  if (status != IconPrepareStatus::Ready)
-  {
-#if ICON_3D_RENDER_DEBUG
-    if (!forceRenderEveryFrame)
-#endif
-      clear_to(0, picCtx);
-  }
+  if (status != IconPrepareStatus::Ready && !forceRenderEveryFrame) //-V560
+    clear_to(0, picCtx);
 
   return !(status == IconPrepareStatus::RetryAgain);
 }

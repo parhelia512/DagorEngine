@@ -6,6 +6,7 @@
 
 #include <daECS/core/component.h>
 #include <generic/dag_smallTab.h>
+#include <util/dag_compilerDefs.h>
 
 namespace ecs
 {
@@ -14,7 +15,7 @@ class EntityManager;
 type_index_t find_component_type_index(component_type_t, ecs::EntityManager * = nullptr);
 
 template <typename T>
-class List : protected dag::Vector<T>
+class DAGOR_WARN_IF_UNUSED List : protected dag::Vector<T>
 {
 public:
   typedef dag::Vector<T> base_type;

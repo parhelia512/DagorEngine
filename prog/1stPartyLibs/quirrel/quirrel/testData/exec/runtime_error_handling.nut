@@ -39,7 +39,7 @@ println(caught(function() { throw { code = 7 } }))
 function nested() {
   try {
     try { throw "inner" }
-    catch (e) { throw "rethrown:" + e }
+    catch (e) { throw $"rethrown:{e}" }
   }
   catch (e) { return e }
 }

@@ -12,7 +12,7 @@
 #include <rendInst/rendInstExtraRender.h>
 #include <rendInst/visibility.h>
 
-#include <render/world/cameraParams.h>
+#include <render/cameraParams.h>
 #include <render/world/dynModelRenderPass.h>
 #include <render/world/global_vars.h>
 #include <render/world/occlusionLandMeshManager.h>
@@ -45,6 +45,7 @@ void CameraViewVisibilityMgr::init()
 
   occlusionLandMeshManager = eastl::make_unique<OcclusionLandMeshManager>();
   rendinstMainVisibility = rendinst::createRIGenVisibility(midmem);
+  rendinst::setRIGenVisibilityRequestDestrLods(rendinstMainVisibility, !isSubView);
 }
 
 void CameraViewVisibilityMgr::close()

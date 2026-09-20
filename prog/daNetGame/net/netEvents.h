@@ -26,7 +26,6 @@ struct OnNetDedicatedPrepareServerInfo : public ecs::Event
 {
   ServerInfo &srvInfoMsg;
   const net::ServerFlags &serverFlags;
-  uint32_t &connFlags;
   uint16_t clientFlags;
   matching::UserId userId;
   const eastl::string &userName;
@@ -36,7 +35,6 @@ struct OnNetDedicatedPrepareServerInfo : public ecs::Event
   ECS_BROADCAST_EVENT_DECL(OnNetDedicatedPrepareServerInfo)
   OnNetDedicatedPrepareServerInfo(ServerInfo &si,
     const net::ServerFlags &sf,
-    uint32_t &cnf,
     uint16_t cf,
     matching::UserId id,
     const eastl::string &nm,
@@ -45,7 +43,6 @@ struct OnNetDedicatedPrepareServerInfo : public ecs::Event
     ECS_EVENT_CONSTRUCTOR(OnNetDedicatedPrepareServerInfo),
     srvInfoMsg(si),
     serverFlags(sf),
-    connFlags(cnf),
     clientFlags(cf),
     userId(id),
     userName(nm),

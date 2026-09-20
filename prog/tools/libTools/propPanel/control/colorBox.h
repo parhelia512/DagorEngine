@@ -42,6 +42,8 @@ public:
 
   void setValueHighlight(ColorOverride::ColorIndex color) override { valueHighlightColor = color; }
 
+  const char *getImguiTypeName() const override { return "ColorBox"; }
+
   void updateImgui() override
   {
     ScopedImguiBeginDisabled scopedDisabled(!controlEnabled);
@@ -69,6 +71,7 @@ public:
     const ImVec2 previewSize(ImGui::GetContentRegionAvail().x, 0.0f);
     const bool pressed = ImGui::ColorButton("##preview", ImVec4(asColor4.r, asColor4.g, asColor4.b, asColor4.a),
       ImGuiColorEditFlags_AlphaPreviewHalf | ImGuiColorEditFlags_NoPicker | ImGuiColorEditFlags_NoTooltip, previewSize);
+    setImguiTestItemInfo();
 
     if (pressed)
     {
@@ -105,6 +108,25 @@ public:
 
     const bool changed = ImGui::ColorEdit4(controlCaption.c_str(), reinterpret_cast<float *>(&asColor4),
       ImGuiColorEditFlags_NoLabel | ImGuiColorEditFlags_NoPicker | ImGuiColorEditFlags_NoTooltip | ImGuiColorEditFlags_NoSmallPreview);
+
+    // ColorEdit4 submits its components in a PushID(label) scope and ends with a group item, so there is no last
+    // item to name. The component IDs have to be rebuilt the same way ColorEdit4 makes them. We passed no display
+    // mask to ColorEdit4(), so the saved context wide option decides which items exist and what they hold.
+    const ImGuiColorEditFlags displayMode = ImGui::GetCurrentContext()->ColorEditOptions & ImGuiColorEditFlags_DisplayMask_;
+    ImGui::PushID(controlCaption.c_str());
+    if (displayMode & ImGuiColorEditFlags_DisplayHex)
+    {
+      setImguiTestItemInfoById(ImGui::GetID("##Text"), "hex");
+    }
+    else
+    {
+      const bool hsv = (displayMode & ImGuiColorEditFlags_DisplayHSV) != 0;
+      setImguiTestItemInfoById(ImGui::GetID("##X"), hsv ? "h" : "r");
+      setImguiTestItemInfoById(ImGui::GetID("##Y"), hsv ? "s" : "g");
+      setImguiTestItemInfoById(ImGui::GetID("##Z"), hsv ? "v" : "b");
+      setImguiTestItemInfoById(ImGui::GetID("##W"), "a");
+    }
+    ImGui::PopID();
 
     if (valueHighlightColorSet)
       ImGui::PopStyleColor();

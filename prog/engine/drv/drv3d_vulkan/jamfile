@@ -8,7 +8,10 @@ Target      = engine/drv/drv3d_vulkan.lib ;
 
 include $(Root)/prog/_jBuild/defaults.jam ;
 
-if $(Platform) in windows linux && $(PlatformArch) in x86_64 {
+if $(Platform) = windows && $(Config) = dbg {
+  # NGX Windows libraries require the release CRT and STL.
+  UseDlss = no ;
+} else if $(Platform) in windows linux && $(PlatformArch) in x86_64 {
   if ! $(UseDlss) && ! [ GLOB $(_DEVTOOL) : ngx-dlss-* ] { UseDlss = no ; }
   UseDlss ?= yes ;
 } else {
@@ -206,7 +209,7 @@ if $(Platform) in nswitch {
 }
 
 CPPopt = -DINSIDE_DRIVER ;
-if [ GLOB $(Root)/prog/3rdPartyLibs/streamline : * ] { CPPopt += -DHAS_STREAMLINE ; }
+if $(UseStreamline) = yes { CPPopt += -DHAS_STREAMLINE ; }
 
 if $(Platform) in android windows linux && $(Config) != rel {
   Sources += renderDoc_capture_module.cpp ;
@@ -222,10 +225,7 @@ if $(Platform) in windows {
     Wintrust.lib
   ;
 
-  if $(PlatformArch) in x86 x86_64 {
-    AddIncludes += $(_DEVTOOL)/nvapi-$(NvApiVer) ;
-    CPPopt += -DHAS_NVAPI ;
-  }
+  include $(Root)/prog/engine/drv/drv3d_commonCode/nvapi.jam ;
 } else if $(Platform) in linux {
   Sources +=
     os/linux.cpp
@@ -322,6 +322,7 @@ if $(XessEnabled) = yes && $(Platform)-$(PlatformArch) = windows-x86_64 && [ GLO
 
 UseProgLibs +=
   engine/drv/drv3d_commonCode
+  engine/drv/shadersMetaData/spirv
   3rdPartyLibs/vulkan/smol-v
 ;
 

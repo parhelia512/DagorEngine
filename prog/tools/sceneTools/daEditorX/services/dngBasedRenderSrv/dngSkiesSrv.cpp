@@ -143,6 +143,7 @@ class DngBasedSkiesService : public ISkiesService
   void renderSky() override {}
   void renderClouds() override {}
   bool areCloudTexturesReady() override { return get_daskies() ? get_daskies()->isCloudsReady() : false; }
+  bool isLightingConverged() override { return get_daskies() ? get_daskies()->isLightingConverged() : false; }
 
   void afterD3DReset(bool full_reset) override { reapplyWeather(); }
 

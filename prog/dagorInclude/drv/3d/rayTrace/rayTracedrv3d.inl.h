@@ -2,6 +2,8 @@
 
 // raytrace interface ->
 #if D3D_HAS_RAY_TRACING
+namespace d3d _MULTI_INTERFACE
+{
 // deprecated use raytrace::create_acceleration_structure instead
 RaytraceBottomAccelerationStructure *create_raytrace_bottom_acceleration_structure(RaytraceGeometryDescription *desc, uint32_t count,
   RaytraceBuildFlags flags, uint32_t &build_scratch_size_in_bytes, uint32_t *update_scratch_size_in_bytes,
@@ -27,8 +29,9 @@ uint64_t get_raytrace_acceleration_structure_size(RaytraceAnyAccelerationStructu
 RaytraceAccelerationStructureGpuHandle get_raytrace_acceleration_structure_gpu_handle(RaytraceAnyAccelerationStructure as);
 void copy_raytrace_acceleration_structure(RaytraceAnyAccelerationStructure dst, RaytraceAnyAccelerationStructure src,
   bool compact = false);
+} // namespace d3d _MULTI_INTERFACE
 
-namespace raytrace
+namespace d3d::raytrace _MULTI_INTERFACE
 {
 bool check_vertex_format_support_for_acceleration_structure_build(uint32_t format);
 ::raytrace::AccelerationStructurePool create_acceleration_structure_pool(const ::raytrace::AccelerationStructurePoolCreateInfo &info);
@@ -52,6 +55,6 @@ void dispatch_indirect(const ::raytrace::ResourceBindingTable &rbt, const ::rayt
   const ::raytrace::RayDispatchIndirectParameters &rdip, GpuPipeline gpu_pipeline = GpuPipeline::GRAPHICS);
 void dispatch_indirect_count(const ::raytrace::ResourceBindingTable &rbt, const ::raytrace::Pipeline &pipeline,
   const ::raytrace::RayDispatchIndirectCountParameters &rdicp, GpuPipeline gpu_pipeline = GpuPipeline::GRAPHICS);
-} // namespace raytrace
+} // namespace d3d::raytrace_MULTI_INTERFACE
 // <- raytrace interface
 #endif

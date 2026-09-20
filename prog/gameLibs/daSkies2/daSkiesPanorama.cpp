@@ -205,7 +205,7 @@ void DaSkies::createCloudsPanoramaSplitResources(int resolution_width, int resol
       {1, RenderPassExtraIndexes::RP_SUBPASS_EXTERNAL_END, 0, RP_TA_STORE_WRITE, RB_STAGE_PIXEL | RB_RO_SRV}};
 
     cloudsPanoramaSplitRP = d3d::create_render_pass(
-      {"clouds_panorama_multipass", sizeof(targets) / sizeof(targets[0]), sizeof(binds) / sizeof(binds[0]), targets, binds, 11});
+      {"clouds_panorama_multipass", sizeof(targets) / sizeof(targets[0]), sizeof(binds) / sizeof(binds[0]), targets, binds});
   }
 }
 
@@ -814,8 +814,8 @@ void DaSkies::downsamplePanoramaDepth(UniqueTex &depth, UniqueTexWithShaderVar &
   depth->getinfo(depthTexInfo);
   uint16_t panoramaDownsampledDepthTexWidth = depthTexInfo.w >> panoramaDepthTexMipNumber;
   uint16_t panoramaDownsampledDepthTexHeight = depthTexInfo.h >> panoramaDepthTexMipNumber;
-  downsampled_depth->updateSubRegion(depth.getTex2D(), 2, 0, 0, 0, panoramaDownsampledDepthTexWidth, panoramaDownsampledDepthTexHeight,
-    1, 0, 0, 0, 0);
+  d3d::update_sub_region(depth.getTex2D(), 2, 0, 0, 0, panoramaDownsampledDepthTexWidth, panoramaDownsampledDepthTexHeight, 1,
+    downsampled_depth.getBaseTex(), 0, 0, 0, 0);
   depth.close();
   isPanoramaDepthTexReady = true;
 }

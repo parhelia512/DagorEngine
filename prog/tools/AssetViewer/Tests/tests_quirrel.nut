@@ -25,13 +25,22 @@ tr.registerTest("quirrel_fail", function(runtime) {
   println("Success, Test FAILED!")
 })
 
+function printItemInfo(msg, item) {
+  local max = item.bb.Max
+  local min = item.bb.Min
+  local labelStr = item.label != null ? $", label = {item.label}" : ", label = <null>"
+  local displayNameStr = item.displayName != null ? $", displayName = {item.displayName}" : ", displayName = <null>"
+  local controlTypeStr = item.controlType != null ? $", controlType = {item.controlType}" : ", controlType = <null>"
+  local bbStr = $"[Min: ({min.x}, {min.y}), Max: ({max.x}, {max.y})]"
+  println("".concat($"{msg}: id = {item.id}, bb = {bbStr}, parentId = {item.parentId}",
+    labelStr, displayNameStr, controlTypeStr, $", controlId = {item.controlId}"))
+}
+
 tr.registerTest("quirrel_query_item", function(runtime) {
   local item = null
   item = runtime.queryItem("Root/*/*/Assets Tree/Collapse all")
   if (item != null) {
-    local max = item.bb.Max
-    local min = item.bb.Min
-    println($"Query item: id = {item.id}, bb = [Min: ({min.x}, {min.y}), Max: ({max.x}, {max.y})], parentId = {item.parentId}")
+    printItemInfo("Query item", item);
   } else {
     runtime.markFailed();
   }
@@ -40,6 +49,24 @@ tr.registerTest("quirrel_query_item", function(runtime) {
     runtime.markFailed();
   }
   println($"Success, Query Item!")
+})
+
+tr.registerTest("quirrel_query_children", function(runtime) {
+  local children = null
+  children = runtime.queryChildren("Root/*/*/Assets Tree")
+  if (children != null) {
+    println($"Query children len = {children.len()}")
+    foreach (item in children) {
+      printItemInfo("Query children", item);
+    }
+  } else {
+    runtime.markFailed();
+  }
+  children = runtime.queryChildren("Root/*/*/No such GUI Item")
+  if (children != null) {
+    runtime.markFailed();
+  }
+  println($"Success, Query Children!")
 })
 
 tr.registerTest("quirrel_mouse_move", function(runtime) {
@@ -67,6 +94,41 @@ tr.registerTest("quirrel_mouse_click", function(runtime) {
   runtime.yieldTime(1.0);
   runtime.input().mouseClick(Mouse.Right);
   println("Success, Mouse Click (Item)!")
+})
+
+tr.registerTest("quirrel_mouse_modifier_click", function(runtime) {
+  local assets = runtime.queryItem("Root/*/*/Assets Tree");
+  local collapse = runtime.queryItem("Root/*/*/Assets Tree/Collapse all");
+  if (assets != null && collapse != null) {
+    local cSize = collapse.bb.Max - collapse.bb.Min;
+    local x = collapse.bb.Max.x - (cSize.y / 2);
+    local top = Point2(x, collapse.bb.Max.y + cSize.y);
+    local bottom = Point2(x, assets.bb.Max.y - cSize.y * 2);
+    local shiftClickScroll = function(pos) {
+      runtime.input().mousePosition(pos);
+      runtime.yieldFrame();
+      runtime.input().mouseClickModifier(Mouse.Left, Modifier.Shift);
+      runtime.yieldTime(1.0);
+    }
+    runtime.yieldTime(1.0);
+    shiftClickScroll(top);
+    local checkLastAsset = function(should) {
+      local item = runtime.queryItem("**/cdk_color_tex_palette");
+      return (should && item != null) || (!should && item == null);
+    }
+    local checkTop = checkLastAsset(false);
+    shiftClickScroll(bottom);
+    local checkBottom = checkLastAsset(true);
+    shiftClickScroll(top);
+    local checkTopAgain = checkLastAsset(false);
+    if (checkTop && checkBottom && checkTopAgain) {
+      println("Success, Mouse Modifier Click!");
+    } else {
+      runtime.markFailed();
+    }
+  } else {
+    runtime.markFailed();
+  }
 })
 
 tr.registerTest("quirrel_keys", function(runtime) {

@@ -35,7 +35,7 @@ static void queryPerformanceCounterLowRes(LARGE_INTEGER *lpPerformanceCount)
     wstate.values.last8 = now8;
     if (wstate.as_int == orig) // not changed
       break;
-    if (InterlockedCompareExchange((volatile long *)&wrapAroundState, wstate.as_int, orig) == orig)
+    if (InterlockedCompareExchange((volatile long *)&wrapAroundState, wstate.as_int, orig) == orig) //-V779
       break;
     // Another thread changed 'wrapAroundState', retry
   }

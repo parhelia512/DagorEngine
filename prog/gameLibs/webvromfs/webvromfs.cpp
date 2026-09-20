@@ -25,6 +25,8 @@ bool WebVromfsDataCache::silentMode = false;
 
 bool WebVromfsDataCache::init(const DataBlock &params, const char *cache_dir)
 {
+  // let a main-thread unmount drive download completions while it drains off-main resolves
+  set_vromfs_backed_resolve_pump(&cpujobs::release_done_jobs);
   DataBlock wcParams;
   wcParams = params;
 

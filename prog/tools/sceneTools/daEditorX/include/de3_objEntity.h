@@ -18,6 +18,12 @@ class IObjEntity
 public:
   static const int ST_NOT_COLLIDABLE = 31; //< hardcoded subtype that disables collision test for entity
 
+  // Reserved editLayerIdx values, outside the range that edit layers use.
+  // Hiding LAYER_INDEX_ALWAYS_HIDDEN is the user's responsibility, LayerHiddenMask does not set it to hidden.
+  // See IObjEntityFilter::setLayerHiddenMask().
+  static constexpr int LAYER_INDEX_ALWAYS_HIDDEN = LayerHiddenMask::BIT_COUNT - 1;
+  static constexpr int LAYER_INDEX_LANDCLASS = LayerHiddenMask::BIT_COUNT - 2;
+
   inline IObjEntity(int cls) : entityClass(cls), subType(0), flags(0), editLayerIdx(0) {}
 
   virtual void setTm(const TMatrix &tm) = 0;
@@ -68,7 +74,7 @@ protected:
   unsigned subType : 6;
   unsigned flags : 20;
   uint8_t editLayerIdx;
-  G_STATIC_ASSERT((sizeof(editLayerIdx) * 8) <= LayerHiddenMask::BIT_COUNT);
+  G_STATIC_ASSERT(LayerHiddenMask::BIT_COUNT <= (1 << (sizeof(editLayerIdx) * 8)));
 };
 
 

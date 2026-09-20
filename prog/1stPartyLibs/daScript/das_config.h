@@ -60,7 +60,11 @@ using std::chrono::milliseconds;
 
 #define DAS_GLOBAL_NEW 1
 
+#if defined(DAS_LLVM_AOT)
+#define DAS_BIND_EXTERNAL 1
+#else
 #define DAS_BIND_EXTERNAL 0
+#endif
 
 #define DAS_SMART_PTR_TRACKER 0
 #if defined(_DEBUG_TAB_)

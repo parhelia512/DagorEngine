@@ -12,6 +12,7 @@
 #include <curl/curl.h>
 #include <dagCrypto/rand.h>
 #include <hash/sha1.h>
+#include <perfMon/dag_cpuFreq.h>
 
 #include <string.h>
 
@@ -149,14 +150,15 @@ struct RingBuffer
     buffer.resize(oldSize + len);
     if (dataSize == 0)
       return;
-    if (dataEnd < dataStart) // data is wrapped
+    // dataEnd == dataStart with dataSize > 0 is a full buffer, also wrapped
+    if (dataEnd <= dataStart)
     {
       size_t bytesInHead = dataEnd;
       size_t bytesToMove = eastl::min(len, bytesInHead);
       memcpy(&buffer[oldSize], &buffer[0], bytesToMove);
       if (bytesToMove == bytesInHead)
       {
-        dataEnd = (oldSize - 1) + bytesToMove;
+        dataEnd = oldSize + bytesToMove;
       }
       else
       {
@@ -203,6 +205,8 @@ public:
     bool pingReceived = false;
     bool pongReceived = false;
     bool closed = false;
+    // This side queued the close frame; closeReason then holds our own text
+    bool localClose = false;
     eastl::vector<ReceivedMessage> inbox;
     websocket::Error closeReason;
 
@@ -217,6 +221,13 @@ public:
 
   WebsocketInput &getNetworkData() { return input; }
   bool isProtoSwitched() const { return websockProtoActive; }
+
+  const char *lastCurlError() const { return errorBuffer; }
+  // Both count from the connect until the first bytes move. The send side is
+  // when curl took the bytes; the socket write itself is not observable.
+  int msSinceLastRecv() const { return int(unsigned(get_time_msec()) - unsigned(lastRecvMs)); }
+  int msSinceLastHandedToCurl() const { return int(unsigned(get_time_msec()) - unsigned(lastSendMs)); }
+  size_t bytesQueuedBeforeCurl() const { return sndBuf.size(); }
 
 private:
   bool processWebsocketFrame(PayloadView data);
@@ -238,6 +249,9 @@ private:
   curl_slist *resolve = nullptr;
   RingBuffer sndBuf;
   int pauseFlags = 0;
+  char errorBuffer[CURL_ERROR_SIZE] = {};
+  int lastRecvMs;
+  int lastSendMs;
 
   // handshake state
   eastl::string secKey;
@@ -408,11 +422,13 @@ size_t WebSocketCurlConnection::pullData(dag::Span<uint8_t> out_buf)
     return CURL_READFUNC_PAUSE;
   }
 
+  lastSendMs = get_time_msec();
   return sndBuf.read(out_buf);
 }
 
 size_t WebSocketCurlConnection::onHeaderData(eastl::string_view header)
 {
+  lastRecvMs = get_time_msec();
   static const char secWebSocketAccept[] = "Sec-WebSocket-Accept: ";
   static const char connectionUpgrade[] = "Connection: Upgrade\r\n";
   static const char upgradeWebsocket[] = "Upgrade: websocket\r\n";
@@ -450,6 +466,8 @@ size_t WebSocketCurlConnection::onHeaderData(eastl::string_view header)
       return 0;
     }
     websockProtoActive = true;
+    // Verbose stays off past this point: with TLS it reports every record.
+    // A failure's detail still reaches errorBuffer.
     curl_easy_setopt(easy, CURLOPT_VERBOSE, 0L);
     debug("[websocket] handshake ok. switching protocol");
   }
@@ -469,12 +487,14 @@ void WebSocketCurlConnection::sendPing() { sendWSCtrl(PING, {}); }
 
 void WebSocketCurlConnection::consume(PayloadView data)
 {
+  lastRecvMs = get_time_msec();
   const bool succeeded = processWebsocketFrame(data);
   if (!succeeded)
   {
     logwarn("[websocket] abandon WebSocket connection; closeStatus: %d; %s", input.closeReason.code,
       input.closeReason.message.c_str());
     sendClose((CloseStatusInt)input.closeReason.code);
+    input.localClose = true;
     input.closed = true;
   }
 }
@@ -604,16 +624,26 @@ bool WebSocketCurlConnection::processWebsocketFrame(PayloadView data)
         // It may happen the close was initiated by the application, so avoid overwriting the status code and the reason
         if (input.closeReason.code == 0)
         {
-          CloseStatusInt remoteCloseStatus = 0;
+          // https://datatracker.ietf.org/doc/html/rfc6455#section-5.5.1
+          // The close payload is optional: 2 bytes of status code, then the UTF-8 reason text.
+          CloseStatusInt remoteCloseStatus = (CloseStatusInt)CloseStatus::NoStatusRcvd;
+          eastl::string_view remoteCloseReason;
           if (frame.controlPayload.size() >= 2)
           {
             remoteCloseStatus = ntohs(*((CloseStatusInt const *)frame.controlPayload.data()));
+            remoteCloseReason = eastl::string_view((const char *)frame.controlPayload.data() + 2, frame.controlPayload.size() - 2);
+          }
+          if (remoteCloseReason.empty())
+          {
+            remoteCloseReason = "<no reason text>";
           }
 
           input.setCloseReason(remoteCloseStatus,
-            {eastl::string::CtorSprintf(), "connection was closed by the remote side with code %d", remoteCloseStatus});
+            {eastl::string::CtorSprintf(), "connection was closed by the remote side with code %d; reason: %.*s", remoteCloseStatus,
+              (int)remoteCloseReason.size(), remoteCloseReason.data()});
 
-          debug("[websocket] connection is closed by the remote side with code %d", remoteCloseStatus);
+          debug("[websocket] connection is closed by the remote side with code %d; reason: %.*s", remoteCloseStatus,
+            (int)remoteCloseReason.size(), remoteCloseReason.data());
         }
         break;
       case CONTINUATION:
@@ -743,6 +773,11 @@ static eastl::string create_ip_resolve_entry(const eastl::string &connect_uri, c
   if (connect_ip_hint.empty())
     return {};
 
+#if LIBCURL_VERSION_NUM < 0x073E00 // URL parser API, 7.62.0
+  logwarn("[websocket] ignore connect IP (%s) because libcurl %s cannot decode URL: %s", connect_ip_hint.c_str(), LIBCURL_VERSION,
+    connect_uri.c_str());
+  return {};
+#else
   char *host = nullptr;
   char *port = nullptr;
   CURLU *url = curl_url();
@@ -771,6 +806,7 @@ static eastl::string create_ip_resolve_entry(const eastl::string &connect_uri, c
   curl_free(port);
 
   return resolveEntry;
+#endif
 }
 
 WebSocketCurlConnection::WebSocketCurlConnection(const eastl::string &uri, const eastl::string &ip_resolve_entry,
@@ -785,6 +821,7 @@ WebSocketCurlConnection::WebSocketCurlConnection(const eastl::string &uri, const
   easy = curl_easy_init();
   if (!easy)
     DAG_FATAL("failed to allocate curl handle");
+  lastRecvMs = lastSendMs = get_time_msec();
   curl_easy_setopt(easy, CURLOPT_PRIVATE, this);
   curl_easy_setopt(easy, CURLOPT_HEADERDATA, this);
   curl_easy_setopt(easy, CURLOPT_WRITEDATA, this);
@@ -795,6 +832,7 @@ WebSocketCurlConnection::WebSocketCurlConnection(const eastl::string &uri, const
   curl_easy_setopt(easy, CURLOPT_FOLLOWLOCATION, 1L);
   curl_easy_setopt(easy, CURLOPT_VERBOSE, 1L);
   curl_easy_setopt(easy, CURLOPT_DEBUGFUNCTION, curl_debug);
+  curl_easy_setopt(easy, CURLOPT_ERRORBUFFER, errorBuffer);
   if (connect_timeout_ms > 0)
     curl_easy_setopt(easy, CURLOPT_CONNECTTIMEOUT_MS, connect_timeout_ms);
 
@@ -970,6 +1008,7 @@ void WebSocketClientImpl::close(CloseStatus status)
 
   auto &wsInput = wsConn->getNetworkData();
   wsInput.setCloseReason(status, {eastl::string::CtorSprintf(), "connection was closed by the application with code %d", (int)status});
+  wsInput.localClose = true;
   debug("[websocket] WebSocket connection is closed by the application with code %d", (int)status);
 
   wsConn->sendClose((CloseStatusInt)status);
@@ -1006,9 +1045,25 @@ void WebSocketClientImpl::poll()
     websocket::Error error;
     if (code != CURLE_OK)
     {
-      logwarn("[websocket] receiving from '%s' failed: %s", url, curl_easy_strerror(code));
+      long osErrno = 0;
+      curl_easy_getinfo(easy, CURLINFO_OS_ERRNO, &osErrno);
+      const char *peerIp = nullptr;
+      long localPort = 0;
+      curl_easy_getinfo(easy, CURLINFO_PRIMARY_IP, &peerIp);
+      curl_easy_getinfo(easy, CURLINFO_LOCAL_PORT, &localPort);
+      // Only our own close text is repeated here, never a peer's reason.
+      const WebSocketCurlConnection::WebsocketInput &wsInput = wsConn->getNetworkData();
+      eastl::string localCloseNote;
+      if (wsInput.localClose)
+        localCloseNote.sprintf("; local close queued with code %d: %s", wsInput.closeReason.code, wsInput.closeReason.message.c_str());
+      logwarn("[websocket] receiving from '%s' (%s, local port %ld) failed: %s (curl %d '%s', os errno %ld); "
+              "last recv %d ms ago, last bytes handed to curl %d ms ago, %u bytes still queued before curl%s",
+        url, peerIp ? peerIp : "", localPort, curl_easy_strerror(code), (int)code, wsConn->lastCurlError(), osErrno,
+        wsConn->msSinceLastRecv(), wsConn->msSinceLastHandedToCurl(), (unsigned)wsConn->bytesQueuedBeforeCurl(),
+        localCloseNote.c_str());
       error.code = code;
-      error.message = curl_easy_strerror(code);
+      error.message = wsConn->lastCurlError()[0] ? wsConn->lastCurlError() : curl_easy_strerror(code);
+      error.message += localCloseNote;
     }
     else
     {
@@ -1040,6 +1095,9 @@ void WebSocketClientImpl::poll()
     const char *actualConnectedIp = nullptr;
     curl_easy_getinfo(wsConn->getCurlHandle(), CURLINFO_PRIMARY_IP, &actualConnectedIp);
     actualConnectedIp = actualConnectedIp ? actualConnectedIp : "";
+    long localPort = 0;
+    curl_easy_getinfo(wsConn->getCurlHandle(), CURLINFO_LOCAL_PORT, &localPort);
+    debug("[websocket] connected to %s from local port %ld", actualConnectedIp, localPort);
 
     connectCb(this, ConnectStatus::Ok, actualConnectedIp, Error::no_error());
   }

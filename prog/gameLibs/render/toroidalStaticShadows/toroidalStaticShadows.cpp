@@ -103,7 +103,6 @@ ToroidalStaticShadows::ToroidalStaticShadows(int tsz, int cnt, float dist, float
   TexPtr tex = is_array ? dag::create_array_tex(texSize, texSize, cnt, fmt, 1, "static_shadow_tex_arr", RESTAG_SHADOW)
                         : dag::create_tex(nullptr, texSize, texSize, fmt, 1, "static_shadow_tex2d", RESTAG_SHADOW);
   staticShadowTex = UniqueTexWithShaderVar(eastl::move(tex), "static_shadow_tex");
-  restoreShadowSampler();
   clearTexture();
   static_shadows_cascades = get_shader_variable_id("static_shadows_cascades", true);
   // @NOTE: this check is enough as long as we never resize cascades anywhere but here
@@ -115,14 +114,6 @@ ToroidalStaticShadows::ToroidalStaticShadows(int tsz, int cnt, float dist, float
       logerr("static_shadows_cascades was assumed to =%d, but using %d cascades", assumedVal, desiredVal);
   }
   setSunDir(Point3(0, 1, 0), 2, 2); // to force non-zero matrices in cascades
-}
-
-void ToroidalStaticShadows::restoreShadowSampler()
-{
-  d3d::SamplerInfo smpInfo;
-  smpInfo.filter_mode = d3d::FilterMode::Compare;
-  smpInfo.mip_map_mode = d3d::MipMapMode::Point;
-  ShaderGlobal::set_sampler(get_shader_variable_id("static_shadow_tex_samplerstate", true), d3d::request_sampler(smpInfo));
 }
 
 ToroidalStaticShadowCascade::BeforeRenderReturned ToroidalStaticShadows::updateOriginAndRender(const Point3 &origin,

@@ -87,6 +87,10 @@ public:
   SmallTab<int, MidmemAlloc> texVarOfs;
   SmallTab<VarMap, MidmemAlloc> varMapTable;
 
+#if DAGOR_DBGLEVEL > 0
+  mutable uint32_t selectedStaticVariantCode = uint32_t(-1);
+#endif
+
 public:
   ScriptedShaderElement(ScriptedShaderElement &&) = default;
 
@@ -104,7 +108,7 @@ public:
   int chooseDynamicVariant(unsigned int &out_variant_code) const;
   int chooseCachedDynamicVariant(unsigned int variant_code) const;
 
-  void setStatesForVariant(int curVariant, uint32_t program, ShaderStateBlockId state_index) const;
+  void setStatesForVariant(int curVariant, unsigned variant_code, uint32_t program, ShaderStateBlockId state_index) const;
   void getDynamicVariantStates(int variant_code, int cur_variant, uint32_t &program, ShaderStateBlockId &state_index,
     shaders::RenderStateId &render_state, shaders::ConstStateIdx &const_state, shaders::TexStateIdx &tex_state) const;
 
@@ -153,13 +157,12 @@ public:
   void resetStateBlocks();
   void preCreateStateBlocks();
   void resetShaderPrograms(bool delete_programs = true);
-  void preCreateShaderPrograms();
   void detachElem();
 
   const char *getShaderClassName() const override;
   void setProgram(uint32_t variant);
-  PROGRAM getComputeProgram(const shaderbindump::ShaderCode::ShRef *p, int variant_code = -1) const;
   PROGRAM getComputeProgram() const;
+  PROGRAM preCreateComputeProgram(int pass_id) const;
   inline bool setReqTexLevel(int req_tex_level = 15) const override
   {
     bool increased = req_tex_level > tex_level;
@@ -176,6 +179,8 @@ private:
     ScriptedShadersBinDumpOwner const &dump_owner) const;
   void preparePassIdOOL(PackedPassId::Id &pass_id, int variant, unsigned int variant_code,
     ScriptedShadersBinDumpOwner const &dump_owner) const;
+
+  PROGRAM getComputeProgram(const shaderbindump::ShaderCode::ShRef *p, int variant_code) const;
 
   const shaderbindump::ShaderCode::ShRef *getPassCode() const;
 

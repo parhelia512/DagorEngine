@@ -16,9 +16,11 @@ float scope_alternate_reflection_dist = 40.0;
 float4 ssr_frameNo = (0,0,0,0);
 float4 SSRParams = (0.91, -2.5, 0,0);
 
+float scope_sdf_reflections_environment_darkening = 0.4;
+float scope_sdf_reflections_sky_darkening = 1.0;
+
 shader scope_lens_reflections
 {
-  supports global_const_block;
   z_write = false;
   z_test = false;
   cull_mode = none;
@@ -138,6 +140,9 @@ shader scope_lens_reflections
     scope_reflections_visibility_diff_cos@f1 = scope_reflections_visibility_max_cos - scope_reflections_visibility_min_cos;
     scope_reflections_visibility_min_cos@f1 = scope_reflections_visibility_min_cos;
     scope_reflection_head_visibility@f1 = scope_reflection_head_visibility;
+
+    scope_sdf_reflections_environment_darkening@f1 = scope_sdf_reflections_environment_darkening;
+    scope_sdf_reflections_sky_darkening@f1 = scope_sdf_reflections_sky_darkening;
   }
   GET_ALTERNATE_REFLECTIONS(ps)
 
@@ -155,6 +160,8 @@ shader scope_lens_reflections
     #include <pbr/BRDF.hlsl>
     #include <phase_functions.hlsl>
 
+    #define GLASS_USE_INDOOR_PROBES 0
+
     #define GLASS_HAS_ENVI_PROBE_SAMPLING_FUNC
     float3 glass_sample_envi_probe(float2 screenpos, float3 world_normal, float3 reflection_vec,
                                    float roughness_mip, float3 e2p)
@@ -167,6 +174,9 @@ shader scope_lens_reflections
       get_alternate_reflections(alternateRefl, hitDist, screenpos, reflection_vec,
                                 e2p, world_normal, false, false, alternate_reflection_dist);
     ##endif
+
+      envi *= scope_sdf_reflections_sky_darkening;
+      alternateRefl.rgb *= scope_sdf_reflections_environment_darkening;
 
       return lerp(envi, alternateRefl.rgb, alternateRefl.a);
     }
@@ -187,7 +197,8 @@ shader scope_lens_reflections
       float VoN = abs(dot(input.normal, normalize(input.pointToEye)));
       float headOcclusionTerm = 1.0 - scope_reflection_head_visibility * saturate((VoN - scope_reflections_visibility_min_cos) / scope_reflections_visibility_diff_cos);
 
-      float3 radiance = sample_scope_lens_reflections(input, screenpos, float2(0,0), float4(0,0,0,1));
+      float stub = 1.0;
+      float3 radiance = sample_scope_lens_reflections(input, screenpos, float2(0,0), float4(0,0,0,1), stub);
       return float4(radiance * headOcclusionTerm, 1);
     }
   }

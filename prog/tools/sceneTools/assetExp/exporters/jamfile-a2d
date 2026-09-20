@@ -13,11 +13,10 @@ AddIncludes =
   $(Root)/prog/3rdPartyLibs/acl/includes
 ;
 
-UseProgLibs =
+UseProgLibs +=
   engine/startup
 
   tools/libTools/assetMgr
-  tools/libTools/util
 
   engine/startup
   engine/math
@@ -25,7 +24,6 @@ UseProgLibs =
   engine/lib3d
   engine/drv/drv3d_null
 
-  tools/libTools/assetMgrHlp
   tools/libTools/shaderResBuilder
   tools/libTools/dagFileRW
 ;

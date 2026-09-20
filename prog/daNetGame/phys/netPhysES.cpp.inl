@@ -142,7 +142,7 @@ struct ReserveOneThreadpoolWorkerJob final : public cpujobs::IJob
   os_event_t evt;
   ReserveOneThreadpoolWorkerJob() { os_event_create(&evt); }
   ~ReserveOneThreadpoolWorkerJob() { os_event_destroy(&evt); }
-  const char *getJobName(bool &) const override { return "ReserveOneThreadpoolWorkerJob"; }
+  const char *getJobName(bool &) const override { return DAPROFILER_STRING("ReserveOneThreadpoolWorkerJob"); }
   void doJob() override
   {
     threadpool::wake_up_one(); // Wake up Jolt's sim job
@@ -172,7 +172,12 @@ static void start_async_phys_sim_es(const ParallelUpdateFrameDelayed &evt)
   dacoll::phys_world_set_invalid_fetch_sim_res_thread(/*cur thread*/ 0); // it's invalid to call fetchSimRes until end of this event
 }
 
-static inline void net_phys_update_es(const ecs::UpdateStageInfoAct &) { PhysUpdateCtx::ctx.update(); }
+static inline void net_phys_update_es(const ecs::UpdateStageInfoAct &)
+{
+  if (!net::is_net_lifecycle_thread())
+    return;
+  PhysUpdateCtx::ctx.update();
+}
 
 template <typename Callable>
 static void get_phys_ecs_query(ecs::EntityManager &manager, ecs::EntityId eid, Callable c);

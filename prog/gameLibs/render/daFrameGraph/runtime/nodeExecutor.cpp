@@ -419,6 +419,7 @@ void NodeExecutor::execute(int prev_frame, int curr_frame, multiplexing::Extents
 
 void NodeExecutor::gatherExternalResources(multiplexing::Extents extents)
 {
+  TIME_PROFILE(gatherExternalResources);
   externalResources.clear();
   externalResources.reserve(graph.resources.totalKeys());
 
@@ -437,8 +438,8 @@ void NodeExecutor::gatherExternalResources(multiplexing::Extents extents)
     static_assert(eastl::variant_size_v<decltype(extRes)> == 2); // paranoid check
     if (auto *tex = eastl::get_if<ManagedTexView>(&extRes))
     {
-      G_ASSERTF(*tex, "daFG: External texture '%s' was not provided by it's registering node!",
-        registry.knownNames.getName(resNameId));
+      if (DAGOR_UNLIKELY(!*tex))
+        LOGERR_ONCE("daFG: External texture '%s' was not provided by it's registering node!", registry.knownNames.getName(resNameId));
 
 #if DAGOR_DBGLEVEL > 0
       if (*tex)
@@ -456,7 +457,8 @@ void NodeExecutor::gatherExternalResources(multiplexing::Extents extents)
     }
     else if (auto *buf = eastl::get_if<ManagedBufView>(&extRes))
     {
-      G_ASSERTF(*buf, "daFG: External buffer '%s' was not provided by it's registering node!", registry.knownNames.getName(resNameId));
+      if (DAGOR_UNLIKELY(!*buf))
+        LOGERR_ONCE("daFG: External buffer '%s' was not provided by it's registering node!", registry.knownNames.getName(resNameId));
 
 #if DAGOR_DBGLEVEL > 0
       if (*buf)
@@ -672,8 +674,15 @@ void NodeExecutor::applyState(const sd::NodeStateDelta &state, int frame, int pr
           else
             G_ASSERT_FAIL("Impossible situation!");
 
-          targets.push_back(RenderPassTarget{RenderTarget{getTexture(att.res, frame), att.mipLevel, att.layer}, clearValue});
+          BaseTexture *tex = getTexture(att.res, frame);
+          if (DAGOR_UNLIKELY(tex == nullptr))
+            LOGERR_ONCE("daFG: render pass attachment '%s' was missing at execution time!", resourceName(att.res));
+
+          targets.push_back(RenderPassTarget{RenderTarget{tex, att.mipLevel, att.layer}, clearValue});
         }
+
+        if (DAGOR_UNLIKELY(targets.empty()))
+          LOGERR_ONCE("daFG: encountered a render pass without attachments!");
 
         // FIXME: barriers are already defined for RP, yet we double generate them, causing issues
         // process ahead of time and hope for the best for now
@@ -829,13 +838,16 @@ void NodeExecutor::bindBindlessShaderVar(int bind_idx, const intermediate::Bindi
     if (binding.projectedTag == tag_for<d3d::SamplerHandle>())
     {
       const auto blob = getBlobView(*binding.resource, frameToGet);
+      if (DAGOR_UNLIKELY(!blob))
+        LOGERR_ONCE("daFG: sampler blob '%s' bound bindlessly to shader var %d was missing at execution time!",
+          resourceName(*binding.resource), bind_idx);
       slot = d3d::register_bindless_sampler(*static_cast<const d3d::SamplerHandle *>(binding.projector(blob.data)));
     }
     else
     {
       // Pick this frame's slot from the resource's per-frame range; the manager
       // refreshes the descriptor only if the bound resource changed.
-      const uint32_t baseSlot = graph.resources[*binding.resource].baseBindlessSlot;
+      const uint32_t baseSlot = bindlessSlots.baseSlot(*binding.resource);
       const bool isTex = graph.resources[*binding.resource].getResType() == ResourceType::Texture;
       D3dResource *res = isTex ? static_cast<D3dResource *>(getTexture(*binding.resource, frameToGet))
                                : static_cast<D3dResource *>(getBuffer(*binding.resource, frameToGet));
@@ -858,6 +870,8 @@ void NodeExecutor::bindBlob(int bind_idx, const intermediate::Binding &binding, 
   {
     // TODO: should we try and reset things to zero when unbinding?
     const auto blob = getBlobView(*binding.resource, frame);
+    if (DAGOR_UNLIKELY(!blob))
+      LOGERR_ONCE("daFG: blob '%s' bound at index %d was missing at execution time!", resourceName(*binding.resource), bind_idx);
     bindSetter(bind_idx, *static_cast<const eastl::remove_reference_t<ProjectedType> *>((binding.projector)(blob.data)));
   }
   else if (binding.reset || binding.optional)
@@ -912,11 +926,19 @@ BlobView NodeExecutor::getBlobView(intermediate::ResourceIndex res_idx, int fram
   return resourceAllocator.getBlob(frame, res_idx);
 }
 
+const char *NodeExecutor::resourceName(intermediate::ResourceIndex res_idx) const
+{
+  return graph.resourceNames.isMapped(res_idx) ? graph.resourceNames[res_idx].c_str() : "NOT_MAPPED";
+}
+
 template <class T>
 const T &NodeExecutor::getDynamicParameter(const intermediate::DynamicParameter &param, int frame) const
 {
   G_ASSERT(param.projectedTag == tag_for<T>()); // Paranoic check
-  return *static_cast<const T *>(param.projector(getBlobView(param.resource, frame).data));
+  const auto blob = getBlobView(param.resource, frame);
+  if (DAGOR_UNLIKELY(!blob))
+    LOGERR_ONCE("daFG: blob '%s' providing a dynamic parameter was missing at execution time!", resourceName(param.resource));
+  return *static_cast<const T *>(param.projector(blob.data));
 }
 
 bool NodeExecutor::shouldSwitchVrsTex() const

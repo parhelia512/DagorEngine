@@ -10,6 +10,7 @@
 #include <util/dag_stdint.h>
 #include <util/dag_globDef.h>
 #include <math/dag_color.h>
+#include <EASTL/string.h>
 
 
 class ShaderElement;
@@ -166,7 +167,7 @@ public:
 
   // build meshdata
   bool build(class Mesh &m, ShaderMaterial **mats, int nummats, IColorConvert &color_convert, bool allow_32_bit = false,
-    int node_id = 128);
+    int node_id = 128, int uv_err_lod = -1, const char *uv_err_node = nullptr);
 
   // optimize data for cache
   void optimizeForCache(bool opt_overdraw_too = true);
@@ -199,9 +200,20 @@ public:
   static int get_channel_cvt_errors();
   static int get_channel_cvt_critical_errors();
 
+  // aggregated per (lod, node, tc channel): count of offending verts and worst |uv|
+  struct UvRangeError
+  {
+    eastl::string node;
+    int lod;
+    int channel;
+    int count;
+    float maxAbs;
+  };
+
   static void reset_uv_range_errors();
-  static int get_uv_range_errors();
+  static int get_uv_range_error_count();
   static float get_uv_range_max_abs();
+  static const Tab<UvRangeError> &get_uv_range_errors();
   static bool exchange_uv_validation(bool on);
 
   RElem *addElem(int stage)

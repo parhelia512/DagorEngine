@@ -31,7 +31,6 @@ public:
 
   const eastl::hash_map<ProfilerString, TextureData> &getTextures() const;
   const eastl::vector<ProfilerString> &getFilteredTextures() const;
-  void initializeFilteredTextures();
   float getTextureMemorySize(const TextureData &texture_data) const;
   void selectTexture(const char *texture_name);
   void drawTextureView(const char *texture_name);

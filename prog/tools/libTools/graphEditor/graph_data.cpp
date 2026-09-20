@@ -8,6 +8,7 @@
 #include <perfMon/dag_cpuFreq.h>
 #include <util/dag_string.h>
 
+#include <EASTL/algorithm.h>
 #include <EASTL/hash_map.h>
 #include <EASTL/hash_set.h>
 
@@ -17,6 +18,8 @@
 
 namespace
 {
+constexpr const char *UNNAMED_NODE = "<unnamed>";
+
 // Pin shape (type/role/hidden) is derived from the descriptor at render time, not stored on
 // the loaded Node. Both rules that previously lived here -- the shader_editor "non-texture
 // outputs hidden" rule and the per-(desc,pin) flat hidden table mirroring mainNodes.js's
@@ -416,6 +419,134 @@ eastl::string param_as_string(const DataBlock *blk, const char *name)
   }
 }
 
+bool edge_opposite_end(const GraphData::Edge &edge, int node_id, int pin_index, int &out_node, int &out_pin)
+{
+  if (edge.elemA == node_id && edge.pinA == pin_index)
+  {
+    out_node = edge.elemB;
+    out_pin = edge.pinB;
+    return true;
+  }
+  if (edge.elemB == node_id && edge.pinB == pin_index)
+  {
+    out_node = edge.elemA;
+    out_pin = edge.pinA;
+    return true;
+  }
+  return false;
+}
+
+bool edge_source_pin(const GraphData &gd, const GraphData::Edge &edge, int &out_node, int &out_pin)
+{
+  const int endNodes[2] = {edge.elemA, edge.elemB};
+  const int endPins[2] = {edge.pinA, edge.pinB};
+  for (int i = 0; i < 2; ++i)
+  {
+    const GraphData::Pin *const pin = find_pin(gd, endNodes[i], endPins[i]);
+    if (pin && pin->role == PinRole::Out)
+    {
+      out_node = endNodes[i];
+      out_pin = endPins[i];
+      return true;
+    }
+  }
+  return false;
+}
+
+bool is_pin_reachable(const GraphData::Node &node, int pin_index)
+{
+  return pin_index >= 0 && pin_index < static_cast<int>(node.pins.size()) && !node.pins[pin_index].hidden &&
+         !node.pins[pin_index].separator;
+}
+
+bool is_pin_reachable(const GraphData &gd, int node_id, int pin_index)
+{
+  const GraphData::Node *const n = find_node_by_id(gd, node_id);
+  return n && is_pin_reachable(*n, pin_index);
+}
+
+const char *node_display_name(const GraphData &gd, int node_id)
+{
+  const GraphData::Node *const n = find_node_by_id(gd, node_id);
+  if (!n || n->descName.empty())
+  {
+    return UNNAMED_NODE;
+  }
+  return n->descName.c_str();
+}
+
+const char *pin_comment(const GraphData &gd, int node_id, int pin_index)
+{
+  const GraphData::Node *const n = find_node_by_id(gd, node_id);
+  if (!n || !is_pin_reachable(*n, pin_index))
+  {
+    return "";
+  }
+  return n->pins[pin_index].comment.c_str();
+}
+
+namespace
+{
+// One edge seen from pin (node_id, pin_index): false when the edge does not touch that pin, and `out`
+// is then untouched. The one place the three answers about an edge are composed -- where it leads,
+// whether that node is still there, and whether the view can go to it.
+bool resolve_pin_edge(const GraphData &gd, const GraphData::Edge &edge, int node_id, int pin_index, PinEdge &out)
+{
+  int oppositeNode = -1;
+  int oppositePin = -1;
+  if (!edge_opposite_end(edge, node_id, pin_index, oppositeNode, oppositePin))
+  {
+    return false;
+  }
+
+  const GraphData::Node *const destination = find_node_by_id(gd, oppositeNode);
+  out.edgeId = edge.id;
+  out.oppositeNode = oppositeNode;
+  out.oppositePin = oppositePin;
+  out.muted = edge.muted;
+  out.oppositeNodeExists = destination != nullptr;
+  out.oppositePinReachable = destination && is_pin_reachable(*destination, oppositePin);
+  return true;
+}
+} // namespace
+
+void collect_pin_edges(const GraphData &gd, int node_id, int pin_index, eastl::vector<PinEdge> &out)
+{
+  out.clear();
+  if (node_id < 0 || pin_index < 0)
+  {
+    return;
+  }
+
+  for (const GraphData::Edge &e : gd.edges)
+  {
+    PinEdge pinEdge;
+    if (resolve_pin_edge(gd, e, node_id, pin_index, pinEdge))
+    {
+      out.push_back(pinEdge);
+    }
+  }
+}
+
+bool has_reachable_destination(const GraphData &gd, int node_id, int pin_index)
+{
+  if (node_id < 0 || pin_index < 0)
+  {
+    return false;
+  }
+
+  for (const GraphData::Edge &e : gd.edges)
+  {
+    // The PinEdge is a stack value, so the per-frame caller still allocates nothing.
+    PinEdge pinEdge;
+    if (resolve_pin_edge(gd, e, node_id, pin_index, pinEdge) && pinEdge.oppositePinReachable)
+    {
+      return true;
+    }
+  }
+  return false;
+}
+
 void resolve_node_pins(GraphData::Node &node, const DataBlock *base_nodes_blk)
 {
   // Find the matching `node{}` block in the registry by templateUid. The loaders own
@@ -448,9 +579,9 @@ void resolve_node_pins(GraphData::Node &node, const DataBlock *base_nodes_blk)
   {
     // Descriptor missing from base_nodes.blk -- happens for shader_editor-generated nodes
     // (mask_from_index, multi_max, etc.) which carry their pin shape only in the per-instance
-    // saved data. The loader has already populated role / types / type / isInput / singleConnect
-    // from it; we just need to mark pins visible and apply the shader_editor visibility
-    // rule so output pins that aren't textures/particles stay hidden, matching the JS
+    // saved data. The loader has already populated role / types / type / isInput from it and left
+    // singleConnect multi-connect; we just need to mark pins visible and apply the shader_editor
+    // visibility rule so output pins that aren't textures/particles stay hidden, matching the JS
     // editor's rendering.
     for (GraphData::Pin &p : node.pins)
     {
@@ -508,8 +639,10 @@ void resolve_node_pins(GraphData::Node &node, const DataBlock *base_nodes_blk)
     p.type = p.types.empty() ? PinType::Unknown : p.types.front();
     p.typeGroup.assign(descPin->getStr("typeGroup", ""));
     p.separator = descPin->getBool("separator", false);
-    // singleConnect default mirrors graphEditor.js: outputs are single-connect, inputs are not.
-    p.singleConnect = descPin->getBool("singleConnect", p.role == PinRole::Out);
+    // Multi-connect unless the descriptor asks otherwise. An output driving several consumers is
+    // ordinary, and base_nodes.blk states the flag on every pin anyway, so only descriptor-less
+    // nodes ride on this default.
+    p.singleConnect = descPin->getBool("singleConnect", false);
     p.hidden = descPin->getBool("hidden", false);
     // shader_editor: outputs whose first type is not texture/particles are hidden -- mirrors
     // mainNodes.js GE_preprocessDescription. Separators are exempt: they carry no types, so the
@@ -675,6 +808,36 @@ int parse_graph_size(const char *s, int fallback)
   return atoi(p);
 }
 
+bool erase_node_and_incident_edges(GraphData &gd, int node_id)
+{
+  bool erased = false;
+  auto edgeEnd = eastl::remove_if(gd.edges.begin(), gd.edges.end(),
+    [node_id](const GraphData::Edge &e) { return e.elemA == node_id || e.elemB == node_id; });
+  if (edgeEnd != gd.edges.end())
+  {
+    gd.edges.erase(edgeEnd, gd.edges.end());
+    erased = true;
+  }
+  auto nodeIt = eastl::find_if(gd.nodes.begin(), gd.nodes.end(), [node_id](const GraphData::Node &n) { return n.id == node_id; });
+  if (nodeIt != gd.nodes.end())
+  {
+    gd.nodes.erase(nodeIt);
+    erased = true;
+  }
+  return erased;
+}
+
+bool erase_edge(GraphData &gd, int edge_id)
+{
+  auto it = eastl::find_if(gd.edges.begin(), gd.edges.end(), [edge_id](const GraphData::Edge &e) { return e.id == edge_id; });
+  if (it == gd.edges.end())
+  {
+    return false;
+  }
+  gd.edges.erase(it);
+  return true;
+}
+
 void clear_graph_data(GraphData &out)
 {
   out.nodes.clear();
@@ -683,9 +846,9 @@ void clear_graph_data(GraphData &out)
   out.shaderListBlk.reset();
   out.renderDir.clear();
   out.entityDir.clear();
-  out.heightmapScale = FLT_MAX;
-  out.heightmapMin = FLT_MAX;
-  out.heightmapCellSize = FLT_MAX;
+  out.heightmapScale = UNSET_HEIGHT;
+  out.heightmapMin = UNSET_HEIGHT;
+  out.heightmapCellSize = UNSET_HEIGHT;
   out.graphTextureWidth = 1024;
   out.graphTextureHeight = 1024;
   out.graphTextureDepth = 1024;
@@ -924,15 +1087,7 @@ eastl::string effective_subgraph_boundary_name(const GraphData &gd, int boundary
   // Locate the boundary node by id. Linear scan -- boundary lookup is cold-path (synthesis,
   // validation, expander pre-pass) and the node count for a subgraph file stays small even
   // for index_coloring_64 (489 nodes).
-  const GraphData::Node *boundary = nullptr;
-  for (const GraphData::Node &n : gd.nodes)
-  {
-    if (n.id == boundary_node_id)
-    {
-      boundary = &n;
-      break;
-    }
-  }
+  const GraphData::Node *const boundary = find_node_by_id(gd, boundary_node_id);
   if (!boundary)
   {
     return {};
@@ -978,21 +1133,14 @@ eastl::string effective_subgraph_boundary_name(const GraphData &gd, int boundary
     {
       continue;
     }
-    for (const GraphData::Node &n : gd.nodes)
+    const GraphData::Node *const other = find_node_by_id(gd, otherNodeId);
+    if (other && otherPinIdx >= 0 && otherPinIdx < static_cast<int>(other->pins.size()))
     {
-      if (n.id != otherNodeId)
+      const eastl::string &name = other->pins[otherPinIdx].name;
+      if (!name.empty())
       {
-        continue;
+        return name;
       }
-      if (otherPinIdx >= 0 && otherPinIdx < static_cast<int>(n.pins.size()))
-      {
-        const eastl::string &name = n.pins[otherPinIdx].name;
-        if (!name.empty())
-        {
-          return name;
-        }
-      }
-      break;
     }
   }
 
@@ -1014,17 +1162,16 @@ bool save_graph_data_blk(const GraphData &d, const char *blk_path)
     root.setStr("entityDir", d.entityDir.c_str());
   }
 
-  // FLT_MAX is the sentinel `clear_graph_data` uses for "absent". Keep the sentinel
-  // implicit in the saved file -- consumers default back to FLT_MAX on load.
-  if (d.heightmapScale != FLT_MAX)
+  // Keep the sentinel implicit in the saved file -- consumers default back to it on load.
+  if (d.heightmapScale != UNSET_HEIGHT)
   {
     root.setReal("heightmapScale", d.heightmapScale);
   }
-  if (d.heightmapMin != FLT_MAX)
+  if (d.heightmapMin != UNSET_HEIGHT)
   {
     root.setReal("heightmapMin", d.heightmapMin);
   }
-  if (d.heightmapCellSize != FLT_MAX)
+  if (d.heightmapCellSize != UNSET_HEIGHT)
   {
     root.setReal("heightmapCellSize", d.heightmapCellSize);
   }
@@ -1161,9 +1308,9 @@ bool load_graph_data_blk(GraphData &out, const char *blk_path, const char * /*sh
 
   out.renderDir = root.getStr("renderDir", "");
   out.entityDir = root.getStr("entityDir", "");
-  out.heightmapScale = root.getReal("heightmapScale", FLT_MAX);
-  out.heightmapMin = root.getReal("heightmapMin", FLT_MAX);
-  out.heightmapCellSize = root.getReal("heightmapCellSize", FLT_MAX);
+  out.heightmapScale = root.getReal("heightmapScale", UNSET_HEIGHT);
+  out.heightmapMin = root.getReal("heightmapMin", UNSET_HEIGHT);
+  out.heightmapCellSize = root.getReal("heightmapCellSize", UNSET_HEIGHT);
   out.graphTextureWidth = root.getInt("graphTextureWidth", 1024);
   out.graphTextureHeight = root.getInt("graphTextureHeight", 1024);
   out.graphTextureDepth = root.getInt("graphTextureDepth", 1024);
@@ -1205,9 +1352,9 @@ bool load_graph_data_blk(GraphData &out, const char *blk_path, const char * /*sh
           pin.isInput = (pin.role != PinRole::Out);
           parse_pin_types_csv(c->getStr("types", ""), pin.types);
           pin.type = pin.types.empty() ? PinType::Unknown : pin.types.front();
-          // graphEditor.js parity: outputs default to single-connect, inputs do not.
-          // resolve_node_pins below overrides this when the descriptor is present.
-          pin.singleConnect = (pin.role == PinRole::Out);
+          // Final for shader_editor sub-graph nodes, which have no descriptor to override it: their
+          // outputs feed many consumers in saved graphs, so single-connect would evict real wiring.
+          pin.singleConnect = false; // -V1048
           if (const DataBlock *pinData = c->getBlockByName("data"))
           {
             pin.data.setFrom(pinData);

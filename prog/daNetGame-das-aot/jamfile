@@ -221,12 +221,18 @@ if [ GLOB $(Root)/prog/gameLibs/gamePhys/ballistics : * ] {
 
 CPPopt += -DDAS_AOT_COMPILER ;
 
+if $(DasAotLLVM) = yes {
+  CPPopt += -DDAS_LLVM_AOT ;
+  UseProgLibs += 1stPartyLibs/daScript/modules/dasLLVM ;
+}
+
 AddIncludes +=
   $(Root)/prog/daNetGame
   $(Root)/prog/daNetGameLibs
   $(Root)/prog/3rdPartyLibs/rapidjson/include
   $(Root)/prog/engine/dagorInclude
   $(Root)/prog/gameLibs/publicInclude
+  $(Root)/prog/gameLibs
   $(Root)/prog/1stPartyLibs/daScript/include
   $(Root)/prog/gameLibs/publicInclude/quirrel
   $(Root)/prog/1stPartyLibs/quirrel/quirrel/include

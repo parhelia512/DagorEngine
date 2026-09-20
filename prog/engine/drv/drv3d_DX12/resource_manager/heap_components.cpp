@@ -2,6 +2,8 @@
 
 #include "heap_components.h"
 #include <device.h>
+#include <debug/names.h>
+
 #include <ioSys/dag_dataBlock.h>
 #include <3d/tql.h>
 
@@ -970,6 +972,9 @@ ResourceMemoryHeapProvider::ResourceMemoryAllocationResult ResourceMemoryHeapPro
       }
 
       auto &heap = group[heapID.index];
+
+      debug::name_object(heap.heap.Get(), debug::format_object_name("MemoryHeap.%s#%u", heap_properties.typeName(), heapID.index));
+
       result = first_allocate_from_heap(alloc_info, heap, heapID);
 
       HEAP_LOG("DX12: Allocated new memory heap %p with a size of %.2f %s", heap.heap.Get(), ByteUnits{heap.totalSize}.units(),

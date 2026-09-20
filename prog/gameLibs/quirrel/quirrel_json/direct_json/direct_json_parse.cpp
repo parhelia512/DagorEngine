@@ -35,15 +35,15 @@ struct DirectJsonParser
   UpdateJsonStreamCB updateStreamCB;
   void *userData;
 
-  DirectJsonParser(const char *start, const char *end, HSQUIRRELVM vm) :
-    start(start),
-    end(end),
+  DirectJsonParser(const char *json_start, const char *json_end, HSQUIRRELVM vm) :
+    start(json_start),
+    end(json_end),
     vm(vm),
-    pos(start),
+    pos(json_start),
     endOfInput(false),
     depth(0),
     errorPos(nullptr),
-    triggerPos(end),
+    triggerPos(json_end),
     updateStreamCB(nullptr),
     userData(nullptr)
   {

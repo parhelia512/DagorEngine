@@ -39,6 +39,11 @@ size_t number_of_tickrate_changes = 0;
 
 } // namespace dedicated
 
+namespace dedicated_matching
+{
+void notify_network_is_up() {}
+} // namespace dedicated_matching
+
 void pull_dedicated_das() {}
 
 void on_sync_vroms_done_msg(const net::IMessage *) {}

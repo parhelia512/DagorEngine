@@ -5,6 +5,10 @@
 namespace drv3d_vulkan
 {
 
+#if _TARGET_PC_WIN
+bool TimelineSyncPartAddressWaitable::has_futex_impl = false;
+#endif
+
 template <>
 TimelineManager::CpuReplay &TimelineManager::get()
 {

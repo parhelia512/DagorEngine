@@ -7,11 +7,15 @@
 #include <EASTL/sort.h>
 
 #include "generic/dag_reverseView.h"
+#include <ioSys/dag_dataBlock.h>
 #include <perfMon/dag_statDrv.h>
+#include <startup/dag_globalSettings.h>
 #include <util/dag_convar.h>
 #include <dag/dag_vectorSet.h>
+#include <drv/3d/dag_consts.h>
 #include <drv/3d/dag_driver.h>
 #include <drv/3d/dag_info.h>
+#include <drv/3d/dag_texFlags.h>
 
 #include <common/resourceUsage.h>
 #include <common/genericPoint.h>
@@ -27,6 +31,19 @@ CONSOLE_BOOL_VAL("dafg", report_resource_statistics, false);
 CONSOLE_BOOL_VAL("dafg", dump_resources, false);
 
 CONSOLE_INT_VAL("dafg", resource_packer, dafg::PackerType::GreedyScanline, 0, dafg::PackerType::COUNT - 1);
+
+CONSOLE_BOOL_VAL("dafg", fill_dedicated_fast_gpu_local, true);
+
+// Weights say how much memory traffic a usage is assumed to cause, which is
+// what makes a resource worth putting into the dedicated heap.
+CONSOLE_FLOAT_VAL("dafg", dedicated_attachment_weight, 4.f);
+CONSOLE_FLOAT_VAL("dafg", dedicated_unordered_access_weight, 3.f);
+CONSOLE_FLOAT_VAL("dafg", dedicated_shader_resource_weight, 2.f);
+CONSOLE_FLOAT_VAL("dafg", dedicated_transfer_weight, 2.f);
+CONSOLE_FLOAT_VAL("dafg", dedicated_other_weight, 1.f);
+// How much bigger than the heap the list of considered candidates may get
+CONSOLE_FLOAT_VAL_MINMAX("dafg", dedicated_shortlist_size_multiplier, 3.f, 0.f, 64.f);
+CONSOLE_BOOL_VAL("dafg", dedicated_promote_debug_resources, false);
 
 namespace dafg
 {
@@ -45,9 +62,31 @@ static uint64_t corrected_resource_size(const ResourceProperties &resources, con
   return corrections[frame][idx] != 0 ? corrections[frame][idx] : resources[idx].sizeInBytes;
 }
 
+static bool is_placed(uint64_t offset) { return offset != PackerOutput::NOT_SCHEDULED && offset != PackerOutput::NOT_ALLOCATED; }
+
+void load_resource_scheduling_settings()
+{
+  const DataBlock *settings = dgs_get_settings ? dgs_get_settings() : nullptr;
+  if (settings == nullptr)
+    return;
+
+  const DataBlock *dafgBlk = settings->getBlockByNameEx("dafg");
+  fill_dedicated_fast_gpu_local.set(dafgBlk->getBool("fillDedicatedFastGPULocal", fill_dedicated_fast_gpu_local.get()));
+
+  const DataBlock *blk = dafgBlk->getBlockByNameEx("dedicatedFastGPULocal");
+  dedicated_attachment_weight.set(blk->getReal("attachmentWeight", dedicated_attachment_weight.get()));
+  dedicated_unordered_access_weight.set(blk->getReal("unorderedAccessWeight", dedicated_unordered_access_weight.get()));
+  dedicated_shader_resource_weight.set(blk->getReal("shaderResourceWeight", dedicated_shader_resource_weight.get()));
+  dedicated_transfer_weight.set(blk->getReal("transferWeight", dedicated_transfer_weight.get()));
+  dedicated_other_weight.set(blk->getReal("otherWeight", dedicated_other_weight.get()));
+  dedicated_shortlist_size_multiplier.set(blk->getReal("shortlistSizeMultiplier", dedicated_shortlist_size_multiplier.get()));
+  dedicated_promote_debug_resources.set(blk->getBool("promoteDebugResources", dedicated_promote_debug_resources.get()));
+}
+
 struct HeapSchedulingResult
 {
   dag::Vector<FrameResource> rescheduledResources;
+  dag::Vector<FrameResource> placedOptionalResources;
   bool heapBecameUnused = false;
 };
 
@@ -60,23 +99,27 @@ auto ResourceScheduler::gatherResourceProperties(const intermediate::Graph &grap
     return ResourceAllocationProperties{desc.size, desc.alignment, CPU_HEAP_GROUP};
   };
 
-  auto getResourceFlags = [](const ResourceDescription &desc) { return desc.asBasicRes.cFlags; };
+  // The whole description, not just cFlags: NativeResourceAllocator keys its
+  // per-heap object cache on it, so any change there hands out a different
+  // gAPI object and the old contents are gone.
+  auto getResourceKey = [](const ResourceDescription &desc) { return desc.hash(); };
 
   for (auto [i, res] : graph.resources.enumerate())
     if (res.isScheduled())
     {
-      // We can't use offset hint if the format of the resource is different from the old one.
-      // This can happen after we change settings in which case we simply reset hinting.
+      // We can't use offset hint if the description of the resource is different
+      // from the old one. This can happen after we change settings or the
+      // rendering resolution, in which case we simply reset hinting.
       if (res.asScheduled().isGpuResource() && res.asScheduled().history != History::No)
       {
-        const auto newFlags = getResourceFlags(eastl::get<ResourceDescription>(res.asScheduled().description));
+        const auto newKey = getResourceKey(res.asScheduled().getGpuDescription());
         for (const auto resNameId : res.frontendResources)
         {
-          const auto flags = historyResourceFlags.find(resNameId);
-          if (flags != historyResourceFlags.end() && newFlags != flags->second)
+          const auto key = historyResourceKeys.find(resNameId);
+          if (key != historyResourceKeys.end() && newKey != key->second)
             invalidateTemporalResources();
 
-          historyResourceFlags[resNameId] = newFlags;
+          historyResourceKeys[resNameId] = newKey;
         }
       }
       resourceProperties[i] = res.asScheduled().isGpuResource()
@@ -210,8 +253,9 @@ auto ResourceScheduler::bucketResourcesIntoHeaps(int prev_frame, const ResourceP
 }
 
 HeapSchedulingResult ResourceScheduler::scheduleHeap(HeapIndex heap_idx, eastl::span<const FrameResource> resources_in_heap,
-  uint32_t preserve_produced_on_frame, uint32_t timepoints_per_frame, bool allow_preservation, const ResourceProperties &resources,
-  const PreviousAllocations &previous_allocations, ResourceSchedule &result, const SchedulingContext &ctx)
+  eastl::span<const FrameResource> optional_resources_in_heap, uint32_t preserve_produced_on_frame, uint32_t timepoints_per_frame,
+  bool allow_preservation, const ResourceProperties &resources, const PreviousAllocations &previous_allocations,
+  ResourceSchedule &result, const SchedulingContext &ctx)
 {
   HeapSchedulingResult heapResult;
 
@@ -220,38 +264,34 @@ HeapSchedulingResult ResourceScheduler::scheduleHeap(HeapIndex heap_idx, eastl::
   auto &allocations = result.allocationLocations;
   auto &heapRequests = result.heapRequests;
 
-  // Collect resources present in this heap
+  // Collect resources present in this heap, keeping the optional ones apart
+  // so that both halves stay parallel to what the packer reports back.
   dag::Vector<FrameResource, framemem_allocator> inHeapIdxToFrameResource;
   dag::Vector<PackerInput::Resource, framemem_allocator> packerResources;
-  inHeapIdxToFrameResource.reserve(resources.size() * SCHEDULE_FRAME_WINDOW);
-  packerResources.reserve(resources.size() * SCHEDULE_FRAME_WINDOW);
+  dag::Vector<FrameResource, framemem_allocator> optionalInHeapIdxToFrameResource;
+  dag::Vector<PackerInput::Resource, framemem_allocator> optionalPackerResources;
 
-  for (auto resource : resources_in_heap)
-  {
-    const auto &resProps = resources[resource.resIdx];
+  const uint32_t newStart = ((preserve_produced_on_frame + 1) % SCHEDULE_FRAME_WINDOW) * timepoints_per_frame;
+  const uint32_t timelineLength = SCHEDULE_FRAME_WINDOW * timepoints_per_frame;
 
-    packerResources.push_back({0, 0, corrected_resource_size(resources, ctx.corrections, resource.resIdx, resource.frame),
-      resProps.offsetAlignment, PackerInput::NO_PIN});
-    inHeapIdxToFrameResource.push_back(resource);
-  }
+  const auto shiftToPreservePoint = [&](LifetimePoint point) {
+    return (point.frame * timepoints_per_frame + point.timepoint + newStart) % timelineLength;
+  };
 
-  // Assign start/end timepoints for collected resources
-  {
-    const uint32_t newStart = ((preserve_produced_on_frame + 1) % SCHEDULE_FRAME_WINDOW) * timepoints_per_frame;
-    const uint32_t timelineLength = SCHEDULE_FRAME_WINDOW * timepoints_per_frame;
-
-    const auto shiftToPreservePoint = [&](LifetimePoint point) {
-      return (point.frame * timepoints_per_frame + point.timepoint + newStart) % timelineLength;
-    };
-
-    for (size_t i = 0; i < packerResources.size(); ++i)
+  const auto collectInHeap = [&](eastl::span<const FrameResource> in_heap, auto &frame_resources, auto &packer_resources) {
+    frame_resources.reserve(in_heap.size());
+    packer_resources.reserve(in_heap.size());
+    for (auto resource : in_heap)
     {
-      const auto [resIdx, frame] = inHeapIdxToFrameResource[i];
-      const auto &lifetime = ctx.lifetimes[frame][resIdx];
-      packerResources[i].start = shiftToPreservePoint(lifetime.firstUse);
-      packerResources[i].end = shiftToPreservePoint(lifetime.release);
+      const auto &lifetime = ctx.lifetimes[resource.frame][resource.resIdx];
+      packer_resources.push_back({shiftToPreservePoint(lifetime.firstUse), shiftToPreservePoint(lifetime.release),
+        corrected_resource_size(resources, ctx.corrections, resource.resIdx, resource.frame),
+        resources[resource.resIdx].offsetAlignment, PackerInput::NO_PIN});
+      frame_resources.push_back(resource);
     }
-  }
+  };
+  collectInHeap(resources_in_heap, inHeapIdxToFrameResource, packerResources);
+  collectInHeap(optional_resources_in_heap, optionalInHeapIdxToFrameResource, optionalPackerResources);
 
 
   bool preserveHeap = false;
@@ -297,12 +337,13 @@ HeapSchedulingResult ResourceScheduler::scheduleHeap(HeapIndex heap_idx, eastl::
   PackerInput input{};
   input.timelineSize = SCHEDULE_FRAME_WINDOW * timepoints_per_frame;
   input.resources = packerResources;
+  input.optionalResources = optionalPackerResources;
   input.maxHeapSize = heapGroupProp.maxHeapSize;
 
   // When running dx12 on windows, we have a weird additional limit
   // on heap sizes that is not reported by the driver and can only be
   // known by asking MS guys on discord, and it's 64MiBs.
-  if (heapGroupProp.optimalMaxHeapSize > 0)
+  if (heapGroupProp.optimalMaxHeapSize > 0 && !packerResources.empty())
   {
     // The funnest part of the whole thing: the 64MiB limit is NOT big
     // enough for 4K HDR monitors! 3840*2160*8 + metadata is just above
@@ -336,6 +377,12 @@ HeapSchedulingResult ResourceScheduler::scheduleHeap(HeapIndex heap_idx, eastl::
     output = packer(input);
   }
 
+  // Handling optional resources is up to the packer, and the ones that ignore
+  // them would turn promotion into a silent no-op.
+  if (!optionalPackerResources.empty() && output.optionalOffsets.empty())
+    LOGWARN_ONCE("daFG: the selected resource packer ignores optional resources, so nothing will be "
+                 "promoted into the dedicated fast GPU-local heap");
+
 #if DAFG_STATISTICS_REPORTING
   if (report_resource_statistics.get() && heapRequests[heap_idx].group != CPU_HEAP_GROUP)
   {
@@ -353,13 +400,19 @@ HeapSchedulingResult ResourceScheduler::scheduleHeap(HeapIndex heap_idx, eastl::
   {
     uint64_t totalResMemory = 0;
     uint64_t totalResArea = 0;
-    for (uint32_t i = 0; i < input.resources.size(); ++i)
-      if (output.offsets[i] != PackerOutput::NOT_SCHEDULED)
-      {
-        const auto &res = input.resources[i];
-        totalResMemory += res.size;
-        totalResArea += (res.size * (res.end + (res.end <= res.start) * input.timelineSize - res.start)) >> 10;
-      }
+    const auto accumulateStatistics = [&](eastl::span<const PackerInput::Resource> packer_resources,
+                                        eastl::span<const uint64_t> offsets) {
+      for (uint32_t i = 0; i < offsets.size(); ++i)
+        if (is_placed(offsets[i]))
+        {
+          const auto &res = packer_resources[i];
+          totalResMemory += res.size;
+          totalResArea += (res.size * (res.end + (res.end <= res.start) * input.timelineSize - res.start)) >> 10;
+        }
+    };
+    accumulateStatistics(packerResources, output.offsets);
+    accumulateStatistics(optionalPackerResources, output.optionalOffsets);
+
     const uint64_t totalArea = (output.heapSize * input.timelineSize) >> 10;
     const float occupancy = totalArea > 0 ? static_cast<float>(totalResArea) / static_cast<float>(totalArea) : 1;
     const float aliasingRatio = output.heapSize > 0 ? static_cast<float>(totalResMemory) / static_cast<float>(output.heapSize) : 1;
@@ -374,17 +427,21 @@ HeapSchedulingResult ResourceScheduler::scheduleHeap(HeapIndex heap_idx, eastl::
     else
       debug("daFG: dump of resources in heap %d", eastl::to_underlying(heap_idx));
     debug("daFG: name\tarea (KB)\tstart\tend\tsize\toffset", eastl::to_underlying(heap_idx));
-    for (uint32_t i = 0; i < input.resources.size(); ++i)
-    {
-      if (output.offsets[i] == PackerOutput::NOT_SCHEDULED)
-        continue;
+    const auto dumpResources = [&](eastl::span<const PackerInput::Resource> packer_resources, eastl::span<const uint64_t> offsets,
+                                 eastl::span<const FrameResource> frame_resources, const char *promoted) {
+      for (uint32_t i = 0; i < offsets.size(); ++i)
+      {
+        if (!is_placed(offsets[i]))
+          continue;
 
-      const auto &res = input.resources[i];
-      const auto frameRes = inHeapIdxToFrameResource[i];
-      const auto area = (res.size * (res.end + (res.end <= res.start) * input.timelineSize - res.start)) >> 10;
-      debug("daFG: %s\t%d\t%d\t%d\t%d\t%d", ctx.cachedResourceNames[frameRes.resIdx], area, res.start, res.end, res.size,
-        output.offsets[i]);
-    }
+        const auto &res = packer_resources[i];
+        const auto area = (res.size * (res.end + (res.end <= res.start) * input.timelineSize - res.start)) >> 10;
+        debug("daFG: %s%s\t%d\t%d\t%d\t%d\t%d", ctx.cachedResourceNames[frame_resources[i].resIdx], promoted, area, res.start, res.end,
+          res.size, offsets[i]);
+      }
+    };
+    dumpResources(packerResources, output.offsets, inHeapIdxToFrameResource, "");
+    dumpResources(optionalPackerResources, output.optionalOffsets, optionalInHeapIdxToFrameResource, " (promoted)");
   }
 
   // We allocate one ESRAM heap with the maximum available size,
@@ -396,7 +453,7 @@ HeapSchedulingResult ResourceScheduler::scheduleHeap(HeapIndex heap_idx, eastl::
   G_ASSERT(!preserveHeap || output.heapSize <= ctx.allocatedHeaps[heap_idx].size);
   // Prohibit decreasing size of preserved heaps
   heapRequests[heap_idx].size = preserveHeap ? ctx.allocatedHeaps[heap_idx].size : output.heapSize;
-  for (uint32_t idx = 0; idx < output.offsets.size(); ++idx)
+  for (uint32_t idx = 0; idx < packerResources.size(); ++idx)
   {
     const auto frameRes = inHeapIdxToFrameResource[idx];
     const auto [resIdx, frame] = frameRes;
@@ -404,7 +461,7 @@ HeapSchedulingResult ResourceScheduler::scheduleHeap(HeapIndex heap_idx, eastl::
     {
       heapResult.rescheduledResources.push_back(frameRes);
 
-      if (input.resources[idx].pin != PackerInput::NO_PIN)
+      if (packerResources[idx].pin != PackerInput::NO_PIN)
       {
         preservedResources[frame][resIdx] = false;
         logerr("daFG: Resource packer failed to pin a preserved resource!");
@@ -412,19 +469,35 @@ HeapSchedulingResult ResourceScheduler::scheduleHeap(HeapIndex heap_idx, eastl::
 
       continue;
     }
-    const auto &packerInputRes = input.resources[idx];
     if (ctx.cachedResources[resIdx].asScheduled().history != History::No)
     {
       // Defensive programming: check that the packer didn't mess up and
       // respected all out hints.
+      const auto &packerInputRes = packerResources[idx];
       if (packerInputRes.pin != PackerInput::NO_PIN && DAGOR_UNLIKELY(packerInputRes.pin != output.offsets[idx]))
       {
         preservedResources[frame][resIdx] = false;
         logerr("daFG: Resource packer failed to pin a preserved resource!");
       }
     }
-    G_ASSERT(output.offsets[idx] + input.resources[idx].size <= heapRequests[heap_idx].size);
+    G_ASSERT(output.offsets[idx] + packerResources[idx].size <= heapRequests[heap_idx].size);
     allocations[frame][resIdx] = {heap_idx, output.offsets[idx]};
+  }
+
+  // Frame copies of an optional resource are accepted independently, just
+  // like mandatory ones: copies that did not fit still sit in their fallback
+  // heap buckets, which are packed after this heap, so no rescheduling.
+  heapResult.placedOptionalResources.reserve(output.optionalOffsets.size());
+  for (uint32_t idx = 0; idx < output.optionalOffsets.size(); ++idx)
+  {
+    if (!is_placed(output.optionalOffsets[idx]))
+      continue;
+
+    const auto frameRes = optionalInHeapIdxToFrameResource[idx];
+    const auto [resIdx, frame] = frameRes;
+    G_ASSERT(output.optionalOffsets[idx] + optionalPackerResources[idx].size <= heapRequests[heap_idx].size);
+    allocations[frame][resIdx] = {heap_idx, output.optionalOffsets[idx]};
+    heapResult.placedOptionalResources.push_back(frameRes);
   }
 
   if (heapRequests[heap_idx].size == 0 && ctx.allocatedHeaps.isMapped(heap_idx))
@@ -559,6 +632,11 @@ void ResourceScheduler::reportSchedulingStatistics(const HeapRequests &heap_requ
   }
 }
 
+// Frame copies of the resources that are worth trying to fit into the
+// dedicated heap, best candidates first.
+static dag::Vector<FrameResource, framemem_allocator> select_dedicated_fast_gpu_local_resources(const ResourceProperties &resources,
+  uint64_t heap_size, const ResourceScheduler::SchedulingContext &ctx, const AlreadyScheduled &already_scheduled);
+
 void ResourceScheduler::scheduleResourcesIntoHeaps(int prev_frame, const ResourceProperties &resources,
   const PlacementChangedFlags &placement_changed, const SchedulingContext &ctx)
 {
@@ -657,6 +735,26 @@ void ResourceScheduler::scheduleResourcesIntoHeaps(int prev_frame, const Resourc
     if (previousHeapRequests.isMapped(idx))
       req.size = previousHeapRequests[idx].size;
 
+  eastl::optional<HeapIndex> dedicatedHeapIdx;
+  uint64_t dedicatedHeapSize = 0;
+  for (auto [idx, req] : heapRequests.enumerate())
+  {
+    if (req.group == CPU_HEAP_GROUP)
+      continue;
+
+    const auto heapGroupProp = ctx.propertyProvider.getResourceHeapGroupProperties(req.group);
+    if (!heapGroupProp.isDedicatedFastGPULocal)
+      continue;
+
+    dedicatedHeapIdx = idx;
+    dedicatedHeapSize = heapGroupProp.maxHeapSize;
+    break;
+  }
+
+  dag::Vector<FrameResource, framemem_allocator> dedicatedOptional;
+  if (fill_dedicated_fast_gpu_local.get() && dedicatedHeapIdx.has_value() && !reusedHeaps.test(*dedicatedHeapIdx, false))
+    dedicatedOptional = select_dedicated_fast_gpu_local_resources(resources, dedicatedHeapSize, ctx, alreadyScheduled);
+
   auto resourcesToBeScheduled = bucketResourcesIntoHeaps(prev_frame, resources, activeRequestForGroup, heapRequests, alreadyScheduled,
     reusedHeaps, previousAllocations, ctx);
 
@@ -667,6 +765,12 @@ void ResourceScheduler::scheduleResourcesIntoHeaps(int prev_frame, const Resourc
   for (uint32_t i = 0; i < heapRequests.size(); ++i)
     if (!reusedHeaps.test(static_cast<HeapIndex>(i), false))
       idxs.push_back(static_cast<HeapIndex>(i));
+
+  // Schedule the dedicated heap before all others, as whatever it promotes has
+  // to leave the other buckets before those get packed
+  if (dedicatedHeapIdx.has_value())
+    if (auto it = eastl::find(idxs.begin(), idxs.end(), *dedicatedHeapIdx); it != idxs.end())
+      eastl::rotate(idxs.begin(), it, it + 1);
 
   dag::Vector<HeapRequest, framemem_allocator> newHeapRequests;
   newHeapRequests.reserve(heapRequests.size());
@@ -684,11 +788,36 @@ void ResourceScheduler::scheduleResourcesIntoHeaps(int prev_frame, const Resourc
     {
       const auto heapIdx = *it;
 
-      auto heapResult = scheduleHeap(heapIdx, resourcesToBeScheduled[heapIdx], preserveProducedOnFrame, timepointsPerFrame,
-        allowPreservation, resources, previousAllocations, cachedSchedule, ctx);
+      const auto optionalForHeap = (dedicatedHeapIdx.has_value() && heapIdx == *dedicatedHeapIdx)
+                                     ? eastl::span<const FrameResource>(dedicatedOptional)
+                                     : eastl::span<const FrameResource>{};
+      auto heapResult = scheduleHeap(heapIdx, resourcesToBeScheduled[heapIdx], optionalForHeap, preserveProducedOnFrame,
+        timepointsPerFrame, allowPreservation, resources, previousAllocations, cachedSchedule, ctx);
 
       if (heapResult.heapBecameUnused)
         heapIsUnused[heapIdx] = true;
+
+      if (!heapResult.placedOptionalResources.empty())
+      {
+        // Taking copies away from a heap that was already packed would leave it
+        // sized for memory nobody uses, so this heap has to go first of all.
+        G_ASSERT(it == idxs.begin());
+
+        // Frame copies are promoted independently, so filter buckets per copy:
+        // a copy that did not make it into this heap must stay in its bucket.
+        eastl::array<IdIndexedFlags<intermediate::ResourceIndex, framemem_allocator>, SCHEDULE_FRAME_WINDOW> promoted;
+        for (auto &perFrame : promoted)
+          perFrame.resize(resources.size(), false);
+        for (const auto &frameRes : heapResult.placedOptionalResources)
+          promoted[frameRes.frame].set(frameRes.resIdx, true);
+        for (uint32_t i = 0; i < resourcesToBeScheduled.size(); ++i)
+        {
+          auto &bucket = resourcesToBeScheduled[static_cast<HeapIndex>(i)];
+          bucket.erase(eastl::remove_if(bucket.begin(), bucket.end(),
+                         [&](const FrameResource &fr) { return promoted[fr.frame].test(fr.resIdx, false); }),
+            bucket.end());
+        }
+      }
 
       if (!heapResult.rescheduledResources.empty())
       {
@@ -735,6 +864,128 @@ void ResourceScheduler::scheduleResourcesIntoHeaps(int prev_frame, const Resourc
   }
 
   reportSchedulingStatistics(heapRequests);
+}
+
+static float usage_bandwidth_weight(const intermediate::ResourceUsage &usage)
+{
+  const auto has = [&](Usage bit) { return (usage.type & bit) == bit; };
+
+  if (has(Usage::COLOR_ATTACHMENT) || has(Usage::DEPTH_ATTACHMENT) || has(Usage::RESOLVE_ATTACHMENT))
+    return dedicated_attachment_weight.get();
+  if (has(Usage::SHADER_RESOURCE))
+    return usage.access == Access::READ_WRITE ? dedicated_unordered_access_weight.get() : dedicated_shader_resource_weight.get();
+  if (has(Usage::COPY) || has(Usage::BLIT))
+    return dedicated_transfer_weight.get();
+  return dedicated_other_weight.get();
+}
+
+// Renaming chains make the name a list, so any part of it having the marker
+// means the resource is debug-related.
+static bool is_debug_resource_name(const intermediate::DebugResourceName &name)
+{
+  static constexpr char MARKER[] = "debug";
+  const auto equalIgnoringCase = [](char a, char b) { return tolower(static_cast<unsigned char>(a)) == b; };
+  return eastl::search(name.begin(), name.end(), eastl::begin(MARKER), eastl::end(MARKER) - 1, equalIgnoringCase) != name.end();
+}
+
+static bool can_be_placed_on_chip(const ResourceDescription &desc)
+{
+  const uint32_t flags = desc.asBasicRes.cFlags;
+  if (desc.type == D3DResourceType::SBUF)
+    return (flags & (SBCF_DYNAMIC | SBCF_CPU_ACCESS_MASK | SBCF_USAGE_READ_BACK)) == 0;
+  return (flags & (TEXCF_SYSMEM | TEXCF_CPU_CACHED_MEMORY | TEXCF_LINEAR_LAYOUT | TEXCF_TILED_RESOURCE)) == 0;
+}
+
+struct DedicatedFastGPULocalCandidate
+{
+  intermediate::ResourceIndex resIdx = intermediate::RESOURCE_NOT_MAPPED;
+  float score = 0.f;
+};
+
+static dag::Vector<FrameResource, framemem_allocator> select_dedicated_fast_gpu_local_resources(const ResourceProperties &resources,
+  uint64_t heap_size, const ResourceScheduler::SchedulingContext &ctx, const AlreadyScheduled &already_scheduled)
+{
+  dag::Vector<FrameResource, framemem_allocator> result;
+  result.reserve(resources.size() * SCHEDULE_FRAME_WINDOW);
+
+  {
+    FRAMEMEM_VALIDATE;
+
+    IdIndexedMapping<intermediate::ResourceIndex, float, framemem_allocator> activity(resources.size(), 0.f);
+    for (const auto &node : ctx.graph.nodes.values())
+      for (const auto &req : node.resourceRequests)
+        activity[req.resource] += usage_bandwidth_weight(req.usage);
+
+    dag::Vector<DedicatedFastGPULocalCandidate, framemem_allocator> candidates;
+    candidates.reserve(resources.size());
+
+    // Asking the driver for these can be expensive, while a schedule only ever
+    // uses a handful of heap groups. Declared after the candidates, as framemem
+    // wants its allocations released in reverse order.
+    constexpr size_t EXPECTED_HEAP_GROUP_COUNT = 8;
+    dag::VectorMap<ResourceHeapGroup *, bool, eastl::less<ResourceHeapGroup *>, framemem_allocator> groupIsDedicated;
+    groupIsDedicated.reserve(EXPECTED_HEAP_GROUP_COUNT);
+    const auto isDedicatedGroup = [&](ResourceHeapGroup *group) {
+      auto it = groupIsDedicated.find(group);
+      if (it == groupIsDedicated.end())
+        it = groupIsDedicated.emplace(group, ctx.propertyProvider.getResourceHeapGroupProperties(group).isDedicatedFastGPULocal).first;
+      return it->second;
+    };
+
+    for (auto [idx, resProps] : resources.enumerate())
+    {
+      if (resProps.offsetAlignment == 0)
+        continue;
+
+      const auto &res = ctx.graph.resources[idx];
+      if (!res.isScheduled() || !res.asScheduled().isGpuResource())
+        continue;
+
+      if (!can_be_placed_on_chip(res.asScheduled().getGpuDescription()))
+        continue;
+
+      // Aliasing barriers for an untracked resource are only synced against
+      // other untracked ones, which is why tracked and untracked resources
+      // never share a heap. The dedicated one holds tracked resources.
+      if (res.isUntracked())
+        continue;
+
+      if (isDedicatedGroup(resProps.heapGroup))
+        continue;
+
+      // History resources wrap around the timeline, which optional resources
+      // are not allowed to do.
+      if (res.asScheduled().history != History::No)
+        continue;
+
+      if (resProps.sizeInBytes > heap_size || resProps.sizeInBytes == 0)
+        continue;
+
+      if (!dedicated_promote_debug_resources.get() && ctx.cachedResourceNames.isMapped(idx) &&
+          is_debug_resource_name(ctx.cachedResourceNames[idx]))
+        continue;
+
+      candidates.push_back({idx, activity[idx] / static_cast<float>(resProps.sizeInBytes)});
+    }
+
+    eastl::sort(candidates.begin(), candidates.end(), [](const auto &a, const auto &b) { return a.score > b.score; });
+
+    const uint64_t shortlistCap = static_cast<uint64_t>(static_cast<double>(heap_size) * dedicated_shortlist_size_multiplier.get());
+    uint64_t accumulated = 0;
+    size_t kept = 0;
+    for (; kept < candidates.size() && accumulated <= shortlistCap; ++kept)
+      accumulated += resources[candidates[kept].resIdx].sizeInBytes;
+    candidates.resize(kept);
+
+    for (const auto &candidate : candidates)
+      for (uint32_t frame = 0; frame < SCHEDULE_FRAME_WINDOW; ++frame)
+        if (!already_scheduled[frame].test(candidate.resIdx, false))
+          result.push_back({candidate.resIdx, frame});
+  }
+
+  result.shrink_to_fit();
+
+  return result;
 }
 
 void ResourceScheduler::invalidateTemporalResources()

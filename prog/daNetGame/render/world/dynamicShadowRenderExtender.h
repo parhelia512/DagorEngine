@@ -6,6 +6,7 @@
 #include <EASTL/fixed_function.h>
 #include <vecmath/dag_vecMathDecl.h>
 #include <render/daFrameGraph/daFG.h>
+#include <render/lights/dynamicShadowRenderExtensions.h>
 
 class DynamicShadowRenderExtender
 {
@@ -60,4 +61,19 @@ private:
   MulticastEvent<ExecutionCallback> executions;
   size_t count = 0;
   dag::FixedMoveOnlyFunction<sizeof(void *), OnInvalidate> onInvalidate;
+};
+
+struct SceneShadowRenderData
+{
+  dynamic_shadow_render::FrameVolumeData volumeData;
+  // Indices for visibility jobs
+  dynamic_shadow_render::FrameVector<int> staticRiSlots;
+  dynamic_shadow_render::FrameVector<int> dynamicRiSlots;
+
+  void clear()
+  {
+    volumeData.clear();
+    staticRiSlots.clear();
+    dynamicRiSlots.clear();
+  }
 };

@@ -757,7 +757,7 @@ public:
     for (DagorAsset *a : mgr->getAssets())
       if (a->props.getBool("useIndividualPackWithSrcHash", false))
         if (IDagorAssetExporter *exp = mgr->getAssetExporter(a->getType()))
-          if (exp->getAssetSourceHash(hash, *a, AssetExportCache::getSharedDataPtr(), _MAKE4C('PC')))
+          if (exp->getAssetSourceHash(hash, *a, _MAKE4C('PC')))
           {
             const char *a_name = a->getName();
             const char *suf = strrchr(a_name, '$');

@@ -6,6 +6,7 @@
 
 #include <shaders/dag_postFxRenderer.h>
 
+#include <render/daFrameGraph/singleShaders.h>
 #include <render/world/defaultVrsSettings.h>
 #include <render/world/frameGraphHelpers.h>
 
@@ -70,9 +71,7 @@ dafg::NodeHandle make_blood_resolve_node()
     }
     registry.allowAsyncPipelines();
 
-    PostFxRenderer shHolder("blood_puddles_resolve");
-
-    return [shHolder = std::move(shHolder)] { shHolder.render(); };
+    dafg::postFx("blood_puddles_resolve", registry);
   });
 }
 

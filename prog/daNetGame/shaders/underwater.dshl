@@ -78,8 +78,6 @@ shader underwater_fog
     water_level_ocean@f1 = water_level;
     frame@f1 = (shadow_frame);
     underwater_fade@f3 = underwater_fade;
-    sun_color_0@f3 = sun_color_0;
-    from_sun_direction@f3 = from_sun_direction;
     water_heightmap_lowres@tex2d = water_heightmap_lowres;
     fog_base_diffuse@f1 = underwater_fog_base_diffuse;
     fog_normal_diffuse@f1 = underwater_fog_normal_diffuse;

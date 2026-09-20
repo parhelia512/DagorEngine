@@ -89,24 +89,24 @@ def public emit_aot_object_globinit(ctx : LLVMContextRef; mod : LLVMOpaqueModule
             }
         }
     }
-    // Fill the cross-module call/ctor target globs recorded during codegen with the
-    // host Context's SimFunction* for each callee (by mangled-name hash).
-    if (!(g_aot_func_globs |> empty())) {
-        let ctx_arg = LLVMGetParam(ctor, 0u)
-        for (fg in g_aot_func_globs) {
-            if (fg.glob == null) {
-                continue
-            }
-            var simfn = build_aot_get_func_by_mnh(b, types, fg.mnh, ctx_arg)
-            // The glob is a pointer-to-fn-type; the SimFunction* (void*) bitcasts in.
-            let elemT = LLVMGlobalGetValueType(fg.glob)
-            var casted = LLVMBuildPointerCast(b, simfn, elemT, "")
-            LLVMBuildStore(b, casted, fg.glob)
-        }
-    }
+    // No das call/ctor target globs to fill: those are per-Context, so codegen resolves them at each
+    // use site (llvm_jit das_func_target). This ctor only re-resolves process-wide addresses.
     LLVMBuildRetVoid(b)
     LLVMDisposeBuilder(b)
     return ctor
+}
+
+
+def public emit_aot_pull_anchor(var types : PrimitiveTypes?; obj_name : string) {
+    var anchor = LLVMAddGlobal(g_mod, types.t_int64, "aot_{obj_name}_pull")
+    LLVMSetInitializer(anchor, LLVMConstInt(types.t_int64, 0ul, 0))
+}
+
+
+def public emit_aot_init_array_entry(var types : PrimitiveTypes?; ctor : LLVMOpaqueValue?; obj_name : string) {
+    var entry = LLVMAddGlobal(g_mod, types.LLVMVoidPtrType(), "das_aot_init_{obj_name}")
+    LLVMSetInitializer(entry, ctor)
+    LLVMSetSection(entry, ".init_array")
 }
 
 

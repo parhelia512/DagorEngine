@@ -56,12 +56,16 @@ local function addqueen (a, n)
 end
 
 
+local REPEATS = 50
+
 function test()
+  for r = 1, REPEATS do
     solutions_count = 0
     addqueen({},1);
     if ( solutions_count~=92 ) then print("failed\n", solutions_count ); end
+  end
 end
 
 loadfile("profile.lua")()
 
-io.write(string.format("\"queen\", %.8f, 20\n", profile_it(20, test)))
+io.write(string.format("\"queen\", %.8f, %d\n", profile_it(20, test) / REPEATS, 20 * REPEATS))

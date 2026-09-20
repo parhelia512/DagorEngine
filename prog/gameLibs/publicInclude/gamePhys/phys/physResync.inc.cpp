@@ -140,6 +140,7 @@ void apply_authority_state(PhysActor *unit, PhysImpl &phys, double current_time,
                                            : phys.currentState.atTick;
         // Move aircraft to the approved position
         phys.setCurrentState(incomingAAS);
+        phys.currentState.applyResyncedState(desyncedState);
         unit->teleportToPos(true, Point3::xyz(incomingAAS.location.P));
         phys.forEachCustomStateSyncer([&](auto ss) { return ss->applyAuthState(incomingAAS.atTick); });
 

@@ -119,7 +119,7 @@ public:
   ~GlobalSharedMemStorage() { term(); }
 
   //! create new/connect to global (inter-process) shared memory storage
-  Data *init(const char *shared_name, size_t sz, int max_rec_num)
+  Data *init(const char *shared_name, size_t sz, int max_rec_num, int lock_timeout_msec = 5000)
   {
     mutex = global_mutex_create(shared_name);
     if (!mutex)
@@ -135,7 +135,13 @@ public:
       sz = Data::calcSizeof(max_rec_num) + 4096;
     sz = (sz + 0xFFFF) & ~0xFFFF; // 64K align
 
-    global_mutex_enter(mutex);
+    if (global_mutex_enter(mutex, lock_timeout_msec))
+    {
+      logerr("[SHMM] mutex lock timed out '%s'", shared_name);
+      global_mutex_close(mutex);
+      mutex = NULL;
+      return NULL;
+    }
     data = (Data *)open_global_map_shared_mem(sharedName, NULL, sz, fd); // open in any location
     int64_t base_addr = data ? data->baseAddr : 0;
     if (data && base_addr != (int64_t)(uintptr_t)data)
@@ -151,7 +157,8 @@ public:
       init_fail:
         logmessage(_MAKE4C('SHMM'), "failed to map shared mem: name=%s, sz=%lluK", sharedName, ((uint64_t)sz) >> 10);
         close_global_map_shared_mem(fd, NULL, 0);
-        global_mutex_leave_destroy(mutex, sharedName);
+        global_mutex_leave(mutex);
+        global_mutex_close(mutex);
         mutex = NULL;
         return NULL;
       }
@@ -199,7 +206,9 @@ public:
     }
     if (need_unlink)
       unlink_global_shared_mem(sharedName);
-    global_mutex_leave_destroy(mutex, sharedName);
+    global_mutex_leave(mutex);
+    global_mutex_close(mutex);
+    // NOTE: no global_mutex_unlink call is intentional, as it can still race with new process creating the mutex
     fd = -1;
     data = NULL;
     mutex = NULL;
@@ -320,6 +329,14 @@ public:
       if (r.offs == offs)
         return r.sz;
     return 0;
+  }
+
+  //! test/diagnostic only: holds the global lock for the given duration, so a test process can prove whether
+  //! another process actually blocks on it (same mutex) or not (different, unlinked-and-recreated mutex)
+  void debugHoldMutex(int msec)
+  {
+    ScopedLock lock(mutex, localMutex);
+    sleep_msec(msec);
   }
 
 

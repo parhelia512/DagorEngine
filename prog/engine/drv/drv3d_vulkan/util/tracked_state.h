@@ -439,7 +439,6 @@ public:
     A &ref = data.template ref<A>();
     ref.template set_raw<Target, Data, Ts...>(v);
 
-    DiffBits nb;
     constexpr uint32_t tid = TypeIndexOf<A, FieldTypesPack>::value;
     diff.set(tid, true);
   }

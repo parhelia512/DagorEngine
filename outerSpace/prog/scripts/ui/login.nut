@@ -1,14 +1,13 @@
 from "%darg/ui_imports.nut" import *
-from "%scripts/ui/http_task.nut" import HttpPostTask, mkJsonHttpReq
-from "%scripts/ui/widgets/simpleComponents.nut" import textBtn, textInput, mkWatchedText, headerTxt, menuBtn, menuBtnTextColorNormal, menuBtnTextColorHover
-
+from "%scripts/ui/http_task.nut" import mkJsonHttpReq//, HttpPostTask
+from "%scripts/ui/widgets/simpleComponents.nut" import textBtn, textInput, headerTxt, menuBtn, menuBtnTextColorNormal, menuBtnTextColorHover //, mkWatchedText
 from "%scripts/ui/backend_api.nut" import get_master_server_url, set_master_server_url
 from "%scripts/ui/widgets/msgbox.nut" import showWarning
 import "ecs" as ecs
+from "%sqstd/globalState.nut" import hardPersistWatched
+from "gameevents" import EventUserLoggedIn, EventUserLoggedOut
 
 let { getenv = null } = require_optional("system")
-let { hardPersistWatched } = require("%sqstd/globalState.nut")
-let {EventUserLoggedIn, EventUserLoggedOut} = require("gameevents")
 let userUid = hardPersistWatched("userId") //get after, login
 let getDefUserName = @() getenv?("username") ?? "UserName"
 let userName = hardPersistWatched("userName", getDefUserName())

@@ -131,8 +131,8 @@ StaticTab<VkClearValue, Driver3dRenderTarget::MAX_SIMRT + 1> RenderPassClass::co
 
 uint32_t RenderPassClass::getAttachmentsLoadMask(int clear_mask) const
 {
-  constexpr uint32_t clearColorMask = CLEAR_TARGET | CLEAR_DISCARD_TARGET;
-  constexpr uint32_t clearDepthMask = CLEAR_ZBUFFER | CLEAR_DISCARD_ZBUFFER;
+  constexpr uint32_t clearColorMask = CLEAR_TARGET | DISCARD_TARGET;
+  constexpr uint32_t clearDepthMask = CLEAR_ZBUFFER | DISCARD_ZBUFFER;
 
   bool loadColor = (clear_mask & clearColorMask) == 0 && identifier.colorTargetMask != 0;
   bool loadDepth = (clear_mask & clearDepthMask) == 0 && identifier.hasDepth();
@@ -157,9 +157,9 @@ VulkanRenderPassHandle RenderPassClass::compileVariant(int clear_mask)
     return VK_ATTACHMENT_LOAD_OP_LOAD;
   };
 
-  VkAttachmentLoadOp colorLoadOp = toLoadOp(CLEAR_TARGET, CLEAR_DISCARD_TARGET);
-  VkAttachmentLoadOp depthLoadOp = toLoadOp(CLEAR_ZBUFFER, CLEAR_DISCARD_ZBUFFER);
-  VkAttachmentLoadOp stencilLoadOp = toLoadOp(CLEAR_STENCIL, CLEAR_DISCARD_STENCIL);
+  VkAttachmentLoadOp colorLoadOp = toLoadOp(CLEAR_TARGET, DISCARD_TARGET);
+  VkAttachmentLoadOp depthLoadOp = toLoadOp(CLEAR_ZBUFFER, DISCARD_ZBUFFER);
+  VkAttachmentLoadOp stencilLoadOp = toLoadOp(CLEAR_STENCIL, DISCARD_STENCIL);
 
   bool const_depth_stencil = identifier.depthState == Identifier::RO_DEPTH;
   G_ASSERT(!((isClear(depthLoadOp) || isClear(stencilLoadOp)) && const_depth_stencil));

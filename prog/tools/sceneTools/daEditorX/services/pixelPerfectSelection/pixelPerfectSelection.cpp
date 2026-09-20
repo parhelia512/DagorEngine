@@ -34,8 +34,7 @@ void PixelPerfectSelection::init()
   rendinstMatrixBuffer.reset(
     d3d::create_sbuffer(sizeof(Point4), 4U, SBCF_BIND_SHADER_RES, TEXFMT_A32B32G32R32F, "simple_selection_matrix_buffer"));
 
-  depthRt.set(d3d::create_tex(nullptr, 1, 1, TEXCF_RTARGET | TEXFMT_DEPTH32, 1, "simple_selection_depth_rt"),
-    "simple_selection_depth_rt");
+  depthRt = dag::create_tex(nullptr, 1, 1, TEXCF_RTARGET | TEXFMT_DEPTH32, 1, "simple_selection_depth_rt");
 }
 
 TMatrix4 PixelPerfectSelection::makeProjectionMatrixForViewRegion(int viewWidth, int viewHeight, float fov, float zNear, float zFar,

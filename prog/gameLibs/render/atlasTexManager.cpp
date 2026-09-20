@@ -24,6 +24,7 @@
 #include <util/dag_delayedAction.h>
 #include <math/dag_adjpow2.h>
 #include <stdio.h>
+#include <drv/3d/dag_texture.h>
 
 
 namespace atlas_tex_manager
@@ -197,7 +198,7 @@ bool atlas_tex_manager::TexRec::writeTextureToAtlas(Texture *tex, int atlas_inde
       if ((texMipW % blockSize.x != 0) || (texMipH % blockSize.y != 0))
         break;
 
-      atlasTex[layer].getTex2D()->updateSubRegion(tex, i, 0, 0, 0, texMipW, texMipH, 1, i, destX, destY, 0);
+      d3d::update_sub_region(tex, i, 0, 0, 0, texMipW, texMipH, 1, atlasTex[layer].getTex2D(), i, destX, destY, 0);
     }
   }
 

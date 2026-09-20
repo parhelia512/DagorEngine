@@ -27,6 +27,16 @@
 
 using editorcore_extapi::dagTools;
 
+#if defined(USE_HMAP_ACES)
+#include <landMesh/lmeshWeightAtlas.h>
+#include <libTools/dtx/astcenc.h>
+#include <convert/fastDXT/rygDXT.h>
+#include <EASTL/unique_ptr.h>
+#if !_TARGET_STATIC_LIB // a static link takes the definition from dtx.lib
+ASTCENC_DECLARE_STATIC_DATA();
+#endif
+#endif
+
 bool game_res_sys_v2 = false;
 int exportImageAsDds(mkbindump::BinDumpSaveCB &cb, TexPixel32 *image, int size, int format, int mipmap_count, bool gamma1);
 static int exportDdsAsDDsX(mkbindump::BinDumpSaveCB &cb, void *data, int size, bool gamma1);
@@ -458,11 +468,11 @@ int exportImageAsDds(mkbindump::BinDumpSaveCB &cb, TexPixel32 *image, int size, 
   return exportDdsAsDDsX(cb, memcwr.data(), memcwr.size(), gamma1);
 }
 
-static int exportDdsAsDDsX(mkbindump::BinDumpSaveCB &cb, void *data, int size, bool gamma1)
+// the caller owns b on success: write it out, then dagTools->ddsxFreeBuffer(b)
+static bool convertDdsToDdsx(unsigned target, ddsx::Buffer &b, void *data, int size, bool gamma1, bool allow_non_pow2)
 {
-  ddsx::Buffer b;
   ddsx::ConvertParams cp;
-  cp.allowNonPow2 = false;
+  cp.allowNonPow2 = allow_non_pow2;
   cp.packSzThres = 8 << 10;
   if (gamma1)
     cp.imgGamma = 1.0;
@@ -470,46 +480,30 @@ static int exportDdsAsDDsX(mkbindump::BinDumpSaveCB &cb, void *data, int size, b
   cp.addrV = ddsx::ConvertParams::ADDR_CLAMP;
   cp.mipOrdRev = HmapLandPlugin::defMipOrdRev;
 
-  if (!dagTools->ddsxConvertDds(cb.getTarget(), b, data, size, cp))
+  if (!dagTools->ddsxConvertDds(target, b, data, size, cp))
   {
     CoolConsole &con = DAGORED2->getConsole();
     con.startLog();
     con.addMessage(ILogWriter::ERROR, "Can't export image: %s", dagTools->ddsxGetLastErrorText());
     con.endLog();
-    return 0;
+    return false;
   }
+  return true;
+}
+
+static int exportDdsAsDDsX(mkbindump::BinDumpSaveCB &cb, void *data, int size, bool gamma1)
+{
+  ddsx::Buffer b;
+  if (!convertDdsToDdsx(cb.getTarget(), b, data, size, gamma1, /*allow_non_pow2*/ false))
+    return 0;
   cb.writeRaw(b.ptr, b.len);
-  // debug("DDS(%d)->DDSx(%d)= %+d b  rev=%d", size, b.len, b.len-size, cp.mipOrdRev);
-  int ret = b.len;
+  const int ret = b.len;
   dagTools->ddsxFreeBuffer(b);
   return ret;
 }
 
 // ZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZ//
 
-
-int hmap_export_dds_as_ddsx_raw(mkbindump::BinDumpSaveCB &cb, char *data, int size, int w, int h, int bpp, int levels, int fmt,
-  bool gamma1)
-{
-  Tab<char> dds_data;
-  char buf[1024];
-  if (!create_dds_header(buf, sizeof(buf), w, h, bpp, levels, fmt, HmapLandPlugin::useASTC(cb.getTarget())))
-  {
-    CoolConsole &con = DAGORED2->getConsole();
-    con.startLog();
-    con.addMessage(ILogWriter::ERROR, "Can't convert to DDS - unknown format %08X", fmt);
-    con.endLog();
-    return 0;
-  }
-
-  dds_data.resize(::dds_header_size() + size);
-  memcpy(&dds_data[0], buf, ::dds_header_size());
-  memcpy(&dds_data[::dds_header_size()], data, size);
-  return exportDdsAsDDsX(cb, dds_data.data(), data_size(dds_data), gamma1);
-}
-
-
-// ZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZ//
 
 static bool validate_texture_name(String &name)
 {
@@ -574,32 +568,28 @@ bool hmap_export_land(mkbindump::BinDumpSaveCB &cb, const char *land_name, int e
 }
 
 #if defined(USE_HMAP_ACES)
-__forceinline uint8_t convert_4bit_to8bit(unsigned a)
-{
-  a &= 0xF;
-  return (a << 4) | a;
-}
+// the mobile class takes the atlas as ASTC 4x4, the rest as DXT1; useASTC()
+// serves the legacy exports, which never shipped Android ASTC
+static bool weight_atlas_astc(unsigned target) { return HmapLandPlugin::useASTC(target) || target == _MAKE4C('and'); }
+
 bool aces_export_detail_maps(mkbindump::BinDumpSaveCB &cb, int mapSizeX, int mapSizeY, int tex_elem_size,
-  const Tab<SimpleString> &land_class_names, int base_ofs, bool optimize_size = true, bool tools_internal = false)
+  const Tab<SimpleString> &land_class_names, int base_ofs, bool tools_internal = false)
 {
   static const int MAX_DET_TEX_NUM = HmapLandPlugin::HMAX_DET_TEX_NUM;
+  G_STATIC_ASSERT(MAX_DET_TEX_NUM == LandWeightAtlas::DET_NUM);
   CoolConsole &con = DAGORED2->getConsole();
 
-  int texElemSize = tex_elem_size;
-
-  int texSize;
-  for (texSize = 1; texSize < texElemSize; texSize <<= 1)
-    ;
-
-  int texDataSize = texElemSize;
-  if (texDataSize < texSize)
-    texDataSize++;
+  const int texElemSize = tex_elem_size;
 
   int numElemsX = (mapSizeX + texElemSize - 1) / texElemSize;
   int numElemsY = (mapSizeY + texElemSize - 1) / texElemSize;
 
   int numDetTex = HmapLandPlugin::self->getNumDetailTextures();
   SmallTab<int, TmpmemAlloc> detTexRemap;
+  // each cell's landclass selection, made once here and reused by the packing
+  // pass below - the selection rule must not fork between the two
+  SmallTab<uint8_t, TmpmemAlloc> cellDetIds;
+  clear_and_resize(cellDetIds, numElemsX * numElemsY * MAX_DET_TEX_NUM);
   {
     SmallTab<bool, TmpmemAlloc> usedDetTex;
     clear_and_resize(usedDetTex, numDetTex);
@@ -608,14 +598,15 @@ bool aces_export_detail_maps(mkbindump::BinDumpSaveCB &cb, int mapSizeX, int map
     SmallTab<uint8_t, TmpmemAlloc> typeRemap;
     clear_and_resize(typeRemap, 256);
     uint8_t detIds[MAX_DET_TEX_NUM];
-    int texDataSize = min(texElemSize + 4, texSize);
     for (int ey = 0, mapY = 0, index = 0; ey < numElemsY; ++ey, mapY += texElemSize)
       for (int ex = 0, mapX = 0; ex < numElemsX; ++ex, mapX += texElemSize, ++index)
       {
         mem_set_ff(typeRemap);
-        memset(detIds, 0, MAX_DET_TEX_NUM);
-        int cnt =
-          HmapLandPlugin::self->getMostUsedDetTex(mapX, mapY, texDataSize, detIds, typeRemap.data(), HmapLandPlugin::LMAX_DET_TEX_NUM);
+        memset(detIds, 0xFF, MAX_DET_TEX_NUM); // a slot the selection leaves alone is free, not landclass 0
+        HmapLandPlugin::self->getCellDetTex(mapX, mapY, texElemSize, detIds, typeRemap.data(), MAX_DET_TEX_NUM);
+        // an unpainted cell keeps 0xFF ids, as the legacy export and the
+        // editor's own atlas ship it: the renderer draws the identity tile
+        memcpy(&cellDetIds[index * MAX_DET_TEX_NUM], detIds, MAX_DET_TEX_NUM);
         for (int di = 0; di < MAX_DET_TEX_NUM; di++)
           if (detIds[di] != 0xFFU && detIds[di] < usedDetTex.size() && !usedDetTex[detIds[di]])
             usedDetTex[detIds[di]] = true;
@@ -669,12 +660,20 @@ bool aces_export_detail_maps(mkbindump::BinDumpSaveCB &cb, int mapSizeX, int map
     if (detTexRemap[i] < 0)
       continue;
     const char *landClassName = i < land_class_names.size() ? land_class_names[i].str() : NULL;
-    ::hmap_export_land(cb, landClassName, i);
-    if (DagorAsset *a = DAEDITOR3.getAssetByName(landClassName, DAEDITOR3.getAssetTypeId("land")))
+    const bool exported = ::hmap_export_land(cb, landClassName, i);
+    DagorAsset *la = DAEDITOR3.getAssetByName(landClassName, DAEDITOR3.getAssetTypeId("land"));
+    // hmap_export_land warns and carries on, which suits the tools; the level
+    // export owns the stricter bar the per-cell loop used to apply: the causes
+    // it just named are fatal here
+    if (!tools_internal && (!exported || !la || !la->props.getBlockByNameEx("detail")->getStr("texture", NULL)))
     {
-      if (a->props.getBlockByNameEx("detail")->getStr("shader", nullptr))
-        customLandClassesCount++;
+      DAEDITOR3.conError("cannot export the level: landclass <%s> is unresolved or has no detail texture",
+        landClassName ? landClassName : "");
+      con.endProgress();
+      return false;
     }
+    if (la && la->props.getBlockByNameEx("detail")->getStr("shader", nullptr))
+      customLandClassesCount++;
     con.incDone();
   }
   if (customLandClassesLimit >= 0 && customLandClassesCount > customLandClassesLimit)
@@ -688,191 +687,129 @@ bool aces_export_detail_maps(mkbindump::BinDumpSaveCB &cb, int mapSizeX, int map
   con.addMessage(ILogWriter::REMARK, " in %g seconds", (dagTools->getTimeMsec() - time0) / 1000.0f);
   time0 = dagTools->getTimeMsec();
 
-  /*for (int i=0; i < numDetTex; ++i)
-  {
-    cb.writeReal(i < det_tex_offset.size() ? det_tex_offset[i].x : 0.f);
-    cb.writeReal(i < det_tex_offset.size() ? det_tex_offset[i].y : 0.f);
-  }*/
-
   cb.endBlock();
 
-  con.endProgress();
-  con.addMessage(ILogWriter::REMARK, " in %g seconds", (dagTools->getTimeMsec() - time0) / 1000.0f);
-  time0 = dagTools->getTimeMsec();
-
-  con.startProgress();
-  con.setActionDesc("exporting %d detail maps: %dx%d (texSize=%d)...", numElemsX * numElemsY, numElemsX, numElemsY, texSize);
-  con.setTotal(numElemsX * numElemsY);
-
+  // The atlas the level ships, packed here from the painted map and encoded
+  // for the target; the loader creates the texture from it as is.
   cb.writeInt32e(numElemsX);
   cb.writeInt32e(numElemsY);
-  cb.writeInt32e(texSize);
+  cb.writeInt32e(LandWeightAtlas::PACKED_TEX_SIZE); // no per-cell weight textures follow, the packed atlas does
   cb.writeInt32e(texElemSize);
+  if (tools_internal) // daEditor paints its own atlas and reads nothing past the header
+    return true;
 
-  SmallTab<int, TmpmemAlloc> offsets;
+  con.startProgress();
+  con.setActionDesc("packing land weight atlas: %dx%d cells of %d texels...", numElemsX, numElemsY, texElemSize);
+  con.setTotal(numElemsX * numElemsY);
 
-  clear_and_resize(offsets, numElemsX * numElemsY);
-  mem_set_0(offsets);
-
-  int tableOffset = cb.tell();
-  cb.writeTabDataRaw(offsets); // reserve space with zeroes here
-
-  SmallTab<uint16_t, TmpmemAlloc> image1;
-  clear_and_resize(image1, texSize * texSize);
-  mem_set_0(image1);
-
-  SmallTab<uint8_t, TmpmemAlloc> image2;
-  clear_and_resize(image2, texSize * texSize / 2);
-  mem_set_0(image2);
-  int optimizedSize = 0;
-
+  LandWeightAtlasBuilder builder(numElemsX, numElemsY, texElemSize);
+  const int cellTexels = texElemSize * texElemSize;
+  SmallTab<uint8_t, TmpmemAlloc> weights; // a cell's texels, one plane per slot
+  clear_and_resize(weights, MAX_DET_TEX_NUM * cellTexels);
+  const uint8_t *planes[MAX_DET_TEX_NUM];
+  for (int ch = 0; ch < MAX_DET_TEX_NUM; ch++)
+    planes[ch] = &weights[ch * cellTexels];
+  SmallTab<uint8_t, TmpmemAlloc> typeRemap;
+  clear_and_resize(typeRemap, 256);
   for (int ey = 0, mapY = 0, index = 0; ey < numElemsY; ++ey, mapY += texElemSize)
-  {
     for (int ex = 0, mapX = 0; ex < numElemsX; ++ex, mapX += texElemSize, ++index)
     {
-      offsets[index] = cb.tell();
-      if (tools_internal)
-      {
-        cb.writeZeroes(MAX_DET_TEX_NUM);
-        cb.writeInt32e(0);
-        cb.writeInt32e(0);
-        continue;
-      }
       carray<uint8_t, MAX_DET_TEX_NUM> detIds;
-      mem_set_0(detIds);
-
-      bool doneMark;
-      int cnt = HmapLandPlugin::self->loadLandDetailTexture(cb.getTarget(), ex, ey, (char *)image1.data(), texSize * 2,
-        (char *)image2.data(), texSize * 2, detIds, &doneMark, texSize, texElemSize, false, false);
+      memcpy(detIds.data(), &cellDetIds[index * MAX_DET_TEX_NUM], MAX_DET_TEX_NUM);
+      mem_set_ff(typeRemap);
+      for (int ch = 0; ch < MAX_DET_TEX_NUM; ch++) // landclass id -> the cell's slot
+        if (detIds[ch] != 0xFF)
+          typeRemap[detIds[ch]] = ch;
+      // the cell's own texels only: the packer takes the borders from the neighbours
+      for (int y = 0, t = 0; y < texElemSize; y++)
+        for (int x = 0; x < texElemSize; x++, t++)
+        {
+          uint8_t wt[MAX_DET_TEX_NUM];
+          HmapLandPlugin::self->readLandDetailWeights(mapX + x, mapY + y, make_span_const(typeRemap), wt);
+          for (int ch = 0; ch < MAX_DET_TEX_NUM; ch++)
+            weights[ch * cellTexels + t] = wt[ch];
+        }
+      // one selection feeds both passes, so a stored id has its remap entry
+      // unless it names a landclass no detail slot registers (a layer map with
+      // an empty slot table votes for id 0): such a level cannot ship
       for (int di = 0; di < MAX_DET_TEX_NUM; di++)
         if (detIds[di] != 0xFFU)
         {
-          DagorAsset *a = detIds[di] < land_class_names.size()
-                            ? DAEDITOR3.getAssetByName(land_class_names[detIds[di]], DAEDITOR3.getAssetTypeId("land"))
-                            : NULL;
-          if (!a)
-            DAEDITOR3.conError("cannot export with unresolved reference to landclass <%s>, id=%d [%d]",
-              detIds[di] < land_class_names.size() ? land_class_names[detIds[di]] : "", detIds[di], di);
-          else if (!a->props.getBlockByName("detail"))
-            DAEDITOR3.conError("Land class <%s> - has no detail block", land_class_names[detIds[di]]);
-          else if (!a->props.getBlockByName("detail")->getStr("texture", NULL))
-            DAEDITOR3.conError("Land class <%s> - has no texture in detail block", land_class_names[detIds[di]]);
-          else if (detIds[di] >= detTexRemap.size() || detTexRemap[detIds[di]] < 0)
-            DAEDITOR3.conError("Internal error: unexpected detIds[%d]=%d detTexRemap.count=%d", di, detIds[di], detTexRemap.size());
-          else
+          if (detIds[di] >= detTexRemap.size() || detTexRemap[detIds[di]] < 0)
           {
-            detIds[di] = detTexRemap[detIds[di]];
-            continue;
+            DAEDITOR3.conError("cannot export the level: cell (%d,%d) refers to landclass id %d, which no detail slot registers", ex,
+              ey, detIds[di]);
+            con.endProgress();
+            return false;
           }
-          return false;
+          detIds[di] = detTexRemap[detIds[di]];
         }
-
-      cb.writeRaw(detIds.data(), MAX_DET_TEX_NUM);
-      cb.writeInt32e(0);
-      cb.writeInt32e(0);
-
-      int texOfs = cb.tell();
-
-      // exportImageAsDds(cb, image2.data(), texSize,
-      //   ddstexture::Converter::fmtDXT1a, 1);
-      if (!optimize_size || cnt > 1)
-      {
-        unsigned fmt =
-          ((!optimize_size || cnt > 4) && cb.getTarget() != _MAKE4C('iOS')) ? TEXFMT_A4R4G4B4 : (cnt > 3 ? TEXFMT_DXT5 : TEXFMT_DXT1);
-        char *srcData = (char *)image1.data();
-        int srcDataSize = data_size(image1);
-        SmallTab<unsigned char, TmpmemAlloc> cnvData;
-        if (fmt != TEXFMT_A4R4G4B4)
-        {
-          ddstexture::Converter cnv;
-          cnv.format = (fmt == TEXFMT_DXT5) ? ddstexture::Converter::fmtDXT5 : ddstexture::Converter::fmtDXT1;
-          if (HmapLandPlugin::useASTC(cb.getTarget()))
-            cnv.format = (fmt == TEXFMT_DXT5) ? ddstexture::Converter::fmtASTC4 : ddstexture::Converter::fmtASTC8;
-          cnv.mipmapType = ddstexture::Converter::mipmapNone;
-          cnv.mipmapCount = 0;
-          clear_and_resize(cnvData, texSize * texSize * 4);
-          uint16_t *srcPix = (uint16_t *)srcData;
-          TexPixel32 *pixel = (TexPixel32 *)cnvData.data();
-          for (int i = 0; i < texSize * texSize; ++i, srcPix++, pixel++)
-          {
-            pixel->a = pixel->r = pixel->g = pixel->b = 0;
-            pixel->a = convert_4bit_to8bit((*srcPix) >> 12);
-            pixel->r = convert_4bit_to8bit(((*srcPix) >> 8));
-            pixel->g = convert_4bit_to8bit(((*srcPix) >> 4));
-            pixel->b = convert_4bit_to8bit(((*srcPix) >> 0));
-            if (cnt == 3 || cnt == 4)
-              pixel->b = 0;
-            else if (cnt == 2)
-              pixel->r = 0;
-          }
-          DynamicMemGeneralSaveCB cwr(tmpmem, data_size(cnvData) + 256, 64 << 10);
-          if (!dagTools->ddsConvertImage(cnv, cwr, (TexPixel32 *)cnvData.data(), texSize, texSize, texSize * 4))
-          {
-            DAEDITOR3.conError("cannot convert %dx%d image at (%d,%d)", texSize, texSize, ex, ey);
-            fmt = TEXFMT_A4R4G4B4;
-          }
-          else
-          {
-            srcDataSize = (fmt == TEXFMT_DXT5) ? (texSize * texSize) : (texSize / 4) * (texSize * 2);
-            if (cb.getTarget() == _MAKE4C('iOS'))
-              srcDataSize = (fmt == TEXFMT_DXT5) ? srcDataSize : srcDataSize / 2;
-            clear_and_resize(cnvData, srcDataSize);
-            memcpy(cnvData.data(), cwr.data() + 128, srcDataSize);
-            srcData = (char *)cnvData.data();
-          }
-        }
-        if (!hmap_export_dds_as_ddsx_raw(cb, srcData, srcDataSize, texSize, texSize,
-              (fmt == TEXFMT_A4R4G4B4) ? 16 : ((fmt == TEXFMT_DXT5) ? 8 : 4), 1, fmt, true))
-        {
-          con.addMessage(ILogWriter::ERROR, "Can't write DDSX");
-        }
-        optimizedSize += texSize * texSize * 2 - srcDataSize;
-      }
-      else
-      {
-        if (optimize_size) // -V547
-          optimizedSize += texSize * texSize * 2;
-      }
-      int endOfs1 = cb.tell();
-      if (!optimize_size || cnt > 5)
-      {
-        hmap_export_dds_as_ddsx_raw(cb, (char *)image2.data(), data_size(image2), texSize, texSize, 4, 1, TEXFMT_DXT1, true);
-      }
-      {
-        if (optimize_size)
-          optimizedSize += texSize * texSize / 2;
-      }
-      int endOfs2 = cb.tell();
-
-      cb.seekto(offsets[index] + MAX_DET_TEX_NUM);
-      cb.writeInt32e(endOfs2 - texOfs);
-      cb.writeInt32e(endOfs1 - texOfs);
-
-      cb.seekto(endOfs2);
-
+      builder.addCellWeights(index, detIds.data(), planes);
       con.incDone();
     }
+
+  const bool astc = weight_atlas_astc(cb.getTarget());
+  // the loader checks the texture against the records it ships with, so the
+  // cap must hold on every driver of the target
+  eastl::unique_ptr<LandWeightAtlas> atlas(builder.finishForExport(LandWeightAtlas::MAX_TEX_SIDE));
+  if (!atlas) // refused; the packer logged the cause
+  {
+    con.addMessage(ILogWriter::ERROR, "land weight atlas: the map does not pack, see the log");
+    con.endProgress();
+    return false;
   }
+  int atlasW = 0, atlasH = 0;
+  atlas->getAtlasSize(atlasW, atlasH);
+  Tab<TexPixel32> img(tmpmem);
+  atlas->composeRawImage(img);
 
-  int ofs = cb.tell();
-
-  cb.seekto(tableOffset);
-
-  for (int i = 0; i < offsets.size(); i++)
-    offsets[i] -= base_ofs;
-  cb.writeTabData32ex(offsets);
-
-  cb.seekto(ofs);
-  con.addMessage(ILogWriter::REMARK, " in %g seconds, optimizedSize=%dbytes", (dagTools->getTimeMsec() - time0) / 1000.0f,
-    optimizedSize);
-  time0 = dagTools->getTimeMsec();
+  // the encoded atlas as a DDS; the ddsx conversion takes it from there
+  Tab<uint8_t> dds(tmpmem);
+  const int hdrSz = dds_header_size();
+  if (astc)
+  {
+    ASTCEncoderHelperContext::setupAstcEncExePathname();
+    ASTCEncoderHelperContext astcenc;
+    Tab<char> packed(tmpmem);
+    if (!astcenc.prepareTmpFilenames("land_weight_atlas") || !astcenc.writeTga(img.data(), atlasW, atlasH) ||
+        !astcenc.buildOneSurface(packed, "4x4"))
+    {
+      con.addMessage(ILogWriter::ERROR, "land weight atlas: ASTC encoding of %dx%d failed", atlasW, atlasH);
+      con.endProgress();
+      return false;
+    }
+    dds.resize(hdrSz + packed.size());
+    create_dds_header(dds.data(), hdrSz, atlasW, atlasH, 8, 1, TEXFMT_ASTC4, false);
+    memcpy(dds.data() + hdrSz, packed.data(), packed.size());
+  }
+  else
+  {
+    dds.resize(hdrSz + (atlasW / 4) * (atlasH / 4) * 8);
+    create_dds_header(dds.data(), hdrSz, atlasW, atlasH, 4, 1, TEXFMT_DXT1, false);
+    // the codec of the runtime CPU conversion; TexPixel32 is the BGRA it reads
+    rygDXT::CompressImageDXT1((const uint8_t *)img.data(), dds.data() + hdrSz, atlasW, atlasH, rygDXT::STB_DXT_HIGHQUAL,
+      (atlasW / 4) * 8);
+  }
+  ddsx::Buffer ddsxBuf;
+  // the atlas is page-granular, almost never pow2; a rescale would break the
+  // placement the records ship, so non-pow2 passes through as is
+  if (!convertDdsToDdsx(cb.getTarget(), ddsxBuf, dds.data(), dds.size(), /*gamma1*/ true, /*allow_non_pow2*/ true))
+  {
+    con.endProgress();
+    return false;
+  }
+  atlas->savePacked(cb.getRawWriter(), base_ofs, make_span_const((const uint8_t *)ddsxBuf.ptr, ddsxBuf.len));
+  const int ddsxLen = ddsxBuf.len;
+  dagTools->ddsxFreeBuffer(ddsxBuf);
 
   con.endProgress();
+  con.addMessage(ILogWriter::REMARK, "land weight atlas: %d pages, %dx%d %s, %dK as ddsx, in %g seconds", atlas->getPageCount(),
+    atlasW, atlasH, astc ? "ASTC 4x4" : "DXT1", ddsxLen >> 10, (dagTools->getTimeMsec() - time0) / 1000.0f);
   return true;
 }
 #else
 bool aces_export_detail_maps(mkbindump::BinDumpSaveCB &cb, int mapSizeX, int mapSizeY, int tex_elem_size,
-  const Tab<SimpleString> &land_class_names, int base_ofs, bool optimize_size = true, bool tools_internal = false)
+  const Tab<SimpleString> &land_class_names, int base_ofs, bool tools_internal = false)
 {
   return false;
 }

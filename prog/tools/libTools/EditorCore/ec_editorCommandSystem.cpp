@@ -76,6 +76,7 @@ void EditorCommandSystem::createToolbarButton(PropPanel::ContainerPropertyContro
 {
   ToolbarEditorCommandButton *button = new ToolbarEditorCommandButton(id, editor_command_id, parent.getEventHandler(), &parent);
   button->setTooltip(tooltip);
+  button->setAutomationName(tooltip);
   parent.addControl(button);
 }
 
@@ -85,6 +86,7 @@ void EditorCommandSystem::createToolbarRadioButton(PropPanel::ContainerPropertyC
   ToolbarEditorCommandRadioButton *button =
     new ToolbarEditorCommandRadioButton(id, editor_command_id, parent.getEventHandler(), &parent);
   button->setTooltip(tooltip);
+  button->setAutomationName(tooltip);
   parent.addControl(button);
 }
 
@@ -94,6 +96,7 @@ void EditorCommandSystem::createToolbarToggleButton(PropPanel::ContainerProperty
   ToolbarEditorCommandToggleButton *button =
     new ToolbarEditorCommandToggleButton(id, editor_command_id, parent.getEventHandler(), &parent);
   button->setTooltip(tooltip);
+  button->setAutomationName(tooltip);
   parent.addControl(button);
 }
 

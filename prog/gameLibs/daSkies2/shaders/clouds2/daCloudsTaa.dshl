@@ -2,6 +2,7 @@ include "sky_shader_global.dshl"
 include "viewVecVS.dshl"
 include "distanceToClouds2.dshl"
 include "clouds_tiled_dist.dshl"
+include "clouds_used_uv.dshl"
 include "clouds_close_layer_outside.dshl"
 include "camera_in_camera.dshl"
 
@@ -124,6 +125,8 @@ macro CLOUDS_TAA(code)
 
     clouds_invalidate_taa_frames@i1 = clouds_invalidate_taa_frames;
   }
+  INIT_CLOUDS_USED_UV(code)
+  INIT_CLOUDS_USED_UV_HISTORY(code)
   USE_CLOUDS_DISTANCE(code)
   USE_CLOUDS_DISTANCE_STUB(code)
   DISTANCE_TO_CLOUDS2(code)

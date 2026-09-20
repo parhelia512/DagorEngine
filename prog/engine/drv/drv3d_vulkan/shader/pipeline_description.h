@@ -171,6 +171,10 @@ struct InputLayout
   InputStreamSet streams;
   VertexAttributeSet attribs;
 
+  struct IDCachedPayload
+  {};
+  static constexpr IDCachedPayload idPayload = {};
+
   void fromVdecl(const VSDTYPE *decl);
 
   void reset()
@@ -205,9 +209,10 @@ struct InputLayout
   static constexpr bool isRemovalPending() { return false; }
   bool release() { return true; }
 
-  static InputLayoutID makeID(LinearStorageIndex index) { return InputLayoutID(index); }
+  static InputLayoutID makeID(LinearStorageIndex index, const IDCachedPayload &) { return InputLayoutID(index); }
   static LinearStorageIndex getIndexFromID(InputLayoutID id) { return id.get(); }
   static bool checkID(InputLayoutID) { return true; }
+  static IDCachedPayload createInfoToIDPayload(const CreationInfo &) { return {}; }
 };
 
 inline bool operator==(const InputLayout &l, const InputLayout &r)

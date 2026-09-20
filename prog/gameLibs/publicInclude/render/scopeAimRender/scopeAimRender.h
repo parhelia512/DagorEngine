@@ -8,8 +8,8 @@
 #include <3d/dag_texStreamingContext.h>
 #include <daECS/core/event.h>
 #include <render/dof/dofProperties.h>
-#include <render/world/aimRender.h>
-#include <render/world/cameraParams.h>
+#include <ecs/render/aimRender.h>
+#include <render/cameraParams.h>
 
 class PostFxRenderer;
 
@@ -84,6 +84,8 @@ struct AimDofSettings
   DOFProperties focus;
   float minCheckDistance = 0.0f;
   bool on = false;
+  bool simplifiedRendering = false;
+  bool cocAccumulation = false;
   bool changed = false;
 };
 

@@ -103,6 +103,8 @@ public:
 
   void setEnabled(bool enabled) override { controlEnabled = enabled; }
 
+  const char *getImguiTypeName() const override { return "MultiSelectListBox"; }
+
   void updateImgui() override
   {
     ScopedImguiBeginDisabled scopedDisabled(!controlEnabled);
@@ -117,6 +119,10 @@ public:
 
     if (ImGui::BeginListBox("##lb", size))
     {
+      // The last item here is the child window's MoveId, which ImGui registers only for windows with a title bar.
+      // Name the child window instead. The list items are its children, so a test can find a row by name.
+      setImguiTestItemInfoById(ImGui::GetCurrentWindow()->ID);
+
       ImGui::PushStyleColor(ImGuiCol_Header, getOverriddenColor(ColorOverride::LISTBOX_SELECTION_BACKGROUND));
       ImGui::PushStyleColor(ImGuiCol_HeaderActive, getOverriddenColor(ColorOverride::LISTBOX_HIGHLIGHT_BACKGROUND_ACTIVE));
       ImGui::PushStyleColor(ImGuiCol_HeaderHovered, getOverriddenColor(ColorOverride::LISTBOX_HIGHLIGHT_BACKGROUND_HOVERED));

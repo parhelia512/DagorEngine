@@ -3,6 +3,4 @@
 
 #define UPSCALE_WEIGHTS_COUNT 0x10
 
-#define UPSCALE_DEPTH_MATCH_THRESHOLD 0.02
-
 #endif

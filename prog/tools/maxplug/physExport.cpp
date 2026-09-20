@@ -1,7 +1,7 @@
 // Copyright (C) Gaijin Games KFT.  All rights reserved.
 
 #include <max.h>
-#include <locale.h>
+#include <format>
 #include "dagor.h"
 #include "enumnode.h"
 #include "common.h"
@@ -161,8 +161,8 @@ public:
     if (!getNodeProp(node, s.c_str(), val))
       return def;
 
-    return _tcsicmp(val, _T("yes")) == 0 || _tcsicmp(val, _T("on")) == 0 || _tcsicmp(val, _T("true")) == 0 ||
-           _tcsicmp(val, _T("1")) == 0;
+    const std::wstring_view v = val.data();
+    return iequal(v, L"yes") || iequal(v, L"on") || iequal(v, L"true") || iequal(v, L"1");
   }
 
 
@@ -175,10 +175,8 @@ public:
       return def;
 
 
-    std::string res = wideToStr(val);
-    setlocale(LC_NUMERIC, "C");
-    float r = strtod(res.c_str(), NULL);
-    setlocale(LC_NUMERIC, "");
+    float r = 0;
+    parse_nums(wideToStr(val), r);
 
     return r;
   }
@@ -192,13 +190,9 @@ public:
     if (!getNodeProp(node, s.c_str(), val))
       return def;
 
-    std::string res = wideToStr(val);
-
-    Point3 p;
-    setlocale(LC_NUMERIC, "C");
-    if (sscanf(res.c_str(), " %f , %f , %f", &p.x, &p.y, &p.z) != 3)
+    Point3 p(0, 0, 0);
+    if (parse_nums(wideToStr(val), p.x, p.y, p.z) != 3)
       return def;
-    setlocale(LC_NUMERIC, "");
 
     return p;
   }
@@ -217,27 +211,21 @@ public:
 
   void setNodePropReal(INode *node, const char *name, float val)
   {
-    setlocale(LC_NUMERIC, "C");
-    char s[256];
-    sprintf(s, "%g", val);
-    setlocale(LC_NUMERIC, "");
+    const std::string s = std::format("{:g}", val);
 
     std::string sn(name);
     sn += ":r";
-    setNodeProp(node, sn.c_str(), s);
+    setNodeProp(node, sn.c_str(), s.c_str());
   }
 
 
   void setNodePropPoint3(INode *node, const char *name, const Point3 &val)
   {
-    setlocale(LC_NUMERIC, "C");
-    char s[256];
-    sprintf(s, "%g, %g, %g", val.x, val.y, val.z);
-    setlocale(LC_NUMERIC, "");
+    const std::string s = std::format("{:g}, {:g}, {:g}", val.x, val.y, val.z);
 
     std::string sn(name);
     sn += ":p3";
-    setNodeProp(node, sn.c_str(), s);
+    setNodeProp(node, sn.c_str(), s.c_str());
   }
 
 
@@ -613,8 +601,6 @@ public:
     Point3 size(0, 0, 0);
     float radius = 0;
 
-    int type = 0;
-
     Matrix3 objWtm = getScaledObjectTm(node);
 
     if (cid == Class_ID(SPHERE_CLASS_ID, 0))
@@ -834,7 +820,6 @@ public:
 
       double f = c / a - b * b / (a * a * 3);
       double g = 2 * b * b * b / (a * a * a * 27) - b * c / (a * a) / 3 + d / a;
-      double h = g * g / 4 + f * f * f / 27;
 
       if (f >= 0)
       {

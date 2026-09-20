@@ -35,6 +35,7 @@ struct CompColumn
   Sqrat::Object key;    // component name; also the table key when there are several
   Sqrat::Object defVal; // optional components read as this when absent
   bool boxed = false;   // engine-only type that can not be mirrored; reads as defVal
+  bool isTag = false;   // zero-size component: the row mirrors presence as a bool
 };
 
 class SqEcsComputed;
@@ -68,6 +69,7 @@ public:
   // QueryCompTypes defaults to tmpmem; this one lives as long as the mirror
   ecs::sq::QueryCompTypes columnTypes{midmem_ptr()};
   Tab<ecs::ComponentDesc> descRo, descRq, descNo;
+  int eidRoIdx = -1; // the eid column rowEid reads: a mirrored one, or the appended one
   Sqrat::Object defVal;
 
   eastl::string filterSrc;   // kept: the parser writes into it in place
@@ -171,12 +173,21 @@ void EcsComputedSource::checkColumnTypes(const ecs::EntityManager &mgr)
 {
   typesChecked = true;
   for (int i = 0; i < columns.size(); ++i)
+  {
+    if (columnTypes[i].type == ecs::ComponentTypeInfo<ecs::Tag>::type && !columns[i].isTag)
+    {
+      // the tag registered only after the mirror was made, so creation saw auto type
+      columns[i].isTag = true;
+      logerr("ecs.computed '%s': component <%s> is a tag; write [\"%s\", ecs.TYPE_TAG] so the mirror knows the type at creation",
+        esName.c_str(), sq_objtostring(&columns[i].key.GetObject()), sq_objtostring(&columns[i].key.GetObject()));
+    }
     if (mgr.getComponentTypes().getTypeInfo(columnTypes[i].typeId).flags & ecs::COMPONENT_TYPE_BOXED)
     {
       columns[i].boxed = true;
       logerr("ecs.computed '%s': component <%s> is a boxed engine type and can not be mirrored, it reads as the default value",
         esName.c_str(), sq_objtostring(&columns[i].key.GetObject()));
     }
+  }
 }
 
 void EcsComputedSource::copyRow(const ecs::QueryView &qv, uint32_t row, Tab<ecs::ChildComponent> &out)
@@ -188,7 +199,11 @@ void EcsComputedSource::copyRow(const ecs::QueryView &qv, uint32_t row, Tab<ecs:
     const ecs::sq::CompTypeInfo &ti = columnTypes[i];
     const uint8_t *data = columns[i].boxed ? nullptr : ecs::sq::comp_row_data(qv, qv.getRoStart() + i, row, ti);
     // a null (absent optional or boxed) entry reads as the column default
-    out[i] = data ? ecs::ChildComponent(ti.type, data, ecs::ChildComponent::CopyType::Deep) : ecs::ChildComponent();
+    if (columns[i].isTag)
+      // a tag has no data; presence is cached as a bool and pushed/compared as one
+      out[i] = data ? ecs::ChildComponent(true) : ecs::ChildComponent();
+    else
+      out[i] = data ? ecs::ChildComponent(ti.type, data, ecs::ChildComponent::CopyType::Deep) : ecs::ChildComponent();
   }
 }
 
@@ -316,8 +331,7 @@ void EcsComputedSource::seed()
 
 ecs::EntityId EcsComputedSource::rowEid(const ecs::QueryView &qv, uint32_t row) const
 {
-  // the eid column is appended after the value columns, see mk_ecs_computed
-  const ecs::EntityId *eids = (const ecs::EntityId *)qv.getComponentUntypedData(qv.getRoStart() + columns.size());
+  const ecs::EntityId *eids = (const ecs::EntityId *)qv.getComponentUntypedData(qv.getRoStart() + eidRoIdx);
   return eids ? eids[row] : ecs::INVALID_ENTITY_ID;
 }
 
@@ -661,8 +675,12 @@ bool parse_names(const Sqrat::Object &list, const char *list_name, Tab<ecs::Comp
     // so an untyped value component only works if it is registered already
     const ecs::component_type_t type =
       comp.typeSlot == ecs::sq::CompTypeSlot::EXPLICIT ? comp.type : ecs::sq::registered_comp_type(compName.hash);
+    // a tag has no value to track; presence changes arrive as recreate events
+    const bool isTag = type == ecs::ComponentTypeInfo<ecs::Tag>::type;
+    // eid never changes, so tracking it would only register a change event nobody sends
+    const bool isEid = compName.hash == ECS_HASH("eid").hash;
     out.push_back(ecs::ComponentDesc(compName, type, comp.hasDefVal ? ecs::CDF_OPTIONAL : 0));
-    if (out_tracked)
+    if (out_tracked && !isTag && !isEid)
     {
       if (!out_tracked->empty())
         *out_tracked += ",";
@@ -673,6 +691,7 @@ bool parse_names(const Sqrat::Object &list, const char *list_name, Tab<ecs::Comp
       CompColumn col;
       col.key = comp.key;
       col.defVal = comp.defVal;
+      col.isTag = isTag;
       out_cols->push_back(col);
     }
   }
@@ -710,24 +729,67 @@ SQInteger mk_ecs_computed_impl(HSQUIRRELVM vm, bool map_mode)
   if (map_mode && !src->defVal.IsNull())
     return sq_throwerror(vm, "ecs.computed: 'defVal' makes no sense for an eid map: no matches is an empty table");
 
-  // all listed components are tracked: the pull rebuilds the whole value and does
-  // not care which one changed. Filter components too, for a different reason: a
-  // change that flips the filter is the only report of a row entering or leaving
+  // required: a mistyped param key must not turn into a silent whole-world query
+  Sqrat::Object compsObj = params.RawGetSlot("comps");
+  if (compsObj.IsNull())
+    return sq_throwerror(vm, "ecs.computed: 'comps' is required; to mirror entity ids alone write comps = [\"eid\"]");
+
+  // all listed components are tracked (tags excepted): the pull rebuilds the
+  // whole value and does not care which one changed. Filter components too, for
+  // a different reason: a change that flips the filter is the only report of a
+  // row entering or leaving
   String err;
-  if (!parse_names(params.RawGetSlot("comps"), "comps", src->descRo, &src->columns, &src->trackedCsv, err) ||
+  if (!parse_names(compsObj, "comps", src->descRo, &src->columns, &src->trackedCsv, err) ||
       !parse_names(params.RawGetSlot("comps_rq"), "comps_rq", src->descRq, nullptr, nullptr, err) ||
       !parse_names(params.RawGetSlot("comps_no"), "comps_no", src->descNo, nullptr, nullptr, err))
     return sq_throwerror(vm, err);
   if (src->columns.empty())
-    return sq_throwerror(vm, "ecs.computed: 'comps' must list at least one component");
+    return sq_throwerror(vm, "ecs.computed: 'comps' is empty; name at least one component, \"eid\" included");
 
-  // eid goes right after the value columns (rowEid indexes it there), filter
-  // components after it, so the value column indices stay put
-  src->descRo.push_back(ecs::ComponentDesc(ECS_HASH("eid"), ecs::ComponentTypeInfo<ecs::EntityId>(), 0));
+  // a tag with no default selects like a comps_rq entry; its data column goes
+  // optional because daECS refuses a required zero-size data request
+  for (int i = 0; i < src->columns.size(); ++i)
+  {
+    if (!src->columns[i].isTag)
+      continue;
+    ecs::ComponentDesc &d = src->descRo[i];
+    if (!(d.flags & ecs::CDF_OPTIONAL))
+    {
+      bool alreadyRq = false;
+      for (const ecs::ComponentDesc &rq : src->descRq)
+        alreadyRq |= rq.name == d.name;
+      if (!alreadyRq)
+        src->descRq.push_back(d);
+      d.flags |= ecs::CDF_OPTIONAL;
+    }
+  }
+
+  // rowEid needs the eid column; a mirrored one serves, else it is appended right
+  // after the value columns. Filter components come after it, so the value column
+  // indices stay put
+  for (int i = 0; i < src->columns.size() && src->eidRoIdx < 0; ++i)
+    if (src->descRo[i].name == ECS_HASH("eid").hash)
+    {
+      // an absent optional reads as the entry default; eid is in every entity
+      src->descRo[i].flags &= ~ecs::CDF_OPTIONAL;
+      src->eidRoIdx = i;
+    }
+  if (src->eidRoIdx < 0)
+  {
+    src->eidRoIdx = src->descRo.size();
+    src->descRo.push_back(ecs::ComponentDesc(ECS_HASH("eid"), ecs::ComponentTypeInfo<ecs::EntityId>(), 0));
+  }
   const int filterCompsStart = src->descRo.size();
   if (!parse_names(params.RawGetSlot("comps_filter"), "comps_filter", src->descRo, nullptr, &src->trackedCsv, err))
     return sq_throwerror(vm, err);
   for (int i = filterCompsStart; i < src->descRo.size(); ++i)
+  {
+    if (src->descRo[i].name == ECS_HASH("eid").hash)
+    {
+      err.printf(0, "ecs.computed: 'comps_filter' entry #%d is 'eid'; a filter can always name it, it is in every query",
+        i - filterCompsStart);
+      return sq_throwerror(vm, err);
+    }
     for (int j = 0; j < filterCompsStart; ++j)
       if (src->descRo[i].name == src->descRo[j].name)
       {
@@ -737,6 +799,22 @@ SQInteger mk_ecs_computed_impl(HSQUIRRELVM vm, bool map_mode)
           i - filterCompsStart);
         return sq_throwerror(vm, err);
       }
+    if (src->descRo[i].type == ecs::ComponentTypeInfo<ecs::Tag>::type)
+    {
+      err.printf(0,
+        "ecs.computed: 'comps_filter' entry #%d is a tag; the filter reads values and a tag "
+        "has none, select with 'comps_rq' or 'comps_no' instead",
+        i - filterCompsStart);
+      return sq_throwerror(vm, err);
+    }
+  }
+
+  // refuse a mirror that would follow every entity in the world
+  bool selective = !src->descRq.empty();
+  for (const ecs::ComponentDesc &d : src->descRo)
+    selective |= !(d.flags & ecs::CDF_OPTIONAL) && d.name != ECS_HASH("eid").hash;
+  if (!selective)
+    return sq_throwerror(vm, "ecs.computed: nothing selects the entities: every component is optional and 'comps_rq' is empty");
 
   Sqrat::Object nameObj = params.RawGetSlot("name");
   if (nameObj.GetType() == OT_STRING)
@@ -775,6 +853,14 @@ SQInteger mk_ecs_computed_impl(HSQUIRRELVM vm, bool map_mode)
     // like an ecs query filter string, an empty one means no filter
     if (!src->filterSrc.empty() && !parse_query_filter(src->filterExpr, src->filterSrc.c_str(), {}, roSpan))
       return sq_throwerror(vm, "ecs.computed: failed to parse the 'filter' expression, see the log for details");
+    if (!src->filterExpr.nodes.empty())
+    {
+      // dev builds type-check inside parse_query_filter; release builds skip
+      // that and would read wrong memory on every row, so check here too
+      eastl::string typeErr;
+      if (!PerformExpressionTree::validateExpression(src->filterExpr.nodes.data(), (int)src->filterExpr.nodes.size(), typeErr))
+        return sqstd_throwerrorf(vm, "ecs.computed: type check of the 'filter' expression failed: %s", typeErr.c_str());
+    }
   }
   else if (!filterObj.IsNull())
   {

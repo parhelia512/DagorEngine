@@ -86,7 +86,7 @@ struct Job : cpujobs::IJob
 {
 public:
   Job();
-  const char *getJobName(bool &) const override final { return "ShaderCompilerJob"; }
+  const char *getJobName(bool &) const override final { return DAPROFILER_STRING("ShaderCompilerJob"); }
   void doJob() final;
   void releaseJob() final;
 

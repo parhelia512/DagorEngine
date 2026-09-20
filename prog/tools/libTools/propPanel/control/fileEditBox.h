@@ -112,6 +112,8 @@ public:
 
   void setEnabled(bool enabled) override { controlEnabled = enabled; }
 
+  const char *getImguiTypeName() const override { return "FileEditBox"; }
+
   void updateImgui() override
   {
     ScopedImguiBeginDisabled scopedDisabled(!controlEnabled);
@@ -125,6 +127,7 @@ public:
     ImGui::SetNextItemWidth(editBoxWidth);
 
     const bool textChanged = ImGuiDagor::InputText("##it", &controlValue);
+    setImguiTestItemInfo();
     textInputActive = ImGui::IsItemActive();
     textInputFocused = ImGui::IsItemFocused();
     const bool deactivatedAfterEdit = ImGui::IsItemDeactivatedAfterEdit();
@@ -146,6 +149,7 @@ public:
 
     ImGui::SameLine(0.0f, spaceBetweenControls);
     const bool clickedOnPickButton = ImGui::Button("...", ImVec2(buttonWidth, 0.0f));
+    setImguiTestItemInfo("browse");
     setPreviousImguiControlTooltip();
 
     if (clickedOnPickButton)

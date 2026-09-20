@@ -9,6 +9,7 @@
 #include <gamePhys/collision/rendinstCollisionWrapper.h>
 #include <gamePhys/collision/rendinstContactResultWrapper.h>
 #include "riUserInfo.h"
+#include "../collisionLibPrivate.h"
 
 
 CollisionObject WrapperRendInstCollisionImplCB::processCollisionInstance(const rendinst::CollisionInfo &coll_info,
@@ -29,9 +30,7 @@ void WrapperRendInstCollisionImplCB::addCollisionCheck(const rendinst::Collision
     return;
   }
 
-  // TODO: optimize
-  dacoll::CollisionInstances *instance = dacoll::get_collision_instances_by_handle(coll_info.handle);
-  if (instance && !dacoll::is_ri_instance_enabled(instance, coll_info.desc))
+  if (!dacoll::is_ri_instance_enabled(coll_info.desc))
     return;
 
   TMatrix normalizedTm = coll_info.tm;

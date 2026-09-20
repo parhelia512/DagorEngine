@@ -20,7 +20,10 @@
 //
 
 #include <osApiWrappers/dag_events.h>
+#include <osApiWrappers/dag_addressWait.h>
+#include <osApiWrappers/dag_atomic.h>
 #include <osApiWrappers/dag_critSec.h>
+#include <osApiWrappers/dag_miscApi.h>
 #include <perfMon/dag_cpuFreq.h>
 #include <EASTL/array.h>
 #include <atomic>
@@ -44,6 +47,10 @@ enum class TimelineHistoryState
 
 template <typename T>
 class TimelineSpan;
+
+static constexpr size_t TIMELINE_FALSE_SHARING_ALIGN = 128;
+
+constexpr size_t timeline_hot_align(size_t requested, size_t natural) { return requested > natural ? requested : natural; }
 
 // NOTE:
 // acquire/submit should be called as-if from a single thread
@@ -155,10 +162,16 @@ class Timeline
   size_t time = 0;
 
   // history ring buffer
+  // nextAcquireIdx is producer-owned and shares its line with the producer-only bookkeeping above.
   TimelineHistoryIndex nextAcquireIdx = 0;
-  TimelineHistoryIndex currentProcessIdx = 0;
+  // currentProcessIdx is consumer-owned; push it (and the history array after it) onto their own
+  // cache lines so the consumer's advance() does not false-share with producer-side acquire()/submit().
+  // No-op for non-concurrent timelines (hotIndexAlign == 0 -> natural alignment).
+  alignas(timeline_hot_align(SyncType::hotIndexAlign, alignof(TimelineHistoryIndex))) //
+    TimelineHistoryIndex currentProcessIdx = 0;
   void ringInc(TimelineHistoryIndex &val) { val = (val + 1) % HistoryLength; }
-  eastl::array<HistoryElement, HistoryLength> history;
+  alignas(timeline_hot_align(SyncType::hotIndexAlign, alignof(eastl::array<HistoryElement, HistoryLength>))) //
+    eastl::array<HistoryElement, HistoryLength> history;
 
   friend class TimelineSpan<Timeline>;
 
@@ -391,7 +404,98 @@ public:
   }
 };
 
-struct ConcurrentWorkCounter
+class TimelineSyncPartSpinEventWaitable : public TimelineSyncPartEventWaitable
+{
+  static constexpr int SPINS_BEFORE_EVENT_WAIT = SPINS_BEFORE_SLEEP / 16;
+
+public:
+  TimelineSyncPartSpinEventWaitable() : TimelineSyncPartEventWaitable() {}
+
+  template <typename T>
+  bool waitCond(T cb, uint32_t max_retries)
+  {
+    // use spin_wait_no_profile approach
+    for (int spins = SPINS_BEFORE_EVENT_WAIT, yieldsBackoff = 1; spins > 0; --spins)
+    {
+      if (cb())
+        return true;
+      for (int i = 0; i < yieldsBackoff; ++i)
+        cpu_yield();
+      if (yieldsBackoff < 16)
+        yieldsBackoff *= 2;
+    }
+
+    while (!cb() && max_retries)
+    {
+      wait();
+      --max_retries;
+    }
+    return cb();
+  }
+};
+
+class TimelineSyncPartAddressWaitable
+{
+  static constexpr int WAIT_TIMEOUT_MS = 10;
+  static constexpr int SPINS_BEFORE_WAIT = SPINS_BEFORE_SLEEP / 16;
+  volatile uint32_t wakeGen = 0;
+
+#if _TARGET_PC_WIN
+  TimelineSyncPartEventWaitable evFallback;
+  static bool has_futex_impl;
+#endif
+
+public:
+#if _TARGET_PC_WIN
+  static void initWinFutex() { has_futex_impl = (bool)os_get_native_wait_on_address_impl(); };
+#endif
+
+  void signal()
+  {
+#if _TARGET_PC_WIN
+    if (!has_futex_impl)
+      evFallback.signal();
+    else
+#endif
+    {
+      interlocked_increment(wakeGen);
+      os_wake_on_address_one(&wakeGen);
+    }
+  }
+
+  template <typename T>
+  bool waitCond(T cb, uint32_t max_retries)
+  {
+    for (int spins = SPINS_BEFORE_WAIT, yieldsBackoff = 1; spins > 0; --spins)
+    {
+      if (cb())
+        return true;
+      for (int i = 0; i < yieldsBackoff; ++i)
+        cpu_yield();
+      if (yieldsBackoff < 16)
+        yieldsBackoff *= 2;
+    }
+
+#if _TARGET_PC_WIN
+    if (!has_futex_impl)
+      return evFallback.waitCond(cb, max_retries);
+    else
+#endif
+    {
+      while (max_retries)
+      {
+        const uint32_t gen = interlocked_acquire_load(wakeGen);
+        if (cb())
+          return true;
+        os_wait_on_address(&wakeGen, &gen, WAIT_TIMEOUT_MS);
+        --max_retries;
+      }
+    }
+    return cb();
+  }
+};
+
+struct alignas(TIMELINE_FALSE_SHARING_ALIGN) ConcurrentWorkCounter
 {
   // Synchronizes-with all `fetchAdd` and `fetchDone` calls (through release sequences)
   [[nodiscard]] TimelineHistoryIndex get() { return value.load(std::memory_order_acquire); }
@@ -420,12 +524,15 @@ struct TimelineSyncPartSingleWriterSingleReader
 {
   using PendingCounterType = ConcurrentWorkCounter;
   using AcquireCounterType = WorkCounter;
+  static constexpr size_t hotIndexAlign = TIMELINE_FALSE_SHARING_ALIGN;
 };
 
 struct TimelineSyncPartNonConcurrent
 {
   using PendingCounterType = WorkCounter;
   using AcquireCounterType = WorkCounter;
+  // Single-threaded timeline: opt out of false-sharing padding entirely.
+  static constexpr size_t hotIndexAlign = 0;
 };
 
 

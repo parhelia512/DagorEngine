@@ -76,8 +76,10 @@ public:
           if (!dd_file_exists(CACHE_PATH))
             dd_mkpath(CACHE_PATH);
 
-          cacheFileBlk.saveToTextFile(CACHE_PATH);
-          debug("PSO cache updated");
+          if (dblk::save_to_binary_file(cacheFileBlk, CACHE_PATH))
+            debug("PSO cache updated");
+          else
+            logmessage(failReportLevel, "Failed to write PSO cache to '%s'", CACHE_PATH);
         }
         else
         {
@@ -96,6 +98,10 @@ public:
       {
         logmessage(failReportLevel, "PSO cache request failed with code %d", http_code);
       }
+    }
+    else if (status == httprequests::RequestStatus::ABORTED || status == httprequests::RequestStatus::SHUTDOWN)
+    {
+      logwarn("PSO cache request was not finished, status: %d", static_cast<int>(status));
     }
     else
     {

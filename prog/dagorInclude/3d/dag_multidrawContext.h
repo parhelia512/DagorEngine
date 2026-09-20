@@ -161,6 +161,10 @@ public:
      */
     MultidrawRenderExecutor(const MultidrawContext *context) : context(context) {}
     /**
+     * @brief True when the context filled its buffers, so render submits draw calls.
+     */
+    bool valid() const { return context != nullptr; }
+    /**
      * @brief Renders draw calls.
      * @param primitive_type type of primitive.
      * @param first_drawcall index of first draw call in the buffer.
@@ -260,12 +264,14 @@ public:
       uint32_t &drawcallId = extMultiDraw ? eastl::get<2>(multidrawArgs)[i].drawcallId : dc.startInstanceLocation;
       if constexpr (needPerDrawParamsBuffer())
       {
-        drawcallId = 0;
+        // locked buffers are write combined memory: it must only be written, reading it back costs hundreds of ns,
+        // so the id is composed in a register and stored once
+        uint32_t drawcallIdValue = 0;
         set_cb(i, dc.indexCountPerInstance, dc.instanceCount, dc.startIndexLocation, dc.baseVertexLocation, perDrawArgs.value()[i],
-          drawcallId);
+          drawcallIdValue);
         G_ASSERTF((i < (1u << DrawIdBits)), "Draw call index %d exceeds maximum allowed value %d for DrawIdBits=%d", i,
           (1u << DrawIdBits) - 1, DrawIdBits);
-        drawcallId |= (i << DRAW_DWORD_FREE_BITS);
+        drawcallId = drawcallIdValue | (i << DRAW_DWORD_FREE_BITS);
       }
       else
       {

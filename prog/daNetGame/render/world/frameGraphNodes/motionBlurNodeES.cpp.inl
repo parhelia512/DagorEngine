@@ -5,7 +5,7 @@
 #include <render/renderEvent.h>
 #include <render/daFrameGraph/daFG.h>
 #include <render/motionBlurECS.h>
-#include <render/world/cameraParams.h>
+#include <render/cameraParams.h>
 #include "frameGraphNodes.h"
 #include <render/world/frameGraphNodes/motionBlurNode.h>
 

@@ -1,0 +1,30 @@
+Root    ?= ../../../.. ;
+StrictCompile = yes ;
+include $(Root)/prog/_jBuild/defaults.jam ;
+
+Location = prog/gameLibs/render/animatedSplashScreen ;
+
+TargetType  = lib ;
+Target      = gameLibs/render/animatedSplashScreen.lib ;
+
+AddIncludes =
+  $(Root)/prog/gameLibs/publicInclude
+  $(Root)/prog/gameLibs/render/animatedSplashScreen/public_api
+  $(Root)/prog/gameLibs/render/animatedSplashScreen/graph
+;
+
+Sources =
+  animatedSplashScreen.cpp
+;
+
+# symbols the renderer calls; declared here so a host outside the daNetGame
+# framework links this lib without hand-collecting its dependencies
+UseProgLibs =
+  gameLibs/render
+  gameLibs/render/hdrRender
+  gameLibs/render/shaderCacheWarmup
+  gameLibs/render/antialiasing
+  gameLibs/render/animatedSplashScreen/graph
+;
+
+include $(Root)/prog/_jBuild/build.jam ;

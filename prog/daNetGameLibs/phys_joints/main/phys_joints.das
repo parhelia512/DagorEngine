@@ -14,6 +14,7 @@ require DagorRandom
 require RendInst
 require RiDestr
 require DagorSystem
+require net
 
 struct PhysBodyData
   transform : float3x4
@@ -211,6 +212,9 @@ def update_winch(dt : float; eid : EntityId; var phys_joint__jointLength : float
     let isOnBrake = winch__pulls == winch__extends
     let winchTorque = isOnBrake ? winch__brakeTorque : winch__torque
     joint__lambdaLimit = winchTorque / winch__rad * dt
+    // a client needs the limit above for its own solve, but the joint length replicates from the server
+    if !is_server()
+      return
 
     let pulls = winch__pulls && !isOnBrake
     let extends = winch__extends && !isOnBrake
@@ -282,7 +286,8 @@ def break_rope(eid : EntityId; curTime : float)
           set(init, "rope_phys__despawnAt", curTime + joint__detachedDuration)
   destroyEntity(eid)
 
-[es(after=phys_joint_update)]
+// a break destroys the joint and spawns the pieces, so only the authority may decide it
+[es(tag=server, after=phys_joint_update)]
 def rope_stress_update(info : UpdateStageInfoAct;
                        eid : EntityId;
                        joint__lambdaSum : float;
@@ -299,7 +304,7 @@ def rope_stress_update(info : UpdateStageInfoAct;
     return
   break_rope(eid, info.curTime)
 
-[es(after=phys_joint_update, REQUIRE=joint__stressLimit)]
+[es(tag=server, after=phys_joint_update, REQUIRE=joint__stressLimit)]
 def rope_detach_from_ri(info : UpdateStageInfoAct;
                         eid : EntityId;
                         ri_extra__handle : riex_handle_t)
@@ -321,7 +326,7 @@ def phys_joint_extension_update(info : UpdateStageInfoAct; var phys_joint__joint
     query(phys_joint__secondAnchor) <| $ [es] (transform aka second_transform : float3x4)
       phys_joint__jointLength = min(distance(first_transform[3], second_transform[3]), phys_joint__extensionMax)
 
-[es(after=update_rope)]
+[es(tag=server, after=update_rope)]
 def detached_rope_despawn_update(info : UpdateStageInfoAct; eid : EntityId; rope_phys__despawnAt : float)
   if info.curTime > rope_phys__despawnAt
     destroyEntity(eid)

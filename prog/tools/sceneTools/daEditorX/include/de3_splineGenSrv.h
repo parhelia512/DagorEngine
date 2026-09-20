@@ -156,8 +156,6 @@ public:
   virtual void renderGeneratedGeom(int layer, bool opaque, const Frustum &frustum, int layer_order, bool asHeightmapPatch = false) = 0;
   virtual bool traceRayFoundationLoftGeom(int layer, const Point3 &p, const Point3 &dir, real &maxt, Point3 *norm) const = 0;
   virtual bool traceRayFoundationPolyGeom(int layer, const Point3 &p, const Point3 &dir, real &maxt, Point3 *norm) const = 0;
-  virtual bool shadowRayFoundationLoftGeomHitTest(int layer, const Point3 &p, const Point3 &dir, real &maxt) const = 0;
-  virtual bool shadowRayFoundationPolyGeomHitTest(int layer, const Point3 &p, const Point3 &dir, real &maxt) const = 0;
 
   virtual void setSweepMaskForSplines(const objgenerator::WorldHugeBitmask &bm) = 0;
   virtual void setSweepMaskForPolygons(const objgenerator::WorldHugeBitmask &bm) = 0;

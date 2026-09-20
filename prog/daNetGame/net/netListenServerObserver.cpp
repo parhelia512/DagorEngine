@@ -49,8 +49,7 @@ struct ListenServerNetObserver final : public net::INetworkObserver
     net::IConnection &conn = *msgraw->connection;
     auto msg = msgraw->cast<ClientInfo>();
     G_ASSERT(msg);
-    uint32_t &connFlags = conn.getConnFlagsRW();
-    if (connFlags & net::CF_PENDING)
+    if (conn.hasAnyFlags(net::CF_PENDING))
     {
       if (msg->get<0>() == NET_PROTO_VERSION)
       {
@@ -71,7 +70,7 @@ struct ListenServerNetObserver final : public net::INetworkObserver
           (int)conn.getId(), userName.c_str(), (long long)userId, (long long)groupId, mteam, (int)msg->get<3>(), ver >> 24,
           (ver >> 16) & UCHAR_MAX, (ver >> 8) & UCHAR_MAX, ver & UCHAR_MAX, pltf.c_str());
 
-        connFlags &= ~net::CF_PENDING;
+        conn.clearFlags(net::CF_PENDING);
 
         {
           ServerInfo srvInfoMsg((uint16_t)serverFlags, (uint8_t)phys_get_tickrate(), (uint8_t)phys_get_bot_tickrate(),
@@ -86,8 +85,7 @@ struct ListenServerNetObserver final : public net::INetworkObserver
           g_entity_mgr->broadcastEventImmediate(eastl::move(evt));
         }
 
-        if (!(connFlags & net::CF_PENDING))
-          flush_new_connection(conn);
+        flush_new_connection(conn);
       }
       else
       {
@@ -104,8 +102,8 @@ struct ListenServerNetObserver final : public net::INetworkObserver
     G_VERIFY(conn.setEntityInScopeAlways(net::get_msg_sink()));
     if (!conn.isBlackHole())
     {
+      conn.addFlags(net::CF_PENDING);
       debug("Client #%d connected, wait for identity message", (int)conn.getId());
-      conn.getConnFlagsRW() = net::CF_PENDING;
     }
     else
     {

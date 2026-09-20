@@ -183,6 +183,11 @@ static void clearRigenRtdataAndReinitPregenEnt(RendInstGenData *rgl, unsigned ne
   if (!rgl->rtData)
     return;
 
+  // ri_future_pregen_cnt only counts what riMgr registered, so it is 0 for a layer that got its
+  // pregenEnt from the level bin and no registrations. Shrinking such a layer would leave
+  // rtData->riRes empty while its cells still index the dropped pools.
+  new_pregen_ent_size = max(new_pregen_ent_size, (unsigned)rgl->pregenEnt.size());
+
   {
     ScopedLockWrite lock(rgl->rtData->riRwCs);
     // addref riRes in future pregenEnt
@@ -426,6 +431,10 @@ void rendinst::prepare_rt_rigen_data_render(const Point3 &pos, const TMatrix &vi
   bool needSyncPrepare = rigenNeedSyncPrepare.exchange(false);
   if (pendingReinit)
   {
+    // A RegenRiCell job dereferences rgl->rtData for the whole generateCell() and then locks
+    // rgl->rtData->riRwCs to publish, while the reinit below deletes rtData outside that lock.
+    while (!rendinst::isRIGenPrepareFinished())
+      sleep_usec(1000);
     needSyncPrepare = true;
     FOR_EACH_RG_LAYER_DO (rgl)
       clearRigenRtdataAndReinitPregenEnt(rgl, ri_future_pregen_cnt[_layer]);
@@ -605,7 +614,6 @@ static void prepare_add_pregen(RendInstGenData::CellRtData &crt, int layer_idx, 
   Tab<Point4> poolP4(tmpmem);
   Tab<TMatrix> poolTM(tmpmem);
   Tab<int> poolPerInstDataP4, poolPerInstDataTM(tmpmem);
-  Tab<char> sc_idx(tmpmem);
   int per_sc[SUBCELL_DIV * SUBCELL_DIV];
   int flg = layer_idx << riPoolBits;
 
@@ -945,7 +953,7 @@ rendinst::GetRendInstMatrixByRiIdxResult rendinst::get_rendinst_matrix_by_ri_idx
     return rendinst::GetRendInstMatrixByRiIdxResult::Failure;
 
   bool foundNear = false;
-  mat44f nearTm44;
+  TMatrix nearTm = TMatrix::IDENT;
 
   for (int i = 0; i < cellRt->pools[ri_idx].total; ++i)
   {
@@ -962,16 +970,18 @@ rendinst::GetRendInstMatrixByRiIdxResult rendinst::get_rendinst_matrix_by_ri_idx
       fabsf(position.x - currentPos.x) > 0.01f || fabsf(position.y - currentPos.y) > 0.01f || fabsf(position.z - currentPos.z) > 0.01f)
       continue;
 
-    if (foundNear)
+    TMatrix currentTm;
+    v_mat_43cu_from_mat44(currentTm.array, tm44);
+    if (foundNear && nearTm != currentTm)
       return rendinst::GetRendInstMatrixByRiIdxResult::MultipleInstancesAtThePostion;
 
     foundNear = true;
-    nearTm44 = tm44;
+    nearTm = currentTm;
   }
 
   if (foundNear)
   {
-    v_mat_43cu_from_mat44(out_tm.array, nearTm44);
+    out_tm = nearTm;
     return rendinst::GetRendInstMatrixByRiIdxResult::Success;
   }
 

@@ -345,10 +345,17 @@ ShaderMeshData::ShaderMeshData() { memset(stageEndElemIdx, 0, sizeof(stageEndEle
 ShaderMeshData::~ShaderMeshData() {}
 
 
+// build-site context for the UV range error report
+static int g_uv_err_lod = -1;
+static const char *g_uv_err_node = nullptr;
+
 // build meshdata
 bool ShaderMeshData::build(class Mesh &m, ShaderMaterial **mats, int nummats, IColorConvert &color_convert, bool allow_32_bit,
-  int node_id)
+  int node_id, int uv_err_lod, const char *uv_err_node)
 {
+  g_uv_err_lod = uv_err_lod;
+  g_uv_err_node = uv_err_node;
+
   // Calculate dU, dV (tangent, binormal).
 
   int chIdDu = m.find_extra_channel(SCUSAGE_EXTRA, 50);
@@ -537,9 +544,10 @@ static const char *type_name(int i)
 #undef SWITCH_NAME
 
 static int pos_chan_cvt_err = 0, chan_cvt_err = 0;
-static int uv_range_err = 0;
+static int uv_range_err_count = 0;
 static float uv_range_max_abs = 0.f;
 static bool g_uv_validate = false;
+static Tab<ShaderMeshData::UvRangeError> uv_range_errors;
 
 static __forceinline int convert_vertex(uint8_t *p, Color4 val, uint32_t mod, uint32_t type, const Color4 &mul, const Color4 &ofs,
   int node_idUse)
@@ -756,6 +764,19 @@ struct ChannelVertices
   uint32_t uniqueVertsCount() const { return uint32_t(encodedData.size() / encodedSize); }
 };
 
+// aggregate the offending vert into the (lod, node, tc channel) entry of the report
+static void add_uv_range_error(const char *node, int lod, int channel, float max_abs)
+{
+  for (ShaderMeshData::UvRangeError &e : uv_range_errors)
+    if (e.lod == lod && e.channel == channel && e.node == (node ? node : ""))
+    {
+      e.count++;
+      e.maxAbs = eastl::max(e.maxAbs, max_abs);
+      return;
+    }
+  uv_range_errors.push_back(ShaderMeshData::UvRangeError{eastl::string(node ? node : ""), lod, channel, 1, max_abs});
+}
+
 static void process_channel_data(Mesh &m, ShaderMeshData::RElem &re, const ShaderChannelId *desc, int channel, int node_id,
   int sc_type, int &count, int &type, const uint8_t *&vert_data, size_t &vert_stride, const uint8_t *&face_data, size_t &face_stride,
   int &node_id_use, bool &color_convert, bool need_face = true)
@@ -821,11 +842,12 @@ static void process_channel_data(Mesh &m, ShaderMeshData::RElem &re, const Shade
           {
             float finiteX = check_finite(uv.x) ? uv.x : eastl::numeric_limits<float>::max();
             float finiteY = check_finite(uv.y) ? uv.y : eastl::numeric_limits<float>::max();
+            add_uv_range_error(g_uv_err_node, g_uv_err_lod, desc[channel].ui, eastl::max(fabsf(finiteX), fabsf(finiteY)));
             if (brokenX)
               uv.x = eastl::clamp(finiteX, 0.f, 1.f);
             if (brokenY)
               uv.y = eastl::clamp(finiteY, 0.f, 1.f);
-            uv_range_err++;
+            uv_range_err_count++;
             uv_range_max_abs = eastl::max(uv_range_max_abs, eastl::max(fabsf(finiteX), fabsf(finiteY)));
           }
         }
@@ -1325,11 +1347,13 @@ int ShaderMeshData::get_channel_cvt_critical_errors() { return pos_chan_cvt_err;
 
 void ShaderMeshData::reset_uv_range_errors()
 {
-  uv_range_err = 0;
+  uv_range_err_count = 0;
   uv_range_max_abs = 0.f;
+  uv_range_errors.clear();
 }
-int ShaderMeshData::get_uv_range_errors() { return uv_range_err; }
+int ShaderMeshData::get_uv_range_error_count() { return uv_range_err_count; }
 float ShaderMeshData::get_uv_range_max_abs() { return uv_range_max_abs; }
+const Tab<ShaderMeshData::UvRangeError> &ShaderMeshData::get_uv_range_errors() { return uv_range_errors; }
 bool ShaderMeshData::exchange_uv_validation(bool on) { return eastl::exchange(g_uv_validate, on); }
 
 // save

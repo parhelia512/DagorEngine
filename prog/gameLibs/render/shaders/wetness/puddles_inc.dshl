@@ -126,17 +126,19 @@ macro USE_LAND_WETNESS()
       return float2(base_wetness, puddlesWetness);
     }
 
-    void apply_land_wetness(float2 wetness, float water_border, float3 world_pos, float3 vertical_norm, float3 view, float3 sunDir, float landThickness, inout UnpackedGbuffer g_buf)
+    void apply_land_wetness(float2 wetness, float water_border, float3 world_pos, float3 vertical_norm, float3 view, float3 sunDir, float landThickness, float porosity, inout UnpackedGbuffer g_buf)
     {
       float totalWetness = max(wetness.x, wetness.y);
       float fresnelterm = 0.04 + 0.96 * saturate(1.2*pow3(1-view.y));
       float wetMaterial = get_wet_material(totalWetness, water_border);
-      float porosity = wetness_blend_porosity_params.w;
       float wetnessAO = ClampRange(wetMaterial, 0.45, 0.95);
       float3 albedoSqr = 0.8*g_buf.albedo.rgb * g_buf.albedo.rgb;
 
       // we overriding real normal by vertical normal, so we lose all microdetails on puddle bottom. fake them by sundot
       float preshadow = saturate(dot(g_buf.normal, sunDir));
+
+      // porosity from material works only on relatively low wetness levels, when material is fully covered by water, we use constant porosity instead
+      porosity = lerp(porosity, wetness_blend_porosity_params.w, ClampRange(totalWetness, 0.1, 0.75));
 
       g_buf.normal = lerp(g_buf.normal, vertical_norm, wetnessAO);
       g_buf.albedo.rgb = lerp(g_buf.albedo.rgb, albedoSqr, ClampRange(totalWetness, 0.0, 0.35) * porosity);

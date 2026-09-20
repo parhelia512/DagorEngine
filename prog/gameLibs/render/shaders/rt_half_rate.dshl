@@ -1,0 +1,20 @@
+// Intended to be used with DLSS RR, we can discard half the pixels, and boost the kept ones.
+int rt_half_rate = 0;
+
+macro INIT_AND_USE_RT_HALF_RATE(code)
+  (code) { rt_half_rate@i1 = rt_half_rate; }
+
+  hlsl(code) {
+    #include "pcg_hash.hlsl"
+
+    uint rt_half_rate_offset(uint2 ray_index, uint frame_idx)
+    {
+      return pcg3d_hash_16bit(uint3(ray_index, frame_idx)).x & 1;
+    }
+
+    float rt_ray_energy_scale()
+    {
+      return rt_half_rate ? 2.0 : 1.0;
+    }
+  }
+endmacro

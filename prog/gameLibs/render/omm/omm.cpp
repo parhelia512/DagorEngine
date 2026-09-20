@@ -214,7 +214,6 @@ static ShaderVariableInfo omm_local_constants_var("omm_local_constants", true);
 static ShaderVariableInfo omm_sampler_var("omm_sampler0", true);
 static ShaderVariableInfo omm_uv_cutout_lines_var("omm_uv_cutout_lines", true);
 static ShaderVariableInfo omm_uv_cutout_enabled_var("omm_uv_cutout_enabled", true);
-static uint32_t nextConstantBufferNameId = 0;
 
 static bool sdk_ok(Context &ctx, ommResult result, const char *what)
 {
@@ -488,7 +487,7 @@ static const ShaderNameMap COMPUTE_SHADER_NAMES[] = {
 struct ResourceNameMap
 {
   const char *sdkName = nullptr;
-  const char *shaderVars[8] = {};
+  const char *shaderVars[MAX_RESOURCES_PER_PIPELINE] = {};
   uint32_t shaderVarCount = 0;
 };
 
@@ -560,6 +559,25 @@ static const ResourceNameMap *find_resource_names(const char *sdk_name)
   return nullptr;
 }
 
+static bool resolve_resource_vars(Context &ctx, uint32_t pipeline_index, const ommGpuPipelineDesc &pipeline)
+{
+  const ResourceNameMap *names = find_resource_names(pipeline.compute.shaderFileName);
+  if (!names)
+  {
+    logerr("omm: missing resource name map for SDK shader <%s>",
+      pipeline.compute.shaderFileName ? pipeline.compute.shaderFileName : "");
+    return false;
+  }
+
+  G_ASSERT_RETURN(names->shaderVarCount <= MAX_RESOURCES_PER_PIPELINE, false);
+  PipelineResourceVars &vars = ctx.pipelineResourceVars[pipeline_index];
+  vars.varCount = names->shaderVarCount;
+  for (uint32_t i = 0; i < vars.varCount; ++i)
+    vars.varIds[i] = get_shader_variable_id(names->shaderVars[i], true);
+
+  return true;
+}
+
 static bool load_compute_shader(Context &ctx, uint32_t pipeline_index, const ommGpuPipelineDesc &pipeline)
 {
   const char *shaderName =
@@ -605,16 +623,13 @@ static bool load_pipeline_shaders(Context &ctx)
     return false;
   }
 
-  for (uint32_t i = 0; i < MAX_PIPELINES; ++i)
-    ctx.computeShaders[i] = ComputeShader();
-
   ctx.programCount = info->pipelineNum;
   for (uint32_t i = 0; i < info->pipelineNum; ++i)
   {
     const ommGpuPipelineDesc &pipeline = info->pipelines[i];
     if (pipeline.type == ommGpuPipelineType_Compute)
     {
-      if (!load_compute_shader(ctx, i, pipeline))
+      if (!load_compute_shader(ctx, i, pipeline) || !resolve_resource_vars(ctx, i, pipeline))
         return false;
     }
     else if (pipeline.type == ommGpuPipelineType_Graphics)
@@ -680,36 +695,34 @@ static void mark_written_resource(Context &ctx, BarrierTracker &barriers, const 
     barriers.mark_write(view.buffer);
 }
 
-static bool bind_resource_var(const char *shader_var, const ResourceView &view, ommGpuDescriptorType type)
+static bool bind_resource_var(int var_id, const ResourceView &view, ommGpuDescriptorType type)
 {
-  const int varId = get_shader_variable_id(shader_var, true);
   switch (type)
   {
     case ommGpuDescriptorType_TextureRead:
       if (!view.texture)
         return false;
-      return ShaderGlobal::set_texture_unsafe(varId, view.texture);
+      return ShaderGlobal::set_texture_unsafe(var_id, view.texture);
     case ommGpuDescriptorType_BufferRead:
     case ommGpuDescriptorType_RawBufferRead:
     case ommGpuDescriptorType_RawBufferWrite:
       if (!view.buffer)
         return false;
-      return ShaderGlobal::set_buffer_unsafe(varId, view.buffer);
+      return ShaderGlobal::set_buffer_unsafe(var_id, view.buffer);
     default: break;
   }
 
   return false;
 }
 
-static void unbind_resource_var(const char *shader_var, ommGpuDescriptorType type)
+static void unbind_resource_var(int var_id, ommGpuDescriptorType type)
 {
-  const int varId = get_shader_variable_id(shader_var, true);
   switch (type)
   {
-    case ommGpuDescriptorType_TextureRead: ShaderGlobal::set_texture_unsafe(varId, nullptr); break;
+    case ommGpuDescriptorType_TextureRead: ShaderGlobal::set_texture_unsafe(var_id, nullptr); break;
     case ommGpuDescriptorType_BufferRead:
     case ommGpuDescriptorType_RawBufferRead:
-    case ommGpuDescriptorType_RawBufferWrite: ShaderGlobal::set_buffer_unsafe(varId, nullptr); break;
+    case ommGpuDescriptorType_RawBufferWrite: ShaderGlobal::set_buffer_unsafe(var_id, nullptr); break;
     default: break;
   }
 }
@@ -718,20 +731,14 @@ static bool bind_sampler(d3d::SamplerHandle sampler) { return omm_sampler_var.se
 
 static void unbind_sampler() { omm_sampler_var.set_sampler(d3d::INVALID_SAMPLER_HANDLE); }
 
-static bool bind_resources(Context &ctx, BarrierTracker &barriers, const Resources &resources, const ommGpuPipelineDesc &pipeline,
-  const ommGpuResource *resource_list, uint32_t resource_count)
+static bool bind_resources(Context &ctx, BarrierTracker &barriers, const Resources &resources, uint32_t pipeline_index,
+  const ommGpuPipelineDesc &pipeline, const ommGpuResource *resource_list, uint32_t resource_count)
 {
-  const ResourceNameMap *resourceNames = find_resource_names(pipeline.compute.shaderFileName);
-  if (!resourceNames)
-  {
-    logerr("omm: missing resource name map for SDK shader <%s>",
-      pipeline.compute.shaderFileName ? pipeline.compute.shaderFileName : "");
-    return false;
-  }
-  if (resourceNames->shaderVarCount != resource_count)
+  const PipelineResourceVars &vars = ctx.pipelineResourceVars[pipeline_index];
+  if (vars.varCount != resource_count)
   {
     logerr("omm: SDK shader <%s> expected %u resources, got %u",
-      pipeline.compute.shaderFileName ? pipeline.compute.shaderFileName : "", resourceNames->shaderVarCount, resource_count);
+      pipeline.compute.shaderFileName ? pipeline.compute.shaderFileName : "", vars.varCount, resource_count);
     return false;
   }
 
@@ -752,7 +759,7 @@ static bool bind_resources(Context &ctx, BarrierTracker &barriers, const Resourc
         return false;
 
       const ResourceView view = resolve_resource(ctx, resources, resource);
-      if (!bind_resource_var(resourceNames->shaderVars[resourceIndex - 1], view, range.descriptorType))
+      if (!bind_resource_var(vars.varIds[resourceIndex - 1], view, range.descriptorType))
         return false;
     }
   }
@@ -760,12 +767,9 @@ static bool bind_resources(Context &ctx, BarrierTracker &barriers, const Resourc
   return resourceIndex == resource_count;
 }
 
-static void unbind_resources(const ommGpuPipelineDesc &pipeline)
+static void unbind_resources(const Context &ctx, uint32_t pipeline_index, const ommGpuPipelineDesc &pipeline)
 {
-  const ResourceNameMap *resourceNames = find_resource_names(pipeline.compute.shaderFileName);
-  if (!resourceNames)
-    return;
-
+  const PipelineResourceVars &vars = ctx.pipelineResourceVars[pipeline_index];
   const ommGpuDescriptorRangeDesc *ranges = pipeline.compute.descriptorRanges;
   const uint32_t rangeCount = pipeline.compute.descriptorRangeNum;
 
@@ -775,10 +779,10 @@ static void unbind_resources(const ommGpuPipelineDesc &pipeline)
     const ommGpuDescriptorRangeDesc &range = ranges[rangeIndex];
     for (uint32_t i = 0; i < range.descriptorNum; ++i)
     {
-      if (resourceIndex >= resourceNames->shaderVarCount)
+      if (resourceIndex >= vars.varCount)
         return;
 
-      unbind_resource_var(resourceNames->shaderVars[resourceIndex++], range.descriptorType);
+      unbind_resource_var(vars.varIds[resourceIndex++], range.descriptorType);
     }
   }
 }
@@ -790,20 +794,31 @@ static void mark_written_resources(Context &ctx, BarrierTracker &barriers, const
     mark_written_resource(ctx, barriers, resources, resource_list[i]);
 }
 
-static bool create_constant_buffer(dag::Vector<UniqueBuf> &buffers, const uint8_t *data, uint32_t byte_size, const char *name,
-  ResourceTagType tag, D3DRESID &out_buffer_id)
+static bool create_constant_buffer(UniqueBuf &buffer, uint32_t byte_size, const char *name)
 {
-  out_buffer_id = BAD_D3DRESID;
-  if (!data || byte_size == 0)
-    return true;
-
-  const String uniqueName(0, "%s_%u", name, nextConstantBufferNameId++);
-  UniqueBuf buffer = dag::buffers::create_one_frame_cb(size_to_cbuffer_registers(byte_size), uniqueName.c_str(), tag);
+  buffer = dag::buffers::create_one_frame_cb(size_to_cbuffer_registers(byte_size), name, OMM_RESOURCE_TAG);
   if (!buffer)
   {
     logerr("omm: failed to create constant buffer <%s> of size %u", name, byte_size);
     return false;
   }
+
+  return true;
+}
+
+static bool update_constant_buffer(UniqueBuf &buffer, const uint8_t *data, uint32_t byte_size, const char *name,
+  D3DRESID &out_buffer_id)
+{
+  out_buffer_id = BAD_D3DRESID;
+  if (!data || byte_size == 0)
+    return true;
+
+  // init() sizes both buffers from the SDK's declared maximum, thus this grow path runs only if the SDK
+  // asks for more. The managed name is fixed, thus the old buffer must go before the new one takes it.
+  if (buffer && buffer->getSize() < byte_size)
+    buffer.close();
+  if (!buffer && !create_constant_buffer(buffer, byte_size, name))
+    return false;
 
   if (!buffer.getBuf()->updateData(0, byte_size, data, VBLOCK_WRITEONLY | VBLOCK_DISCARD))
   {
@@ -812,17 +827,16 @@ static bool create_constant_buffer(dag::Vector<UniqueBuf> &buffers, const uint8_
   }
 
   out_buffer_id = buffer.getBufId();
-  buffers.push_back(eastl::move(buffer));
   return true;
 }
 
-static bool bind_constants(PendingBake &bake, const ommGpuDispatchChain &chain, const uint8_t *local_data, uint32_t local_size)
+static bool bind_constants(Context &ctx, const ommGpuDispatchChain &chain, const uint8_t *local_data, uint32_t local_size)
 {
   D3DRESID globalBufferId = BAD_D3DRESID;
   D3DRESID localBufferId = BAD_D3DRESID;
-  if (!create_constant_buffer(bake.constantBuffers, chain.globalCBufferData, chain.globalCBufferDataSize, "omm_global_constants",
-        OMM_RESOURCE_TAG, globalBufferId) ||
-      !create_constant_buffer(bake.constantBuffers, local_data, local_size, "omm_local_constants", OMM_RESOURCE_TAG, localBufferId))
+  if (!update_constant_buffer(ctx.globalConstantBuffer, chain.globalCBufferData, chain.globalCBufferDataSize, "omm_global_constants",
+        globalBufferId) ||
+      !update_constant_buffer(ctx.localConstantBuffer, local_data, local_size, "omm_local_constants", localBufferId))
     return false;
 
   return omm_global_constants_var.set_buffer(globalBufferId) && omm_local_constants_var.set_buffer(localBufferId);
@@ -840,8 +854,8 @@ static bool validate_program(const Context &ctx, uint32_t pipeline_index)
          ctx.computeShaders[pipeline_index].getComputeProgram() != BAD_PROGRAM;
 }
 
-static bool execute_compute(Context &ctx, PendingBake &bake, BarrierTracker &barriers, const Resources &resources,
-  const ommGpuDispatchChain &chain, const ommGpuComputeDesc &desc, d3d::SamplerHandle sampler)
+static bool execute_compute(Context &ctx, BarrierTracker &barriers, const Resources &resources, const ommGpuDispatchChain &chain,
+  const ommGpuComputeDesc &desc, d3d::SamplerHandle sampler)
 {
   TIME_D3D_PROFILE_NAME(omm_compute_dispatch, desc.name ? desc.name : "omm_compute_dispatch");
 
@@ -855,10 +869,10 @@ static bool execute_compute(Context &ctx, PendingBake &bake, BarrierTracker &bar
 
   FINALLY([&] { unbind_sampler(); });
   FINALLY([&] { unbind_constants(); });
-  FINALLY([&] { unbind_resources(pipeline); });
+  FINALLY([&] { unbind_resources(ctx, desc.pipelineIndex, pipeline); });
 
-  if (!bind_sampler(sampler) || !bind_constants(bake, chain, desc.localConstantBufferData, desc.localConstantBufferDataSize) ||
-      !bind_resources(ctx, barriers, resources, pipeline, desc.resources, desc.resourceNum))
+  if (!bind_sampler(sampler) || !bind_constants(ctx, chain, desc.localConstantBufferData, desc.localConstantBufferDataSize) ||
+      !bind_resources(ctx, barriers, resources, desc.pipelineIndex, pipeline, desc.resources, desc.resourceNum))
     return false;
 
   if (!ctx.computeShaders[desc.pipelineIndex].dispatchGroups(desc.gridWidth, desc.gridHeight, 1))
@@ -872,7 +886,7 @@ static bool execute_compute(Context &ctx, PendingBake &bake, BarrierTracker &bar
   return true;
 }
 
-static bool execute_compute_indirect(Context &ctx, PendingBake &bake, BarrierTracker &barriers, const Resources &resources,
+static bool execute_compute_indirect(Context &ctx, BarrierTracker &barriers, const Resources &resources,
   const ommGpuDispatchChain &chain, const ommGpuComputeIndirectDesc &desc, d3d::SamplerHandle sampler)
 {
   TIME_D3D_PROFILE_NAME(omm_compute_indirect_dispatch, desc.name ? desc.name : "omm_compute_indirect_dispatch");
@@ -891,10 +905,10 @@ static bool execute_compute_indirect(Context &ctx, PendingBake &bake, BarrierTra
 
   FINALLY([&] { unbind_sampler(); });
   FINALLY([&] { unbind_constants(); });
-  FINALLY([&] { unbind_resources(pipeline); });
+  FINALLY([&] { unbind_resources(ctx, desc.pipelineIndex, pipeline); });
 
-  if (!bind_sampler(sampler) || !bind_constants(bake, chain, desc.localConstantBufferData, desc.localConstantBufferDataSize) ||
-      !bind_resources(ctx, barriers, resources, pipeline, desc.resources, desc.resourceNum))
+  if (!bind_sampler(sampler) || !bind_constants(ctx, chain, desc.localConstantBufferData, desc.localConstantBufferDataSize) ||
+      !bind_resources(ctx, barriers, resources, desc.pipelineIndex, pipeline, desc.resources, desc.resourceNum))
     return false;
 
   if (!barriers.transition(indirect.buffer, RB_RO_INDIRECT_BUFFER))
@@ -946,11 +960,180 @@ static bool create_readback_buffer(UniqueBuf &buffer, uint32_t byte_size, const 
   return true;
 }
 
-static void close_pending_bake(PendingBake &bake)
+// One rule over both: a pooled buffer at or under the keep size serves any smaller bake and stays for the
+// session; a larger one serves only a bake within the oversize factor and is freed once no bake is in
+// flight, so a large bake's scratch neither pins a slot nor holds VRAM after the burst.
+static constexpr uint32_t POOLED_BUFFER_MAX_OVERSIZE = 4;
+static constexpr uint32_t POOLED_BUFFER_IDLE_KEEP_BYTES = 1u << 20;
+
+// The smallest bake this buffer may serve, so two pooled buffers can be compared for what they cover.
+static uint32_t min_reusable_size(const UniqueBuf &buffer)
 {
+  const uint32_t capacity = buffer->getSize();
+  return capacity <= POOLED_BUFFER_IDLE_KEEP_BYTES ? 0 : capacity / POOLED_BUFFER_MAX_OVERSIZE;
+}
+
+static bool can_reuse_pooled_buffer(const UniqueBuf &buffer, uint32_t byte_size)
+{
+  if (!buffer || byte_size == 0)
+    return false;
+
+  return buffer->getSize() >= byte_size && min_reusable_size(buffer) <= byte_size;
+}
+
+// suffix_index appends an ordinal, for a suffix that names more than one buffer. The name is built here
+// and not by the caller, because the reuse path needs none.
+static bool create_pooled_buffer(UniqueBuf &buffer, uint32_t byte_size, unsigned flags, uint32_t slot, const char *suffix,
+  int suffix_index = -1)
+{
+  if (can_reuse_pooled_buffer(buffer, byte_size))
+    return true;
+
+  const String name =
+    suffix_index < 0 ? String(0, "omm_slot_%u_%s", slot, suffix) : String(0, "omm_slot_%u_%s_%d", slot, suffix, suffix_index);
+  return create_buffer(buffer, byte_size, flags, name.c_str(), OMM_RESOURCE_TAG);
+}
+
+static bool create_pooled_readback_buffer(UniqueBuf &buffer, uint32_t byte_size, uint32_t slot, const char *suffix)
+{
+  if (can_reuse_pooled_buffer(buffer, byte_size))
+    return true;
+
+  return create_readback_buffer(buffer, byte_size, String(0, "omm_slot_%u_%s", slot, suffix).c_str(), OMM_RESOURCE_TAG);
+}
+
+// The pair has one lifetime: the readback copy takes the whole device buffer, thus a failed create must
+// leave no readback smaller than its device half.
+static bool create_pooled_readback_pair(UniqueBuf &device, UniqueBuf &readback, uint32_t byte_size, unsigned flags, uint32_t slot,
+  const char *device_suffix, const char *readback_suffix)
+{
+  if (can_reuse_pooled_buffer(device, byte_size) && can_reuse_pooled_buffer(readback, byte_size))
+    return true;
+
+  device.close();
+  readback.close();
+  if (!create_pooled_buffer(device, byte_size, flags, slot, device_suffix))
+    return false;
+  if (!create_pooled_readback_buffer(readback, byte_size, slot, readback_suffix))
+  {
+    device.close();
+    return false;
+  }
+
+  return true;
+}
+
+// Takes the buffer by value: ownership always moves out of the caller, so a buffer the store does not
+// take is freed here instead of staying alive in a result the caller already accounts as empty.
+static void push_recycled_buffer(BufferRecycleStore &store, UniqueBuf buffer)
+{
+  if (!buffer)
+    return;
+
+  if (store.count < MAX_RECYCLED_BUFFERS)
+  {
+    store.buffers[store.count++] = eastl::move(buffer);
+    return;
+  }
+
+  // Full: evict only a buffer the new one fully covers, smallest first. A buffer over the keep size serves
+  // nothing below its oversize bound, so it must not take the place of a small buffer the small bakes reuse.
+  const uint32_t incomingMinSize = min_reusable_size(buffer);
+  uint32_t victim = store.count;
+  for (uint32_t i = 0; i < store.count; ++i)
+  {
+    if (store.buffers[i]->getSize() >= buffer->getSize() || min_reusable_size(store.buffers[i]) < incomingMinSize)
+      continue;
+    if (victim == store.count || store.buffers[i]->getSize() < store.buffers[victim]->getSize())
+      victim = i;
+  }
+  if (victim != store.count)
+    store.buffers[victim] = eastl::move(buffer);
+}
+
+// Best fit: the smallest buffer the size rule accepts, so a large one stays for a large need.
+// A recycled buffer's last GPU use was recorded earlier in the same command stream than the dispatches of
+// the bake that takes it, thus the driver orders the reuse; no wait of our own is needed.
+static bool take_recycled_buffer(BufferRecycleStore &store, uint32_t byte_size, UniqueBuf &out_buffer)
+{
+  uint32_t best = MAX_RECYCLED_BUFFERS;
+  for (uint32_t i = 0; i < store.count; ++i)
+  {
+    if (!can_reuse_pooled_buffer(store.buffers[i], byte_size))
+      continue;
+    if (best == MAX_RECYCLED_BUFFERS || store.buffers[i]->getSize() < store.buffers[best]->getSize())
+      best = i;
+  }
+
+  if (best == MAX_RECYCLED_BUFFERS)
+    return false;
+
+  out_buffer = eastl::move(store.buffers[best]);
+  --store.count;
+  if (best != store.count)
+    store.buffers[best] = eastl::move(store.buffers[store.count]);
+  return true;
+}
+
+// The output buffers go back to the stores: a failed or discarded bake holds the same three a consumed
+// one hands over, and closing them makes the next bake create them again.
+static void close_pending_bake(Context &ctx, PendingBake &bake)
+{
+  push_recycled_buffer(ctx.recycledArrayDataBuffers, eastl::move(bake.outOmmArrayData));
+  push_recycled_buffer(ctx.recycledOutputBuffers, eastl::move(bake.outOmmDescArray));
+  push_recycled_buffer(ctx.recycledOutputBuffers, eastl::move(bake.outOmmIndexBuffer));
+
   const uint32_t generation = bake.generation;
+  BakeBufferPool pool = eastl::move(bake.pool);
   bake = {};
   bake.generation = generation;
+  bake.pool = eastl::move(pool);
+}
+
+static void free_if_large(UniqueBuf &buffer)
+{
+  if (buffer && buffer->getSize() > POOLED_BUFFER_IDLE_KEEP_BYTES)
+    buffer.close();
+}
+
+// Only correct while every slot is free: a dispatched bake still reads its own pooled buffers.
+static void trim_idle_pools(Context &ctx)
+{
+  for (const PendingBake &bake : ctx.pendingBakes)
+    if (bake.state != PendingBakeState::Free)
+      return;
+
+  for (BufferRecycleStore *store : {&ctx.recycledArrayDataBuffers, &ctx.recycledOutputBuffers})
+    for (uint32_t i = 0; i < store->count;)
+    {
+      free_if_large(store->buffers[i]);
+      if (store->buffers[i])
+      {
+        ++i;
+        continue;
+      }
+      --store->count;
+      if (i != store->count)
+        store->buffers[i] = eastl::move(store->buffers[store->count]);
+    }
+
+  for (PendingBake &bake : ctx.pendingBakes)
+  {
+    free_if_large(bake.pool.outOmmDescArrayHistogram);
+    free_if_large(bake.pool.outOmmIndexHistogram);
+    free_if_large(bake.pool.outPostDispatchInfo);
+    free_if_large(bake.pool.readbackOmmDescArrayHistogram);
+    free_if_large(bake.pool.readbackOmmIndexHistogram);
+    free_if_large(bake.pool.readbackPostDispatchInfo);
+    for (UniqueBuf &buffer : bake.pool.transientPoolBuffers)
+      free_if_large(buffer);
+  }
+}
+
+static void close_bake_slot(Context &ctx, PendingBake &bake)
+{
+  close_pending_bake(ctx, bake);
+  trim_idle_pools(ctx);
 }
 
 static PendingBake *get_pending_bake(Context &ctx, BakeHandle handle)
@@ -974,13 +1157,13 @@ static Resources make_resources(const BakeInput &input, const PendingBake &bake)
     .subdivisionLevelBuffer = input.subdivisionLevelBuffer,
     .outOmmArrayData = bake.outOmmArrayData.getBuf(),
     .outOmmDescArray = bake.outOmmDescArray.getBuf(),
-    .outOmmDescArrayHistogram = bake.outOmmDescArrayHistogram.getBuf(),
+    .outOmmDescArrayHistogram = bake.pool.outOmmDescArrayHistogram.getBuf(),
     .outOmmIndexBuffer = bake.outOmmIndexBuffer.getBuf(),
-    .outOmmIndexHistogram = bake.outOmmIndexHistogram.getBuf(),
-    .outPostDispatchInfo = bake.outPostDispatchInfo.getBuf(),
+    .outOmmIndexHistogram = bake.pool.outOmmIndexHistogram.getBuf(),
+    .outPostDispatchInfo = bake.pool.outPostDispatchInfo.getBuf(),
   };
   for (uint32_t i = 0; i < MAX_TRANSIENT_POOL_BUFFERS; ++i)
-    resources.transientPoolBuffers[i] = bake.transientPoolBuffers[i].getBuf();
+    resources.transientPoolBuffers[i] = bake.pool.transientPoolBuffers[i].getBuf();
   return resources;
 }
 
@@ -1013,14 +1196,15 @@ static bool issue_readbacks(PendingBake &bake)
   // Histograms are optional statistics: allocate_pending_bake leaves both the device and readback
   // buffers null when the SDK reports a zero-sized histogram, so skip those copies. Post-dispatch
   // info is always present.
-  const bool haveArrayHistogram = bake.outOmmDescArrayHistogram && bake.readbackOmmDescArrayHistogram;
-  const bool haveIndexHistogram = bake.outOmmIndexHistogram && bake.readbackOmmIndexHistogram;
+  const BakeBufferPool &pool = bake.pool;
+  const bool haveArrayHistogram = pool.outOmmDescArrayHistogram && pool.readbackOmmDescArrayHistogram;
+  const bool haveIndexHistogram = pool.outOmmIndexHistogram && pool.readbackOmmIndexHistogram;
 
-  if (haveArrayHistogram && !copy_for_readback(bake.outOmmDescArrayHistogram.getBuf(), bake.readbackOmmDescArrayHistogram.getBuf()))
+  if (haveArrayHistogram && !copy_for_readback(pool.outOmmDescArrayHistogram.getBuf(), pool.readbackOmmDescArrayHistogram.getBuf()))
     return false;
-  if (haveIndexHistogram && !copy_for_readback(bake.outOmmIndexHistogram.getBuf(), bake.readbackOmmIndexHistogram.getBuf()))
+  if (haveIndexHistogram && !copy_for_readback(pool.outOmmIndexHistogram.getBuf(), pool.readbackOmmIndexHistogram.getBuf()))
     return false;
-  if (!copy_for_readback(bake.outPostDispatchInfo.getBuf(), bake.readbackPostDispatchInfo.getBuf()))
+  if (!copy_for_readback(pool.outPostDispatchInfo.getBuf(), pool.readbackPostDispatchInfo.getBuf()))
     return false;
 
   if (!bake.readbackQuery)
@@ -1128,6 +1312,24 @@ static bool validate_shader_vars()
   return allPresent;
 }
 
+// Sized from the maximums the SDK declares, so no bake has to grow them. A declared zero gives no
+// size; update_constant_buffer then creates on demand.
+static bool create_constant_buffers(Context &ctx)
+{
+  const auto *info = static_cast<const ommGpuPipelineInfoDesc *>(ctx.pipelineInfo);
+  if (!info)
+    return false;
+
+  if (const uint32_t maxDataSize = info->globalConstantBufferDesc.maxDataSize)
+    if (!create_constant_buffer(ctx.globalConstantBuffer, maxDataSize, "omm_global_constants"))
+      return false;
+  if (const uint32_t maxDataSize = info->localConstantBufferDesc.maxDataSize)
+    if (!create_constant_buffer(ctx.localConstantBuffer, maxDataSize, "omm_local_constants"))
+      return false;
+
+  return true;
+}
+
 bool init(Context &ctx)
 {
   shutdown(ctx);
@@ -1164,7 +1366,7 @@ bool init(Context &ctx)
   }
   ctx.pipeline = pipeline;
 
-  if (!set_pipeline_info(ctx) || !load_pipeline_shaders(ctx) || !validate_shader_vars())
+  if (!set_pipeline_info(ctx) || !load_pipeline_shaders(ctx) || !validate_shader_vars() || !create_constant_buffers(ctx))
   {
     shutdown(ctx);
     return false;
@@ -1244,47 +1446,60 @@ static bool fill_pre_dispatch_info(Context &ctx, const BakeInput &input, Pending
   return true;
 }
 
-static bool allocate_pending_bake(PendingBake &allocated, const char *name_prefix)
+// A recycled buffer keeps the debug name of the bake that created it, which only affects capture-tool labels.
+// No zeroing on reuse: the bake zeroes the array data itself, and the SDK writes the desc array densely from
+// index zero and the index buffer over its whole size, so no consumer reads a stale element.
+static bool create_bake_output_buffer(BufferRecycleStore &store, UniqueBuf &buffer, uint32_t byte_size, unsigned flags, uint32_t slot,
+  uint32_t generation, const char *suffix)
 {
-  const char *prefix = name_prefix ? name_prefix : "omm";
+  if (byte_size == 0)
+  {
+    buffer.close();
+    return true;
+  }
+  if (take_recycled_buffer(store, byte_size, buffer))
+    return true;
+
+  return create_buffer(buffer, byte_size, flags, String(0, "omm_bake_%u_%u_%s", slot, generation, suffix).c_str(), OMM_RESOURCE_TAG);
+}
+
+static bool allocate_pending_bake(Context &ctx, PendingBake &allocated, uint32_t slot)
+{
+  const uint32_t generation = allocated.generation;
   const unsigned arrayDataFlags = SBCF_UA_SR_BYTE_ADDRESS | SBCF_OPACITY_MICRO_MAP_TRIANGLE_SOURCE_DATA;
   const unsigned outputFlags = SBCF_UA_SR_BYTE_ADDRESS;
   const unsigned transientFlags = SBCF_UA_SR_BYTE_ADDRESS | SBCF_MISC_DRAWINDIRECT;
 
-  if (!create_buffer(allocated.outOmmArrayData, allocated.outOmmArraySizeInBytes, arrayDataFlags,
-        String(0, "%s_out_array_data", prefix).c_str(), OMM_RESOURCE_TAG) ||
-      !create_buffer(allocated.outOmmDescArray, allocated.outOmmDescSizeInBytes, outputFlags,
-        String(0, "%s_out_desc_array", prefix).c_str(), OMM_RESOURCE_TAG) ||
-      !create_buffer(allocated.outOmmDescArrayHistogram, allocated.outOmmArrayHistogramSizeInBytes, outputFlags,
-        String(0, "%s_out_desc_histogram", prefix).c_str(), OMM_RESOURCE_TAG) ||
-      !create_buffer(allocated.outOmmIndexBuffer, allocated.outOmmIndexBufferSizeInBytes, outputFlags,
-        String(0, "%s_out_index_buffer", prefix).c_str(), OMM_RESOURCE_TAG) ||
-      !create_buffer(allocated.outOmmIndexHistogram, allocated.outOmmIndexHistogramSizeInBytes, outputFlags,
-        String(0, "%s_out_index_histogram", prefix).c_str(), OMM_RESOURCE_TAG) ||
-      !create_buffer(allocated.outPostDispatchInfo, allocated.outOmmPostDispatchInfoSizeInBytes, outputFlags,
-        String(0, "%s_out_post_dispatch_info", prefix).c_str(), OMM_RESOURCE_TAG))
+  if (!create_bake_output_buffer(ctx.recycledArrayDataBuffers, allocated.outOmmArrayData, allocated.outOmmArraySizeInBytes,
+        arrayDataFlags, slot, generation, "out_array_data") ||
+      !create_bake_output_buffer(ctx.recycledOutputBuffers, allocated.outOmmDescArray, allocated.outOmmDescSizeInBytes, outputFlags,
+        slot, generation, "out_desc_array") ||
+      !create_bake_output_buffer(ctx.recycledOutputBuffers, allocated.outOmmIndexBuffer, allocated.outOmmIndexBufferSizeInBytes,
+        outputFlags, slot, generation, "out_index_buffer"))
     return false;
 
-  if (!create_readback_buffer(allocated.readbackOmmDescArrayHistogram, allocated.outOmmArrayHistogramSizeInBytes,
-        String(0, "%s_readback_desc_histogram", prefix).c_str(), OMM_RESOURCE_TAG) ||
-      !create_readback_buffer(allocated.readbackOmmIndexHistogram, allocated.outOmmIndexHistogramSizeInBytes,
-        String(0, "%s_readback_index_histogram", prefix).c_str(), OMM_RESOURCE_TAG) ||
-      !create_readback_buffer(allocated.readbackPostDispatchInfo, allocated.outOmmPostDispatchInfoSizeInBytes,
-        String(0, "%s_readback_post_dispatch_info", prefix).c_str(), OMM_RESOURCE_TAG))
+  BakeBufferPool &pool = allocated.pool;
+  if (!create_pooled_readback_pair(pool.outOmmDescArrayHistogram, pool.readbackOmmDescArrayHistogram,
+        allocated.outOmmArrayHistogramSizeInBytes, outputFlags, slot, "out_desc_histogram", "readback_desc_histogram") ||
+      !create_pooled_readback_pair(pool.outOmmIndexHistogram, pool.readbackOmmIndexHistogram,
+        allocated.outOmmIndexHistogramSizeInBytes, outputFlags, slot, "out_index_histogram", "readback_index_histogram") ||
+      !create_pooled_readback_pair(pool.outPostDispatchInfo, pool.readbackPostDispatchInfo,
+        allocated.outOmmPostDispatchInfoSizeInBytes, outputFlags, slot, "out_post_dispatch_info", "readback_post_dispatch_info"))
     return false;
 
   for (uint32_t i = 0; i < allocated.numTransientPoolBuffers; ++i)
   {
-    if (
-      i >= MAX_TRANSIENT_POOL_BUFFERS || !create_buffer(allocated.transientPoolBuffers[i], allocated.transientPoolBufferSizeInBytes[i],
-                                           transientFlags, String(0, "%s_transient_%u", prefix, i).c_str(), OMM_RESOURCE_TAG))
+    if (i >= MAX_TRANSIENT_POOL_BUFFERS)
+      return false;
+    if (!create_pooled_buffer(pool.transientPoolBuffers[i], allocated.transientPoolBufferSizeInBytes[i], transientFlags, slot,
+          "transient", int(i)))
       return false;
   }
 
   return true;
 }
 
-static bool dispatch_internal(Context &ctx, PendingBake &bake, const BakeInput &input, const Resources &resources)
+static bool dispatch_internal(Context &ctx, const BakeInput &input, const Resources &resources)
 {
   TIME_D3D_PROFILE(omm_bake_dispatch);
 
@@ -1310,11 +1525,11 @@ static bool dispatch_internal(Context &ctx, PendingBake &bake, const BakeInput &
     switch (desc.type)
     {
       case ommGpuDispatchType_Compute:
-        if (!execute_compute(ctx, bake, barriers, resources, *chain, desc.compute, sampler))
+        if (!execute_compute(ctx, barriers, resources, *chain, desc.compute, sampler))
           return false;
         break;
       case ommGpuDispatchType_ComputeIndirect:
-        if (!execute_compute_indirect(ctx, bake, barriers, resources, *chain, desc.computeIndirect, sampler))
+        if (!execute_compute_indirect(ctx, barriers, resources, *chain, desc.computeIndirect, sampler))
           return false;
         break;
       case ommGpuDispatchType_DrawIndexedIndirect: logerr("omm: graphics dispatch is not supported"); return false;
@@ -1359,22 +1574,21 @@ bool begin_bake(Context &ctx, const BakeInput &input, BakeHandle &out_handle)
   }
 
   PendingBake &bake = ctx.pendingBakes[slot];
-  close_pending_bake(bake);
+  close_pending_bake(ctx, bake);
   bake.generation++;
   if (bake.generation == 0)
     bake.generation = 1;
 
-  if (!fill_pre_dispatch_info(ctx, input, bake) ||
-      !allocate_pending_bake(bake, String(0, "omm_bake_%u_%u", slot, bake.generation).c_str()))
+  if (!fill_pre_dispatch_info(ctx, input, bake) || !allocate_pending_bake(ctx, bake, slot))
   {
-    close_pending_bake(bake);
+    close_pending_bake(ctx, bake);
     return false;
   }
 
   const Resources resources = make_resources(input, bake);
-  if (!clear_omm_array_data(bake) || !dispatch_internal(ctx, bake, input, resources) || !issue_readbacks(bake))
+  if (!clear_omm_array_data(bake) || !dispatch_internal(ctx, input, resources) || !issue_readbacks(bake))
   {
-    close_pending_bake(bake);
+    close_pending_bake(ctx, bake);
     return false;
   }
 
@@ -1406,6 +1620,24 @@ void clear_result(BakeResult &result)
   result = {};
 }
 
+void recycle_result(Context &ctx, BakeResult &result, bool keep_index_buffer)
+{
+  debug_unregister_bake_result(result);
+
+  push_recycled_buffer(ctx.recycledArrayDataBuffers, eastl::move(result.arrayData));
+  push_recycled_buffer(ctx.recycledOutputBuffers, eastl::move(result.descArray));
+  result.arrayDataSizeInBytes = 0;
+  result.descArraySizeInBytes = 0;
+  if (!keep_index_buffer)
+  {
+    push_recycled_buffer(ctx.recycledOutputBuffers, eastl::move(result.indexBuffer));
+    result = {};
+  }
+
+  // Without this, a buffer released outside a bake keeps its VRAM until the next bake ends.
+  trim_idle_pools(ctx);
+}
+
 ConsumeBakeResult consume_bake(Context &ctx, BakeHandle handle, BakeResult &out_result, BakeStats *out_stats)
 {
   if (!is_bake_ready(ctx, handle))
@@ -1416,18 +1648,19 @@ ConsumeBakeResult consume_bake(Context &ctx, BakeHandle handle, BakeResult &out_
     return ConsumeBakeResult::Failed;
 
   PostDispatchInfo postInfo;
-  if (!read_post_dispatch_info(bake->readbackPostDispatchInfo.getBuf(), postInfo))
+  if (!read_post_dispatch_info(bake->pool.readbackPostDispatchInfo.getBuf(), postInfo))
   {
-    close_pending_bake(*bake);
+    close_bake_slot(ctx, *bake);
     return ConsumeBakeResult::Failed;
   }
 
   clear_result(out_result);
-  if (!convert_histogram(bake->readbackOmmDescArrayHistogram.getBuf(), bake->outOmmArrayHistogramSizeInBytes,
+  if (!convert_histogram(bake->pool.readbackOmmDescArrayHistogram.getBuf(), bake->outOmmArrayHistogramSizeInBytes,
         out_result.arrayBuildDescs) ||
-      !convert_histogram(bake->readbackOmmIndexHistogram.getBuf(), bake->outOmmIndexHistogramSizeInBytes, out_result.blasLinkageDescs))
+      !convert_histogram(bake->pool.readbackOmmIndexHistogram.getBuf(), bake->outOmmIndexHistogramSizeInBytes,
+        out_result.blasLinkageDescs))
   {
-    close_pending_bake(*bake);
+    close_bake_slot(ctx, *bake);
     return ConsumeBakeResult::Failed;
   }
 
@@ -1443,7 +1676,7 @@ ConsumeBakeResult consume_bake(Context &ctx, BakeHandle handle, BakeResult &out_
   if (out_stats)
     *out_stats = make_bake_stats(postInfo);
 
-  close_pending_bake(*bake);
+  close_bake_slot(ctx, *bake);
   return ConsumeBakeResult::Ready;
 }
 
@@ -1460,7 +1693,7 @@ bool wait_bake(Context &ctx, BakeHandle handle, BakeResult &out_result, BakeStat
 void discard_bake(Context &ctx, BakeHandle handle)
 {
   if (PendingBake *bake = get_pending_bake(ctx, handle))
-    close_pending_bake(*bake);
+    close_bake_slot(ctx, *bake);
 }
 
 raytrace::OpacityMicroMapTriangleArrayBuildInfo make_array_build_info(const BakeResult &result, Sbuffer *scratch,

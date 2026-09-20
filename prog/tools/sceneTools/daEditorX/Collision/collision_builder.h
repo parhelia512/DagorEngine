@@ -14,8 +14,6 @@ struct CollisionBuildSettings
 {
   float leafSz[3];
   int levels;
-  float gridStep, minMutualOverlap, minSmallOverlap;
-  int minFaceCnt;
 
   CollisionBuildSettings() { defaults(); }
 
@@ -25,11 +23,6 @@ struct CollisionBuildSettings
     leafSz[1] = 8;
     leafSz[2] = 4;
     levels = 7;
-
-    gridStep = 50.0;
-    minMutualOverlap = 0.95;
-    minSmallOverlap = 0.1;
-    minFaceCnt = 8;
   }
 
   const Point3 &leafSize() const { return reinterpret_cast<const Point3 &>(leafSz); }
@@ -58,9 +51,8 @@ public:
 
   virtual bool finishAndWrite(const char *temp_fname, IGenSave &cwr, unsigned target_code) = 0;
 
-  // can return separate ray tracer object that it owns
-  // application can use this pointer to call finishAndWrite()
-  virtual ICollisionDumpBuilder *getSeparateRayTracer() = 0;
+  // The scene's water, as its own stream. Call it after finishAndWrite; false means no water.
+  virtual bool finishAndWriteWater(IGenSave & /*cwr*/) { return false; }
 
 public:
   enum
@@ -79,7 +71,9 @@ public:
 
 // standard dump builders
 ICollisionDumpBuilder *create_dagor_raytracer_dump_builder();
-ICollisionDumpBuilder *create_bullet_collision_dump_builder(bool need_bt_data);
+// Writes a CollisionResource stream (the level-bin SCol block). physmat_path carries the water
+// flag, so finishAndWrite refuses the cook when that blk cannot be read.
+ICollisionDumpBuilder *create_static_collision_dump_builder(const char *physmat_path, bool fail_on_jolt_degenerate);
 
 static bool getPhysMatNameFromMatName(MaterialData *m, String &s)
 {

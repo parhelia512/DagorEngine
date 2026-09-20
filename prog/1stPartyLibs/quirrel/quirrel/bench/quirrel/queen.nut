@@ -26,11 +26,15 @@ function addqueen(a, n) {
     }
 }
 
+local REPEATS = 50;
+
 function test() {
-    solutions = 0;
-    local a = array(8, null);  // Initialize an array of size 8 with nulls
-    addqueen(a, 0);
-    assert(solutions == 92);
+    for (local r = 0; r < REPEATS; r++) {
+        solutions = 0;
+        local a = array(8, null);  // Initialize an array of size 8 with nulls
+        addqueen(a, 0);
+        assert(solutions == 92);
+    }
 }
 
 local profile_it
@@ -40,4 +44,4 @@ try {
     throw "no loadfile"
 } catch(e) profile_it = require("profile.nut")
 
-print("\"queen\", " + profile_it(20, test) + ", 20\n");
+print("\"queen\", " + (profile_it(20, test) / REPEATS) + ", " + (20 * REPEATS) + "\n");

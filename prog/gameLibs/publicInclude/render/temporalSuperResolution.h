@@ -33,11 +33,25 @@ public:
   void setExtraTexFlags(unsigned int flags) { extraTexFlags = flags; }
   dafg::NodeHandle createApplierNode(const char *input_name);
 
-  void apply(Texture *in_color, Texture *out_color, Texture *history_color, Texture *out_confidence, Texture *history_confidence,
-    Texture *reactive_tex, Texture *debug_texture, const Point4 &uv_transform, bool reset = false,
-    Point2 jitterPixelOffset = Point2::ZERO, Texture *vrs_mask = nullptr, IPoint2 input_resolution = IPoint2::ZERO);
+  struct ApplyTextures
+  {
+    Texture *inColor = nullptr;
+    Texture *outColor = nullptr;
+    Texture *historyColor = nullptr;
+    Texture *outDepth = nullptr;
+    Texture *historyDepth = nullptr;
+    Texture *outConfidence = nullptr;
+    Texture *historyConfidence = nullptr;
+    Texture *reactiveMask = nullptr;
+    Texture *vrsMask = nullptr;
+    Texture *debug = nullptr;
+  };
+
+  void apply(const ApplyTextures &textures, const Point4 &uv_transform, bool reset = false, Point2 jitterPixelOffset = Point2::ZERO,
+    IPoint2 input_resolution = IPoint2::ZERO);
 
   TextureIDPair getDebugRenderTarget();
+  unsigned int getOutputTextureFormat() const;
 
   bool isValid() const { return true; }
   const IPoint2 &getInputResolution() const { return inputResolution; }

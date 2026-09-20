@@ -5,8 +5,8 @@
 #include <rendInst/rendInstCollision.h>
 #include <landMesh/lmeshManager.h>
 #include <heightmap/heightmapHandler.h>
-#include <sceneRay/dag_sceneRay.h>
-#include <gameMath/traceUtils.h>
+#include <gameRes/dag_collisionResource.h>
+#include <rendInst/traceUtils.h>
 #include <fftWater/fftWater.h>
 #include <perfMon/dag_statDrv.h>
 #include <gamePhys/collision/contactData.h>
@@ -17,7 +17,7 @@
 #include "collisionGlobals.h"
 #include <supp/dag_alloca.h>
 
-static const float invalid_water_height = -1e10f;
+static const float invalid_water_height = dacoll::INVALID_WATER_HEIGHT;
 static void first_mirroring_transform(float &in_out_x, float &in_out_z, float &out_x_k, float &out_z_k);
 
 // The RI tracer always adds Destructible|Meshes; these are the caller-selected extras.
@@ -48,21 +48,58 @@ static void gate_trace_cache(dag::Span<Trace> traces, const TraceMeshFaces *&han
 
 bool dacoll::traceray_normalized_frt(const Point3 &p, const Point3 &dir, real &t, int *out_pmid, Point3 *out_norm)
 {
-  if (!dacoll::get_frt())
+  const CollisionResource *res = dacoll::get_static_collision_resource();
+  if (!res)
     return false;
+  int matId = PHYSMAT_INVALID;
+  mat44f identTm;
+  v_mat44_ident(identTm);
+  if (!res->traceRay(identTm, p, dir, t, out_norm, matId, /*ray_mat_id*/ -1, CollisionNode::TRACEABLE))
+    return false;
+  if (out_pmid)
+    *out_pmid = matId;
+  return true;
+}
 
-  int faceNo = dacoll::get_frt()->tracerayNormalized(p, dir, t);
-  if (faceNo >= 0)
-  {
-    G_ASSERT(faceNo < get_pmid().size());
+bool dacoll::tracedown_normalized_frt(const Point3 &p, real &t, int *out_pmid, Point3 *out_norm)
+{
+  const CollisionResource *res = dacoll::get_static_collision_resource();
+  if (!res)
+    return false;
+  const Point3 down(0.f, -1.f, 0.f);
+  int matId = PHYSMAT_INVALID;
+  mat44f identTm;
+  v_mat44_ident(identTm);
+  if (!res->traceRay(identTm, p, down, t, out_norm, matId, /*ray_mat_id*/ -1, CollisionNode::TRACEABLE, /*tm_cache*/ nullptr,
+        /*force_cull*/ true))
+    return false;
+  if (out_pmid)
+    *out_pmid = matId;
+  return true;
+}
 
-    if (out_pmid)
-      *out_pmid = get_pmid()[faceNo];
+bool dacoll::traceray_water(const Point3 &p, const Point3 &dir, real &t, Point3 *out_norm)
+{
+  const CollisionResource *res = dacoll::get_water_collision();
+  if (!res)
+    return false;
+  int matId = PHYSMAT_INVALID;
+  mat44f identTm;
+  v_mat44_ident(identTm);
+  return res->traceRay(identTm, p, dir, t, out_norm, matId, /*ray_mat_id*/ -1, CollisionNode::TRACEABLE);
+}
 
-    if (out_norm)
-      *out_norm = dacoll::get_frt()->facebounds(faceNo).n;
-  }
-  return faceNo >= 0;
+bool dacoll::tracedown_water(const Point3 &p, real &t, Point3 *out_norm)
+{
+  const CollisionResource *res = dacoll::get_water_collision();
+  if (!res)
+    return false;
+  const Point3 down(0.f, -1.f, 0.f);
+  int matId = PHYSMAT_INVALID;
+  mat44f identTm;
+  v_mat44_ident(identTm);
+  return res->traceRay(identTm, p, down, t, out_norm, matId, /*ray_mat_id*/ -1, CollisionNode::TRACEABLE, /*tm_cache*/ nullptr,
+    /*force_cull*/ true);
 }
 
 bool dacoll::traceray_normalized_lmesh(const Point3 &p, const Point3 &dir, real &t, int *out_pmid, Point3 *out_norm)
@@ -86,7 +123,13 @@ bool dacoll::traceray_normalized_lmesh(const Point3 &p, const Point3 &dir, real 
 
 bool dacoll::rayhit_normalized_frt(const Point3 &p, const Point3 &dir, real t)
 {
-  return get_frt() ? get_frt()->rayhitNormalized(p, dir, t) : false;
+  const CollisionResource *res = dacoll::get_static_collision_resource();
+  if (!res)
+    return false;
+  mat44f identTm;
+  v_mat44_ident(identTm);
+  int outMat;
+  return res->rayHit(identTm, p, dir, t, PHYSMAT_INVALID, outMat, CollisionNode::TRACEABLE);
 }
 
 bool dacoll::rayhit_normalized_lmesh(const Point3 &p, const Point3 &dir, real t)
@@ -103,11 +146,9 @@ bool dacoll::rayhit_normalized_ri(const Point3 &p, const Point3 &dir, real t, re
 {
   Trace traceData(p, dir, t, nullptr);
   dag::Span<Trace> traceDataSlice(&traceData, 1);
-  // we don't have proper rayhit with handle and ray mat support yet in rendinst lib, but we'll surely add it in future.
-  // TODO: add rayhit with handles and ray mat to rensinst library
   rendinst::TraceFlags traceFlags = rendinst::TraceFlag::Destructible | rendinst::TraceFlag::Meshes | additional_trace_flags;
   gate_trace_cache(traceDataSlice, handle);
-  return rendinst::traceRayRIGenNormalized(traceDataSlice, traceFlags, ray_mat_id, nullptr, handle, skip_riex_handle);
+  return rendinst::rayhitRIGenNormalized(traceDataSlice, traceFlags, ray_mat_id, nullptr, handle, skip_riex_handle);
 }
 
 bool dacoll::rayhit_normalized(const Point3 &p, const Point3 &dir, real t, int flags, int ray_mat_id, const TraceMeshFaces *handle,
@@ -280,19 +321,13 @@ bool dacoll::tracedown_normalized(const Point3 &p, real &t, int *out_pmid, Point
   return true;
 }
 
-// The cached down kernels (tracedown_hmap_cache_multiray + traceDownTrianglesMultiRay) pack
-// the hit heightmap/triangle index into the integer w lane of the SoA normal. Resolve it to
-// a phys material id per ray; an out-of-range index means no static-mesh face was hit and the
-// material comes from the handle's material map instead.
+// the cached down kernels return the hit triangle's v0.w in the SoA normal's w lane
 static void resolve_down_matids(dag::Span<Trace> traces, const TraceMeshFaces *handle, const vec4f *v_out_norm)
 {
   for (int i = 0; i < traces.size(); ++i)
   {
-    int faceNo = v_extract_wi(v_cast_vec4i(v_out_norm[i]));
-    if (faceNo < 0 || faceNo >= dacoll::get_pmid().size())
-      traces[i].outMatId = handle->matMapCache.getMatAt(Point2::xz(traces[i].pos));
-    else
-      traces[i].outMatId = dacoll::get_pmid()[faceNo];
+    const int m = dacoll::resolve_static_cache_tri_mat(v_extract_wi(v_cast_vec4i(v_out_norm[i])));
+    traces[i].outMatId = m >= 0 ? m : handle->matMapCache.getMatAt(Point2::xz(traces[i].pos));
   }
 }
 
@@ -312,6 +347,17 @@ static bool tracedown_ri_multiray(dag::Span<Trace> traces, bbox3f_cref ray_box, 
   return rendinst::traceDownMultiRay(traces, ray_box, ri_desc, handle, ray_mat_id, traceFlags);
 }
 
+// Every arm of a down multiray answers the static scene through the culled down entry, never the
+// two-sided ray walk, so all of them keep to the same faces.
+static bool tracedown_static_scene(dag::Span<Trace> traces, int flags)
+{
+  bool res = false;
+  if (flags & dacoll::ETF_FRT)
+    for (Trace &trace : traces)
+      res |= dacoll::tracedown_normalized_frt(trace.pos, trace.pos.outT, &trace.outMatId, &trace.outNorm);
+  return res;
+}
+
 bool dacoll::tracedown_normalized_multiray(dag::Span<Trace> traces, dag::Span<rendinst::RendInstDesc> ri_desc, int flags,
   int ray_mat_id, const TraceMeshFaces *handle)
 {
@@ -320,7 +366,10 @@ bool dacoll::tracedown_normalized_multiray(dag::Span<Trace> traces, dag::Span<re
     return false;
 
   if (!handle)
-    return dacoll::traceray_normalized_multiray(traces, ri_desc, flags, ray_mat_id, handle);
+  {
+    const bool res = tracedown_static_scene(traces, flags);
+    return dacoll::traceray_normalized_multiray(traces, ri_desc, flags & ~ETF_FRT, ray_mat_id, handle) || res;
+  }
 
   TIME_PROFILE_DEV(tracedown_handle);
 
@@ -344,7 +393,10 @@ bool dacoll::tracedown_normalized_multiray(dag::Span<Trace> traces, dag::Span<re
   bool traceRes = try_use_trace_cache(rayBox, handle);
   trace_utils::draw_trace_handle_debug_cast_result(handle, traces, traceRes, false);
   if (!traceRes)
-    return dacoll::traceray_normalized_multiray(traces, ri_desc, flags, ray_mat_id);
+  {
+    const bool res = tracedown_static_scene(traces, flags);
+    return dacoll::traceray_normalized_multiray(traces, ri_desc, flags & ~ETF_FRT, ray_mat_id) || res;
+  }
 
   bool rendinstsValid = rendinst::checkCachedRiData(handle);
 
@@ -375,7 +427,10 @@ bool dacoll::tracedown_normalized_multiray(dag::Span<Trace> traces, dag::Span<re
     fallbackFlags &= ~ETF_HEIGHTMAP;
   if (!handle->hasObjectGroups)
     fallbackFlags &= ~ETF_OBJECTS_GROUP;
-  res |= dacoll::traceray_normalized_multiray(traces, ri_desc, fallbackFlags, ray_mat_id, handle);
+  // A cache that could not hold the static scene falls back here, and the down rule has to survive
+  // that: the ordinary ray walk below would answer a face the cached kernel culled.
+  res |= tracedown_static_scene(traces, fallbackFlags);
+  res |= dacoll::traceray_normalized_multiray(traces, ri_desc, fallbackFlags & ~ETF_FRT, ray_mat_id, handle);
 
   return res;
 }
@@ -827,32 +882,25 @@ bool dacoll::is_valid_heightmap_pos(const Point2 &pos)
 
 bool dacoll::is_valid_water_height(float height) { return height > invalid_water_height; }
 
-float get_water_height_2d(const Point3 &pos, float t, bool &underwater)
+float dacoll::get_water_height_2d(const Point3 &pos, float t, bool &underwater)
 {
-  if (!dacoll::get_water_tracer())
-  {
-    underwater = false;
-    return invalid_water_height;
-  }
-  float ht = invalid_water_height;
   float t2 = t * 2.f;
   Point3 startPos = pos + Point3(0.f, t, 0.f);
-  int faceNo = dacoll::get_water_tracer()->traceDown(startPos, t2);
-  if (faceNo >= 0)
+  if (dacoll::tracedown_water(startPos, t2, nullptr))
   {
-    ht = startPos.y - t2;
+    const float ht = startPos.y - t2;
     underwater = ht > pos.y;
     return ht;
   }
   underwater = false;
-  return ht;
+  return invalid_water_height;
 }
 
 static float traceht_water_at_time_internal(const Point3 &pos, float t, float time, bool &underwater, bool &is_fft_water_height_above)
 {
   is_fft_water_height_above = false;
   if (dacoll::has_only_water2d())
-    return get_water_height_2d(pos, t, underwater);
+    return dacoll::get_water_height_2d(pos, t, underwater);
 
   FFTWater *water = dacoll::get_water();
   if (water)
@@ -868,7 +916,7 @@ static float traceht_water_at_time_internal(const Point3 &pos, float t, float ti
       }
     }
   }
-  return get_water_height_2d(pos, t, underwater);
+  return dacoll::get_water_height_2d(pos, t, underwater);
 }
 
 

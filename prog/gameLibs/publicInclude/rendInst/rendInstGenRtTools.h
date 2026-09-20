@@ -72,7 +72,8 @@ int get_global_forced_lod();
 int get_effective_forced_lod(int local);
 
 // Tries to find the rendInst matrix by coordinates.
-// If there are multiple rendInsts with the same asset type at the same (or very near) location then it returns with failure.
+// If there are multiple rendInsts with the same asset type at the same (or very near) location but with different matrices - result is
+// ambiguous and it returns with failure.
 enum class GetRendInstMatrixByRiIdxResult
 {
   Success, // out_tm is only set in this case.

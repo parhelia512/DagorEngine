@@ -165,7 +165,7 @@ macro USE_EYE_CAUSTICS()
         float4 pos_and_radius = ol.posRadius;
         float4 color_and_specular = getFinalColor(ol, worldPos);
         float4 shadowTcToAtlas = getOmniLightShadowData(omni_light_index);
-        float2 shadowZnZfar = ol.shadowZnZf_pad.xy;
+        float2 shadowZnZfar = ol.shadowZnZf_flags_packedDataBits.xy;
 
         float3 point2light = pos_and_radius.xyz-worldPos.xyz;
         float distSqFromLight = dot(point2light,point2light);

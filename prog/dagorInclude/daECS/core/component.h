@@ -9,6 +9,7 @@
 #include <debug/dag_assert.h>
 #include <EASTL/type_traits.h>
 #include <EASTL/utility.h>
+#include <util/dag_compilerDefs.h>
 #include "componentType.h"
 
 namespace eastl
@@ -25,7 +26,7 @@ struct ComponentTypeInfo;
 class EntityComponentRef;
 struct InstantiatedTemplate;
 
-class ChildComponent
+class DAGOR_WARN_IF_UNUSED ChildComponent
 {
 public:
   ChildComponent() = default;
@@ -102,7 +103,7 @@ public:
     {
       initTypeIndex(ComponentTypeInfo<T>::type);
       componentTypeSize = ComponentTypeInfo<T>::size;
-      if (isAttrBoxedType<T>())
+      if (isCompBoxedType<T>())
       {
         // value.data = (void*)(new typename eastl::remove_reference<T>::type(v));
         // do it same way, as free in BoxedCreator, as data can be MOVED to it. may be make allocator part of type to remove it?
@@ -129,7 +130,7 @@ public:
     G_ASSERT_RETURN(isNull(), );
     initTypeIndex(ComponentTypeInfo<T>::type);
     componentTypeSize = ComponentTypeInfo<T>::size;
-    if (isAttrBoxedType<T>())
+    if (isCompBoxedType<T>())
     {
       // value.data = (void*)(new typename eastl::remove_reference<T>::type(v));
       // do it same way, as free in BoxedCreator, as data can be MOVED to it. may be make allocator part of type to remove it?
@@ -154,7 +155,7 @@ public:
     {
       initTypeIndex(ComponentTypeInfo<T>::type);
       componentTypeSize = ComponentTypeInfo<T>::size;
-      if (isAttrBoxedType<T>())
+      if (isCompBoxedType<T>())
       {
         // value.data = (void*)(new typename eastl::remove_reference<T>::type(eastl::move(v)));
         // do it same way, as free in BoxedCreator, as data can be MOVED to it. may be make allocator part of type to remove it?
@@ -212,25 +213,25 @@ protected:
   friend EntityManager;
   friend InstantiatedTemplate;
   template <typename T>
-  static bool isAttrBoxedType()
+  static bool isCompBoxedType()
   {
     return sizeof(T) > sizeof(value) || ComponentTypeInfo<T>::is_boxed || ComponentTypeInfo<T>::is_non_trivial_move;
   }
   template <typename T>
   const void *getTypedData() const
   {
-    return isAttrBoxedType<T>() ? value.data : value.buffer;
+    return isCompBoxedType<T>() ? value.data : value.buffer;
   }
   template <typename T>
   void *getTypedData()
   {
-    return isAttrBoxedType<T>() ? value.data : value.buffer;
+    return isCompBoxedType<T>() ? value.data : value.buffer;
   }
   friend void serialize_child_component(const ChildComponent &comp, class SerializerCb &serializer, ecs::EntityManager &);
 
-  bool isAttrBoxedBySize() const { return is_child_comp_boxed_by_size(componentTypeSize); }
-  const void *getRawData() const { return isAttrBoxedBySize() ? value.data : value.buffer; }
-  void *getRawData() { return isAttrBoxedBySize() ? value.data : value.buffer; }
+  bool isCompBoxedBySize() const { return is_child_comp_boxed_by_size(componentTypeSize); }
+  const void *getRawData() const { return isCompBoxedBySize() ? value.data : value.buffer; }
+  void *getRawData() { return isCompBoxedBySize() ? value.data : value.buffer; }
 
   void reset()
   {
@@ -241,7 +242,7 @@ protected:
   }
   void resetBoxedMem()
   {
-    if (isAttrBoxedBySize())
+    if (isCompBoxedBySize())
       memfree_anywhere(value.data);
     reset();
   }

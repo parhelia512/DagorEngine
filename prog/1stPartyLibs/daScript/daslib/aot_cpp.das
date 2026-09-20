@@ -1577,7 +1577,7 @@ class public CppAot : AstVisitor {
             write(*ss, "\n/*<<AOT_FUNC_BEGIN>>*/");
         }
         if (fastMath) {
-            write(*ss, "\nDAS_FAST_MATH_PUSH");  // guards live in simulate/aot.h, mirroring aot_builtin_math.h
+            write(*ss, "\nDAS_FAST_MATH_PUSH");  // guards live in simulate/aot.h
         }
         write(*ss, "\ninline ");
         describeLocalCppType(ss, fn.result, cross_platform, CpptSubstitureRef.no, CpptSkipConst.yes);
@@ -3885,7 +3885,7 @@ class public CppAot : AstVisitor {
         return argType.isVoidPointer ^^ passType.isVoidPointer;
     }
     def needStringCast(func : Function?; arg : TypeDeclPtr) {
-        return func.moreFlags.needStringCast && arg.isString && !arg.flags.ref;
+        return arg.isString && !arg.flags.ref;
     }
     def CallFunc_preVisitCallArg(call : ExprCallFunc?; arg : ExpressionPtr; is_last : bool) {
         if (call.func.moreFlags.propertyFunction) return ;  // property function goes ((arg0).name()). we do nothing here
@@ -3925,7 +3925,7 @@ class public CppAot : AstVisitor {
         if (isPolicyBasedCallFunc(call) && policyArgNeedCast(call.func.result, argType)) {
             write(*ss, "cast<{describeCppType(argType,DescribeConfig(skip_ref=true,skip_const=true,cross_platform=cross_platform))}>::from(");
         }
-        if (needStringCast(call.func, argType)) {
+        if (needStringCast(call.func, funArgType)) {
             write(*ss, "(das_string_cast(");
         }
     }

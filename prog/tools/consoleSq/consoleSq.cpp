@@ -74,7 +74,7 @@
 #include "scriptapi.h"
 
 
-#define APP_VERSION "1.0.46"
+#define APP_VERSION "1.0.49"
 
 // Stubs
 

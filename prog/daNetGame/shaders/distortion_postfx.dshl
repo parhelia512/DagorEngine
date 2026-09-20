@@ -16,17 +16,23 @@ shader distortion_postfx {
   color_write = rgba;
 
   hlsl(ps) {
+    #define frame_tex_samplerstate global_linear_mirror_sampler
+
     half3 sampleSceneColor(float2 uv)
     {
       return tex2Dlod(frame_tex, float4(uv,0,0)).rgb;
     }
-    float sampleSceneAlpha(float2 uv)
-    {
-      return tex2Dlod(frame_tex, float4(uv,0,0)).a;
-    }
     ##if antialiasing_type == tsr
-      #define SAMPLE_HAZE_SCENE_DEPTH(tc) sampleSceneAlpha(tc)
+      #define tsr_depth_samplerstate global_linear_mirror_sampler
+      #define SAMPLE_HAZE_SCENE_DEPTH(tc) tex2Dlod(tsr_depth, float4((tc),0,0)).x
     ##endif
+  }
+
+  INIT_GLOBAL_LINEAR_MIRROR_SAMPLER(ps)
+
+  if (antialiasing_type == tsr)
+  {
+    (ps) { tsr_depth@tex2d = tsr_depth; }
   }
 
   INIT_HEAT_HAZE_OFFSET()
@@ -41,7 +47,7 @@ shader distortion_postfx {
   local float4 frame_tex_resolution = get_dimensions(frame_tex, 0);
 
   (ps) {
-    frame_tex@smp2d = frame_tex;
+    frame_tex@tex2d = frame_tex;
     frame_tex_resolution@f4 = (frame_tex_resolution.xy, 1/frame_tex_resolution.xy);
   }
 
@@ -50,17 +56,10 @@ shader distortion_postfx {
     {
       apply_distortion_uv_modifier(input.tc);
 
-    ##if antialiasing_type == tsr
-      float pseudoDepth = sampleSceneAlpha(input.tc);
-      float alpha = pseudoDepth;
-    ##else
-      float alpha = 1.0;
-    ##endif
-
       float3 frame = apply_distortion_postfx(input);
       apply_post_distortion_color_modifier(frame, input.tc);
 
-      return float4(frame, alpha);
+      return float4(frame, 1.0);
     }
   }
 

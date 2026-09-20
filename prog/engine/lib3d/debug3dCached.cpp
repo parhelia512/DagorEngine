@@ -183,6 +183,7 @@ struct CachedDebugLinesData
   {
     if (numTriangles <= 0)
       return;
+    initVertexBuffer();
 
     push_blocks();
     setStates();

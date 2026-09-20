@@ -95,7 +95,11 @@ shader start_heightmap_shadows_cs
 {
   HMAP_SHADOW_CALC_COMMON(cs)
   (cs) {
-    heightmap_shadow_read@smpArray = heightmap_shadow;
+    heightmap_shadow_read@texArray = heightmap_shadow;
+  }
+  INIT_GLOBAL_LINEAR_WRAP_SAMPLER(cs)
+  hlsl(cs) {
+    #define heightmap_shadow_read_samplerstate global_linear_wrap_sampler
   }
   hlsl(cs) {
     #pragma hlsl2021
@@ -295,7 +299,7 @@ shader copy_heightmap_shadows_cs
 {
   (cs) {
     heightmap_shadow_szi_np2@i4 = heightmap_shadow_szi_np2;
-    heightmap_shadow@smpArray = heightmap_shadow;
+    heightmap_shadow@texArray = heightmap_shadow;
 
     heightmap_shadow_to@uav : register(0) hlsl {
       RWTexture2DArray<float4> heightmap_shadow_to@uav;

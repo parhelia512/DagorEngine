@@ -168,7 +168,7 @@ template <class T>
 inline void initial_transform_cache_get_manager_ecs_query(ecs::EntityManager &manager, T b);
 
 ECS_TAG(render)
-ECS_ON_EVENT(OnLevelLoaded)
+ECS_ON_EVENT(EventRenderSceneLoaded)
 static void initial_transform_cache_create_manager_es(const ecs::Event &, ecs::EntityManager &manager)
 {
   manager.getOrCreateSingletonEntity(ECS_HASH("initial_transform_cache_manager"));

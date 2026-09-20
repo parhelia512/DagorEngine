@@ -238,7 +238,6 @@ public:
 
   float getDistance() const { return maxDistance; }
   const ManagedTexWithShaderVar &getTex() { return staticShadowTex; }
-  void restoreShadowSampler();
   void setMaxHtRange(float max_ht_range); // that is only for skewed matrix
   float getSmallestTexelSize() const { return cascades.empty() ? -1 : cascades[0].texelSize; }
   float getBiggestTexelSize() const { return cascades.empty() ? -1 : cascades.back().texelSize; }

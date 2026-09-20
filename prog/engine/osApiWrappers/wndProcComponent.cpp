@@ -1,8 +1,7 @@
 // Copyright (C) Gaijin Games KFT.  All rights reserved.
 
 #include <osApiWrappers/dag_wndProcComponent.h>
-#include <stdlib.h>
-#include <string.h>
+#include <osApiWrappers/dag_atomic.h>
 
 static constexpr int MAX_COMP_NUM = 32;
 static IWndProcComponent *comp[MAX_COMP_NUM] = {0};
@@ -31,14 +30,17 @@ void del_wnd_proc_component(IWndProcComponent *c)
 {
   int id = find_component(c);
   if (id != -1)
-    comp[id] = NULL;
+    comp[id] = nullptr;
 }
 
 static bool is_inside_wnd_proc_components = false;
+// A counter, not a snapshot of comp[]: the fatal message box suspends from its own thread while the
+// main thread continues to add and remove components.
+static int suspend_count = 0;
 
 bool perform_wnd_proc_components(void *hwnd, unsigned msg, uintptr_t wParam, intptr_t lParam, intptr_t &result)
 {
-  if (is_inside_wnd_proc_components)
+  if (is_inside_wnd_proc_components || interlocked_acquire_load(suspend_count) > 0)
     return false;
 
   is_inside_wnd_proc_components = true;
@@ -62,21 +64,9 @@ bool perform_wnd_proc_components(void *hwnd, unsigned msg, uintptr_t wParam, int
   return false;
 }
 
-void *detach_all_wnd_proc_components()
-{
-  void *ret = malloc(sizeof(comp));
-  memcpy(ret, comp, sizeof(comp));
-  memset(comp, 0, sizeof(comp));
-  return ret;
-}
+void suspend_wnd_proc_components() { interlocked_increment(suspend_count); }
 
-void attach_all_wnd_proc_components(void *h)
-{
-  if (!h)
-    return;
-  memcpy(comp, h, sizeof(comp));
-  free(h);
-}
+void resume_wnd_proc_components() { interlocked_decrement(suspend_count); }
 
 #define EXPORT_PULL dll_pull_osapiwrappers_wndProcComponent
 #include <supp/exportPull.h>

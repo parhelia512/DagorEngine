@@ -43,7 +43,10 @@ void FileSerializationStorage::write(const void *data, size_t size)
 {
   const int res = df_write(file, data, (int)size);
   if (res != size)
+  {
+    writeFailed = true;
     logerr("can't write to serialization storage '%@'", fileName.c_str());
+  }
 }
 
 FileSerializationStorage::~FileSerializationStorage() { df_close(file); }
@@ -192,6 +195,7 @@ struct FileSerializationWrite final : FileSerializationStorage
   virtual size_t writingSize() const override;
   virtual bool readOverflow(void *data, size_t size) override;
   virtual void write(const void *data, size_t size) override;
+  virtual void finish() override;
   void flush(ZSTD_EndDirective end_mode);
 
   void init();
@@ -208,7 +212,12 @@ void FileSerializationWrite::init()
   buffer.resize(buffInSize);
   writeBuffer.resize_noinit(buffOutSize);
 
-  df_write(file, &cksum, sizeof(cksum));
+  // placeholder for the checksum, rewritten in place by finish() once the body is known
+  if (df_write(file, &cksum, sizeof(cksum)) != sizeof(cksum))
+  {
+    writeFailed = true;
+    logerr("das: serialize: can't write checksum placeholder to '%@'", fileName.c_str());
+  }
 }
 
 size_t FileSerializationWrite::writingSize() const { return totalSize; }
@@ -245,32 +254,48 @@ void FileSerializationWrite::flush(ZSTD_EndDirective end_mode)
     ZSTD_inBuffer input = {buffer.data(), (size_t)bufferPos, 0};
     ZSTD_outBuffer output = {writeBuffer.data(), writeBuffer.size(), 0};
     size_t const remaining = ZSTD_compressStream2(cctx, &output, &input, end_mode);
-    G_ASSERT(!ZSTD_isError(remaining));
-    df_write(file, writeBuffer.data(), (int)output.pos);
+    if (DAGOR_UNLIKELY(ZSTD_isError(remaining))) // bailing out also keeps the loop below from spinning forever
+    {
+      writeFailed = true;
+      bufferPos = 0;
+      logerr("das: serialize: zstd write '%@' err=%#x(%s)", fileName.c_str(), (int)remaining, ZSTD_getErrorName(remaining));
+      return;
+    }
+    if (df_write(file, writeBuffer.data(), (int)output.pos) != (int)output.pos)
+    {
+      writeFailed = true;
+      logerr("das: serialize: short write of %d byte(s) to '%@'", (int)output.pos, fileName.c_str());
+    }
     cksum = crc32c_append(cksum, writeBuffer.data(), output.pos);
     bufferPos = 0;
     finished = end_mode == ZSTD_e_end ? (remaining == 0) : (input.pos == input.size);
   } while (!finished);
 }
 
-FileSerializationWrite::~FileSerializationWrite()
+void FileSerializationWrite::finish()
 {
   if (!cctx)
     return;
 
   flush(ZSTD_e_end);
 
-  df_seek_to(file, 0);
-  df_write(file, &cksum, sizeof(cksum));
+  if (df_seek_to(file, 0) != 0 || df_write(file, &cksum, sizeof(cksum)) != sizeof(cksum))
+  {
+    writeFailed = true;
+    logerr("das: serialize: can't write checksum to '%@'", fileName.c_str());
+  }
 
   ZSTD_freeCCtx(cctx);
+  cctx = nullptr; // idempotent: finish() is also called by the destructor
 }
 
-das::SerializationStorage *create_file_read_serialization_storage(file_ptr_t file, const das::string &name)
+FileSerializationWrite::~FileSerializationWrite() { finish(); }
+
+FileSerializationStorage *create_file_read_serialization_storage(file_ptr_t file, const das::string &name)
 {
   return new FileSerializationRead(file, name);
 }
-das::SerializationStorage *create_file_write_serialization_storage(file_ptr_t file, const das::string &name)
+FileSerializationStorage *create_file_write_serialization_storage(file_ptr_t file, const das::string &name)
 {
   return new FileSerializationWrite(file, name);
 }

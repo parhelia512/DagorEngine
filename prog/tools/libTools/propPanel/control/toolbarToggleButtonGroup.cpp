@@ -59,6 +59,7 @@ void ToolbarToggleButtonGroupPropertyControl::updateImgui()
   const ImTextureID icon = image_helper.getImTextureIdFromIconId(iconId);
   const bool clicked = ImGui::ImageButtonEx(ImGui::GetCurrentWindow()->GetID("ib"), icon, ImVec2(size, size), ImVec2(0, 0),
     ImVec2(1, 1), ImVec4(0, 0, 0, 0), ImVec4(1, 1, 1, 1), ImGuiButtonFlags_MouseButtonLeft | ImGuiButtonFlags_MouseButtonRight);
+  setImguiTestItemInfo();
   const bool rightClicked = clicked && ImGui::IsItemHovered() && ImGui::IsMouseReleased(ImGuiMouseButton_Right, ImGui::GetItemID());
 
   ImGui::PopStyleColor(2);

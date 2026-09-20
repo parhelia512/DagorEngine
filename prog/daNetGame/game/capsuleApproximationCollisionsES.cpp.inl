@@ -40,7 +40,7 @@ void capsules_collision_on_appear_es(const ecs::Event &,
     [&](CollisionResource &collres, ECS_SHARED(CapsuleApproximation) capsule_approximation) {
       for (int i = 0; i < capsule_approximation.capsuleDatas.size(); i++)
       {
-        auto approx = capsule_approximation.capsuleDatas[i];
+        const auto &approx = capsule_approximation.capsuleDatas[i];
         const char *collNodeName = collres.getNodeName(approx.collNodeId);
         if (capsuleNodes.find(str_hash_fnv1(collNodeName)) != capsuleNodes.end())
           capsule_approximation_collisions_ids.push_back(i);
@@ -63,7 +63,7 @@ void capsules_collisions_es(const UpdateStageInfoBeforeRender &,
     [&](AnimV20::AnimcharBaseComponent &animchar, ECS_SHARED(CapsuleApproximation) capsule_approximation) {
       for (auto approxId : capsule_approximation_collisions_ids)
       {
-        auto approx = capsule_approximation.capsuleDatas[approxId];
+        const auto &approx = capsule_approximation.capsuleDatas[approxId];
         mat44f wtm;
         animchar.getNodeTree().getNodeWtm(approx.nodeIndex, wtm);
         vec4f a = v_ldu(&approx.a.x), b = v_ldu(&approx.b.x);

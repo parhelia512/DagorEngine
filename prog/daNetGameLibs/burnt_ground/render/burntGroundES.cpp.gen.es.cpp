@@ -59,7 +59,7 @@ static ecs::EntitySystemDesc burnt_ground_renderer_on_appear_es_es_desc
   make_span(burnt_ground_renderer_on_appear_es_comps+4, 7)/*ro*/,
   empty_span(),
   empty_span(),
-  ecs::EventSetBuilder<OnLevelLoaded,
+  ecs::EventSetBuilder<EventRenderSceneLoaded,
                        ecs::EventEntityCreated,
                        ecs::EventComponentsAppear>::build(),
   0
@@ -103,7 +103,7 @@ static ecs::EntitySystemDesc burnt_ground_renderer_on_change_es_es_desc
   make_span(burnt_ground_renderer_on_change_es_comps+1, 8)/*ro*/,
   empty_span(),
   empty_span(),
-  ecs::EventSetBuilder<OnLevelLoaded,
+  ecs::EventSetBuilder<EventRenderSceneLoaded,
                        ecs::EventEntityCreated,
                        ecs::EventComponentsAppear>::build(),
   0

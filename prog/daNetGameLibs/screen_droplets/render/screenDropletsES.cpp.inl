@@ -115,7 +115,7 @@ static void reset_screen_droplets_es(
 }
 
 ECS_TAG(render)
-ECS_ON_EVENT(UnloadLevel)
+ECS_ON_EVENT(EventRenderSceneUnload)
 static void disable_screen_droplets_es(const ecs::Event &)
 {
   if (get_screen_droplets_mgr())
@@ -123,7 +123,7 @@ static void disable_screen_droplets_es(const ecs::Event &)
 }
 
 ECS_TAG(render)
-ECS_ON_EVENT(OnLevelLoaded)
+ECS_ON_EVENT(EventRenderSceneLoaded)
 static void reset_screen_droplets_for_new_level_es(const ecs::Event &)
 {
   if (get_screen_droplets_mgr())

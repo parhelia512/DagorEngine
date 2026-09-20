@@ -55,4 +55,4 @@ void tiled_map_fog_of_war_set_data(const eastl::vector<uint32_t> &data)
 }
 
 ECS_TAG(render)
-void tiled_map_fog_of_war_after_reset_es(const AfterDeviceReset &) { tiled_map_fog_of_war_after_reset(); }
+void tiled_map_fog_of_war_after_reset_es(const EventAfterDeviceReset &) { tiled_map_fog_of_war_after_reset(); }

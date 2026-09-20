@@ -641,7 +641,7 @@ namespace Cpu
                         }
                         uint32_t workItemIdx = (uint32_t)vmWorkItems.size();
                         // Temporarily set the triangle->vm desc mapping like this.
-                        triangleIDToWorkItem.insert(std::make_pair(vmId, workItemIdx));
+                        triangleIDToWorkItem.emplace(vmId, workItemIdx);
                         vmWorkItems.emplace_back(allocator, ommFormat, subdivisionLevel, i, uvTri);
                     }
                     else {
@@ -1047,7 +1047,7 @@ namespace Cpu
                 auto it = digestToWorkItemIndex.find(digest);
                 if (it == digestToWorkItemIndex.end())
                 {
-                    digestToWorkItemIndex.insert(std::make_pair(digest, i));
+                    digestToWorkItemIndex.emplace(digest, i);
                 }
                 else
                 {
@@ -1264,7 +1264,7 @@ namespace Cpu
                             {
                                 vector<uint32_t> layerHashToWorkItem(allocator);
                                 layerHashToWorkItem.push_back(workItemIndex);
-                                hashTable.layerHashToWorkItem.insert(std::make_pair(hash, layerHashToWorkItem));
+                                hashTable.layerHashToWorkItem.emplace(hash, layerHashToWorkItem);
                             }
                         }
                     }

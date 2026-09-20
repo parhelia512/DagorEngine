@@ -6,7 +6,8 @@ let isString = @(v) v instanceof String
 
 function splitTextToParts(fullText, replaceTable): array {
   local parts = [fullText]
-  foreach (key, comp in replaceTable) {
+  foreach (id, comp in replaceTable) {
+    let key = "".concat("{", id, "}")
     let prevParts = parts
     parts = []
     foreach (text in prevParts) {
@@ -92,14 +93,16 @@ let pushLine = @(arr: array, line) arr.append({
 })
 
 function mkProps(textareaProps): table {
-  let { font = null, fontSize = null, size = null, maxWidth = 0 } = textareaProps
+  let { font = null, fontSize = null, size = null, maxWidth = 0, lineSpacing = 0 } = textareaProps
   let sz = size?[0] ?? size ?? 0
+  let maxW = sz > 0 && maxWidth > 0 ? min(sz, maxWidth)
+    : sz > 0 ? sz
+    : maxWidth
   return  {
-    maxWidth = sz > 0 && maxWidth > 0 ? min(sz, maxWidth)
-      : sz > 0 ? sz
-      : maxWidth
+    maxWidth = maxW
     fontParams = { font, fontSize }
-    inlineTextProps = textareaProps.__merge({ size = null, behavior = null, rendObj = ROBJ_TEXT })
+    inlineTextProps = textareaProps.__merge({ size = null, behavior = null, rendObj = ROBJ_TEXT, lineSpacing = null })
+    containerProps = { size, maxWidth = maxW, gap = lineSpacing }
   }
 }
 
@@ -109,29 +112,34 @@ function mkProps(textareaProps): table {
  * and returns a daRG component that looks like a solid textarea.
  * @param {string}  fullText - Input string.
  * @param {table}  textareaProps - textarea daRG component props, must contain "size" or "maxWidth" prop.
- * @param {table} replaceTable - Map of daRG components (or arrays of daRG components) by text tokens.
+ * @param {table} replaceTable - Map of daRG components or strings (or map of arrays of daRG components or strings)
+ *                by text tokens.
  * @return {table} - daRG component.
  *
  * Usage example:
  *
- * let text = "This is a long multiline text containing links like <<LINK1>> or like <<LINK2>> or like <<LINK3>>, which can be clickable buttons."
+ * let text = "This is a multiline text containing link {LINK}, which can be clickable button, and plain text {TEXT}."
  * let textareaProps = { maxWidth = hdpx(380), rendObj = ROBJ_TEXTAREA, behavior = Behaviors.TextArea }.__update(fontSmall)
  * let mkLink = @(text) { text, rendObj = ROBJ_TEXT, color = 0xFF1697E1 }.__update(fontSmall)
  * let replaceTable = {
- *   ["<<LINK1>>"] = mkLink("Link #1"),
- *   ["<<LINK2>>"] = mkLink("Link #2"),
- *   ["<<LINK3>>"] = mkLink("Link #3"),
+ *   LINK = mkLink("Link #1")
+ *   TEXT = "Plain Text"
  * }
  * let myComponent = mkTextareaBlock(text, textareaProps, replaceTable)
  */
 function mkTextareaBlock(fullText, textareaProps, replaceTable) {
-  let { maxWidth, fontParams, inlineTextProps } = mkProps(textareaProps)
+  let { maxWidth, fontParams, inlineTextProps, containerProps } = mkProps(textareaProps)
   if (maxWidth <= 0) {
     assert(false, "Table textareaProps must contain a valid \"size\" or \"maxWidth\" prop")
     return null
   }
   let mkTextarea = @(text) textareaProps.__merge({ text })
   let mkInlineText = @(text) inlineTextProps.__merge({ text })
+  let plainTextSubsts = replaceTable.filter(@(v) isString(v))
+  if (plainTextSubsts.len() > 0) {
+    fullText = fullText.subst(plainTextSubsts)
+    replaceTable = replaceTable.filter(@(v) !isString(v))
+  }
   if (fullText.contains("\r"))
     fullText = fullText.replace("\r\n", "\n")
   let parts = splitTextToParts(fullText, replaceTable)
@@ -209,10 +217,9 @@ function mkTextareaBlock(fullText, textareaProps, replaceTable) {
     }
   }
   return {
-    maxWidth
     flow = FLOW_VERTICAL
     children = res.map(@(t) isString(t) ? mkTextarea(t) : t)
-  }
+  }.__update(containerProps)
 }
 
 return mkTextareaBlock

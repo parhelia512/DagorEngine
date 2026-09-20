@@ -48,7 +48,7 @@ int get_jitter_sequence_length() { return 1; }
 
 RTarget::CPtr apply(const ApplyContext &, bool) { return nullptr; }
 void apply_fxaa(AntialiasingMethod, TEXTUREID, TEXTUREID, const Point4 &) {}
-void apply_mobile_aa(Texture *, Texture *, const ApplyContext &) {}
+void apply_mobile_aa(Texture *, Texture *, Texture *, const ApplyContext &) {}
 
 const char *get_available_methods(bool, bool) { return "off"; }
 const char *get_available_upscaling_options(const char *) { return "native"; }
@@ -65,7 +65,6 @@ void schedule_generated_frames(const FrameGenContext &) {}
 int get_supported_generated_frames(const char *, bool) { return 0; }
 bool is_dynamic_mfg_supported(const char *, bool) { return false; }
 const char *get_frame_generation_unsupported_reason(const char *, bool) { return nullptr; }
-int get_presented_frame_count() { return 1; }
 bool is_frame_generation_enabled() { return false; }
 bool is_frame_generation_enabled_in_config() { return false; }
 } // namespace render::antialiasing

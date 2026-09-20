@@ -21,7 +21,7 @@
 
 using namespace drv3d_vulkan;
 
-NO_UBSAN d3d::ResUpdateBuffer *d3d::allocate_update_buffer_for_tex_region(BaseTexture *dest_base_texture, unsigned dest_mip,
+d3d::ResUpdateBuffer *d3d::allocate_update_buffer_for_tex_region(BaseTexture *dest_base_texture, unsigned dest_mip,
   unsigned dest_slice, unsigned offset_x, unsigned offset_y, unsigned offset_z, unsigned width, unsigned height, unsigned depth)
 {
   D3D_CONTRACT_ASSERT_RETURN(dest_base_texture, nullptr);
@@ -81,7 +81,7 @@ NO_UBSAN d3d::ResUpdateBuffer *d3d::allocate_update_buffer_for_tex_region(BaseTe
   return (d3d::ResUpdateBuffer *)rub;
 }
 
-NO_UBSAN d3d::ResUpdateBuffer *d3d::allocate_update_buffer_for_tex(BaseTexture *dest_base_texture, int dest_mip, int dest_slice)
+d3d::ResUpdateBuffer *d3d::allocate_update_buffer_for_tex(BaseTexture *dest_base_texture, int dest_mip, int dest_slice)
 {
   D3D_CONTRACT_ASSERT(dest_base_texture);
   BaseTex *dest_tex = cast_to_texture_base(dest_base_texture);
@@ -139,7 +139,7 @@ NO_UBSAN d3d::ResUpdateBuffer *d3d::allocate_update_buffer_for_tex(BaseTexture *
   return (d3d::ResUpdateBuffer *)rub;
 }
 
-NO_UBSAN void d3d::release_update_buffer(d3d::ResUpdateBuffer *&rub)
+void d3d::release_update_buffer(d3d::ResUpdateBuffer *&rub)
 {
   if (ResUpdateBufferImp *&rub_imp = reinterpret_cast<ResUpdateBufferImp *&>(rub))
   {
@@ -151,7 +151,7 @@ NO_UBSAN void d3d::release_update_buffer(d3d::ResUpdateBuffer *&rub)
   }
 }
 
-NO_UBSAN char *d3d::get_update_buffer_addr_for_write(d3d::ResUpdateBuffer *rub)
+char *d3d::get_update_buffer_addr_for_write(d3d::ResUpdateBuffer *rub)
 {
   if (ResUpdateBufferImp *rub_imp = reinterpret_cast<ResUpdateBufferImp *>(rub))
   {
@@ -163,19 +163,19 @@ NO_UBSAN char *d3d::get_update_buffer_addr_for_write(d3d::ResUpdateBuffer *rub)
   return nullptr;
 }
 
-NO_UBSAN size_t d3d::get_update_buffer_size(d3d::ResUpdateBuffer *rub)
+size_t d3d::get_update_buffer_size(d3d::ResUpdateBuffer *rub)
 {
   return rub ? ((ResUpdateBufferImp *)rub)->stagingBuffer->getBlockSize() : 0;
 }
 
-NO_UBSAN size_t d3d::get_update_buffer_pitch(d3d::ResUpdateBuffer *rub) { return rub ? ((ResUpdateBufferImp *)rub)->pitch : 0; }
+size_t d3d::get_update_buffer_pitch(d3d::ResUpdateBuffer *rub) { return rub ? ((ResUpdateBufferImp *)rub)->pitch : 0; }
 
-NO_UBSAN size_t d3d::get_update_buffer_slice_pitch(d3d::ResUpdateBuffer *rub)
+size_t d3d::get_update_buffer_slice_pitch(d3d::ResUpdateBuffer *rub)
 {
   return rub ? reinterpret_cast<ResUpdateBufferImp *>(rub)->slicePitch : 0;
 }
 
-NO_UBSAN bool d3d::update_texture_and_release_update_buffer(d3d::ResUpdateBuffer *&rub)
+bool d3d::update_texture_and_release_update_buffer(d3d::ResUpdateBuffer *&rub)
 {
   if (!rub)
     return false;

@@ -76,8 +76,12 @@ shader esm_ao_decal_render
   (ps) {
     esm_expK_expKExpMinusOne_oneMinusBiasTop_biasBottom@f4 = (esm_params.z, esm_params.w - 1.0, 1.0 - esm_ao_bias_top, esm_ao_bias_bottom);
     screen_pos_to_texcoord__esm_gamma@f3 = (1 / esm_ao_target_size.x, 1 / esm_ao_target_size.y, esm_ao_gamma, 0);
-    esm_shadows@smpArray = esm_shadows;
+    esm_shadows@texArray = esm_shadows;
     esm_ao_view_pos@f3 = esm_ao_view_pos;
+  }
+  INIT_GLOBAL_LINEAR_CLAMP_SAMPLER(ps)
+  hlsl(ps) {
+    #define esm_shadows_samplerstate global_linear_clamp_sampler
   }
 
   hlsl (ps) {

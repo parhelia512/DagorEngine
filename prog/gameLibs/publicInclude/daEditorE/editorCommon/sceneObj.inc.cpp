@@ -6,8 +6,8 @@
 #include <daECS/core/entityManager.h>
 #include <daECS/core/componentTypes.h>
 #include <daEditorE/editorCommon/entityEditor.h>
+#include <daEditorE/editorCommon/inGameEditor.h>
 #include <debug/dag_log.h>
-#include <quirrel/sqEventBus/sqEventBus.h>
 
 namespace
 {
@@ -170,6 +170,7 @@ void SceneObj::onRemove(ObjectEditor *editor)
         entities.push_back(eo);
       }
     });
+    invalidate_scene_tree();
 
     if (!entities.empty())
     {
@@ -201,8 +202,8 @@ void SceneObj::onAdd(ObjectEditor *editor)
     if (undoData->order != ecs::Scene::C_INVALID_SCENE_ID)
     {
       ecs::g_scenes->setSceneOrder(sceneId, undoData->order);
-      sqeventbus::send_event("entity_editor.onEcsScenesStateChanged");
     }
+    invalidate_scene_tree();
 
     undoData.reset();
   }

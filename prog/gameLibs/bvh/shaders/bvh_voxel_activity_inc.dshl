@@ -1,0 +1,39 @@
+// Camera centered, world snapped volume of voxel lives: ray hits reset a voxel to the active
+// value, every bvh build decays each live voxel by one. Space outside the volume is not
+// tracked and must be treated as always active.
+
+texture bvh_voxel_activity;
+// xyz: grid origin (the texel 0,0,0 corner) relative to bvh_origin, w: 1 / voxel size
+float4 bvh_voxel_activity_grid_origin;
+// xyz: voxel count per axis, w: the active value; 0 while the feature is off or the
+// debug freeze pauses marking
+int4 bvh_voxel_activity_grid_size;
+
+macro USE_BVH_VOXEL_ACTIVITY_MARK(stage)
+  (stage)
+  {
+    bvh_voxel_activity_grid_origin@f4 = bvh_voxel_activity_grid_origin;
+    bvh_voxel_activity_grid_size@i4 = bvh_voxel_activity_grid_size;
+    bvh_voxel_activity@uav = bvh_voxel_activity hlsl { RWTexture3D<uint> bvh_voxel_activity@uav; }
+  }
+
+  hlsl(stage)
+  {
+    // Explicit opt in: call after a successful main TLAS trace with the camera relative hit
+    // position. Probe passes and late GI bounces wander far from anything visible and should
+    // not call it, or gate it on their own config.
+    void bvh_voxel_activity_mark(float3 camera_relative_pos)
+    {
+      [branch]
+      if (bvh_voxel_activity_grid_size.w <= 0)
+        return;
+
+      int3 voxel = int3(floor((camera_relative_pos - bvh_voxel_activity_grid_origin.xyz) * bvh_voxel_activity_grid_origin.w));
+      if (any(voxel < 0) || any(voxel >= bvh_voxel_activity_grid_size.xyz))
+        return;
+
+      // Racing stores all write the same constant, so no atomic is needed.
+      bvh_voxel_activity[voxel] = uint(bvh_voxel_activity_grid_size.w);
+    }
+  }
+endmacro

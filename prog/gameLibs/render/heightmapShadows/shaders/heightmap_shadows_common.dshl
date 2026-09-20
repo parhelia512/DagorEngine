@@ -29,7 +29,11 @@ macro INIT_HMAP_SHADOWS(code)
   INIT_HMAP_SHADOWS_MATH(code)
   INIT_HMAP_SHADOWS_OPT(code)
   (code) {
-    heightmap_shadow@smpArray = heightmap_shadow;
+    heightmap_shadow@texArray = heightmap_shadow;
+  }
+  INIT_GLOBAL_LINEAR_WRAP_SAMPLER(code)
+  hlsl(code) {
+    #define heightmap_shadow_samplerstate global_linear_wrap_sampler
   }
 endmacro
 

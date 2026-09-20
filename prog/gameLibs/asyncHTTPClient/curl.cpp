@@ -1,6 +1,7 @@
 // Copyright (C) Gaijin Games KFT.  All rights reserved.
 
 #include <asyncHTTPClient/asyncHTTPClient.h>
+#include <asyncHTTPClient/curl_global.h>
 
 #include <debug/dag_log.h>
 #include <memory/dag_framemem.h>
@@ -18,7 +19,20 @@
 #include <EASTL/unique_ptr.h>
 #include <EASTL/fixed_vector.h>
 
+#include <stdlib.h>
+
 #include <curl/curl.h>
+
+// 7.32.0 replaced the double-based progress callback with the curl_off_t one
+#if LIBCURL_VERSION_NUM >= 0x072000
+#define CURLX_PROGRESSFUNCTION CURLOPT_XFERINFOFUNCTION
+#define CURLX_PROGRESSDATA     CURLOPT_XFERINFODATA
+typedef curl_off_t progress_off_t;
+#else
+#define CURLX_PROGRESSFUNCTION CURLOPT_PROGRESSFUNCTION
+#define CURLX_PROGRESSDATA     CURLOPT_PROGRESSDATA
+typedef double progress_off_t;
+#endif
 
 #if _TARGET_XBOX
 #include <osApiWrappers/gdk/network.h>
@@ -79,7 +93,7 @@ static size_t write_callback(void *ptr, size_t size, size_t nmemb, void *userdat
 static size_t header_callback(char *ptr, size_t size, size_t nmemb, void *userdata);
 static size_t put_read_callback(char *ptr, size_t size, size_t nmemb, void *userdata);
 
-static int progress_callback(void *userdata, curl_off_t dltotal, curl_off_t dlnow, curl_off_t, curl_off_t);
+static int progress_callback(void *userdata, progress_off_t dltotal, progress_off_t dlnow, progress_off_t, progress_off_t);
 static bool verbose_debug = false;
 
 static size_t curl_debug(CURL *, curl_infotype it, char *msg, size_t n, void *)
@@ -141,7 +155,7 @@ static CURL *make_curl_handle(const char *url, const char *user_agent, bool veri
     curl_easy_setopt(curl, CURLOPT_HEADERFUNCTION, header_callback);
     curl_easy_setopt(curl, CURLOPT_HEADERDATA, user_data);
   }
-  curl_easy_setopt(curl, CURLOPT_XFERINFOFUNCTION, progress_callback);
+  curl_easy_setopt(curl, CURLX_PROGRESSFUNCTION, progress_callback);
   curl_easy_setopt(curl, CURLOPT_NOPROGRESS, 0);
   curl_easy_setopt(curl, CURLOPT_SHARE, curlsh);
 
@@ -152,7 +166,7 @@ static CURL *make_curl_handle(const char *url, const char *user_agent, bool veri
   curl_easy_setopt(curl, CURLOPT_URL, url);
   curl_easy_setopt(curl, CURLOPT_USERAGENT, user_agent);
   curl_easy_setopt(curl, CURLOPT_WRITEDATA, user_data);
-  curl_easy_setopt(curl, CURLOPT_XFERINFODATA, user_data);
+  curl_easy_setopt(curl, CURLX_PROGRESSDATA, user_data);
   curl_easy_setopt(curl, CURLOPT_PRIVATE, user_data);
   curl_easy_setopt(curl, CURLOPT_VERBOSE, verbose_debug ? 1L : 0L);
   curl_easy_setopt(curl, CURLOPT_DEBUGFUNCTION, curl_debug);
@@ -298,7 +312,7 @@ public:
     {
       curl_easy_setopt(curlHandle, CURLOPT_NOPROGRESS, 1);
       curl_easy_setopt(curlHandle, CURLOPT_HEADERFUNCTION, nullptr);
-      curl_easy_setopt(curlHandle, CURLOPT_XFERINFOFUNCTION, nullptr);
+      curl_easy_setopt(curlHandle, CURLX_PROGRESSFUNCTION, nullptr);
       curl_easy_cleanup(curlHandle);
     }
 
@@ -464,11 +478,11 @@ using RequestStatePtr = eastl::unique_ptr<RequestState>;
 static eastl::list<RequestStatePtr> active_requests;
 static eastl::list<RequestStatePtr> requests_queue;
 
-static int progress_callback(void *userdata, curl_off_t dltotal, curl_off_t dlnow, curl_off_t, curl_off_t)
+static int progress_callback(void *userdata, progress_off_t dltotal, progress_off_t dlnow, progress_off_t, progress_off_t)
 {
   RequestState *context = (RequestState *)userdata;
   if (dlnow > 0 || dltotal > 0)
-    context->onDownloadProgress(dltotal, dlnow);
+    context->onDownloadProgress((size_t)dltotal, (size_t)dlnow);
   return 0;
 }
 
@@ -792,11 +806,22 @@ void init_async(InitAsyncParams const &params)
 
   if (!curlm)
   {
+    // Init the globals here, not lazily on the first easy handle: that registers
+    // OpenSSL's atexit, and ours must come later to run before it. An atexit and not
+    // a static destructor also runs before the pre-main statics (delayedActions) are
+    // gone. Once only: shutdown_async() clears curlm and a later request inits again
+    curl_global::init();
+    static bool cleanup_registered = false;
+    if (!cleanup_registered)
+      cleanup_registered = atexit(&shutdown_async) == 0;
+
     curlm = curl_multi_init();
     curl_multi_setopt(curlm, CURLMOPT_TIMERFUNCTION, &timer_func);
     curl_multi_setopt(curlm, CURLMOPT_TIMERDATA, NULL);
     curl_multi_setopt(curlm, CURLMOPT_PIPELINING, 1);
+#if LIBCURL_VERSION_NUM >= 0x071E00 // 7.30.0, no equivalent cap before that
     curl_multi_setopt(curlm, CURLMOPT_MAX_TOTAL_CONNECTIONS, 10);
+#endif
 
     curlsh = curl_share_init();
     curl_share_setopt(curlsh, CURLSHOPT_SHARE, CURL_LOCK_DATA_DNS);
@@ -867,11 +892,5 @@ void shutdown_async()
   safe_delete_mutex(mutex);
   safe_delete_mutex(queue_mutex);
 }
-
-struct StaticCleanup
-{
-  ~StaticCleanup() { shutdown_async(); }
-
-} static_cleanup;
 
 } // namespace httprequests

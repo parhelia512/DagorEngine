@@ -1,0 +1,8 @@
+// The loading screens the game ships; every game platform shaders_*.blk
+// includes this file. Kept out of game_common_override.blk: the
+// MotionMatching sample borrows that list and must not compile them.
+"@override:source" {
+  file:t = "loading/planet.dshl"
+  file:t = "loading/protoplanet.dshl"
+  file:t = "loading/star_nest.dshl"
+}

@@ -119,7 +119,7 @@ float fake_distortion_period = 6;
 
 block(frame) water3d_block
 {
-  supports global_const_block;
+  GLOBAL_CONSTS(ps)
   (vs) {
     water_level@f1 = water_level;
     world_view_pos@f3 = world_view_pos;

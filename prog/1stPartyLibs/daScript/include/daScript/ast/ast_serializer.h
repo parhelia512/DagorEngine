@@ -221,7 +221,7 @@ namespace das {
         AstSerializer & serializeModule ( Module & module, bool already_exists );
 
         static constexpr uint32_t getVersion () {
-            return 198;   // 198: CodeOfPolicies::max_unreserved_size rides the policy record
+            return 199;   // 199: MoreFunctionFlags lost needStringCast, so the flag bits shifted
         }
 
         void serializeProgram ( ProgramPtr program, ModuleGroup & libGroup ) noexcept;

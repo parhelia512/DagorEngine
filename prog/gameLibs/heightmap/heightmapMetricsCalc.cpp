@@ -624,6 +624,7 @@ void MetricsErrors::calc_lod_errors(const HeightmapHandler &h, uint16_t min_leve
   int res = max(h.getHeightmapSizeX(), h.getHeightmapSizeY()) / dim_;
   uint8_t maxResShiftValue = get_bigger_log2(res);
   max_level = min<uint32_t>(max_level, maxResShiftValue);
+  min_level = min<uint16_t>(min_level, max_level);
   if (maxErrLevel == max_level && data.size() == get_level_ofs(max_level) - get_level_ofs(min_level) &&
       order.size() == get_level_ofs(max_level + 1) - get_level_ofs(min_level) && dim == dim_)
     return;

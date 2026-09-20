@@ -204,13 +204,12 @@ static void disable_laser_es(const ecs::Event &, ecs::EntityManager &manager, bo
 
 ECS_TAG(render)
 ECS_NO_ORDER
-static void update_lasers_es(const ParallelUpdateFrameDelayed &, ecs::EntityManager &manager, int &laserBeamTracerId,
-  int &laserDecalId, const Point3 &laserBeamColor, float laserBeamMaxLength, float laserStartSize, float laserMaxSize,
-  float laserMaxIntensity, float laserScrollingSpeed, bool laserActive, bool laserAvailable, bool laserVisible,
-  const Point3 &laser_data__rayHit, const Point3 &laser_data__fxPos, const Point3 &laser_data__fxDir,
-  const float &laser_data__laserLen, const ecs::EntityId &laser_data__gunOwner, const ecs::EntityId &laser_data__playerId,
-  bool laser_sight__is_compatible, const float laser_data__dotIntensity, const Point3 &laserBeamDotColor,
-  const float laserBeamFadeDistPercentage)
+static void update_lasers_es(const ecs::UpdateStageInfoAct &, ecs::EntityManager &manager, int &laserBeamTracerId, int &laserDecalId,
+  const Point3 &laserBeamColor, float laserBeamMaxLength, float laserStartSize, float laserMaxSize, float laserMaxIntensity,
+  float laserScrollingSpeed, bool laserActive, bool laserAvailable, bool laserVisible, const Point3 &laser_data__rayHit,
+  const Point3 &laser_data__fxPos, const Point3 &laser_data__fxDir, const float &laser_data__laserLen,
+  const ecs::EntityId &laser_data__gunOwner, const ecs::EntityId &laser_data__playerId, bool laser_sight__is_compatible,
+  const float laser_data__dotIntensity, const Point3 &laserBeamDotColor, const float laserBeamFadeDistPercentage)
 {
   if (!laser_sight__is_compatible)
     return;

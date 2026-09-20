@@ -8,9 +8,7 @@
 #include <math/dag_bounds2.h>
 #include <render/grass_eraser_consts.hlsli>
 
-#define INSIDE_RENDERER 1 // fixme: move to jam
-
-#include <render/world/private_worldRenderer.h> //need only for invalidateGI
+#include <render/renderer.h>
 #include "grassRenderer.h"
 
 
@@ -51,17 +49,11 @@ static void get_grass_render_ecs_query(ecs::EntityManager &manager, Callable c);
 
 void erase_grass(const Point3 &world_pos, float radius)
 {
-  if (WorldRenderer *renderer = (WorldRenderer *)get_world_renderer())
+  if (IRenderWorld *renderer = get_world_renderer())
   {
     get_grass_render_ecs_query(*g_entity_mgr, [&](GrassRenderer &grass_render) { grass_render.addGrassEraser(world_pos, radius); });
-    // due to the size of the grass, gi is affected in a larger radius
-    float giRad = radius + 1;
-    BBox3 modelBox(Point3(0, 0, 0), giRad);
-    TMatrix tm;
-    tm.identity();
-    tm.setcol(3, world_pos);
-    BBox3 approxBbox(world_pos, giRad);
-    renderer->invalidateGI(modelBox, tm, approxBbox);
+    const float giEdge = 2 * (radius + 1); // full cube edge: grass is tall, gi reaches past the erase radius
+    renderer->invalidateGI(BBox3(world_pos, giEdge));
   }
 }
 

@@ -109,7 +109,6 @@ void ShadowDepthScroller::init()
   state.zFunc = CMPF_ALWAYS;
   scrollStateId = shaders::overrides::create(state);
 
-  const char *name = "static_shadow_depth_tile_patch";
-  tileTex.set(d3d::create_tex(NULL, tileSizeW, tileSizeH, TEXCF_RTARGET | TEXFMT_L16, 1, name, RESTAG_SHADOW), name);
-  tileTex.setVar();
+  tileTex =
+    dag::create_tex(NULL, tileSizeW, tileSizeH, TEXCF_RTARGET | TEXFMT_L16, 1, "static_shadow_depth_tile_patch", RESTAG_SHADOW);
 }

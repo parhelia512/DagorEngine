@@ -8,30 +8,45 @@
 #include <render/lights/spotLightsManager.h>
 #include <generic/dag_tab.h>
 #include <vecmath/dag_vecMathDecl.h>
-#include <math/dag_Point3.h>
 #include <shaders/dag_computeShaders.h>
+#include <shaders/dag_shaderVariableInfo.h>
+#include <3d/dag_resPtr.h>
 
 class Sbuffer;
+class LightsPartition;
 
 class LightsSorter
 {
+  friend class LightsPartition;
+
 public:
   LightsSorter(OmniLightsManager &omni_lights, SpotLightsManager &spot_lights);
-  void sortOmniLightsCPU(Tab<uint16_t> &visible_ids, vec4f cur_view_pos);
-  void sortSpotLightsCPU(Tab<uint16_t> &visible_ids, vec4f cur_view_pos);
-  // zfar must be > 0. It does not cull or clip lights beyond it - it only normalizes the
-  // shader's internal half-precision distance encoding (dist/zfar, see sort_omni/spot_lights_cs
-  // in lights_partition.dshl), so pick something close to the actual range of the lights being
-  // sorted rather than the camera's full draw distance: if zfar ends up more than about 2^24
-  // (~16.8 million) times the farthest sorted light's distance, every real key underflows to
-  // zero and the sort silently stops reordering lights, in release builds too - only a debug
-  // assert (zfar > 0) guards against misuse.
-  void sortOmniLightsGPU(Sbuffer *buf, Sbuffer *count_buf, const Point3 &view_pos, float zfar);
-  void sortSpotLightsGPU(Sbuffer *buf, Sbuffer *count_buf, const Point3 &view_pos, float zfar);
+  void initGpuMode();
+  void sortLightsCPU(Tab<uint16_t> &omni_visible_ids, Tab<uint16_t> &spot_visible_ids, vec4f cur_view_pos);
+
+  void sortLightsGPU(Sbuffer *data_buf, Sbuffer *counts_buf, int max_far_lights_count, bool update_variables = true);
+
+  bool isGPUSortAvailable() const;
 
 private:
+  void bindStageBuffers();
+  void unbindStageBuffers();
+
+  void dispatchPrepareSort();
+  void dispatchSortImpl(Sbuffer *data_buf);
+  void dispatchFinalizeSort(int max_far_lights_count);
+
   OmniLightsManager *omniLights;
   SpotLightsManager *spotLights;
-  ComputeShader sortOmniCS;
-  ComputeShader sortSpotCS;
+
+  ComputeShader prepareSortCS;
+  ComputeShader sortWaveImplCS;
+  ComputeShader sortScalarBasicImplCS;
+  ComputeShader sortScalarMediumImplCS;
+  ComputeShader sortScalarHighImplCS;
+  ComputeShader sortBatchedImplCS;
+  ComputeShader finalizeSortCS;
+
+  UniqueBuf sortDispatchArgsBuf;
+  UniqueBuf sortLightsStageDataBuf;
 };

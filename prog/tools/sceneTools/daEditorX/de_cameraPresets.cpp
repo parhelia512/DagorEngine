@@ -335,7 +335,7 @@ bool CameraPresetsManager::setNameAndShared(PresetId id, eastl::string_view name
 
   UndoSystem *us = EDITORCORE->getUndoSystem();
   us->begin();
-  us->put(new RenameUndo(*state, ps->id, trimmed, is_shared));
+  us->put<RenameUndo>(*state, ps->id, trimmed, is_shared);
   us->accept("Rename camera preset");
 
   ps->name = SimpleString(trimmed.data(), trimmed.size());
@@ -444,7 +444,7 @@ PresetId CameraPresetsManager::addPresetFromCamera(eastl::string_view name, int 
 
   UndoSystem *us = EDITORCORE->getUndoSystem();
   us->begin();
-  us->put(new CreateUndo(*state, ps));
+  us->put<CreateUndo>(*state, ps);
   us->accept("Create camera preset");
 
   state->presets.push_back(eastl::move(ps));
@@ -507,7 +507,7 @@ void CameraPresetsManager::deletePresets(const dag::Vector<PresetId> &ids)
 
   UndoSystem *us = EDITORCORE->getUndoSystem();
   us->begin();
-  us->put(new DeleteUndo(*state, eastl::move(removed)));
+  us->put<DeleteUndo>(*state, eastl::move(removed));
   us->accept(ids.size() == 1 ? "Delete camera preset" : "Delete camera presets");
 
   for (PresetId bid : ids)

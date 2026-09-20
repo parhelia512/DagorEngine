@@ -49,7 +49,7 @@ void GeomNodeTree::copyDataFrom(const GeomNodeTree &from)
   markPoseChanged();    // content replacement: bump the TARGET's own generation (never inherit the source's)
 }
 
-GeomNodeTree &GeomNodeTree::operator=(const GeomNodeTree &from)
+void GeomNodeTree::replaceContentFrom(const GeomNodeTree &from)
 {
   const intptr_t dataSz = from.data.size();
   G_ASSERT(!dataCoalloc || data.size() == dataSz); // co-allocated data can't be resized, see make()
@@ -60,7 +60,6 @@ GeomNodeTree &GeomNodeTree::operator=(const GeomNodeTree &from)
     data.set(dataSz ? (char *)memalloc(dataSz, midmem) : nullptr, dataSz);
   }
   copyDataFrom(from);
-  return *this;
 }
 
 /* static */
@@ -395,22 +394,23 @@ GeomNodeTree *GeomNodeTree::load(IGenLoad &_cb)
   }
 
   tree->invalidateWtm();
-  tree->markPoseChanged(); // content established: same bump rule as copy-assign
+  tree->markPoseChanged(); // content established: same bump rule as replaceContentFrom
   return tree;
 }
 
 
-void GeomNodeTree::calcWorldBox(bbox3f &box) const
+void GeomNodeTree::calcWorldBoxFromImportantNodes(bbox3f &box) const
 {
   v_bbox3_init_empty(box);
-  for (auto &m : wtm())
-    v_bbox3_add_pt(box, m.col3);
+  const mat44f *m = wtm().data();
+  for (const mat44f *m_end = m + importantNodeCount(); m < m_end; m++)
+    v_bbox3_add_pt(box, m->col3);
 }
 
-void GeomNodeTree::calcWorldBox(BBox3 &box) const
+void GeomNodeTree::calcWorldBoxFromImportantNodes(BBox3 &box) const
 {
   bbox3f vbox;
-  calcWorldBox(vbox);
+  calcWorldBoxFromImportantNodes(vbox);
   v_stu_bbox3(box, vbox);
 }
 

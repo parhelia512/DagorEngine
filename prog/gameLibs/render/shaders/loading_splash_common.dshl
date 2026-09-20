@@ -1,0 +1,248 @@
+// Shared const-slot map for every per-scene loading_splash_<name>[_1..4] shader.
+// noiseTex.cpp creates its textures only when these globals exist in the dump.
+texture noise_64_tex_l8 always_referenced;
+texture noise_128_tex_hash always_referenced;
+sampler noise_64_tex_l8_samplerstate always_referenced;
+sampler noise_128_tex_hash_samplerstate always_referenced;
+
+int loading_splash_noise_64_tex_l8_const_no = 0;
+int loading_splash_noise_128_tex_hash_const_no = 1;
+int loading_splash_iGlobalTime_iResolution_iPaperWhiteNits_const_no = 0;
+int loading_splash_iSeed_const_no = 1;
+int loading_splash_exit_const_no = 2;
+int loading_splash_iFrame_history_iPrevTime_const_no = 3;
+int loading_splash_node_params_const_no = 4;
+// s0, s1 pair with the noise textures; graph node inputs pick one of these two
+int loading_splash_linear_clamp_const_no = 2;
+int loading_splash_point_clamp_const_no = 3;
+
+// The fixed const and texture map on one stage: every legacy scene gets it on
+// ps, a graph node (splash_graph_spec.md) on ps or cs.
+macro LOADING_SPLASH_CONSTS(stage)
+  (stage) {
+    noise_64_tex_l8@smp2d : register(loading_splash_noise_64_tex_l8_const_no);
+    noise_128_tex_hash@smp2d : register(loading_splash_noise_128_tex_hash_const_no);
+    iGlobalTime_iResolution_iPaperWhiteNits@f4 : register(loading_splash_iGlobalTime_iResolution_iPaperWhiteNits_const_no);
+    iSeed@f1 : register(loading_splash_iSeed_const_no);
+    loading_splash_exit@f4 : register(loading_splash_exit_const_no);
+    iFrame_history_iPrevTime@f4 : register(loading_splash_iFrame_history_iPrevTime_const_no);
+    iNodeParams@f4 : register(loading_splash_node_params_const_no);
+    loading_splash_linear_clamp@sampler : register(loading_splash_linear_clamp_const_no);
+    loading_splash_point_clamp@sampler : register(loading_splash_point_clamp_const_no);
+  }
+
+  hlsl(stage) {
+    // iGlobalTime is raw session time; scenes that want per-session variation
+    // reference iSeed explicitly (matches the pre-refactor ShaderToy semantics).
+    #define iGlobalTime (iGlobalTime_iResolution_iPaperWhiteNits.x)
+    #define iResolution (iGlobalTime_iResolution_iPaperWhiteNits.yz)
+    #define iPaperWhiteNits (iGlobalTime_iResolution_iPaperWhiteNits.w)
+    #define iTime iGlobalTime
+    // frames drawn since start, 1 when the previous frame's history surfaces
+    // hold a frame, splash time of the previous drawn frame. These three are
+    // reserved names in every scene, like iGlobalTime and iResolution: a scene
+    // that declares one of its own is macro-substituted and fails to compile
+    #define iFrame (iFrame_history_iPrevTime.x)
+    #define history_is_valid (iFrame_history_iPrevTime.y)
+    #define iPrevTime (iFrame_history_iPrevTime.z)
+    #define game_is_under (iFrame_history_iPrevTime.w)
+    // 0 means that state is not entered
+    #define slow_exit_time (loading_splash_exit.x)
+    #define rush_exit_time (loading_splash_exit.y)
+    #define slow_exit_seconds (loading_splash_exit.z)
+    #define rush_exit_seconds (loading_splash_exit.w)
+    // the old name of the same event
+    #define end_of_loading_time slow_exit_time
+    // the flare LUT rows at their texel centers: the writer and every reader sample here
+    #define LOADING_SPLASH_FLARE_LUT_TINT_V 0.125
+    #define LOADING_SPLASH_FLARE_LUT_FALL_V 0.375
+    // params:p4 of the graph node (0 when absent); shared nodes read their knobs here
+
+    ##if hardware.ps4
+      #pragma argument (nofastmath) // PS4 skies artifact workaround
+    ##endif
+
+    // the degenerate shape is 0/0, not x/0
+    float splash_exit_ramp(float num, float den) { return den > 0.0 ? saturate(num / den) : 1.0; }
+
+    // TAA asks for the previous frame's t
+    bool splash_exit_rushing(float t) { return rush_exit_time > 0.0 && t >= rush_exit_time; }
+
+    // < 0 while loading runs
+    float splash_exit_elapsed(float t)
+    {
+      if (splash_exit_rushing(t))
+        return t - (slow_exit_time > 0.0 ? slow_exit_time : rush_exit_time);
+      // no declared duration is no exit, as approach reports too
+      if (slow_exit_time <= 0.0 || slow_exit_seconds <= 0.0 || t < slow_exit_time)
+        return -1.0;
+      return t - slow_exit_time;
+    }
+
+    #define SPLASH_EXIT_WHITE_FULL 2.0
+    #define SPLASH_EXIT_DOOR_SHARE 0.5
+
+    // 1 arrival, 2 end, negative loading
+    float splash_exit_approach(float t)
+    {
+      float slowPace = slow_exit_time > 0.0 && slow_exit_seconds > 0.0 ? 1.0 / slow_exit_seconds : 0.0;
+      if (splash_exit_rushing(t))
+      {
+        float a0 = clamp((rush_exit_time - slow_exit_time) * slowPace, 0.0, SPLASH_EXIT_WHITE_FULL);
+        return a0 + (SPLASH_EXIT_WHITE_FULL - a0) * splash_exit_ramp(t - rush_exit_time, SPLASH_EXIT_DOOR_SHARE * rush_exit_seconds);
+      }
+      // no duration, or standing before the stamp: still loading, not 0
+      if (slowPace <= 0.0 || t < slow_exit_time)
+        return -1.0;
+      // holding there keeps the rush continuous
+      return min((t - slow_exit_time) * slowPace, SPLASH_EXIT_WHITE_FULL);
+    }
+
+    // 1 ends the splash
+    float splash_exit_portal(float t)
+    {
+      return splash_exit_rushing(t) ? splash_exit_ramp(t - rush_exit_time, rush_exit_seconds) : 0.0;
+    }
+  }
+endmacro
+
+// Fixed pipeline state and const bindings that every loading_splash shader
+// reuses; call at the top of every per-scene shader block.
+macro LOADING_SPLASH_STATE()
+  cull_mode = none;
+  z_write = false;
+  z_test = false;
+
+  POSTFX_VS_TEXCOORD(0, tc)
+  LOADING_SPLASH_CONSTS(ps)
+  hlsl(ps) {
+    #include <loading/loading_port.hlsl>
+    #include <loading_splash_tonemap.hlsl>
+    #include <loading_splash_wait_marker.hlsl>
+  }
+endmacro
+
+// Graph nodes: the same fixed map, then the node declares its own inputs at
+// t2 and up (name@tex2d : register(N), sampled through one of the fixed
+// samplers: #define name_samplerstate loading_splash_linear_clamp) and its
+// own entry point. The graph blk is the register contract.
+macro LOADING_SPLASH_NODE_STATE()
+  LOADING_SPLASH_STATE()
+endmacro
+
+// a compute node gets the const map alone: the GLSL port shims and the
+// encode set are for pixel scenes
+macro LOADING_SPLASH_NODE_STATE_CS()
+  LOADING_SPLASH_CONSTS(cs)
+endmacro
+
+// The composite of a scene that opens onto the game, in place of
+// LOADING_SPLASH_STATE(). It blends over the host's finished frame instead of
+// reading it, dst.rgb = src.rgb + dst.rgb * src.a, leaving the target's alpha
+// alone, and the scene writes premultiplied colour in the target's own space
+// through splash_over_game(). The blend and that helper are one macro because
+// either alone compiles and draws the wrong picture. Only the composite: an
+// intermediate node would composite onto its own history.
+macro LOADING_SPLASH_COMPOSITE_OVER_GAME_STATE(fam_1, fam_2, fam_3, fam_4)
+  LOADING_SPLASH_STATE()
+  blend_src = one; blend_dst = sa;
+  blend_asrc = zero; blend_adst = one;
+
+  hlsl(ps) {
+    #define LOADING_SPLASH_OVER_GAME 1
+
+    // the two-target family also needs the scene's own space: one value cannot
+    // serve an HDR and an SDR target
+    static float4 splash_over_game_sdr = float4(0, 0, 0, 0);
+
+    // the encode runs in front of the premultiply, which is why it is here and
+    // not in PS_MAIN; every fragColor write goes through it, early-outs too
+    float4 splash_over_game(float3 col, float3 add, float cover)
+    {
+      col = max(0, col);
+      add = max(0, add);
+      splash_over_game_sdr = float4(col * (1.0 - cover) + add, cover);
+    ##if (shader == fam_1) || (shader == fam_2)
+      col = loading_splash_hdr10_encode(col);
+      add = loading_splash_hdr10_encode(add);
+    ##elif (shader == fam_3)
+      col *= LOADING_SPLASH_LINEAR_SCALE;
+      add *= LOADING_SPLASH_LINEAR_SCALE;
+    ##elif (shader == fam_4)
+      col = RemoveSRGBCurve(col);
+      add = RemoveSRGBCurve(add);
+    ##endif
+      return float4(col * (1.0 - cover) + add, cover);
+    }
+  }
+endmacro
+
+// HDR-variant render-target layout, shared by every per-scene shader.
+// Call between LOADING_SPLASH_STATE() and the scene #include; pass the
+// family members (SDR is the bare name, so there is no _0 sibling).
+macro LOADING_SPLASH_PS_OUTPUT(fam_1, fam_2, fam_3, fam_4)
+  hlsl(ps) {
+    struct PsOutput
+    {
+    ##if (shader == fam_1)
+      half4 hdr_result : SV_Target0;
+      half4 sdr_result : SV_Target1;
+    ##elif (shader == fam_2) || (shader == fam_3) || (shader == fam_4)
+      half4 hdr_result : SV_Target0;
+    ##else
+      half4 sdr_result : SV_Target0;
+    ##endif
+    };
+  }
+endmacro
+
+// Scene entry point + per-variant encode dispatch; call after the scene
+// #include supplied mainImage(). Keeps the encode contract in one place so
+// a change (e.g. LOADING_SPLASH_SCENE_MAX_NITS) does not sweep every wrapper.
+// A scene that defines LOADING_SPLASH_WAIT_MARKER gets the rotating wait
+// marker composited over its output, above everything it drew.
+macro LOADING_SPLASH_PS_MAIN(fam, fam_1, fam_2, fam_3, fam_4)
+  hlsl(ps) {
+    PsOutput postfx_ps(VsOutput input HW_USE_SCREEN_POS)
+    {
+      float4 pos = GET_SCREEN_POS(input.pos);
+      float4 load = float4(0, 0, 0, 1);
+      mainImage(load, pos.xy);
+      // an over-game scene marks its own colour, before it premultiplies
+      #if defined(LOADING_SPLASH_WAIT_MARKER) && !defined(LOADING_SPLASH_OVER_GAME)
+        load.xyz = loading_splash_wait_marker(load.xyz, pos.xy, iResolution, iGlobalTime, slow_exit_time);
+      #endif
+
+      PsOutput ret;
+    ##if (shader == fam_1) || (shader == fam_2)
+      #ifdef LOADING_SPLASH_OVER_GAME
+        ret.hdr_result = load;
+      #else
+        ret.hdr_result = half4(loading_splash_hdr10_encode(max(0, load.xyz)), load.w);
+      #endif
+    ##elif (shader == fam_3)
+      #ifdef LOADING_SPLASH_OVER_GAME
+        ret.hdr_result = load;
+      #else
+        ret.hdr_result = half4(max(0, load.xyz) * LOADING_SPLASH_LINEAR_SCALE, load.w);
+      #endif
+    ##elif (shader == fam_4)
+      #ifdef LOADING_SPLASH_OVER_GAME
+        ret.hdr_result = load;
+      #else
+        ret.hdr_result = half4(RemoveSRGBCurve(max(0, load.xyz)), load.w);
+      #endif
+    ##endif
+    ##if (shader == fam) || (shader == fam_1)
+      #ifdef LOADING_SPLASH_OVER_GAME
+        ret.sdr_result = splash_over_game_sdr;
+      #else
+        ret.sdr_result = load;
+      #endif
+    ##endif
+      return ret;
+    }
+  }
+
+  compile("target_ps", "postfx_ps");
+endmacro

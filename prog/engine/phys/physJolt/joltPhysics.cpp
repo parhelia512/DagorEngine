@@ -26,6 +26,9 @@
 #include <Jolt/Physics/Collision/Shape/ConvexHullShape.h>
 #include <Jolt/Physics/Collision/Shape/EmptyShape.h>
 #include "shapes/HeightField16Shape.h"
+#include "shapes/CollisionBlasShape.h"
+#include "joltNativeShape.h"
+#include "collResJoltChunk.h"
 #include <Jolt/Physics/Collision/GroupFilterTable.h>
 #include <Jolt/Physics/Collision/RayCast.h>
 #include <Jolt/Physics/Collision/ShapeCast.h>
@@ -194,7 +197,7 @@ public:
     JobImpl(const char *jName, JPH::ColorArg color, JPH::JobSystem *jSys, const JobFunction &jFunc, JPH::uint32 numDeps) :
       Job(jName, color, jSys, jFunc, numDeps)
     {}
-    const char *getJobName(bool &) const override { return "JoltJobImpl"; }
+    const char *getJobName(bool &) const override { return DAPROFILER_STRING("JoltJobImpl"); }
     void doJob() override
     {
       Execute();
@@ -429,6 +432,7 @@ void PhysWorld::init_engine(bool single_threaded)
   JPH::Factory::sInstance = new JPH::Factory;
   JPH::RegisterTypes();
   JPH::HeightField16Shape::sRegister();
+  JPH::CollisionBlasShape::sRegister();
   physicsSystem = new JPH::PhysicsSystem();
   physicsSystem->Init(maxBodiesNum, numBodyMutexes, maxBodiesPairsNum, maxContactConstraints, broadPhaseLayerInterface, broadphase_f,
     objects_f);
@@ -510,8 +514,13 @@ PhysBody::PhysBody(PhysWorld *w, float mass, const PhysCollision *coll, const TM
 
   JPH::BodyCreationSettings body;
   bool isDynamic = mass > 0.f;
-  if (auto shape = PhysBody::create_jolt_collision_shape(coll, isDynamic))
-    body.SetShape(shape);
+  auto shape = PhysBody::create_jolt_collision_shape(coll, isDynamic);
+  if (!shape)
+  {
+    logerr("No collision shape for phys body <%s> with collType=%d @ %@", s.debugName, coll ? (int)coll->collType : -1, tm);
+    return;
+  }
+  body.SetShape(shape);
   if (s.autoMask)
   {
     groupMask = isDynamic ? DefaultFilter : StaticFilter;
@@ -685,14 +694,77 @@ void PhysBody::getInvMassMatrix(real &_mass, real &ixx, real &iyy, real &izz)
   });
 }
 
-struct JoltPhysNativeShape : public PhysCollision
-{
-  JPH::RefConst<JPH::Shape> shape;
-  JPH::Vec3 localScale;
-
-  JoltPhysNativeShape(JPH::RefConst<JPH::Shape> s, JPH::Vec3 ls) : PhysCollision(TYPE_NATIVE_SHAPE), shape(s), localScale(ls) {}
-};
 void PhysCollision::clearNativeShapeData(PhysCollision &c) { static_cast<JoltPhysNativeShape &>(c).shape = nullptr; }
+
+namespace
+{
+// the resource's shape: the bare chunk shape plus the claim on the Data block the chunk lives in
+class CollResBlasShape final : public JPH::CollisionBlasShape
+{
+public:
+  CollResBlasShape(const soa4::ChunkRef &chunk, const CollResJoltChunk::Share &share, JPH::uint32 compound_children,
+    bool force_descent_ids, ShapeResult &out_result) :
+    JPH::CollisionBlasShape(chunk, compound_children, force_descent_ids, out_result), mData(share)
+  {}
+  virtual Stats GetStats() const override
+  {
+    return Stats(sizeof(*this) + mData.sharedBytes(), CollisionBlasShape::GetStats().mNumTriangles);
+  }
+
+private:
+  CollResJoltChunk::Share mData;
+};
+} // namespace
+
+JPH::Shape::ShapeResult CollResJoltChunk::createShape(const CollisionResource &res, int node_id, JPH::uint32 compound_children,
+  bool force_descent_ids)
+{
+  JPH::Shape::ShapeResult result;
+  const CollisionNode *node = res.getNode(node_id);
+  if (!node || node->nodeBlasOfs == ~0u)
+  {
+    result.SetError("node has no BLAS chunk");
+    return result;
+  }
+  const View view = viewOf(res, *node);
+  if (!view) // the binding exists but fails a bounds or validity check
+  {
+    result.SetError("node's BLAS chunk binding is corrupt");
+    return result;
+  }
+  // the header bit is the stamped truth (read past validation): a post-load behavior mutation
+  // cannot add the flags words
+  if (!(view.hdrFlags & CollisionResource::NodeBlasChunkHeader::HAS_EDGE_FLAGS))
+  {
+    logerr("collres node %d <%s>: its chunk carries no edge flags (not PHYS_COLLIDABLE at chunk build); no Jolt shape", node_id,
+      res.getNodeNameStr(*node));
+    result.SetError("node's chunk has no edge flags");
+    return result;
+  }
+  JPH::Ref<CollResBlasShape> shape = new CollResBlasShape(view.chunk, Share(res),
+    compound_children ? compound_children : (JPH::uint32)res.getAllNodes().size(), force_descent_ids, result);
+  return result;
+}
+
+PhysCollision *create_phys_collision_from_coll_resource_node(const CollisionResource &res, int node_id, unsigned compound_children)
+{
+  if (!res.hasNodeBlas(node_id)) // no chunk (non-mesh, degenerate): the trimesh path, silently
+    return nullptr;
+  const JPH::Shape::ShapeResult shape = CollResJoltChunk::createShape(res, node_id, compound_children);
+  if (shape.IsValid())
+    return new JoltPhysNativeShape(shape.Get());
+  logwarn("collres node %d: %s, the body takes the trimesh path", node_id, shape.GetError().c_str());
+  return nullptr;
+}
+
+PhysCollision *create_phys_collision_from_blas_chunk(const soa4::ChunkRef &chunk)
+{
+  const JPH::Shape::ShapeResult shape = JPH::CollisionBlasShape::sCreate(chunk);
+  if (shape.IsValid())
+    return new JoltPhysNativeShape(shape.Get());
+  logwarn("BLAS chunk of %u triangles: %s, the body takes the trimesh path", chunk.triCount, shape.GetError().c_str());
+  return nullptr;
+}
 
 // Jolt's incremental hull builder can fail its own consistency check on near-degenerate
 // point configurations (e.g. quantization-aligned verts); a slightly larger tolerance
@@ -1499,7 +1571,7 @@ struct JoltSimJob final : public cpujobs::IJob
 
   void update(float dt, int nsteps = 1) { jolt_api::phys_sys().Update(dt, nsteps, tempAllocator, jobSystem); }
 
-  const char *getJobName(bool &) const override { return "JoltSimJob"; }
+  const char *getJobName(bool &) const override { return DAPROFILER_STRING("JoltSimJob"); }
 
   void doJob() override
   {

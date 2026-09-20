@@ -40,12 +40,7 @@ bool ios_is_ipad()
 
 size_t ios_get_available_memory()
 {
-  size_t mem = 0;
-  if (@available(iOS 13, *))
-  {
-    mem = os_proc_available_memory();
-  }
-  return mem;
+  return os_proc_available_memory();
 }
 
 size_t ios_get_phys_footprint()

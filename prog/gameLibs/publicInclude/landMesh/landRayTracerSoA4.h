@@ -22,6 +22,10 @@
 class IGenLoad;
 class IGenSave;
 class GlobalSharedMemStorage;
+namespace soa4
+{
+struct ChunkRef;
+}
 
 class LandRayTracerSoA4
 {
@@ -126,6 +130,9 @@ public:
   // nothing and count 0.
   int getCellVertCount(int cell_idx) const;
   int getCellTriCount(int cell_idx) const;
+  // The cell's BLAS as a physics shape reads it (its edge flags words filled). The bytes live in the
+  // dump, so the shape must not outlive the tracer. False for an empty or out-of-range cell.
+  bool getCellChunk(int cell_idx, soa4::ChunkRef &out) const;
   template <class CB>
   void iterateCellVertices(int cell_idx, CB cb) const // cb(const Point3 &world_pos)
   {
@@ -213,7 +220,12 @@ private:
     Point3 origin = Point3(0, 0, 0);
     BBox3 bbox;
     int cellCount = 0;
-    int _pad = 0; // keeps sizeof(DumpHeader) a 16B multiple so the Cell records after it stay aligned
+    // bit 0 (CELL_EDGE_FLAGS): the cells' edge flags words are present - filled at build and at a
+    // version 1 load, carried by the wire on a version 2 blob. An invariant, not a gate (asserted
+    // at serve); the field mirrors the collision chunk format (NodeBlasChunkHeader::flags). Also
+    // keeps sizeof a 16B multiple.
+    static constexpr int CELL_EDGE_FLAGS = 1;
+    int flags = 0;
   };
 
   struct alignas(16) Cell // POD record in the dump; payload locations are dump offsets
@@ -280,6 +292,7 @@ private:
   // invCellSize are derived inside)
   bool assemble(DumpHeader h, dag::Span<CellTmp> tmp_cells);
   static void buildCellGeom(CellTmp &out, dag::Vector<vec4f> &verts4, dag::Vector<uint32_t> &idx);
+  static void buildCellEdgeFlags(CellTmp &out);
   static void finalizeCellAccel(CellTmp &out);
   template <bool ANY_HIT>
   bool traceCell(const Cell &c, vec3f p, vec3f d, const Point3 &pos, const Point3 &dir, float t_in, float t_out, float &t,

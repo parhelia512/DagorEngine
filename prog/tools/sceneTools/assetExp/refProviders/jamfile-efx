@@ -13,11 +13,10 @@ AddIncludes =
   $(Root)/prog/tools/sceneTools/daEditorX/include
 ;
 
-UseProgLibs =
+UseProgLibs +=
   engine/startup
 
   tools/libTools/assetMgr
-  tools/libTools/util
 ;
 
 include $(Root)/prog/_jBuild/build.jam ;

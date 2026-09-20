@@ -706,8 +706,10 @@ void CodeGenVisitor::visitTryStatement(TryStatement *tryStmt) {
         _fs->_traps++;
     }
 
+    const bool continueTargetIsALoop = _fs->_continuetargets.size() && _fs->_continuetargets.top() >= 0;
+
     if (_fs->_breaktargets.size()) _fs->_breaktargets.top() += n;
-    if (_fs->_continuetargets.size()) _fs->_continuetargets.top() += n;
+    if (continueTargetIsALoop) _fs->_continuetargets.top() += n;
 
     {
         BEGIN_SCOPE();
@@ -718,7 +720,7 @@ void CodeGenVisitor::visitTryStatement(TryStatement *tryStmt) {
     _fs->_traps -= n;
     _fs->AddInstruction(_OP_POPTRAP, n, 0);
     if (_fs->_breaktargets.size()) _fs->_breaktargets.top() -= n;
-    if (_fs->_continuetargets.size()) _fs->_continuetargets.top() -= n;
+    if (continueTargetIsALoop) _fs->_continuetargets.top() -= n;
     _fs->AddInstruction(_OP_JMP, 0, 0);
     SQInteger jmppos = _fs->GetCurrentPos();
 
@@ -1089,6 +1091,7 @@ int CodeGenVisitor::getSubtreeConstScoreImpl(Node *node) {
         case TO_BNOT:
         case TO_NEG:
         case TO_TYPEOF:
+        case TO_SPREAD:
         case TO_PAREN: {
             UnExpr *unExpr = static_cast<UnExpr *>(node);
             int s = getSubtreeConstScoreImpl(unExpr->argument());
@@ -1253,7 +1256,7 @@ int CodeGenVisitor::getSubtreeConstScoreImpl(Node *node) {
             ArenaVector<TableMember> &members = static_cast<TableExpr *>(node)->members();
             int res = 50;
             for (TableMember &m : members) {
-                int s1 = getSubtreeConstScoreImpl(m.key);
+                int s1 = m.hasKey() ? getSubtreeConstScoreImpl(m.key) : 1;
                 int s2 = getSubtreeConstScoreImpl(m.value);
                 if (s1 == 0 || s2 == 0)
                     return 0;
@@ -1292,6 +1295,9 @@ int CodeGenVisitor::getSubtreeConstScoreImpl(Node *node) {
 void CodeGenVisitor::visitCodeBlockExpr(CodeBlockExpr *expr) {
     maybeAddInExprLine(expr);
     SQInteger resultTarget = _fs->PushTarget();
+
+    _fs->AddInstruction(_OP_LOADNULLS, resultTarget, 1);
+
     BEGIN_SCOPE();
 
     SQInteger nbreaks = _fs->_unresolvedbreaks.size();
@@ -1302,8 +1308,6 @@ void CodeGenVisitor::visitCodeBlockExpr(CodeBlockExpr *expr) {
     _fs->_expr_block_results.push_back(resultTarget);
 
     expr->block()->visit(this);
-
-    //_fs->AddInstruction(_OP_LOADNULLS, resultTarget, 1);
 
     nbreaks = _fs->_unresolvedbreaks.size() - nbreaks;
     if (nbreaks > 0)
@@ -1331,6 +1335,12 @@ void CodeGenVisitor::generateTableExpr(TableExpr *tableDecl) {
 
     for (SQUnsignedInteger i = 0; i < members.size(); ++i) {
         const TableMember &m = members[i];
+
+        if (m.isSpread()) {
+            emitSpreadInto(m.value, 0);
+            continue;
+        }
+
 #if SQ_LINE_INFO_IN_STRUCTURES
         if (i < 100 && m.key->lineStart() != -1) {
             _fs->AddLineInfos(m.key->lineStart(), false, false);
@@ -1372,17 +1382,16 @@ void CodeGenVisitor::generateTableExpr(TableExpr *tableDecl) {
     }
 }
 
-void CodeGenVisitor::addPatchDocObjectInstruction(const DocObject &docObject) {
-    int idx = (_ss(_vm)->doc_object_index += 2);
-    SaveDocstringToVM((void *)size_t(idx), docObject);
-    _fs->AddInstruction(_OP_PATCH_DOCOBJ, _fs->TopTarget(), idx, 0, 0);
+void CodeGenVisitor::addSetClassDocStringInstruction(Node *owner, const DocObject &docObject) {
+    SQDocStringId id = AddDocString(owner, docObject);
+    _fs->AddInstruction(_OP_SET_CLASS_DOCSTRING, _fs->TopTarget(), id, 0, 0);
 }
 
 void CodeGenVisitor::visitTableExpr(TableExpr *tableExpr) {
     addLineNumber(tableExpr);
     _fs->AddInstruction(_OP_NEWOBJ, _fs->PushTarget(), tableExpr->members().size(), 0, NEWOBJ_TABLE);
     if (!tableExpr->docObject.isEmpty())
-        addPatchDocObjectInstruction(tableExpr->docObject);
+        _ctx.throwError(tableExpr, "table docstrings are not supported");
 
     generateTableExpr(tableExpr);
 }
@@ -1399,7 +1408,7 @@ void CodeGenVisitor::visitClassExpr(ClassExpr *klass) {
 
     _fs->AddInstruction(_OP_NEWOBJ, _fs->PushTarget(), baseIdx, 0, NEWOBJ_CLASS);
     if (!klass->docObject.isEmpty())
-        addPatchDocObjectInstruction(klass->docObject);
+        addSetClassDocStringInstruction(klass, klass->docObject);
 
     generateTableExpr(klass);
 }
@@ -1671,7 +1680,7 @@ SQObjectPtr CodeGenVisitor::compileFunc(FunctionExpr *funcDecl, bool is_const, s
     _fs->PopChildState();
     _childFs = savedChildFsAtRoot;
 
-    SaveDocstringToVM((void *)funcProto, funcDecl->docObject);
+    funcProto->_docstring_id = AddDocString(funcDecl, funcDecl->docObject);
     _complexity_level--;
 
     return result;
@@ -1711,14 +1720,18 @@ SQObjectPtr CodeGenVisitor::compileConstFunc(FunctionExpr *funcDecl)
 }
 
 
-void CodeGenVisitor::SaveDocstringToVM(void *key, const DocObject &docObject) {
-    if (docObject.getDocString()) {
-        SQObjectPtr docValue(SQString::Create(_ss(_vm), docObject.getDocString()));
-        SQObjectPtr docKey;
-        docKey._type = OT_USERPOINTER;
-        docKey._unVal.pUserPointer = key;
-        _table(_ss(_vm)->doc_objects)->NewSlot(docKey, docValue);
-    }
+SQDocStringId CodeGenVisitor::AddDocString(Node *owner, const DocObject &docObject) {
+    const char *text = docObject.getDocString();
+    if (!text)
+        return 0;
+    SQDocStringId id = _ss(_vm)->AddDocString(text);
+#if SQ_STORE_DOC_OBJECTS
+    if (id == 0)
+        _ctx.throwError(owner, "too many docstrings in the shared state");
+#else
+    (void)owner;
+#endif
+    return id;
 }
 
 SQTable* CodeGenVisitor::GetScopedConstsTable()
@@ -1961,11 +1974,26 @@ void CodeGenVisitor::visitArrayExpr(ArrayExpr *expr) {
         if (i < 100 && valExpr->lineStart() != -1)
             _fs->AddLineInfos(valExpr->lineStart(), false, false);
 #endif
+        if (valExpr->op() == TO_SPREAD) {
+            emitSpreadInto(valExpr, inits.size() - i - 1);
+            continue;
+        }
+
         visitForValueMaybeStaticMemo(valExpr);
         SQInteger val = _fs->PopTarget();
         SQInteger array = _fs->TopTarget();
         _fs->AddInstruction(_OP_APPENDARRAY, array, val, AAT_STACK);
     }
+}
+
+void CodeGenVisitor::emitSpreadInto(Expr *spread, SQUnsignedInteger elementsAfterSpread) {
+    assert(spread->op() == TO_SPREAD);
+
+    visitForValueMaybeStaticMemo(spreadSourceOf(spread));
+    SQInteger source = _fs->PopTarget();
+    SQInteger container = _fs->TopTarget();
+    const SQUnsignedInteger reservationHint = elementsAfterSpread < 255 ? elementsAfterSpread : 255;
+    _fs->AddInstruction(_OP_SPREAD, container, source, reservationHint);
 }
 
 void CodeGenVisitor::emitUnaryOp(SQOpcode op, UnExpr *u) {

@@ -23,13 +23,11 @@ AddIncludes =
   $(Root)/prog/engine
 ;
 
-UseProgLibs =
+UseProgLibs +=
   engine/startup
   engine/math
 
   tools/libTools/assetMgr
-  tools/libTools/assetMgrHlp
-  tools/libTools/util
   tools/libTools/dtx
   3rdPartyLibs/arc/zlib-$(UseZlibVer)
   3rdPartyLibs/hash

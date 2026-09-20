@@ -8,10 +8,11 @@
 #include <util/dag_globDef.h>
 
 #include <drv/3d/dag_consts.h>
+#include <drv/3d/dag_multi_interface.h>
 
 class Sbuffer;
 
-namespace d3d
+namespace d3d _MULTI_INTERFACE
 {
 /**
  * @brief Sets shader constants for the specified stage.
@@ -151,22 +152,6 @@ bool set_const_buffer(unsigned stage, unsigned slot, const float *data, unsigned
 bool set_const_buffer(unsigned stage, unsigned slot, Sbuffer *buffer);
 
 /**
- * @brief Sets the size of the vertex shader constant buffer that can be filled with set_const call.
- *
- * @param required_count The required count of float4 registers of the constant buffer. If 0, the default size is set.
- * @return The actual count in the constant buffer.
- */
-int set_vs_constbuffer_register_count(int required_count);
-
-/**
- * @brief Sets the size of the compute shader constant buffer that can be filled with set_const call.
- *
- * @param required_count The required count of float4 registers of the constant buffer. If 0, the default size is set.
- * @return The actual count in the constant buffer.
- */
-int set_cs_constbuffer_register_count(int required_count);
-
-/**
  * @brief Sets a constant buffer at slot 0 for the specified stage. Uses the fastest method available on the platform.
  *
  * Constant buffers are valid until driver acquire call or end of frame.
@@ -206,7 +191,7 @@ inline void release_cb0_data(unsigned stage)
 #endif
 }
 
-} // namespace d3d
+} // namespace d3d _MULTI_INTERFACE
 
 #if _TARGET_D3D_MULTI
 #include <drv/3d/dag_interface_table.h>
@@ -221,9 +206,6 @@ inline bool set_immediate_const(unsigned stage, const uint32_t *data, unsigned n
 {
   return d3di.set_immediate_const(stage, data, num_words);
 }
-
-inline int set_vs_constbuffer_register_count(int required_count) { return d3di.set_vs_constbuffer_register_count(required_count); }
-inline int set_cs_constbuffer_register_count(int required_count) { return d3di.set_cs_constbuffer_register_count(required_count); }
 
 inline bool set_const_buffer(unsigned stage, unsigned slot, Sbuffer *buffer) { return d3di.set_const_buffer(stage, slot, buffer); }
 

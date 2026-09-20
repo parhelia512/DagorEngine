@@ -343,6 +343,104 @@ static ecs::EntitySystemDesc dagdp_local_volume_sphere__link_es_es_desc
                        ecs::EventComponentsAppear>::build(),
   0
 ,"render","dagdp__volume_placer_name");
+static constexpr ecs::ComponentDesc volume_boxes_ecs_query_comps[] =
+{
+//start of 2 ro components at [0]
+  {ECS_HASH("dagdp_internal__volume_placer_eid"), ecs::ComponentTypeInfo<ecs::EntityId>()},
+  {ECS_HASH("transform"), ecs::ComponentTypeInfo<TMatrix>()},
+//start of 1 rq components at [2]
+  {ECS_HASH("dagdp_volume_box"), ecs::ComponentTypeInfo<ecs::Tag>()}
+};
+static ecs::CompileTimeQueryDesc volume_boxes_ecs_query_desc
+(
+  "dagdp::volume_boxes_ecs_query",
+  empty_span(),
+  make_span(volume_boxes_ecs_query_comps+0, 2)/*ro*/,
+  make_span(volume_boxes_ecs_query_comps+2, 1)/*rq*/,
+  empty_span());
+template<typename Callable>
+inline void dagdp::volume_boxes_ecs_query(ecs::EntityManager &manager, Callable function)
+{
+  perform_query(&manager, volume_boxes_ecs_query_desc.getHandle(),
+    [&function](const ecs::QueryView& __restrict components)
+    {
+        auto comp = components.begin(), compE = components.end(); G_ASSERT(comp != compE); do
+        {
+          function(
+              ECS_RO_COMP(volume_boxes_ecs_query_comps, "dagdp_internal__volume_placer_eid", ecs::EntityId)
+            , ECS_RO_COMP(volume_boxes_ecs_query_comps, "transform", TMatrix)
+            );
+
+        }while (++comp != compE);
+    }
+  );
+}
+static constexpr ecs::ComponentDesc volume_cylinders_ecs_query_comps[] =
+{
+//start of 2 ro components at [0]
+  {ECS_HASH("dagdp_internal__volume_placer_eid"), ecs::ComponentTypeInfo<ecs::EntityId>()},
+  {ECS_HASH("transform"), ecs::ComponentTypeInfo<TMatrix>()},
+//start of 1 rq components at [2]
+  {ECS_HASH("dagdp_volume_cylinder"), ecs::ComponentTypeInfo<ecs::Tag>()}
+};
+static ecs::CompileTimeQueryDesc volume_cylinders_ecs_query_desc
+(
+  "dagdp::volume_cylinders_ecs_query",
+  empty_span(),
+  make_span(volume_cylinders_ecs_query_comps+0, 2)/*ro*/,
+  make_span(volume_cylinders_ecs_query_comps+2, 1)/*rq*/,
+  empty_span());
+template<typename Callable>
+inline void dagdp::volume_cylinders_ecs_query(ecs::EntityManager &manager, Callable function)
+{
+  perform_query(&manager, volume_cylinders_ecs_query_desc.getHandle(),
+    [&function](const ecs::QueryView& __restrict components)
+    {
+        auto comp = components.begin(), compE = components.end(); G_ASSERT(comp != compE); do
+        {
+          function(
+              ECS_RO_COMP(volume_cylinders_ecs_query_comps, "dagdp_internal__volume_placer_eid", ecs::EntityId)
+            , ECS_RO_COMP(volume_cylinders_ecs_query_comps, "transform", TMatrix)
+            );
+
+        }while (++comp != compE);
+    }
+  );
+}
+static constexpr ecs::ComponentDesc volume_spheres_ecs_query_comps[] =
+{
+//start of 3 ro components at [0]
+  {ECS_HASH("dagdp_internal__volume_placer_eid"), ecs::ComponentTypeInfo<ecs::EntityId>()},
+  {ECS_HASH("transform"), ecs::ComponentTypeInfo<TMatrix>()},
+  {ECS_HASH("sphere_zone__radius"), ecs::ComponentTypeInfo<float>()},
+//start of 1 rq components at [3]
+  {ECS_HASH("dagdp_volume_sphere"), ecs::ComponentTypeInfo<ecs::Tag>()}
+};
+static ecs::CompileTimeQueryDesc volume_spheres_ecs_query_desc
+(
+  "dagdp::volume_spheres_ecs_query",
+  empty_span(),
+  make_span(volume_spheres_ecs_query_comps+0, 3)/*ro*/,
+  make_span(volume_spheres_ecs_query_comps+3, 1)/*rq*/,
+  empty_span());
+template<typename Callable>
+inline void dagdp::volume_spheres_ecs_query(ecs::EntityManager &manager, Callable function)
+{
+  perform_query(&manager, volume_spheres_ecs_query_desc.getHandle(),
+    [&function](const ecs::QueryView& __restrict components)
+    {
+        auto comp = components.begin(), compE = components.end(); G_ASSERT(comp != compE); do
+        {
+          function(
+              ECS_RO_COMP(volume_spheres_ecs_query_comps, "dagdp_internal__volume_placer_eid", ecs::EntityId)
+            , ECS_RO_COMP(volume_spheres_ecs_query_comps, "transform", TMatrix)
+            , ECS_RO_COMP(volume_spheres_ecs_query_comps, "sphere_zone__radius", float)
+            );
+
+        }while (++comp != compE);
+    }
+  );
+}
 static constexpr ecs::ComponentDesc on_mesh_placers_ecs_query_comps[] =
 {
 //start of 13 ro components at [0]
@@ -557,104 +655,6 @@ inline void dagdp::around_ri_placers_ecs_query(ecs::EntityManager &manager, Call
             , ECS_RO_COMP(around_ri_placers_ecs_query_comps, "dagdp__volume_cylinder_eids", ecs::EidList)
             , ECS_RO_COMP(around_ri_placers_ecs_query_comps, "dagdp__volume_sphere_eids", ecs::EidList)
             , ECS_RO_COMP(around_ri_placers_ecs_query_comps, "dagdp__csm_cascade_count", int)
-            );
-
-        }while (++comp != compE);
-    }
-  );
-}
-static constexpr ecs::ComponentDesc volume_boxes_ecs_query_comps[] =
-{
-//start of 2 ro components at [0]
-  {ECS_HASH("dagdp_internal__volume_placer_eid"), ecs::ComponentTypeInfo<ecs::EntityId>()},
-  {ECS_HASH("transform"), ecs::ComponentTypeInfo<TMatrix>()},
-//start of 1 rq components at [2]
-  {ECS_HASH("dagdp_volume_box"), ecs::ComponentTypeInfo<ecs::Tag>()}
-};
-static ecs::CompileTimeQueryDesc volume_boxes_ecs_query_desc
-(
-  "dagdp::volume_boxes_ecs_query",
-  empty_span(),
-  make_span(volume_boxes_ecs_query_comps+0, 2)/*ro*/,
-  make_span(volume_boxes_ecs_query_comps+2, 1)/*rq*/,
-  empty_span());
-template<typename Callable>
-inline void dagdp::volume_boxes_ecs_query(ecs::EntityManager &manager, Callable function)
-{
-  perform_query(&manager, volume_boxes_ecs_query_desc.getHandle(),
-    [&function](const ecs::QueryView& __restrict components)
-    {
-        auto comp = components.begin(), compE = components.end(); G_ASSERT(comp != compE); do
-        {
-          function(
-              ECS_RO_COMP(volume_boxes_ecs_query_comps, "dagdp_internal__volume_placer_eid", ecs::EntityId)
-            , ECS_RO_COMP(volume_boxes_ecs_query_comps, "transform", TMatrix)
-            );
-
-        }while (++comp != compE);
-    }
-  );
-}
-static constexpr ecs::ComponentDesc volume_cylinders_ecs_query_comps[] =
-{
-//start of 2 ro components at [0]
-  {ECS_HASH("dagdp_internal__volume_placer_eid"), ecs::ComponentTypeInfo<ecs::EntityId>()},
-  {ECS_HASH("transform"), ecs::ComponentTypeInfo<TMatrix>()},
-//start of 1 rq components at [2]
-  {ECS_HASH("dagdp_volume_cylinder"), ecs::ComponentTypeInfo<ecs::Tag>()}
-};
-static ecs::CompileTimeQueryDesc volume_cylinders_ecs_query_desc
-(
-  "dagdp::volume_cylinders_ecs_query",
-  empty_span(),
-  make_span(volume_cylinders_ecs_query_comps+0, 2)/*ro*/,
-  make_span(volume_cylinders_ecs_query_comps+2, 1)/*rq*/,
-  empty_span());
-template<typename Callable>
-inline void dagdp::volume_cylinders_ecs_query(ecs::EntityManager &manager, Callable function)
-{
-  perform_query(&manager, volume_cylinders_ecs_query_desc.getHandle(),
-    [&function](const ecs::QueryView& __restrict components)
-    {
-        auto comp = components.begin(), compE = components.end(); G_ASSERT(comp != compE); do
-        {
-          function(
-              ECS_RO_COMP(volume_cylinders_ecs_query_comps, "dagdp_internal__volume_placer_eid", ecs::EntityId)
-            , ECS_RO_COMP(volume_cylinders_ecs_query_comps, "transform", TMatrix)
-            );
-
-        }while (++comp != compE);
-    }
-  );
-}
-static constexpr ecs::ComponentDesc volume_spheres_ecs_query_comps[] =
-{
-//start of 3 ro components at [0]
-  {ECS_HASH("dagdp_internal__volume_placer_eid"), ecs::ComponentTypeInfo<ecs::EntityId>()},
-  {ECS_HASH("transform"), ecs::ComponentTypeInfo<TMatrix>()},
-  {ECS_HASH("sphere_zone__radius"), ecs::ComponentTypeInfo<float>()},
-//start of 1 rq components at [3]
-  {ECS_HASH("dagdp_volume_sphere"), ecs::ComponentTypeInfo<ecs::Tag>()}
-};
-static ecs::CompileTimeQueryDesc volume_spheres_ecs_query_desc
-(
-  "dagdp::volume_spheres_ecs_query",
-  empty_span(),
-  make_span(volume_spheres_ecs_query_comps+0, 3)/*ro*/,
-  make_span(volume_spheres_ecs_query_comps+3, 1)/*rq*/,
-  empty_span());
-template<typename Callable>
-inline void dagdp::volume_spheres_ecs_query(ecs::EntityManager &manager, Callable function)
-{
-  perform_query(&manager, volume_spheres_ecs_query_desc.getHandle(),
-    [&function](const ecs::QueryView& __restrict components)
-    {
-        auto comp = components.begin(), compE = components.end(); G_ASSERT(comp != compE); do
-        {
-          function(
-              ECS_RO_COMP(volume_spheres_ecs_query_comps, "dagdp_internal__volume_placer_eid", ecs::EntityId)
-            , ECS_RO_COMP(volume_spheres_ecs_query_comps, "transform", TMatrix)
-            , ECS_RO_COMP(volume_spheres_ecs_query_comps, "sphere_zone__radius", float)
             );
 
         }while (++comp != compE);

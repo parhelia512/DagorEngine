@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Quirrel VM acceptance benchmark: csq vs Lua 5.4 / Luau interpreters.
+"""Quirrel VM acceptance benchmark: sq vs Lua / Luau interpreters.
 
 Runs the workloads in quirrel/ (*.nut) and lua/ (same algorithms) on each
 available VM, parses the self-reported per-rep timings ("BENCH <name>
@@ -11,12 +11,13 @@ median across runs - a standard interpreter-benchmark protocol that filters
 both cold-start and machine noise.
 
 This is the acceptance harness for interpreter work: run it before and after
-a VM change. Use a release build of csq (jam -sConfig=rel in
-the consoleSq tool). --lua/--luau default to the prebuilt interpreters
-committed next to the workloads (see README.md).
+a VM change. It measures the release sq (jam -sConfig=rel in the sq tool);
+a dev build measures its asserts.
+--lua/--luau default to the prebuilt interpreters committed next to the
+workloads (see README.md).
 
 Usage:
-  python run_vm_bench.py --csq <csq.exe> [--lua <lua.exe>] [--luau <luau.exe>]
+  python run_vm_bench.py [--sq <sq-64.exe>] [--lua <lua.exe>] [--luau <luau.exe>]
                          [--runs 3] [--out vm_bench_results.json] [bench ...]
 """
 
@@ -28,6 +29,9 @@ import statistics
 import subprocess
 import sys
 
+# One definition of the machine-info envelope, shared with the documentation suite.
+from benchmarks import machine_info
+
 HERE = os.path.dirname(os.path.abspath(__file__))
 
 BENCHES = ["fib", "binarytrees", "life", "mandel", "strings",
@@ -35,6 +39,14 @@ BENCHES = ["fib", "binarytrees", "life", "mandel", "strings",
            "method_calls"]
 
 BENCH_RE = re.compile(r"BENCH (\S+) ([0-9.]+) ms")
+
+# <dagor>/prog/1stPartyLibs/quirrel/quirrel/bench -> the release interpreter
+DEFAULT_SQ = os.path.normpath(os.path.join(HERE, "..", "..", "..", "..", "..",
+                                           "tools", "util", "sq-64.exe"))
+
+# The doc site reads this side-car and renders the ratio table; see the
+# {{vm_benchmarks}} directive in ../doc/gen/render.py.
+RESULTS = os.path.normpath(os.path.join(HERE, "..", "doc", "content", "_vm_bench.json"))
 
 
 def run_one(cmd, cwd):
@@ -58,13 +70,19 @@ def bench_vm(vm_name, cmd_template, bench, runs):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("benches", nargs="*")
-    ap.add_argument("--csq", required=True, help="path to csq.exe (release build!)")
-    ap.add_argument("--lua", help="path to lua 5.4 interpreter (default: committed lua/lua.exe)")
+    ap.add_argument("--sq", default=DEFAULT_SQ,
+                    help="path to the release sq (default: tools/util/sq-64.exe)")
+    ap.add_argument("--lua", help="path to the lua interpreter (default: committed lua/lua.exe)")
     ap.add_argument("--luau", help="path to luau CLI (default: committed luau/luau.exe)")
     ap.add_argument("--luau-codegen", action="store_true", help="add a luau --codegen column")
     ap.add_argument("--runs", type=int, default=3)
-    ap.add_argument("--out", default="vm_bench_results.json")
+    ap.add_argument("--out", default=RESULTS,
+                    help="side-car to write; a path of your own leaves the committed one alone")
     args = ap.parse_args()
+
+    if not os.path.exists(args.sq):
+        raise SystemExit(f"{args.sq} is not there; build it with "
+                         "jam -sConfig=rel in the sq tool (see README.md)")
 
     if not args.lua:
         default_lua = os.path.join(HERE, "lua", "lua.exe")
@@ -73,9 +91,9 @@ def main():
         default_luau = os.path.join(HERE, "luau", "luau.exe")
         args.luau = default_luau if os.path.exists(default_luau) else None
 
-    vms = [("quirrel", [args.csq])]
+    vms = [("quirrel", [args.sq])]
     if args.lua:
-        vms.append(("lua54", [args.lua]))
+        vms.append(("lua55", [args.lua]))
     if args.luau:
         vms.append(("luau", [args.luau, "-O2"]))
         if args.luau_codegen:
@@ -94,8 +112,10 @@ def main():
                 table[bench][vm_name] = None
                 print(f"{bench:>16} {vm_name:>14}      FAILED: {e}", flush=True)
 
-    with open(os.path.join(HERE, args.out), "w") as f:
-        json.dump(table, f, indent=1)
+    doc = {"info": machine_info(), "runs": args.runs, "results": table}
+    with open(os.path.join(HERE, args.out), "w", encoding="utf-8", newline="\n") as f:
+        json.dump(doc, f, indent=1)
+        f.write("\n")
 
     print("\n=== summary (ms, median of best-rep; ratio vs quirrel) ===")
     vm_names = [v[0] for v in vms]

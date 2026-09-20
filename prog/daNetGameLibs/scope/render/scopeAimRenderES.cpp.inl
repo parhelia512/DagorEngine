@@ -24,7 +24,6 @@
 #include <render/dof/dof_ps.h>
 #include <render/rendererFeatures.h>
 #include <render/renderEvent.h>
-#include <render/world/cameraInCamera.h>
 #include <render/world/dynModelRenderPass.h>
 #include <render/dynmodelRenderer.h>
 #include <render/world/global_vars.h>
@@ -614,6 +613,8 @@ void restore_scope_aim_dof(const AimDofSettings &savedDofSettings)
     dof.setDoFParams(savedDofSettings.focus);
     dof.setOn(savedDofSettings.on);
     dof.setMinCheckDistance(savedDofSettings.minCheckDistance);
+    dof.setSimplifiedRendering(savedDofSettings.simplifiedRendering);
+    dof.setCocAccumulation(savedDofSettings.cocAccumulation);
   });
 }
 
@@ -628,6 +629,8 @@ void prepare_aim_dof(const ScopeAimRenderingData &scopeAimData,
     dof_settings.focus = focus;
     dof_settings.on = dof.isOn();
     dof_settings.minCheckDistance = dof.getMinCheckDistance();
+    dof_settings.simplifiedRendering = dof.isSimplifiedRendering();
+    dof_settings.cocAccumulation = dof.isCocAccumulationEnabled();
 
     float focusPlaneDist = 0.5f;
     float nearBlurAmount = 0.0f;
@@ -636,14 +639,12 @@ void prepare_aim_dof(const ScopeAimRenderingData &scopeAimData,
     {
       get_aim_dof_scope_ecs_query(*g_entity_mgr, scopeAimData.entityWithScopeLensEid,
         [&](float gunmod__focusPlaneShift, float gunmod__dofNearAmountPercent, float gunmod__dofFarAmountPercent,
-          const float gunmod__realZoomDofFarAmountPercent = 0.18) {
+          bool gunmod__dofFovInvariant = false) {
           focusPlaneDist = gunmod__focusPlaneShift;
-          nearBlurAmount = scopeAimData.nearDofEnabled ? gunmod__dofNearAmountPercent * 0.01 : 0.0f;
-
-          const float farDofPercent =
-            camera_in_camera::is_lens_render_active() ? gunmod__realZoomDofFarAmountPercent : gunmod__dofFarAmountPercent;
-          const float farDofValue = farDofPercent * 0.01f;
-          farBlurAmount = aim_data.farDofEnabled ? farDofValue : 0.0f;
+          nearBlurAmount = scopeAimData.nearDofEnabled ? gunmod__dofNearAmountPercent * 0.01f : 0.0f;
+          farBlurAmount = aim_data.farDofEnabled ? gunmod__dofFarAmountPercent * 0.01f : 0.0f;
+          if (gunmod__dofFovInvariant)
+            focus.setFovInvariant(true);
         });
 
       TIME_D3D_PROFILE(scope_aim_dof_prepare);
@@ -688,6 +689,7 @@ void prepare_aim_dof(const ScopeAimRenderingData &scopeAimData,
     dof.setDoFParams(focus);
     dof.setMinCheckDistance(0.0f);
     dof.setSimplifiedRendering(scopeAimData.simplifiedAimDof);
+    dof.setCocAccumulation(false);
     dof_settings.changed = true;
   });
 }

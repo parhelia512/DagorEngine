@@ -1,0 +1,140 @@
+---
+title: Compiler directives
+group: Language
+order: 88
+summary: The `#` directives that turn a language feature on or off.
+---
+
+A line starting with `#` is a compiler directive. The directive is an
+identifier-like word, with an optional `default:` prefix, that turns a
+language feature on or off for the rest of the current unit. It is not a
+comment (see [Lexical structure](page:language/lexical)). It is also not an
+`#if`-style preprocessor: there is no expression, no macro and no condition.
+
+- `#strict` / `#relaxed` - root-table access and `delete`, forbidden together.
+- `#forbid-root-table` / `#allow-root-table` - whether `::name` may reach the root table.
+- `#forbid-delete-operator` / `#allow-delete-operator` - whether the `delete` operator may be used.
+- `#forbid-clone-operator` / `#allow-clone-operator` - whether the `clone` operator may be used.
+- `#forbid-switch-statement` / `#allow-switch-statement` - whether `switch`/`case`/`default` parse as a statement.
+- `#forbid-implicit-type-methods` / `#allow-implicit-type-methods` - whether a missing slot falls back to a type method.
+- `#forbid-auto-freeze` / `#allow-auto-freeze` - whether array/table/class literals get frozen automatically.
+- `#forbid-compiler-internals` / `#allow-compiler-internals` - whether a `$${ ... }` block may be used as an expression.
+- `#disable-optimizer` / `#enable-optimizer` - whether the bytecode peephole optimizer runs.
+
+Four features start off and need an explicit `allow` (or `enable`) to turn
+on: the `delete` operator, the `switch` statement, `$${ ... }` blocks, and
+auto-freezing literals. The other four start on and need an explicit
+`forbid` (or `disable`) to turn off: root-table access, the `clone`
+operator, implicit type methods, and the bytecode optimizer.
+
+`#strict` and `#relaxed` change only root-table access and `delete`. They
+do not change `switch`, auto-freeze, or any other feature.
+
+## Scope
+
+Without `default:`, a directive applies from the line where it is written to
+the end of the block that contains it (a function body or a bare `{ }`). The
+old value comes back when that block ends. At the top level, the block is
+the rest of the file.
+
+Three directive pairs do not follow that rule: `#disable-optimizer` /
+`#enable-optimizer`, `#forbid-implicit-type-methods` /
+`#allow-implicit-type-methods`, and `#forbid-auto-freeze` /
+`#allow-auto-freeze`. The compiler resolves them while it generates code for
+the enclosing function, not while it parses the block that declares them.
+Their effect lasts until that function ends (or the file ends, at the top
+level), even when the directive is inside a nested `{ }` that has already
+closed.
+
+{{example:language/directives-scope}}
+
+## default:
+
+A directive with the `default:` prefix also changes the VM's default for
+every unit compiled later in the same process. This includes a module that
+the current file `require`s later:
+
+```nut
+// main.nut
+#default:forbid-root-table
+let cfg = require("config.nut")   // config.nut inherits the ban, even
+                                   // though it has no directive of its own
+```
+
+Without `default:`, a directive never applies to a separately compiled
+file. Each file's parser starts from the VM's current default.
+
+## Root table access
+
+```nut
+#forbid-root-table
+::spawnPoint <- "hangar"
+// Access to root table is forbidden
+```
+
+Everything placed in the root table through `::` is visible from every
+other unit that shares the VM.
+
+## delete and clone
+
+`delete` is forbidden by default; `#allow-delete-operator` turns it on.
+`clone` is allowed by default; `#forbid-clone-operator` turns it off. See
+[Operators and expressions](page:language/operators) for what each
+operator does and why `rawdelete` is the usual replacement for `delete`.
+
+## switch
+
+`switch` is off by default. Without
+[`#allow-switch-statement`](page:language/control-flow), `switch`, `case`
+and `default` parse as ordinary identifiers.
+
+## Implicit type methods
+
+By default, indexing a table or instance with a name it does not have falls
+back to a type method of that name. `params.filter` is
+[filter](sym:types.Table.filter) when `params` has no `filter` slot.
+`#forbid-implicit-type-methods` turns that fallback off. A missing slot is
+then always an "index does not exist" error, and never returns a function:
+
+```nut
+#forbid-implicit-type-methods
+let params = { name = "alpha" }
+println(params.len)
+// the index 'len' (type='string') does not exist
+```
+
+## Auto-freezing literals
+
+`#allow-auto-freeze` applies an implicit [freeze](sym:freeze) to every
+array, table or class literal when it is built. `let squad = { hp = 100 }`
+then creates an immutable table; [is_frozen](sym:types.Table.is_frozen)
+reports it. The directive does not change the rules on
+[Bindings and constants](page:language/bindings): the binding can still be
+`let` or `local`, and only the value becomes read-only.
+
+## Compiler internals
+
+`$${ statements }` is a statement block used as an expression. Its value is
+the value that a `return` inside it produces. It is for code that must run
+more than one statement where only an expression is allowed. It is
+forbidden unless `#allow-compiler-internals` is in effect.
+
+{{example:language/directives-compiler-internals}}
+
+## The optimizer
+
+`#disable-optimizer` turns off the peephole passes that fold constant
+arithmetic and collapse jump chains in the generated bytecode. It changes
+the size and shape of the bytecode. It does not change what a script
+computes or prints. Use it only to inspect a `-bytecode-dump` or to narrow
+down a suspected optimizer bug.
+
+## #pos
+
+`#pos:<line>:<column>` is not in the list above. It does not accept
+`default:` and it cannot be turned off. It sets the compiler's line and
+column counters to the given position. Every error and every
+[`__LINE__`](page:language/lexical) after it is reported against that
+position, not against the line count of the real file. Tools that generate
+Quirrel source use it so that error messages point at their own input, not
+at the generated text.

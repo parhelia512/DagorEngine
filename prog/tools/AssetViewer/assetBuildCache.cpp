@@ -265,6 +265,12 @@ static int compute_auto_jobs(const DaBuildPostParams &params)
 
 static void finish_auto_jobs() { autoJobsActive = false; }
 
+bool is_queued(uint64_t pack_id, unsigned tc)
+{
+  dag::ConstSpan<unsigned> tcs = queue_get_pack_tcs(pack_id);
+  return eastl::find(tcs.begin(), tcs.end(), tc) != tcs.end();
+}
+
 void queue_add_pack(uint64_t pack_id, unsigned tc)
 {
   if (pack_id == INVALID_PACK_ID)
@@ -303,23 +309,91 @@ void queue_toggle_pack(uint64_t pack_id, unsigned tc)
   queue_add_pack(pack_id, tc);
 }
 
-void queue_add_pack_all_platforms(uint64_t pack_id)
+void queue_get_all_platform_tcs(Tab<unsigned> &out_tcs)
 {
-  queue_add_pack(pack_id, _MAKE4C('PC'));
-  for (unsigned tc : ::get_app().getWorkspace().getAdditionalPlatforms())
+  out_tcs.clear();
+  out_tcs.push_back(_MAKE4C('PC'));
+  for (auto tc : ::get_app().getWorkspace().getAdditionalPlatforms())
+    out_tcs.push_back(tc);
+}
+
+static PacksQueueState fold_packs_state(dag::ConstSpan<uint64_t> pack_ids, dag::ConstSpan<unsigned> tcs)
+{
+  bool any = false, all = true;
+
+  for (auto pack_id : pack_ids)
+  {
+    if (pack_id == INVALID_PACK_ID)
+      continue;
+    for (unsigned tc : tcs)
+    {
+      const bool queued = is_queued(pack_id, tc);
+      any |= queued;
+      all &= queued;
+    }
+  }
+
+  if (!any)
+    return PacksQueueState::None;
+  return all ? PacksQueueState::All : PacksQueueState::Partial;
+}
+
+PacksQueueState queue_get_packs_state(dag::ConstSpan<uint64_t> pack_ids, unsigned tc)
+{
+  return fold_packs_state(pack_ids, make_span_const(&tc, 1));
+}
+
+PacksQueueState queue_get_packs_state_all_platforms(dag::ConstSpan<uint64_t> pack_ids)
+{
+  Tab<unsigned> tcs;
+  queue_get_all_platform_tcs(tcs);
+  const PacksQueueState state = fold_packs_state(pack_ids, tcs);
+  if (state != PacksQueueState::None)
+    return state;
+
+  // a code the workspace no longer lists still keeps the pack exported, and the removal clears it,
+  // so the set is not None while anything at all is stored
+  for (auto pack_id : pack_ids)
+    if (!queue_get_pack_tcs(pack_id).empty())
+      return PacksQueueState::Partial;
+  return PacksQueueState::None;
+}
+
+// queue_add_pack and queue_remove_pack already ignore INVALID_PACK_ID and a duplicate tc
+void queue_add_missing_packs(dag::ConstSpan<uint64_t> pack_ids, unsigned tc)
+{
+  for (auto pack_id : pack_ids)
     queue_add_pack(pack_id, tc);
 }
 
-void queue_toggle_all_platforms(uint64_t pack_id)
+void queue_add_missing_packs_all_platforms(dag::ConstSpan<uint64_t> pack_ids)
 {
-  if (!queue_get_pack_tcs(pack_id).empty())
-  {
-    auto it = queueMap.find(pack_id);
-    if (it != queueMap.end())
+  Tab<unsigned> tcs;
+  queue_get_all_platform_tcs(tcs);
+  for (unsigned tc : tcs)
+    queue_add_missing_packs(pack_ids, tc);
+}
+
+void queue_remove_packs(dag::ConstSpan<uint64_t> pack_ids, unsigned tc)
+{
+  for (auto pack_id : pack_ids)
+    queue_remove_pack(pack_id, tc);
+}
+
+// clears every stored target code, not only the current platform set: a stale one would keep the pack exported
+void queue_remove_packs_all_platforms(dag::ConstSpan<uint64_t> pack_ids)
+{
+  for (auto pack_id : pack_ids)
+    if (auto it = queueMap.find(pack_id); it != queueMap.end())
       it->second.tcs.clear();
-  }
-  else
-    queue_add_pack_all_platforms(pack_id);
+}
+
+void queue_add_pack_all_platforms(uint64_t pack_id)
+{
+  Tab<unsigned> tcs;
+  queue_get_all_platform_tcs(tcs);
+  for (unsigned tc : tcs)
+    queue_add_pack(pack_id, tc);
 }
 
 void queue_remove_all() { queueMap.clear(); }
@@ -484,11 +558,6 @@ void export_queue()
 
   if (groups.empty())
     return;
-
-  currentlyBuildingMap.clear();
-  for (auto &kv : queueMap)
-    if (!kv.second.tcs.empty())
-      currentlyBuildingMap[kv.first].assign(kv.second.tcs.begin(), kv.second.tcs.end());
 
   bool consoleWasOpen = ::get_app().getConsole().isVisible();
   pendingBuildQueue.clear();
@@ -1019,6 +1088,10 @@ static bool launch_build_inproc_async(DaBuildPostParams postParams)
     return false;
   }
 
+  currentlyBuildingMap.clear();
+  for (auto &id : postParams.ids)
+    currentlyBuildingMap[id].assign(postParams.tc.begin(), postParams.tc.end());
+
   buildPostParams = eastl::move(postParams);
   {
     WinAutoLock lock(logMutex);
@@ -1091,6 +1164,10 @@ static bool launch_build_async(DaBuildPostParams postParams)
     ::get_app().getConsole().addMessage(ILogWriter::ERROR, "daBuild: cannot find daBuild executable near %s", startDir.str());
     return false;
   }
+
+  currentlyBuildingMap.clear();
+  for (auto &id : postParams.ids)
+    currentlyBuildingMap[id].assign(postParams.tc.begin(), postParams.tc.end());
 
   dabuildProgress = DaBuildProgress{};
   currentBuildUsesJobs = (dabuildJobs > 0);
@@ -1555,14 +1632,9 @@ void build_assets(dag::ConstSpan<unsigned> tc, dag::ConstSpan<DagorAsset *> asse
   params.checkRes = true;
   params.emptyPacksForUpToDateCheck = false;
 
-  currentlyBuildingMap.clear();
-
   for (DagorAsset *a : assets)
     add_asset_id(params.ids, *a);
   params.tc.assign(tc.begin(), tc.end());
-
-  for (auto &id : params.ids)
-    currentlyBuildingMap[id].assign(tc.begin(), tc.end());
 
   launch_build(eastl::move(params));
 }
@@ -1590,6 +1662,10 @@ static bool is_tc_building(dag::ConstSpan<unsigned> buildingTcs, unsigned tc)
 
 void render_dabuild_imgui()
 {
+  uint32_t queuePackCount = 0;
+  for (const auto &[unused, queueEntry] : queueMap)
+    queuePackCount += queueEntry.tcs.size();
+
   if (pendingBringToFront)
   {
     pendingBringToFront = false;
@@ -1625,21 +1701,21 @@ void render_dabuild_imgui()
       if (autoJobsActive)
         ImGui::BeginDisabled();
       ImGui::Checkbox("Auto", &autoJobs);
-      ImGui::SetItemTooltip("Auto-optimizing pack exports");
+      ImGui::SetItemTooltip("Auto-optimizing pack builds");
       if (autoJobsActive)
         ImGui::EndDisabled();
       ImGui::SameLine();
     }
 
     {
-      const float exportWidth = ImGui::CalcTextSize("Export").x + ImGui::GetStyle().FramePadding.x * 2.0f;
+      const float buildWidth = ImGui::CalcTextSize("Build").x + ImGui::GetStyle().FramePadding.x * 2.0f;
       const float stopWidth = ImGui::CalcTextSize("Stop").x + ImGui::GetStyle().FramePadding.x * 2.0f;
-      ImGui::SetCursorPosX(ImGui::GetCursorPosX() + ImGui::GetContentRegionAvail().x - stopWidth - exportWidth - 10.f);
+      ImGui::SetCursorPosX(ImGui::GetCursorPosX() + ImGui::GetContentRegionAvail().x - stopWidth - buildWidth - 10.f);
 
       if (running)
       {
         ImGui::BeginDisabled();
-        ImGui::Button("Export");
+        ImGui::Button("Build");
         ImGui::EndDisabled();
 
         ImGui::SameLine(0.0f, 10.0f);
@@ -1654,8 +1730,14 @@ void render_dabuild_imgui()
       }
       else
       {
-        if (ImGui::Button("Export"))
+        if (queuePackCount == 0)
+          ImGui::BeginDisabled();
+
+        if (ImGui::Button("Build"))
           export_queue();
+
+        if (queuePackCount == 0)
+          ImGui::EndDisabled();
 
         ImGui::SameLine(0.0f, 10.0f);
 
@@ -1732,6 +1814,22 @@ void render_dabuild_imgui()
     float deselectAllWidth = ImGui::CalcTextSize("Deselect all").x + ImGui::GetStyle().FramePadding.x * 2.0f;
     float selectAllWidth = ImGui::CalcTextSize("Select all").x + ImGui::GetStyle().FramePadding.x * 2.0f;
     float rightButtonsWidth = deselectAllWidth + ImGui::GetStyle().ItemSpacing.x + selectAllWidth;
+
+    if (running)
+      ImGui::TextUnformatted("Building pack(s)");
+    else if (queuePackCount > 0)
+      ImGui::Text("Selected %u pack(s)", queuePackCount);
+    else
+      ImGui::TextUnformatted("No pack selected");
+
+    dag::ConstSpan<unsigned> additionalPlatforms = ::get_app().getWorkspace().getAdditionalPlatforms();
+    const bool multiPlatform = !additionalPlatforms.empty();
+
+    if (multiPlatform && ImGui::IsItemHovered())
+      ImGui::SetTooltip("Each platform counts as a separate pack");
+
+    ImGui::SameLine();
+
     ImGui::SetCursorPosX(ImGui::GetCursorPosX() + ImGui::GetContentRegionAvail().x - rightButtonsWidth);
 
     if (ImGui::Button("Deselect all"))
@@ -1739,9 +1837,6 @@ void render_dabuild_imgui()
     ImGui::SameLine();
     if (ImGui::Button("Select all"))
       queue_select_all_known_packs();
-
-    dag::ConstSpan<unsigned> additionalPlatforms = ::get_app().getWorkspace().getAdditionalPlatforms();
-    const bool multiPlatform = !additionalPlatforms.empty();
 
     static constexpr float LIST_PAD = 2.0f;
     static constexpr float ITEM_PAD = 4.0f;
@@ -1771,7 +1866,7 @@ void render_dabuild_imgui()
 
     const ImVec4 colSelected = PropPanel::getOverriddenColor(PropPanel::ColorOverride::LISTBOX_SELECTION_BACKGROUND);
     const ImVec4 colHovered = PropPanel::getOverriddenColor(PropPanel::ColorOverride::LISTBOX_HIGHLIGHT_BACKGROUND_HOVERED);
-    const ImVec4 colBuilding = ImVec4(0.85f, 0.55f, 0.10f, 1.0f);
+    const ImVec4 colBuilding = PropPanel::getOverriddenColor(PropPanel::ColorOverride::DABUILD_PANEL_CURRENTLY_BUILDING);
 
     const float lineH = ImGui::GetFrameHeight();
 
@@ -1797,6 +1892,7 @@ void render_dabuild_imgui()
     ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(LIST_PAD, LIST_PAD));
     ImGui::PushStyleColor(ImGuiCol_ChildBg, ImGui::GetStyleColorVec4(ImGuiCol_FrameBg));
     bool childOpen = ImGui::BeginChild("##packList", ImVec2(0, 0), ImGuiChildFlags_AlwaysUseWindowPadding, ImGuiWindowFlags_None);
+    bool childHovered = ImGui::IsWindowHovered();
     ImGui::PopStyleVar();
     ImGui::PopStyleColor();
 
@@ -1821,20 +1917,32 @@ void render_dabuild_imgui()
         ImVec2 rowMin = ImGui::GetCursorScreenPos();
         ImVec2 rowMax = ImVec2(rowMin.x + availW, rowMin.y + lineH);
 
-        int hoveredSeg = -1;
+        ImGui::SetCursorScreenPos(rowMin);
+        char btnId[64];
+        snprintf(btnId, sizeof(btnId), "##qrow%d", rowIdx++);
+
+        bool clicked = false;
+        bool hovered = false;
+
         if (!running)
         {
+          clicked = ImGui::InvisibleButton(btnId, ImVec2(availW, lineH));
+          hovered = ImGui::IsItemHovered();
+        }
+        else
+          ImGui::Dummy(ImVec2(availW, lineH));
+
+        int hoveredSeg = -1;
+        if (hovered)
+        {
           float relX = ImGui::GetIO().MousePos.x - rowMin.x;
-          if (ImGui::IsMouseHoveringRect(rowMin, rowMax))
+          if (!multiPlatform || relX < bodyW)
+            hoveredSeg = 0;
+          else
           {
-            if (!multiPlatform || relX < bodyW)
-              hoveredSeg = 0;
-            else
-            {
-              int ci = (int)((relX - bodyW) / platformSegW);
-              if (ci >= 0 && ci < numPlatSeg)
-                hoveredSeg = ci + 1;
-            }
+            int ci = (int)((relX - bodyW) / platformSegW);
+            if (ci >= 0 && ci < numPlatSeg)
+              hoveredSeg = ci + 1;
           }
         }
 
@@ -1873,15 +1981,6 @@ void render_dabuild_imgui()
               dl->AddRectFilled(ImVec2(cx, rowMin.y), ImVec2(cxE, rowMax.y), ImGui::GetColorU32(colHovered));
           }
         }
-
-        ImGui::SetCursorScreenPos(rowMin);
-        char btnId[64];
-        snprintf(btnId, sizeof(btnId), "##qrow%d", rowIdx++);
-        bool clicked = false;
-        if (!running)
-          clicked = ImGui::InvisibleButton(btnId, ImVec2(availW, lineH));
-        else
-          ImGui::Dummy(ImVec2(availW, lineH));
 
         if (clicked)
         {
@@ -1961,7 +2060,17 @@ void render_dabuild_imgui()
     ImGui::EndChild();
 
     if (running)
+    {
       ImGui::EndDisabled();
+
+      if (childHovered)
+      {
+        ImGui::BeginTooltip();
+        ImGui::TextUnformatted("Pack building is in process");
+        ImGui::TextUnformatted("Currently being built packs are marked with color");
+        ImGui::EndTooltip();
+      }
+    }
   }
   DAEDITOR3.imguiEnd();
 

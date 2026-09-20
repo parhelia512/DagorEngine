@@ -1259,9 +1259,7 @@ void TracerManager::renderHeads(const Point3 &view_pos, const TMatrix &view_itm)
   const int FX_HEAD_NUM_REGISTERS =
     tracerTypeBuffer.getSbuffer() ? FX_HEAD_MAX_SUPPORTED_NUM_REGISTERS : FX_HEAD_MIN_SUPPORTED_NUM_REGISTERS;
   int numRegisters = tracerTypeBuffer.getSbuffer() ? FX_HEAD_H_NUM_REGISTERS : FX_HEAD_NUM_REGISTERS;
-  int batchInstNum =
-    (d3d::set_vs_constbuffer_register_count(FX_HEAD_MAXIUM_REGISTERS + FX_TRACER_DATA_REGISTER_NO) - FX_TRACER_DATA_REGISTER_NO) /
-    numRegisters;
+  int batchInstNum = FX_HEAD_MAXIUM_REGISTERS / numRegisters;
   int curInstNum = 0;
 
   for (uint32_t tracerNo = 0, bit = 1, processed = 0; tracerNo < tracers.size() && processed < numVisibleTracers;
@@ -1324,8 +1322,6 @@ void TracerManager::renderHeads(const Point3 &view_pos, const TMatrix &view_itm)
     d3d::drawind(PRIM_TRILIST, 0, curInstNum * FX_HEAD_PRIMITIVES_PER_PARTICLE, 0);
     curInstNum = 0;
   }
-
-  d3d::set_vs_constbuffer_register_count(0);
 
   if (tracerTypeBuffer.getSbuffer())
     d3d::set_buffer(STAGE_VS, FX_TRACER_TYPE_REGISTER_NO, NULL);

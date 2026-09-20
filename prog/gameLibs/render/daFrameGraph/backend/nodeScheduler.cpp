@@ -17,7 +17,8 @@
 namespace dafg
 {
 
-auto NodeScheduler::schedule(const intermediate::Graph &graph, const PassColoring &pass_coloring) -> NodePermutation
+auto NodeScheduler::schedule(const intermediate::Graph &graph, const PassColoring &pass_coloring,
+  const IdIndexedMapping<intermediate::NodeIndex, intermediate::NodeIndex> &prev_positions) -> NodePermutation
 {
   static constexpr intermediate::NodeIndex NOT_VISITED = MINUS_ONE_SENTINEL_FOR<intermediate::NodeIndex>;
 
@@ -55,8 +56,17 @@ auto NodeScheduler::schedule(const intermediate::Graph &graph, const PassColorin
   eastl::underlying_type_t<intermediate::NodeIndex> timer = graph.nodes.used() - 1;
   PassColor lastColor = pass_coloring.back();
 
+  dag::Vector<uint64_t, framemem_allocator> stabilityRank(graph.nodes.totalKeys(), 0);
+  for (auto idx : graph.nodes.keys())
+  {
+    uint64_t prevPos = UINT32_MAX;
+    if (prev_positions.isMapped(idx) && prev_positions[idx] != intermediate::NODE_NOT_MAPPED)
+      prevPos = eastl::to_underlying(prev_positions[idx]);
+    stabilityRank[eastl::to_underlying(idx)] = (prevPos << 32) | (UINT32_MAX - eastl::to_underlying(idx));
+  }
 
-  auto orderComp = [&graph, &lastColor, &pass_coloring, &passInDegree](intermediate::NodeIndex l, intermediate::NodeIndex r) {
+  auto orderComp = [&graph, &lastColor, &pass_coloring, &passInDegree, &stabilityRank](intermediate::NodeIndex l,
+                     intermediate::NodeIndex r) {
     if (graph.nodes[l].multiplexingIndex != graph.nodes[r].multiplexingIndex)
       return graph.nodes[l].multiplexingIndex < graph.nodes[r].multiplexingIndex;
 
@@ -69,7 +79,7 @@ auto NodeScheduler::schedule(const intermediate::Graph &graph, const PassColorin
     if (graph.nodes[l].priority != graph.nodes[r].priority)
       return graph.nodes[l].priority < graph.nodes[r].priority;
 
-    return eastl::to_underlying(l) > eastl::to_underlying(r);
+    return stabilityRank[eastl::to_underlying(l)] < stabilityRank[eastl::to_underlying(r)];
   };
 
   // The core property of the pass coloring is that if we condense the

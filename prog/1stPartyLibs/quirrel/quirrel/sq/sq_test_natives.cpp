@@ -40,11 +40,22 @@ static SQInteger test_aliased(HSQUIRRELVM vm)
   return 1;
 }
 
-// doc_objects is keyed by object address, so entries of dead objects would be
-// invisible to a script test without this
-static SQInteger test_doc_entry_count(HSQUIRRELVM vm)
+// This count lets tests check that native closure clones share registry slots.
+static SQInteger test_doc_registry_slot_count(HSQUIRRELVM vm)
 {
-  sq_pushinteger(vm, _table(_ss(vm)->doc_objects)->CountUsed());
+  sq_pushinteger(vm, _ss(vm)->GetDocStringRegistrySlotCount());
+  return 1;
+}
+
+static SQInteger test_set_object_docstring(HSQUIRRELVM vm)
+{
+  HSQOBJECT subject;
+  const char *text = nullptr;
+  if (SQ_FAILED(sq_getstackobj(vm, 2, &subject)) || SQ_FAILED(sq_getstring(vm, 3, &text)))
+    return SQ_ERROR;
+  if (SQ_FAILED(sq_setobjectdocstring(vm, &subject, text)))
+    return SQ_ERROR;
+  sq_pushbool(vm, SQTrue);
   return 1;
 }
 
@@ -79,6 +90,12 @@ static SQInteger test_ud_with_delegate(HSQUIRRELVM vm)
   if (SQ_FAILED(sq_setdelegate(vm, -2))) // sets the table (top) as delegate of the userdata
     return SQ_ERROR;
   return 1; // userdata now on top
+}
+
+static SQInteger test_arg_count(HSQUIRRELVM vm)
+{
+  sq_pushinteger(vm, sq_gettop(vm)); // this plus the arguments the container pushed
+  return 1;
 }
 
 static SQInteger test_identity_i64(SQInteger x)
@@ -121,11 +138,14 @@ void register_test_natives(SqModules *module_mgr)
   Sqrat::Table exports(vm);
   exports.Bind("NativeVec", cls);
   exports.SquirrelFunc("raw_cmp", test_raw_cmp, 3, "...");
-  exports.SquirrelFuncDeclString(test_aliased, "aliased_first(): int", "doc of the first slot");
-  exports.SquirrelFuncDeclString(test_aliased, "aliased_second(x: int): int", "doc of the second slot");
-  exports.SquirrelFunc("doc_entry_count", test_doc_entry_count, 1, ".", "doc set without a decl string");
+  exports.SquirrelFuncDeclString(test_aliased, "aliased_first(): int", SQ_DOC("doc of the first slot"));
+  exports.SquirrelFuncDeclString(test_aliased, "aliased_second(x: int): int", SQ_DOC("doc of the second slot"));
+  exports.SquirrelFunc("doc_registry_slot_count", test_doc_registry_slot_count, 1, ".", SQ_DOC("doc set without a decl string"));
+  exports.SquirrelFuncDeclString(test_set_object_docstring, "set_object_docstring(subject, text: string): bool");
   exports.SquirrelFunc("reserve_stack", test_reserve_stack, -1, ".n");
   exports.SquirrelFunc("ud_with_delegate", test_ud_with_delegate, 1, ".");
   exports.Func("identity_i64", test_identity_i64);
+  exports.SquirrelFunc("takes_four_args", test_arg_count, 5, ".....");
+  exports.SquirrelFunc("takes_five_args", test_arg_count, 6, "......");
   module_mgr->addNativeModule("test.native", exports);
 }

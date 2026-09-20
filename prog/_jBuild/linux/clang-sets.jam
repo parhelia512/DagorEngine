@@ -20,6 +20,7 @@ local _DEF_COM_CMDLINE =
   -D_POSIX_C_SOURCE=200809L -D_GNU_SOURCE -D__STDC_CONSTANT_MACROS
   -D__vectorcall=
 ;
+if $(StrictAliasing) = no { _DEF_COM_CMDLINE += -fno-strict-aliasing ; }
 if $(MAbi) = 64 { _DEF_COM_CMDLINE += -D_TARGET_64BIT -D_TARGET_ARCH_X86_64 -D__LINUX__=64 ; }
 else { _DEF_COM_CMDLINE += -D_TARGET_ARCH_X86 -D__LINUX__=32 -D_FILE_OFFSET_BITS=64 ; }
 
@@ -92,10 +93,11 @@ if $(Sanitize) != disabled {
 }
 
 _LIB          = ar ranlib ;
-_C_COMPILER   = $(DISTCC) $(_CLANG_BIN) [ StripStrings $(_DEF_COM_CMDLINE) $(_DEF_C_CMDLINE) : $(RemoveCompilerSwitches_$(_BuildEnv)) ] ;
-_CPP_COMPILER = $(DISTCC) $(_CLANG_BIN) [ StripStrings $(_DEF_COM_CMDLINE) $(_DEF_CPP_CMDLINE) : $(RemoveCompilerSwitches_$(_BuildEnv)) ] ;
+# CI can prefix a compiler cache launcher (e.g. sccache) via `jam -sCompilerWrapper=sccache`; empty by default
+_C_COMPILER   = $(CompilerWrapper) $(DISTCC) $(_CLANG_BIN) [ StripStrings $(_DEF_COM_CMDLINE) $(_DEF_C_CMDLINE) : $(RemoveCompilerSwitches_$(_BuildEnv)) ] ;
+_CPP_COMPILER = $(CompilerWrapper) $(DISTCC) $(_CLANG_BIN) [ StripStrings $(_DEF_COM_CMDLINE) $(_DEF_CPP_CMDLINE) : $(RemoveCompilerSwitches_$(_BuildEnv)) ] ;
 _ASM_COMPILER = nasm -f elf$(MAbi) ;
-_GAS_COMPILER = $(DISTCC) $(_CLANG_BIN) -g -c -m$(MAbi) ;
+_GAS_COMPILER = $(CompilerWrapper) $(DISTCC) $(_CLANG_BIN) -g -c -m$(MAbi) ;
 
 
 _INCLUDE      = $(Root)/prog/dagorInclude $(Root)/prog/1stPartyLibs $(Root)/prog/3rdPartyLibs ;

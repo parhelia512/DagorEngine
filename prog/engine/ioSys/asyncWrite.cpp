@@ -77,6 +77,7 @@ public:
   } // aleartable sleep to be able get AIO callbacks
 #elif _TARGET_APPLE | _TARGET_PC_LINUX | _TARGET_ANDROID | _TARGET_IOS
   void poll_aio_result();
+  void writeBufSync();
 #else
   inline void poll_aio_result() {}
 #endif
@@ -180,49 +181,9 @@ void AsyncWriterCB::close()
   bufNext.clear();
 }
 
-#if _TARGET_PC_WIN | _TARGET_XBOX
-void __stdcall AsyncWriterCB::on_write_done_cb(DWORD dwErr, DWORD cbWritten, OVERLAPPED *lpOverLap)
+#if _TARGET_APPLE | _TARGET_PC_LINUX | _TARGET_ANDROID | _TARGET_IOS
+void AsyncWriterCB::writeBufSync()
 {
-  AsyncWriterCB *wcb = (AsyncWriterCB *)((char *)lpOverLap - offsetof(AsyncWriterCB, overlapped));
-  if (dwErr == ERROR_SUCCESS)
-  {
-    G_ASSERT(wcb->buf.size() == cbWritten);
-    wcb->offs += cbWritten;
-    wcb->buf.clear();
-    wcb->done = WRITE_DONE;
-  }
-  else
-  {
-    wcb->done = WRITE_FAILED;
-    clear_and_shrink(wcb->buf);
-    clear_and_shrink(wcb->bufNext);
-  }
-}
-#elif USE_POSIX_AIO
-void AsyncWriterCB::poll_aio_result()
-{
-  int bwr = 0;
-  if (done == WRITE_IN_PROGRESS)
-    switch (aio_error(&aio))
-    {
-      case EINPROGRESS: return;
-      case 0:
-        bwr = aio_return(&aio);
-        G_ASSERT(buf.size() == bwr);
-        offs += bwr;
-        G_FAST_ASSERT(offs >= 0); // Attempt to write > 2G of data?
-        buf.clear();
-        done = WRITE_DONE;
-        break;
-      default: done = WRITE_FAILED; break;
-    }
-}
-#elif _TARGET_ANDROID | _TARGET_IOS | _TARGET_PC_LINUX
-void AsyncWriterCB::poll_aio_result()
-{
-  if (done != WRITE_IN_PROGRESS)
-    return;
-
   if (buf.empty())
   {
     done = WRITE_DONE;
@@ -246,11 +207,7 @@ void AsyncWriterCB::poll_aio_result()
       left -= (int)w;
       offs += (int)w;
     }
-    else if (errno == EINTR)
-    {
-      continue;
-    }
-    else
+    else if (errno != EINTR)
     {
       done = WRITE_FAILED;
       return;
@@ -259,6 +216,56 @@ void AsyncWriterCB::poll_aio_result()
 
   buf.clear();
   done = WRITE_DONE;
+}
+#endif
+
+#if _TARGET_PC_WIN | _TARGET_XBOX
+void __stdcall AsyncWriterCB::on_write_done_cb(DWORD dwErr, DWORD cbWritten, OVERLAPPED *lpOverLap)
+{
+  AsyncWriterCB *wcb = (AsyncWriterCB *)((char *)lpOverLap - offsetof(AsyncWriterCB, overlapped));
+  if (dwErr == ERROR_SUCCESS)
+  {
+    G_ASSERT(wcb->buf.size() == cbWritten);
+    wcb->offs += cbWritten;
+    wcb->buf.clear();
+    wcb->done = WRITE_DONE;
+  }
+  else
+  {
+    wcb->done = WRITE_FAILED;
+    clear_and_shrink(wcb->buf);
+    clear_and_shrink(wcb->bufNext);
+  }
+}
+#elif USE_POSIX_AIO
+void AsyncWriterCB::poll_aio_result()
+{
+  if (done != WRITE_IN_PROGRESS)
+    return;
+
+  const int err = aio_error(&aio);
+  if (err == EINPROGRESS)
+    return;
+
+  // every completed request must be released by aio_return exactly once
+  const ssize_t bwr = aio_return(&aio);
+  if (err != 0)
+  {
+    done = WRITE_FAILED;
+    return;
+  }
+
+  G_ASSERT(buf.size() == bwr);
+  offs += (int)bwr;
+  G_FAST_ASSERT(offs >= 0); // Attempt to write > 2G of data?
+  buf.clear();
+  done = WRITE_DONE;
+}
+#elif _TARGET_ANDROID | _TARGET_IOS | _TARGET_PC_LINUX
+void AsyncWriterCB::poll_aio_result()
+{
+  if (done == WRITE_IN_PROGRESS)
+    writeBufSync();
 }
 #endif
 
@@ -310,17 +317,13 @@ void AsyncWriterCB::write(const void *ptr, int size)
   done = WRITE_IN_PROGRESS;
 
 #if USE_POSIX_AIO
-  int failcnt = 0;
-  while (aio_write(&aio) != 0)
-    if (errno == EAGAIN)
-      continue;
-    else if (failcnt < ERRORS_BEFORE_FAILING)
-      failcnt++;
+  if (aio_write(&aio) != 0)
+  {
+    if (errno == EAGAIN) // no free darwin slot or no glibc worker: the queue is busy, not the file
+      writeBufSync();
     else
-    {
       done = WRITE_FAILED;
-      break;
-    }
+  }
 #elif _TARGET_PC_WIN | _TARGET_XBOX
   BOOL result = WriteFileEx(fileHandle, buf.data(), buf.size(), &overlapped, on_write_done_cb);
   // APC can't be delivered to different thread then the one that done prior request,

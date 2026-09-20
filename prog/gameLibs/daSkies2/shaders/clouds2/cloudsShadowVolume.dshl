@@ -1,13 +1,27 @@
 include "clouds_weather.dshl"
 
 texture clouds_shadows_volume;
+sampler clouds_shadows_volume_samplerstate;
 macro INIT_CLOUDS_SHADOWS_VOLUME(code)
   (code) {
     clouds_shadows_volume@smp3d = clouds_shadows_volume;
   }
 endmacro
+
+macro INIT_CLOUDS_SHADOWS_VOLUME_TEX(code)
+  (code) {
+    clouds_shadows_volume@tex3d = clouds_shadows_volume;
+  }
+endmacro
+
 macro USE_CLOUDS_SHADOWS_VOLUME(code)
   hlsl(code) {
+    #ifndef CLOUDS_SHADOWS_VOLUME_SAMPLE
+      #define CLOUDS_SHADOWS_VOLUME_SAMPLE(tc) tex3Dlod(clouds_shadows_volume, float4(tc, 0))
+    #endif
+    #ifndef INV_WEATHER_SIZE
+      #define INV_WEATHER_SIZE (clouds_weather_inv_size__alt_scale.x)
+    #endif
     float3 getCloudsShadows3dTC(float3 worldOffsetedPos, float alt_in_clouds)//worldOffsetedPos = worldPos + cloudsOrigin
     {
       float2 tcXZ = worldOffsetedPos.xz*INV_WEATHER_SIZE + 0.5f;
@@ -20,7 +34,14 @@ macro USE_CLOUDS_SHADOWS_VOLUME(code)
       //we can probably consider storing also FIRST octave separately (i.e 11,11,10 32 bit format), and incorrectly filter only less important octaves (i.e. 2th or 2th/3rd).
       //the difference is primarily on silver-lining (it becomes a bit 'bigger')
       //additionally any other ways to enhance quality (i.e. cascades or making couple of steps first) also helps with that issue
-      return tex3Dlod(clouds_shadows_volume, float4(tc, 0)).xy;
+      return CLOUDS_SHADOWS_VOLUME_SAMPLE(tc).xy;
     }
   }
+endmacro
+
+macro USE_CLOUDS_SHADOWS_VOLUME_SMP(code, smpl)
+  hlsl(code) {
+    #define CLOUDS_SHADOWS_VOLUME_SAMPLE(tc) clouds_shadows_volume.SampleLevel(smpl, tc, 0)
+  }
+  USE_CLOUDS_SHADOWS_VOLUME(code)
 endmacro

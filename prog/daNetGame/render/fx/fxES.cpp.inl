@@ -984,7 +984,7 @@ static struct FXManagersUpdateJob final : public cpujobs::IJob
     notify_fx_managers_update_started();
     return this;
   }
-  const char *getJobName(bool &) const override { return "FXManagersUpdateJob"; }
+  const char *getJobName(bool &) const override { return DAPROFILER_STRING("FXManagersUpdateJob"); }
   void doJob() override
   {
     update_fx_managers(dt);

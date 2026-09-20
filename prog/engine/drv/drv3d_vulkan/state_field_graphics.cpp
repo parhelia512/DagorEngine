@@ -1007,7 +1007,7 @@ void StateFieldGraphicsVertexBufferBind::dumpLog(uint32_t index, const FrontGrap
 template <>
 void StateFieldGraphicsVertexBufferBind::transit(uint32_t index, FrontGraphicsStateStorage &, DeviceContext &target) const
 {
-  target.dispatchCmdNoLock<CmdSetVertexBuffer>({index, bRef, offset});
+  target.dispatchCmdNoLock<CmdSetVertexBuffer>({.buffer = bRef, .stream = index, .offset = offset});
 }
 
 template <>
@@ -1030,36 +1030,31 @@ void StateFieldGraphicsVertexBufferBind::set(const StateFieldGraphicsVertexBuffe
 template <>
 void StateFieldGraphicsVertexBuffersBindArray::applyTo(BackGraphicsStateStorage &, BEContext &target) const
 {
-  if (!countMask)
-    return;
-
-  uint32_t cnt = 0;
-  for (uint32_t i = countMask; i != 0; i >>= 1)
+  for (uint32_t first = 0; first < MAX_VERTEX_INPUT_STREAMS; ++first)
   {
-    // by default no allowance to have empty slots in bind-vector (bubble)
-    if ((i & 1) == 0)
-      D3D_ERROR("vulkan: vb binding filtered due empty slot %u (mask %u)", cnt + 1, countMask);
-    else
-      ++cnt;
-  }
+    if (!(countMask & (1u << first)))
+      continue;
 
-  for (uint32_t i = 0; i < cnt; ++i)
-  {
-    //    G_ASSERTF(offsets[i] >= resPtrs[i]->bufOffsetLoc(0),
-    //      "vulkan: old discard index is referenced/invalid offset (zero offset %u specified %u) for vb[%u] %p:%s",
-    //      resPtrs[i]->bufOffsetLoc(0), offsets[i], i, resPtrs[i], resPtrs[i]->getDebugName());
-    target.verifyResident(resPtrs[i]);
-    Backend::sync.addBufferAccess({VK_PIPELINE_STAGE_VERTEX_INPUT_BIT, VK_ACCESS_VERTEX_ATTRIBUTE_READ_BIT}, resPtrs[i],
-      {offsets[i], resPtrs[i]->getBlockSize() - (offsets[i] % resPtrs[i]->getBlockSize())});
-  }
+    uint32_t last = first;
+    while (last + 1 < MAX_VERTEX_INPUT_STREAMS && (countMask & (1u << (last + 1))))
+      ++last;
 
-  VULKAN_LOG_CALL(Backend::cb.wCmdBindVertexBuffers(0, cnt, ary(buffers), offsets));
+    for (uint32_t i = first; i <= last; ++i)
+    {
+      target.verifyResident(resPtrs[i]);
+      Backend::sync.addBufferAccess({VK_PIPELINE_STAGE_VERTEX_INPUT_BIT, VK_ACCESS_VERTEX_ATTRIBUTE_READ_BIT}, resPtrs[i],
+        {offsets[i], resPtrs[i]->getBlockSize() - (offsets[i] % resPtrs[i]->getBlockSize())});
+    }
+
+    VULKAN_LOG_CALL(Backend::cb.wCmdBindVertexBuffers(first, last - first + 1, ary(buffers + first), offsets + first));
+    first = last;
+  }
 }
 
 template <>
 void StateFieldGraphicsVertexBuffersBindArray::dumpLog(const BackGraphicsStateStorage &) const
 {
-  debug("vertexBuffersArray: mask %u");
+  debug("vertexBuffersArray: mask %u", countMask);
   for (uint32_t i = 0; i < MAX_VERTEX_INPUT_STREAMS; ++i)
   {
     if (countMask & (1 << i))

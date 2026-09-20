@@ -61,17 +61,17 @@ void ImpostorRenderer::sort_packed_drawcalls()
 {
   TIME_PROFILE(sort_packed_drawcalls);
   stlsort::sort(multidrawList.begin(), multidrawList.end(), [&](const Record &a, const Record &b) {
-    if (get_material_id(a.cstate) != get_material_id(b.cstate))
-      return get_material_id(a.cstate) < get_material_id(b.cstate);
-    if (a.rstate != b.rstate)
-      return a.rstate < b.rstate;
+    if (get_material_id(a.dvState.const_state) != get_material_id(b.dvState.const_state))
+      return get_material_id(a.dvState.const_state) < get_material_id(b.dvState.const_state);
+    if (a.dvState.render_state != b.dvState.render_state)
+      return a.dvState.render_state < b.dvState.render_state;
     if (a.vData != b.vData)
       return (uintptr_t)a.vData < (uintptr_t)b.vData;
-    if (a.prog != b.prog)
-      return a.prog < b.prog;
+    if (a.dvState.program != b.dvState.program)
+      return a.dvState.program < b.dvState.program;
 
-    if (a.state != b.state)
-      return a.state < b.state;
+    if (a.dvState.state_index != b.dvState.state_index)
+      return a.dvState.state_index < b.dvState.state_index;
     return false;
   });
 }
@@ -82,11 +82,12 @@ void ImpostorRenderer::coalesce_packed_drawcalls()
   TIME_D3D_PROFILE(coalesce_packed_drawcalls);
 
   const auto mergeComparator = [](const Record &a, const Record &b) -> bool {
-    return a.vData == b.vData && a.rstate == b.rstate && get_material_id(a.cstate) == get_material_id(b.cstate) && a.prog == b.prog;
+    return a.vData == b.vData && a.dvState.render_state == b.dvState.render_state &&
+           get_material_id(a.dvState.const_state) == get_material_id(b.dvState.const_state) && a.dvState.program == b.dvState.program;
   };
 
   drawcallRanges.push_back(PackedDrawCallsRange{0, 1});
-  bindlessStatesToUpdateTexLevels.emplace(multidrawList[0].cstate, TexStreamingContext::MAX_TEX_LEVEL);
+  bindlessStatesToUpdateTexLevels.emplace(multidrawList[0].dvState.const_state, TexStreamingContext::MAX_TEX_LEVEL);
 
   for (uint32_t i = 1, ie = multidrawList.size(); i < ie; ++i)
   {
@@ -96,15 +97,17 @@ void ImpostorRenderer::coalesce_packed_drawcalls()
       drawcallRanges.back().count++;
     else
       drawcallRanges.push_back(PackedDrawCallsRange{drawcallRanges.back().count + drawcallRanges.back().start, 1});
-    auto iter = bindlessStatesToUpdateTexLevels.find(currentRelem.cstate);
+    auto iter = bindlessStatesToUpdateTexLevels.find(currentRelem.dvState.const_state);
     if (iter == bindlessStatesToUpdateTexLevels.end())
-      bindlessStatesToUpdateTexLevels.emplace(currentRelem.cstate, TexStreamingContext::MAX_TEX_LEVEL);
+      bindlessStatesToUpdateTexLevels.emplace(currentRelem.dvState.const_state, TexStreamingContext::MAX_TEX_LEVEL);
   }
 }
 
-void ImpostorRenderer::render(dag::Span<const ShaderMesh::RElem> elems)
+uint32_t ImpostorRenderer::render(dag::Span<const ShaderMesh::RElem> elems, uint32_t instance_count)
 {
   TIME_PROFILE(render);
+  G_ASSERT_RETURN(instance_count > 0, 0); // zero would draw once non packed and nothing packed
+  uint32_t drawn = 0;
 
   multidrawList.clear();
   drawcallRanges.clear();
@@ -119,21 +122,14 @@ void ImpostorRenderer::render(dag::Span<const ShaderMesh::RElem> elems)
     if (!elem.e || elem.vertexData->isEmpty())
       continue;
 
-    uint32_t prog;
-    ShaderStateBlockId state;
-    shaders::TexStateIdx tstate;
-    shaders::ConstStateIdx cstate;
-    shaders::RenderStateId rstate;
     ShaderElement *s = static_cast<ShaderElement *>(elem.e);
-    int curVar;
-    curVar = get_dynamic_variant_states(s->native(), prog, state, rstate, cstate, tstate);
-    if (curVar < 0)
+    shaders::CombinedDynVariantState dynVarState = get_dynamic_variant_states(s->native());
+    if (!is_valid(dynVarState))
       continue;
 
-    if (is_packed_material(cstate))
+    if (is_packed_material(dynVarState.const_state))
     {
-      multidrawList.push_back(
-        Record{s, curVar, prog, state, rstate, tstate, cstate, elem.vertexData, elem.si, elem.numf, elem.baseVertex});
+      multidrawList.push_back(Record{s, dynVarState, elem.vertexData, elem.si, elem.numf, elem.baseVertex});
       continue;
     }
 
@@ -147,7 +143,11 @@ void ImpostorRenderer::render(dag::Span<const ShaderMesh::RElem> elems)
     if (!elem.e->setStates(0, true))
       continue;
 
-    d3d_err(elem.drawIndTriList());
+    const bool ok = instance_count > 1 ? d3d::drawind_instanced(PRIM_TRILIST, elem.si, elem.numf, elem.baseVertex, instance_count)
+                                       : elem.drawIndTriList();
+    d3d_err(ok);
+    if (ok) // a draw the driver rejected must not count as submitted
+      ++drawn;
   }
 
   if (!multidrawList.empty())
@@ -158,36 +158,44 @@ void ImpostorRenderer::render(dag::Span<const ShaderMesh::RElem> elems)
     for (auto stateIdTexLevel : bindlessStatesToUpdateTexLevels)
       update_bindless_state(stateIdTexLevel.first, stateIdTexLevel.second);
 
+    uint32_t packedDrawn = 0;
     const auto multiDrawRenderer = multidrawContext.fillBuffers(multidrawList.size(),
-      [this](uint32_t drawcallId, uint32_t &indexCountPerInstance, uint32_t &instanceCount, uint32_t &startIndexLocation,
-        int32_t &baseVertexLocation, uint32_t &perDrawData) {
+      [this, instance_count, &packedDrawn](uint32_t drawcallId, uint32_t &indexCountPerInstance, uint32_t &instanceCount,
+        uint32_t &startIndexLocation, int32_t &baseVertexLocation, uint32_t &perDrawData) {
         const auto &currentRelem = multidrawList[drawcallId];
         indexCountPerInstance = currentRelem.numf * 3;
-        instanceCount = 1;
+        instanceCount = instance_count;
         startIndexLocation = currentRelem.si;
         baseVertexLocation = currentRelem.bv;
 
-        const uint32_t materialOffset = get_material_offset(currentRelem.cstate);
+        const uint32_t materialOffset = get_material_offset(currentRelem.dvState.const_state);
         if (DAGOR_UNLIKELY(materialOffset >= MAX_MATERIAL_OFFSET))
         {
-          logerr("Too big material offset %d.", materialOffset);
-          instanceCount = 0;
+          LOGERR_ONCE("Too big material offset %d.", materialOffset);
+          instanceCount = 0; // this drawcall submits nothing: it must not count as drawn
         }
+        else
+          ++packedDrawn;
         perDrawData = materialOffset;
       });
 
 
-    for (const auto &dcParams : drawcallRanges)
+    if (multiDrawRenderer.valid()) // a failed fill submits nothing
     {
-      auto &rli = multidrawList[dcParams.start];
-      set_states_for_variant(rli.curShader->native(), rli.curVar, rli.prog, rli.state);
+      drawn += packedDrawn;
+      for (const auto &dcParams : drawcallRanges)
+      {
+        auto &rli = multidrawList[dcParams.start];
+        set_states_for_variant(rli.curShader->native(), rli.dvState);
 
-      if (vdata != rli.vData)
-        (vdata = rli.vData)->setToDriver();
+        if (vdata != rli.vData)
+          (vdata = rli.vData)->setToDriver();
 
-      multiDrawRenderer.render(PRIM_TRILIST, dcParams.start, dcParams.count);
+        multiDrawRenderer.render(PRIM_TRILIST, dcParams.start, dcParams.count);
+      }
     }
   }
+  return drawn;
 }
 } // namespace rendinst::render
 
@@ -244,13 +252,6 @@ void initImpostorsGlobals()
   impostorShadowZVarId = ::get_shader_variable_id("impostor_shadow_z", true);
   impostorShadowVarId = ::get_shader_variable_id("impostor_shadow", true);
   worldViewPosVarId = ::get_shader_glob_var_id("world_view_pos");
-  {
-    d3d::SamplerInfo smpInfo;
-    smpInfo.address_mode_u = smpInfo.address_mode_v = smpInfo.address_mode_w = d3d::AddressMode::Clamp;
-    smpInfo.filter_mode = d3d::FilterMode::Compare;
-    smpInfo.mip_map_mode = d3d::MipMapMode::Point;
-    ShaderGlobal::set_sampler(get_shader_variable_id("impostor_shadow_samplerstate", true), d3d::request_sampler(smpInfo));
-  }
 
   const DataBlock *graphics = ::dgs_get_settings()->getBlockByNameEx("graphics");
   const bool compatibilityMode = ::dgs_get_settings()->getBlockByNameEx("video")->getBool("compatibilityMode", false);
@@ -804,7 +805,7 @@ void renderImpostorMips(rendinst::render::RtPoolData &pool, int currentRenderMip
     ShaderGlobal::set_float4(rendinst::render::texelSizeVarId, 1.f, 1.f, 1.f / ti.w, 1.f / ti.h);
     ShaderGlobal::set_int(rendinst::render::texIndVid, -1);
 
-    d3d::clearview(CLEAR_DISCARD_TARGET, 0, 0.f, 0);
+    d3d::clearview(DISCARD_TARGET, 0, 0.f, 0);
     pFx->render();
   }
 

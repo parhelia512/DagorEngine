@@ -130,6 +130,7 @@ public:
   }
 
   void setTreeDragHandler(ITreeDragHandler *handler) override { tree.setDragHandler(handler); }
+  void setTreeDragDropFlags(ImGuiDragDropFlags flags) override { tree.setDragDropFlags(flags); }
   void setTreeDropHandler(ITreeDropHandler *handler) override { tree.setDropHandler(handler); }
   void setTreeFilter(ITreeFilter *filter) override { tree.setTreeFilter(filter); }
   void setTreeMessage(const char *value) override { tree.setMessage(value); }

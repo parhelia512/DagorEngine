@@ -51,14 +51,20 @@ static void getRendInstQuantizedTm(IObjEntity &entity, TMatrix &tm)
 
 bool CompositeEditorViewport::getSelectionBox(IObjEntity *entity, BBox3 &box) const
 {
-  IObjEntity *selectedSubEntity = getSelectedSubEntity(entity);
-  if (!selectedSubEntity)
+  int parentIdx;
+  subEntitySelectionLookup.clear();
+  getSelectedSubEntities(entity, subEntitySelectionLookup, parentIdx);
+  if (subEntitySelectionLookup.empty())
     return false;
 
+  box.setempty();
   TMatrix tm;
-  getRendInstQuantizedTm(*selectedSubEntity, tm);
-  box = tm * selectedSubEntity->getBbox();
-  return true;
+  for (IObjEntity *subEntity : subEntitySelectionLookup)
+  {
+    getRendInstQuantizedTm(*subEntity, tm);
+    box += tm * subEntity->getBbox();
+  }
+  return !box.isempty();
 }
 
 void CompositeEditorViewport::registerEditorCommands(IEditorCommandSystem &command_system)
@@ -156,9 +162,9 @@ void CompositeEditorViewport::handleViewportAcceleratorCommand(unsigned id, IGen
   {
     get_app().getCompositeEditor().pasteParamsToSelectedNode();
   }
-  else if (id == CM_COMPOSITE_EDITOR_DUPLICATE_ASSET)
+  else if (id == CM_COMPOSITE_EDITOR_DUPLICATE_ASSETS)
   {
-    get_app().getCompositeEditor().duplicateSelectedNode();
+    get_app().getCompositeEditor().duplicateSelectedNodes();
   }
   else if (id == CM_COMPOSITE_EDITOR_MAKE_PARENT)
   {
@@ -180,9 +186,9 @@ int CompositeEditorViewport::onMenuItemClick(unsigned id)
   {
     get_app().getCompositeEditor().pasteParamsToSelectedNode();
   }
-  else if (id == CM_COMPOSITE_EDITOR_DUPLICATE_ASSET)
+  else if (id == CM_COMPOSITE_EDITOR_DUPLICATE_ASSETS)
   {
-    get_app().getCompositeEditor().duplicateSelectedNode();
+    get_app().getCompositeEditor().duplicateSelectedNodes();
   }
   else if (id == CM_COMPOSITE_EDITOR_EDIT_SUB_COMPOSITE)
   {
@@ -283,8 +289,13 @@ bool CompositeEditorViewport::handleMouseRBRelease(IGenViewportWnd *wnd, int x, 
           EditorCommandIds::ENTITY_COPY_ASSET, "Copy asset");
         commandSystem->addMenuItem(*popupMenu, PropPanel::ROOT_MENU_ITEM, CM_COMPOSITE_EDITOR_PASTE_ASSET,
           EditorCommandIds::ENTITY_PASTE_ASSET, "Paste asset");
-        commandSystem->addMenuItem(*popupMenu, PropPanel::ROOT_MENU_ITEM, CM_COMPOSITE_EDITOR_DUPLICATE_ASSET,
+        commandSystem->addMenuItem(*popupMenu, PropPanel::ROOT_MENU_ITEM, CM_COMPOSITE_EDITOR_DUPLICATE_ASSETS,
           EditorCommandIds::ENTITY_DUPLICATE_ASSET, "Duplicate asset");
+
+        popupMenu->addSeparator(PropPanel::ROOT_MENU_ITEM);
+        commandSystem->addMenuItem(*popupMenu, PropPanel::ROOT_MENU_ITEM, CM_COMPOSITE_EDITOR_CLEAR_PARENT,
+          EditorCommandIds::ENTITY_CLEAR_PARENT, "Clear parent");
+        popupMenu->setEnabledById(CM_COMPOSITE_EDITOR_CLEAR_PARENT, compositeEditor.hasSelectedParentRelation());
 
         popupMenu->addSeparator(PropPanel::ROOT_MENU_ITEM);
         popupMenu->addItem(PropPanel::ROOT_MENU_ITEM, CM_COMPOSITE_EDITOR_EDIT_SUB_COMPOSITE, "Edit sub-composite in place");
@@ -293,6 +304,11 @@ bool CompositeEditorViewport::handleMouseRBRelease(IGenViewportWnd *wnd, int x, 
       }
       else
       {
+        commandSystem->addMenuItem(*popupMenu, PropPanel::ROOT_MENU_ITEM, CM_COMPOSITE_EDITOR_DUPLICATE_ASSETS,
+          EditorCommandIds::ENTITY_DUPLICATE_ASSET, "Duplicate assets");
+
+        popupMenu->addSeparator(PropPanel::ROOT_MENU_ITEM);
+
         commandSystem->addMenuItem(*popupMenu, PropPanel::ROOT_MENU_ITEM, CM_COMPOSITE_EDITOR_MAKE_PARENT,
           EditorCommandIds::ENTITY_MAKE_PARENT, "Make parent");
         popupMenu->setEnabledById(CM_COMPOSITE_EDITOR_MAKE_PARENT, compositeEditor.canParentSelectedTreeDataNodes());

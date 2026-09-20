@@ -54,10 +54,13 @@ bool trace_entities_in_grid_by_capsule(uint32_t grid_hash,
 bool trace_entities_in_grid_by_capsule(
   uint32_t grid_hash, const Point3 &from, const Point3 &dir, float &t, float radius, ecs::EntityId ignore_eid);
 bool rayhit_entities_in_grid(uint32_t grid_hash, const Point3 &from, const Point3 &dir, float t, ecs::EntityId ignore_eid);
+// convex and local_bbox are both in tm's local space. local_bbox drives the search region: one that
+// contains the convex searches the whole volume, a smaller one caps the range. The grid query only
+// narrows candidates, collres testInclusion is exact.
 bool query_entities_intersections_in_grid(uint32_t grid_hash,
   dag::ConstSpan<plane3f> convex,
   const TMatrix &tm,
-  float rad,
+  const BBox3 &local_bbox,
   bool rayhit,
   IntersectedEntities &entities,
   SortIntersections do_sort);

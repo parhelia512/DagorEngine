@@ -69,7 +69,11 @@ shader rt_reflection
   INIT_AND_USE_ON_TOP_CAMERA_IN_CAMERA(cs)
 
   if (compatibility_mode == compatibility_mode_on || !use_hw_raytracing) { dont_render; }
-  supports global_const_block;
+
+  (cs) {
+    from_sun_direction@f3 = from_sun_direction;
+    sun_color_0@f3 = sun_color_0;
+  }
 
   USE_EMISSION_DECODE_COLOR_MAP_STUB(cs)
 
@@ -127,15 +131,15 @@ shader rt_reflection
   USE_LOAD_BVH_FLAGS_BASE(cs)
   USE_LOAD_DEPTH_GBUFFER_BASE(cs)
   USE_BVH_FOR_REFLECTION(cs)
-  USE_BVH_FX_RENDER(cs)
+  USE_BVH_FX_RENDER(cs, false)
 
   USE_ADAPTIVE_RAY_OFFSET(cs)
 
-  INIT_RT_LIGHTING(cs, false, true, true, rtr_shadow == on, rtr_use_csm, true)
+  INIT_RT_LIGHTING(cs, false, true, true, rtr_shadow == on, true)
   USE_RT_LIGHTING(cs, 0, false)
   INIT_BVH_ATMOSPHERE(cs)
   USE_BVH_ATMOPHERE(cs)
-  RT_PREV_FRAME_SAMPLE(cs, RTRScreenSample)
+  RT_PREV_FRAME_SAMPLE(cs, RTRScreenSample, rtr_use_prev_frame_sample)
 
   if (rtr_res_mul == full_res)
   {
@@ -355,6 +359,10 @@ shader rt_reflection
           isHit = trace_ray(bvhMain, relPos, sampleDir, 0, maxReflectionDistance, w, bvhGroupRender, hitInfo);
         }
 
+        // main TLAS hits only: the terrain fallback sees no occluders and terrain is never culled
+        if (isHit)
+          bvh_voxel_activity_mark(hitInfo.position);
+
         [branch]
         if (!isHit && bvhTerrainValid)
           isHit = trace_ray<true>(bvhTerrain, relPos, sampleDir, maxReflectionDistance, 100000, w, bvhGroupRender, hitInfo);
@@ -364,7 +372,7 @@ shader rt_reflection
       float reflectionDistance;
       if (isHit)
       {
-        if (!rtr_use_prev_frame_sample || !hitInfo.isScreenHit)
+        if (!hitInfo.isScreenHit)
         {
           SurfaceParams hitSurface = calc_surface_params(hitInfo, -sampleDir, w);
           reflectionColor = light_hit_surface(hitSurface, -sampleDir, w + hitInfo.t, hit_dist_params.x);
@@ -470,9 +478,10 @@ shader rt_glass_reflection
   INIT_AND_USE_ON_TOP_CAMERA_IN_CAMERA(cs)
 
   if (compatibility_mode == compatibility_mode_on || !use_hw_raytracing) { dont_render; }
-  supports global_const_block;
 
   (cs) {
+    from_sun_direction@f3 = from_sun_direction;
+    sun_color_0@f3 = sun_color_0;
     inv_proj_tm@f44 = inv_proj_tm;
     resolution@u2 = rtr_resolutionI.xy;
     inv_resolution@f2 = (1.0 / get_dimensions(translucent_gbuffer, 0).xy);
@@ -494,7 +503,7 @@ shader rt_glass_reflection
 
   INIT_BVH(cs, 0, true)
   USE_BVH_FOR_REFLECTION(cs)
-  USE_BVH_FX_RENDER(cs)
+  USE_BVH_FX_RENDER(cs, false)
 
   USE_EMISSION_DECODE_COLOR_MAP_STUB(cs)
   INIT_PACK_UNPACK_DYNSTCODE(cs)
@@ -502,7 +511,7 @@ shader rt_glass_reflection
 
   USE_ADAPTIVE_RAY_OFFSET(cs)
 
-  INIT_RT_LIGHTING(cs, true, true, true, glass_rtr_shadow == on, rtr_use_csm, false)
+  INIT_RT_LIGHTING(cs, true, true, true, glass_rtr_shadow == on, false)
   USE_RT_LIGHTING(cs, 1, false)
   INIT_BVH_ATMOSPHERE(cs)
   USE_BVH_ATMOPHERE(cs)
@@ -550,6 +559,10 @@ shader rt_glass_reflection
 
       HitInfo hitInfo;
       bool isHit = trace_ray(bvhMain, relPos, sampleDir, 0, maxReflectionDistance, w, bvhGroupRender, hitInfo);
+
+      // main TLAS hits only: the terrain fallback sees no occluders and terrain is never culled
+      if (isHit)
+        bvh_voxel_activity_mark(hitInfo.position);
 
       [branch]
       if (!isHit && bvhTerrainValid)

@@ -25,6 +25,8 @@ public:
 
   DagorAsset *getSelectedAsset() { return favoritesTree.getSelectedAsset(); }
 
+  DagorAssetFolder *getSelectedAssetFolder() { return favoritesTree.getSelectedAssetFolder(); }
+
   void setSelectedAsset(const DagorAsset *asset) { favoritesTree.setSelectedAsset(asset); }
 
   void getFilteredAssetsFromTheCurrentFolder(dag::Vector<DagorAsset *> &assets)

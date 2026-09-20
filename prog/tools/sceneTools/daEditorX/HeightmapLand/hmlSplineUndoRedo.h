@@ -11,28 +11,50 @@ public:
   SplineObject *s;
   Ptr<SplinePointObject> p;
 
-  int idx, idx2, idx21;
+  // segment ends are held by object:
+  // indices into points[] go stale when fillet reconciliation reshuffles the array between record and restore
+  Ptr<SplinePointObject> p1, p2;
   SplinePointObject::Props startPr1, startPr2;
   SplinePointObject::Props endPr1, endPr2;
 
-  UndoRefineSpline(SplineObject *s_, SplinePointObject *p_, int idx_, SplinePointObject::Props &startPr1_,
-    SplinePointObject::Props &startPr2_, SplinePointObject::Props &endPr1_, SplinePointObject::Props &endPr2_) :
-    s(s_), idx(idx_), p(p_), startPr1(startPr1_), startPr2(startPr2_), endPr1(endPr1_), endPr2(endPr2_)
+  UndoRefineSpline(SplineObject *s_, SplinePointObject *p_, SplinePointObject *p1_, SplinePointObject *p2_,
+    SplinePointObject::Props &startPr1_, SplinePointObject::Props &startPr2_, SplinePointObject::Props &endPr1_,
+    SplinePointObject::Props &endPr2_) :
+    s(s_), p(p_), p1(p1_), p2(p2_), startPr1(startPr1_), startPr2(startPr2_), endPr1(endPr1_), endPr2(endPr2_)
+  {}
+
+  ~UndoRefineSpline() override
   {
-    idx2 = (idx + 2) % s->points.size();
+    p = nullptr;
+    p1 = nullptr;
+    p2 = nullptr;
   }
 
-  ~UndoRefineSpline() override { p = NULL; }
+  // discarded generated fillet points can outlive their spline membership here
+  bool isMember(SplinePointObject *pt) const
+  {
+    return pt && pt->arrId >= 0 && pt->arrId < s->points.size() && s->points[pt->arrId] == pt;
+  }
+
+  // sync matrix without setPos: its curve rebuild would reconcile fillets on half-restored state;
+  // the caller rebuilds once after both points are set
+  void applyProps(SplinePointObject *pt, const SplinePointObject::Props &pr)
+  {
+    if (!isMember(pt))
+      return;
+    pt->setProps(pr);
+    TMatrix tm = pt->getWtm();
+    tm.setcol(3, pt->getPt());
+    pt->setWtm(tm);
+  }
 
   void restore(bool save_redo) override
   {
     for (int i = 0; i < s->points.size(); i++)
       s->points[i]->arrId = i;
 
-    s->points[idx]->setProps(startPr1);
-    s->points[idx]->setPos(s->points[idx]->getPt());
-    s->points[idx2]->setProps(startPr2);
-    s->points[idx2]->setPos(s->points[idx2]->getPt());
+    applyProps(p1, startPr1);
+    applyProps(p2, startPr2);
 
     s->prepareSplineClassInPoints();
     s->pointChanged(-1);
@@ -41,10 +63,11 @@ public:
 
   void redo() override
   {
-    s->points[idx]->setProps(endPr1);
-    s->points[idx]->setPos(s->points[idx]->getPt());
-    s->points[idx2]->setProps(endPr2);
-    s->points[idx2]->setPos(s->points[idx2]->getPt());
+    for (int i = 0; i < s->points.size(); i++)
+      s->points[i]->arrId = i;
+
+    applyProps(p1, endPr1);
+    applyProps(p2, endPr2);
 
     s->prepareSplineClassInPoints();
     s->pointChanged(-1);
@@ -80,6 +103,8 @@ public:
 
   void restore(bool save_redo) override
   {
+    SplineObject::beforeStructuralEdit(o1, o2);
+
     for (int i = 1; i < o2->points.size(); i++)
     {
       o2->points[i]->spline = o1;
@@ -101,6 +126,8 @@ public:
 
   void redo() override
   {
+    SplineObject::beforeStructuralEdit(o1, o2);
+
     const char *assetBlkName = o1->getBlkGenName();
     for (int i = 1; i <= idx; i++)
       if (o1->points[i]->hasSplineClass())
@@ -222,6 +249,8 @@ public:
 
   void restore(bool save_redo) override
   {
+    SplineObject::beforeStructuralEdit(o1, o2);
+
     for (int i = 1; i < (int)o2->points.size() - 1; i++)
     {
       o2->points[i]->spline = o1;
@@ -242,6 +271,8 @@ public:
 
   void redo() override
   {
+    SplineObject::beforeStructuralEdit(o1, o2);
+
     for (int i = idx1 + 1; i < idx2; i++)
     {
       o1->points[i]->arrId = insert_items(o2->points, i - idx1, 1, &o1->points[i]);
@@ -311,6 +342,9 @@ public:
 
   void restore(bool save_redo) override
   {
+    // after the strip the merged user points are the last cnt of o1 again
+    SplineObject::beforeStructuralEdit(o1);
+
     int offs = o1->points.size() - cnt;
     for (int i = 0; i < cnt; i++)
     {
@@ -335,6 +369,8 @@ public:
 
   void redo() override
   {
+    SplineObject::beforeStructuralEdit(o1, o2);
+
     append_items(o1->points, o2->points.size(), o2->points.data());
 
     for (int i = 0; i < o1->points.size(); i++)

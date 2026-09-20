@@ -42,7 +42,7 @@ enum
   // 4x4 = 10
   TEXCF_VARIABLE_RATE = 0x00000004U,
 
-  // Uses of the texture methods updateSubRegion and update require this, TEXCF_RTARGET or
+  // Uses of d3d::update_sub_region and the texture method update require this, TEXCF_RTARGET or
   // TEXCF_UNORDERED usage flag to be set.
   TEXCF_UPDATE_DESTINATION = 0x00004000U,
 

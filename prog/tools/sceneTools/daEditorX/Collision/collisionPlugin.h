@@ -11,6 +11,7 @@
 #include <libTools/staticGeom/staticGeometryContainer.h>
 
 #include <scene/dag_frtdump.h>
+#include <gameRes/dag_collisionResource.h>
 #include <util/dag_string.h>
 #include <util/dag_oaHashNameMap.h>
 #include "collision_builder.h"
@@ -37,12 +38,6 @@ class CollisionPlugin : public IGenEditorPlugin,
                         public IWndManagerWindowHandler
 {
 public:
-  enum
-  {
-    PHYSENG_DagorFastRT,
-    PHYSENG_Bullet,
-  };
-
   CollisionPlugin();
 
   static const char *getPhysMatPath(ILogWriter *rep = NULL);
@@ -130,17 +125,15 @@ public:
 
   bool recreatePanel();
   bool initCollision(bool for_game) override;
-  FastRtDump *getFrt(bool game_frt);
-  void getFastRtDump(FastRtDump **p) override { *p = getFrt(false); }
+  FastRtDump *getFrt();
+  void getFastRtDump(FastRtDump **p) override { *p = getFrt(); }
 
   // IDagorEdCustomCollider
   bool traceRay(const Point3 &p, const Point3 &dir, real &maxt, Point3 *norm) override;
-  bool shadowRayHitTest(const Point3 &p, const Point3 &dir, real maxt) override { return false; }
   const char *getColliderName() const override { return "Collision plugin"; }
   bool isColliderVisible() const override { return getVisible(); }
 
 public:
-  bool showGcBox, showGcSph, showGcCap, showGcMesh;
   bool showVcm, showDags, showVcmWire;
   bool showGameFrt;
 
@@ -152,10 +145,9 @@ private:
   bool mPanelVisible;
   collisionpreview::Collision collision;
   bool collisionReady;
-  FastRtDump *gameFrt;
+  Ptr<CollisionResource> gameStaticColl;
 
   CollisionBuildSettings rtStg;
-  int curPhysEngType;
 
   int toolBarId;
   CollisionPropPanelClient *panelClient;
@@ -175,12 +167,15 @@ private:
   bool compileGameClip(PropPanel::ContainerPropertyControl *panel, unsigned target_code);
   void prepareDAGcollision();
 
-  bool compileCollision(bool for_game, Tab<int> &plugs, int phys_eng_type, unsigned target_code);
+  bool compileCollision(bool for_game, Tab<int> &plugs, unsigned target_code);
 
   inline void getDAGPath(String &path, const String &dag);
   inline void getEditorClipPath(String &path);
 
+  // The cooked clip files: one base name per target, one suffix each.
+  void getClipPath(String &path, unsigned target_code, const char *suffix) const;
   void getGameClipPath(String &path, unsigned target_code) const;
+  void getWaterClipPath(String &path, unsigned target_code) const;
   void clearDags();
 
   void getCollisionFiles(Tab<String> &files, unsigned target_code) const;

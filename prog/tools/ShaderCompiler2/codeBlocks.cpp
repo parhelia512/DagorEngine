@@ -728,7 +728,7 @@ bool CodeSourceBlocks::ppDirective(char *s, int len, char *dtext, int fnameId, i
 
     String msg(0, "Assert failed in %s:%i\n\"%.*s\"%s%.*s\n", fileNames.getName(fnameId), line, end_expr - begin_expr, begin_expr,
       have_message ? "\n\n" : "", have_message ? end_quote - begin_quote - 1 : 0, begin_quote + 1);
-    int msg_id = ctx.evalCb.add_message(msg, false);
+    int msg_id = ctx.evalCb.add_message(msg);
     if (msg_id < 0)
       return true;
 
@@ -761,7 +761,7 @@ bool CodeSourceBlocks::ppDoInclude(const char *incl_fn, Tab<char> &out_text, con
   String s;
   if (ctx.evalCb.is_debug_mode_enabled())
   {
-    s.printf(0, "\n#undef _FILE_\n#define _FILE_ %d", ctx.evalCb.add_message(fn, true));
+    s.printf(0, "\n#undef _FILE_\n#define _FILE_ %d", ctx.evalCb.add_message(fn));
     append_items(out_text, s.size() - 1, s.data());
   }
   s.printf(0, "\n#line 1 \"%s\"\n", fn);
@@ -796,7 +796,7 @@ bool CodeSourceBlocks::ppDoInclude(const char *incl_fn, Tab<char> &out_text, con
 
   if (ctx.evalCb.is_debug_mode_enabled())
   {
-    s.printf(0, "\n#undef _FILE_\n#define _FILE_ %d", ctx.evalCb.add_message(src_fn, true));
+    s.printf(0, "\n#undef _FILE_\n#define _FILE_ %d", ctx.evalCb.add_message(src_fn));
     append_items(out_text, s.size() - 1, s.data());
   }
   s.printf(0, "\n#line %d \"%s\"\n", src_ln, src_fn);

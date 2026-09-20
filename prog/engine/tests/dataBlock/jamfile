@@ -26,6 +26,7 @@ Sources =
   test_robust.cpp
   test_edge_cases.cpp
   test_malformed_binary.cpp
+  test_no_includes.cpp
 ;
 
 UseProgLibs +=

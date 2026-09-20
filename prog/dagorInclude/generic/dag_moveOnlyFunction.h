@@ -8,6 +8,7 @@
 #include <EASTL/internal/function_detail.h>
 #include <EASTL/unique_ptr.h>
 #include <debug/dag_assert.h>
+#include <generic/dag_nullableCallable.h>
 
 #ifndef GCC_USED
 #if defined(__GNUC__) && !defined(__clang__)
@@ -62,9 +63,18 @@ struct MoveOnlyFunctionBase
   MoveOnlyFunctionBase() : call{nullptr} {}; //-V730
 
   template <typename F>
-  MoveOnlyFunctionBase(F &&func_object) : call{nullptr}
+  MoveOnlyFunctionBase(F &&func_object, CallSignature *cl) : call{cl}
   {
     using UnqualF = eastl::decay_t<F>;
+
+    // owning an empty callable would still report non empty, so store nothing instead
+    if constexpr (is_nullable_callable_v<UnqualF>)
+      if (!func_object)
+      {
+        call = nullptr;
+        relocate = nullptr;
+        return;
+      }
 
     relocate = &relocateImpl<UnqualF>;
     storage.reset(new char[sizeof(UnqualF)]);
@@ -162,10 +172,8 @@ public:
 
   template <typename F, typename = EASTL_INTERNAL_FUNCTION_VALID_FUNCTION_ARGS(F, Ret, Args..., Base, MoveOnlyFunction),
     typename = eastl::disable_if_t<detail::is_move_only_function_v<eastl::decay_t<F>>>>
-  MoveOnlyFunction(F &&func_object) : Base((F &&)func_object)
-  {
-    call = &callImpl<F>;
-  }
+  MoveOnlyFunction(F &&func_object) : Base((F &&)func_object, &callImpl<F>)
+  {}
 
   MoveOnlyFunction &operator=(std::nullptr_t)
   {
@@ -205,10 +213,8 @@ public:
 
   template <typename F, typename = EASTL_INTERNAL_FUNCTION_VALID_FUNCTION_ARGS(F, Ret, Args..., Base, MoveOnlyFunction),
     typename = eastl::disable_if_t<detail::is_move_only_function_v<eastl::decay_t<F>>>>
-  MoveOnlyFunction(F &&func_object) : Base((F &&)func_object)
-  {
-    call = &callImpl<F>;
-  }
+  MoveOnlyFunction(F &&func_object) : Base((F &&)func_object, &callImpl<F>)
+  {}
 
   MoveOnlyFunction &operator=(std::nullptr_t)
   {

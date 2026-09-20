@@ -68,9 +68,6 @@ void render_landmesh_to_heightmap(
 
     ShaderGlobal::setBlock(globalFrameBlockId, ShaderGlobal::LAYER_FRAME);
 
-    const int HEIGTHMAP_VS_CONST_BUFFFER_SIZE = 512;
-    d3d::set_vs_constbuffer_register_count(HEIGTHMAP_VS_CONST_BUFFFER_SIZE);
-
     lmeshRenderer->prepare(*lmeshMgr, HmapOrigin(Point3::xVz(origin, 0)));
 
     LandMeshRenderDesc desc;
@@ -81,8 +78,6 @@ void render_landmesh_to_heightmap(
     lmeshRenderer->render(reinterpret_cast<mat44f_cref &>(globTm), projectionMatrix, Frustum{globTm}, *lmeshMgr,
       LandMeshRenderer::RENDER_ONE_SHADER, desc, ::grs_cur_view.pos, HmapOrigin(Point3::xVz(origin, 0)));
     shaders::overrides::reset();
-
-    d3d::set_vs_constbuffer_register_count(0);
   }
 
   // Restore.

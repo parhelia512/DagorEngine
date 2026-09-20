@@ -1,0 +1,113 @@
+include "shader_global.dshl"
+include "bvh_voxel_activity_inc.dshl"
+
+// The kernels write through a dedicated target var instead of bvh_voxel_activity: a scroll
+// writes the back buffer of the ping-pong pair while bvh_voxel_activity still names the front.
+texture bvh_voxel_activity_target;
+texture bvh_voxel_activity_source;
+int4 bvh_voxel_activity_scroll_delta;
+buffer bvh_voxel_activity_readback;
+// 0 when a 1-element stand-in backs the UAV slot: the decay kernel then skips its stores,
+// since out of bounds UAV stores are only defined on DX
+int bvh_voxel_activity_readback_on;
+
+macro BVH_VOXEL_ACTIVITY_KERNEL(stage)
+  if (compatibility_mode == compatibility_mode_on || !use_hw_raytracing)
+  {
+    dont_render;
+  }
+
+  (stage)
+  {
+    bvh_voxel_activity_grid_size@i4 = bvh_voxel_activity_grid_size;
+    bvh_voxel_activity_target@uav = bvh_voxel_activity_target hlsl { RWTexture3D<uint> bvh_voxel_activity_target@uav; }
+  }
+endmacro
+
+shader bvh_voxel_activity_fill
+{
+  BVH_VOXEL_ACTIVITY_KERNEL(cs)
+
+  hlsl(cs)
+  {
+    [numthreads(4, 4, 4)]
+    void main(uint3 dtid : SV_DispatchThreadID)
+    {
+      if (any(dtid >= uint3(bvh_voxel_activity_grid_size.xyz)))
+        return;
+      bvh_voxel_activity_target[dtid] = 0;
+    }
+  }
+
+  compile("target_cs", "main");
+}
+
+shader bvh_voxel_activity_decay
+{
+  BVH_VOXEL_ACTIVITY_KERNEL(cs)
+
+  (cs)
+  {
+    bvh_voxel_activity_readback@uav = bvh_voxel_activity_readback hlsl { RWStructuredBuffer<uint> bvh_voxel_activity_readback@uav; }
+    bvh_voxel_activity_readback_on@i1 = bvh_voxel_activity_readback_on;
+  }
+
+  hlsl(cs)
+  {
+    // One thread ages four voxels along x and packs them into one uint of the readback
+    // buffer, so the CPU copy of the aged volume is a straight memcpy.
+    [numthreads(4, 4, 4)]
+    void main(uint3 dtid : SV_DispatchThreadID)
+    {
+      uint3 dims = uint3(bvh_voxel_activity_grid_size.xyz);
+      uint packedWidth = dims.x >> 2;
+      if (any(dtid >= uint3(packedWidth, dims.y, dims.z)))
+        return;
+      uint packd = 0; // not "packed": that is a keyword in PSSL
+      UNROLL
+      for (uint i = 0; i < 4; ++i)
+      {
+        uint3 c = uint3(dtid.x * 4 + i, dtid.y, dtid.z);
+        uint life = bvh_voxel_activity_target[c];
+        if (life > 0)
+        {
+          --life;
+          bvh_voxel_activity_target[c] = life;
+        }
+        packd |= life << (i * 8);
+      }
+      if (bvh_voxel_activity_readback_on != 0)
+        structuredBufferAt(bvh_voxel_activity_readback, dtid.x + packedWidth * (dtid.y + dims.y * dtid.z)) = packd;
+    }
+  }
+
+  compile("target_cs", "main");
+}
+
+shader bvh_voxel_activity_scroll
+{
+  BVH_VOXEL_ACTIVITY_KERNEL(cs)
+
+  (cs)
+  {
+    bvh_voxel_activity_scroll_delta@i4 = bvh_voxel_activity_scroll_delta;
+    bvh_voxel_activity_source@tex = bvh_voxel_activity_source hlsl { Texture3D<uint> bvh_voxel_activity_source@tex; }
+  }
+
+  hlsl(cs)
+  {
+    [numthreads(4, 4, 4)]
+    void main(uint3 dtid : SV_DispatchThreadID)
+    {
+      if (any(dtid >= uint3(bvh_voxel_activity_grid_size.xyz)))
+        return;
+      int3 src = int3(dtid) + bvh_voxel_activity_scroll_delta.xyz;
+      uint life = 0; // incoming voxels start fully dead
+      if (all(src >= 0) && all(src < bvh_voxel_activity_grid_size.xyz))
+        life = texelFetch(bvh_voxel_activity_source, src, 0);
+      bvh_voxel_activity_target[dtid] = life;
+    }
+  }
+
+  compile("target_cs", "main");
+}

@@ -131,7 +131,7 @@ public:
     threadpool::add(this, threadpool::PRIO_LOW);
   }
 
-  const char *getJobName(bool &) const override { return "MirrorVisibilityJob"; }
+  const char *getJobName(bool &) const override { return DAPROFILER_STRING("MirrorVisibilityJob"); }
 
   void doJob() override
   {

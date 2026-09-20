@@ -3,7 +3,7 @@
 #include "burntGrassNodes.h"
 
 #include <render/daFrameGraph/daFG.h>
-#include <render/world/cameraParams.h>
+#include <render/cameraParams.h>
 #include <render/world/frameGraphHelpers.h>
 
 #include "burntGrassRenderer.h"

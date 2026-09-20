@@ -7,17 +7,17 @@ namespace sepclient
 {
 
 // Version in Semantic version format: MAJOR.MINOR.PATCH
-inline constexpr char SEP_VERSION[] = "1.0.2";
+inline constexpr char SEP_VERSION[] = "1.0.3";
 
 
 // Release date in ISO 8601 format: YYYY-MM-DD
-inline constexpr char SEP_VERSION_RELEASE_DATE[] = "2026-03-09";
+inline constexpr char SEP_VERSION_RELEASE_DATE[] = "2026-08-24";
 
 
 // Any text-like description of the version; can be empty
 // It is normal to contain a list of features, fixes, or other notes
 
-inline constexpr char SEP_VERSION_DESCRIPTION[] = "patch2";
+inline constexpr char SEP_VERSION_DESCRIPTION[] = "gracefulReconnect";
 
 
 /*
@@ -39,6 +39,9 @@ Initial version used in Enlisted for Profile service only
   E.g. `-config:debug/sep/verboseLogging:b=true`
 - More potential compatibility with various platforms when using `eastl::string::sprintf`
 - Remove unnecessary delay for SqEventBus (Squirrel connector)
+
+1.0.3, 2026-08-24
+- Reconnect to a different host on server shutdown notification.
 
 */
 

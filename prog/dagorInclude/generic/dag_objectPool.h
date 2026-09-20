@@ -12,6 +12,7 @@
 #include <util/dag_compilerDefs.h>
 #include <debug/dag_assert.h>
 #include "dag_bitset.h"
+#include "dag_enumerate.h"
 
 // Pool should scan from oldest to newest block for a free slot
 struct ObjectPoolBlockSearchOrderFrontToBack
@@ -185,18 +186,28 @@ class ObjectPool
       const auto offset = calculate_relative_offset(ptr);
       return offset >= 0 && offset < BlockSize;
     }
-    void release(T *ptr)
+    void releaseAtOffset(size_t offset)
     {
-      const auto offset = calculate_relative_offset(ptr);
 #if defined(DAGOR_ADDRESS_SANITIZER)
       ::delete eastl::exchange(objects[offset], nullptr);
 #endif
       this->markAsFree(offset);
     }
+    void release(T *ptr)
+    {
+      const auto offset = calculate_relative_offset(ptr);
+      releaseAtOffset(offset);
+    }
     void free(T *ptr)
     {
       TypeHandler::destruct(ptr);
       release(ptr);
+    }
+    void freeAtOffset(size_t offset)
+    {
+      T *ptr = get(offset);
+      TypeHandler::destruct(ptr);
+      releaseAtOffset(offset);
     }
     void freeAll()
     {
@@ -509,6 +520,18 @@ public:
             return;
   }
 
+  // Iterates over all blocks and invokes clb with a pointer of each allocated object and index.
+  // stops iteration if clb returns false
+  template <typename C>
+  void enumerateAllocatedBreakable(C clb)
+  {
+    for (auto &&[blockIndex, block] : enumerate(blocks))
+      for (uint32_t i = 0; i < BlockSize; ++i)
+        if (block->isAllocated(i))
+          if (!clb(block->get(i), blockIndex * BlockSize + i))
+            return;
+  }
+
   // Returns number of objects the pool can hold until it needs to allocate a new block
   size_t capacity() const { return blocks.size() * BlockSize; }
 
@@ -546,6 +569,39 @@ public:
 
   // Alias to isAcquired
   bool isAllocated(T *object) const { return isAcquired(object); }
+
+  T *getByIndex(size_t index)
+  {
+    size_t blockIndex = index / BlockSize;
+    if (blockIndex >= blocks.size())
+      return nullptr;
+    size_t offset = index % BlockSize;
+    return blocks[blockIndex]->isAllocated(offset) ? blocks[blockIndex]->get(offset) : nullptr;
+  }
+
+  void releaseAtIndex(size_t index)
+  {
+    size_t blockIndex = index / BlockSize;
+    if (blockIndex >= blocks.size())
+      return;
+    blocks[blockIndex]->releaseAtOffset(index % BlockSize);
+  }
+
+  void freeAtIndex(size_t index)
+  {
+    size_t blockIndex = index / BlockSize;
+    if (blockIndex >= blocks.size())
+      return;
+    blocks[blockIndex]->freeAtOffset(index % BlockSize);
+  }
+
+  bool isIndexAllocated(size_t index) const
+  {
+    size_t blockIndex = index / BlockSize;
+    if (blockIndex >= blocks.size())
+      return false;
+    return blocks[blockIndex]->isAllocated(index % BlockSize);
+  }
 };
 
 // Shorthand for ObjectPool and linear allocate policy

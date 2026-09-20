@@ -14,11 +14,13 @@ shader dagi_media_toroidal_movement_cs
   DAGI_MEDIA_SCENE_UAV(cs)
   DAGI_MEDIA_SCENE_CLIPMAP_MATH(cs)
   DAGI_MEDIA_SCENE_ATLAS(cs)
-  PROJECT_GI_INITIAL_MEDIA(cs)
   (cs) {
     dagi_media_scene_update_lt_coord@i4 = dagi_media_scene_update_lt_coord;
     dagi_media_scene_update_sz_coord@i4 = dagi_media_scene_update_sz_coord;
   }
+  // the project fills the initial media (sampling any baked media volumes), reading the
+  // media scene bound above for the volumes canopy self occlusion
+  PROJECT_GI_INITIAL_MEDIA(cs)
   hlsl(cs) {
     #define WARP_SIZE 64
     [numthreads(WARP_SIZE, 1, 1)]
@@ -64,7 +66,12 @@ shader dagi_media_toroidal_movement_cs
       #endif
         media = dagi_get_project_initial_media(worldPos, voxelSize);
 
-      media = max(media, 0);
+      // dagi_media_scene is fp16 and a huge or inf value would ride every temporal blend.
+      // max first, not clamp: min/max return the non nan operand, so max(nan, 0) is the nan
+      // barrier the project lighting chain needs, while clamp leaves the expansion order (and
+      // with it the nan result) to the backend. the project hook caps each source apart
+      // (density, not lit color), this bounds their sum
+      media = min(max(media, 0), 4096.f);
 
       uint3 targetCoord = dagi_media_scene_wrapped_coord_from_abs_coord(absCoord);
       texture3DAt(dagi_media_scene, targetCoord + uint3(0,0,1 + clip*dagi_media_scene_get_clip_size_with_border())) = media;

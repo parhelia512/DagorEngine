@@ -211,13 +211,13 @@ void FPObjectClipper::onChange(int pcb_id, PropPanel::ContainerPropertyControl *
   }
   */
 
-#define CHANGE_VAL(type, pname, getfunc)                                   \
-  {                                                                        \
-    type val = panel->getfunc(pcb_id);                                     \
-    mFPEditor.getUndoSystem()->begin();                                    \
-    mFPEditor.getUndoSystem()->put(new FastPhysUndoEdClipperParams(this)); \
-    mFPEditor.getUndoSystem()->accept("ClipperChange");                    \
-    clipperObject->pname = val;                                            \
+#define CHANGE_VAL(type, pname, getfunc)                               \
+  {                                                                    \
+    type val = panel->getfunc(pcb_id);                                 \
+    mFPEditor.getUndoSystem()->begin();                                \
+    mFPEditor.getUndoSystem()->put<FastPhysUndoEdClipperParams>(this); \
+    mFPEditor.getUndoSystem()->accept("ClipperChange");                \
+    clipperObject->pname = val;                                        \
   }
 
   if (pcb_id == PID_CLIPTYPE)
@@ -243,7 +243,7 @@ void FPObjectClipper::onClick(int pcb_id, PropPanel::ContainerPropertyControl *p
   Tab<String> _names(tmpmem), _sel_names(tmpmem);
 
   mFPEditor.getUndoSystem()->begin();
-  mFPEditor.getUndoSystem()->put(new FastPhysUndoEdClipperParams(this));
+  mFPEditor.getUndoSystem()->put<FastPhysUndoEdClipperParams>(this);
   mFPEditor.getUndoSystem()->accept("ClipperListChange");
 
   if (pcb_id == PID_ADDPOINT)

@@ -55,7 +55,7 @@ void build_distance_field(UniqueTexWithShaderVar &distField, int textureSize, in
     int sdf_temp_texVarId = get_shader_variable_id("sdf_temp_tex");
     ShaderGlobal::set_int(sdf_stageVarId, -1);
     d3d::set_render_target({}, DepthAccess::RW, {{tempDistField[0].getTex2D(), 0, 0}});
-    d3d::clearview(CLEAR_DISCARD_TARGET, 0, 0, 0);
+    d3d::clearview(DISCARD_TARGET, 0, 0, 0);
     distanceFieldBuilder.render();
     // save_rt_image_as_tga(tempDistField[0].getTex2D(), "temp.tga");
 
@@ -68,7 +68,7 @@ void build_distance_field(UniqueTexWithShaderVar &distField, int textureSize, in
       ShaderGlobal::set_texture(sdf_temp_texVarId, tempDistField[1 - currentTemp]);
       d3d::resource_barrier({tempDistField[1 - currentTemp].getTex2D(), RB_RO_SRV | RB_STAGE_PIXEL, 0, 0});
       d3d::set_render_target({}, DepthAccess::RW, {{tempDistField[currentTemp].getTex2D(), 0, 0}});
-      d3d::clearview(CLEAR_DISCARD_TARGET, 0, 0, 0);
+      d3d::clearview(DISCARD_TARGET, 0, 0, 0);
       distanceFieldBuilder.render();
       // save_rt_image_as_tga(tempDistField[currentTemp].getTex2D(), String(128, "temp%d.tga", i));
     }
@@ -95,7 +95,7 @@ void build_distance_field(UniqueTexWithShaderVar &distField, int textureSize, in
       d3d::set_render_target({}, DepthAccess::RW, {{river_mask.getTex2D(), 0, 0}});
       if (detect_rivers_width > 0)
       {
-        d3d::clearview(CLEAR_DISCARD_TARGET, 0, 0, 0);
+        d3d::clearview(DISCARD_TARGET, 0, 0, 0);
         ShaderGlobal::set_float(get_shader_variable_id("max_river_width", true), detect_rivers_width);
         PostFxRenderer riverBuilder;
         riverBuilder.init("build_river");
@@ -112,7 +112,7 @@ void build_distance_field(UniqueTexWithShaderVar &distField, int textureSize, in
       for (uint32_t i = 1; i < river_levels; ++i)
       {
         d3d::set_render_target({}, DepthAccess::RW, {{river_mask.getTex2D(), i, 0}});
-        d3d::clearview(CLEAR_DISCARD_TARGET, 0, 0, 0);
+        d3d::clearview(DISCARD_TARGET, 0, 0, 0);
         river_mask.getTex2D()->texmiplevel(i - 1, i - 1);
         ShaderGlobal::set_int(current_mip_sizeVarId, max(1, textureSize >> i));
         riverBuilderMip.render();
@@ -128,7 +128,7 @@ void build_distance_field(UniqueTexWithShaderVar &distField, int textureSize, in
       RESTAG_WATER);
 
     d3d::set_render_target({}, DepthAccess::RW, {{distField.getTex2D(), 0, 0}});
-    d3d::clearview(CLEAR_DISCARD_TARGET, 0, 0, 0);
+    d3d::clearview(DISCARD_TARGET, 0, 0, 0);
     PostFxRenderer distanceGradientBuilder;
     distanceGradientBuilder.init("water_gradient_field");
 
@@ -174,7 +174,7 @@ void build_distance_field(UniqueTexWithShaderVar &distField, int textureSize, in
       TEXCF_RTARGET | (high_precision_distance_field ? TEXFMT_L16 : TEXFMT_R8), 1, "shore_distance_field_tex", RESTAG_WATER);
 
     d3d::set_render_target({}, DepthAccess::RW, {{distField.getTex2D(), 0, 0}});
-    d3d::clearview(CLEAR_DISCARD_TARGET, 0, 0, 0);
+    d3d::clearview(DISCARD_TARGET, 0, 0, 0);
     PostFxRenderer copyHeightmap;
     copyHeightmap.init("water_copy_heightmap");
 

@@ -1075,8 +1075,11 @@ void dainput::mouse_wheel_event_occurs(int64_t t_usec, int wheel_inc)
 }
 void dainput::mouse_move_event_occurs(int64_t t_usec, float dx, float dy, int scr_x, int scr_y)
 {
+#if !(_TARGET_C1 | _TARGET_C2)
+  // gamepad's touchpad is reported as a pointing device here, so moving over it must not count as mouse usage
   if (dx != 0.f || dy != 0.f)
     dev_mouse_lastInputOnFrameNo = dagor_frame_no();
+#endif
   last_queued_t_us.store(t_usec);
   emergency_events_dispatch();
   IGenSave *cwr = input_queue.startWrite();
@@ -1309,6 +1312,7 @@ void dainput::process_actions_tick(dainput::actions_processed_t on_input_sample_
     debug("dainput::process_actions_tick() -> time0_us=%lld (ticks=%lld)", time0_us.load(), ref_time_ticks());
   }
 
+  dainput::check_exclusive_sets_on_stack();
   dainput::tick_event_occurs(ref_time_delta_to_usec(ref_time_ticks()));
   for (dainput::AnalogStickActionData &as : agData.as)
     if (as.type == TYPE_ABSMOUSE || as.type == TYPE_STICK_DELTA)
@@ -1730,6 +1734,29 @@ static bool is_action_masked(UsedControlsMask &umask0, dainput::action_handle_t 
   return masked;
 }
 
+// a copy is internal, so a caller can act only on the action that owns the row; one entry per row and column
+static void report_conflict(Tab<dainput::action_handle_t> &out_a, Tab<int> &out_c, dainput::action_handle_t a, int c)
+{
+  using namespace dainput;
+  const action_handle_t reported = get_use_binding_action(a);
+  for (int j = 0; j < out_a.size(); j++)
+    if (out_a[j] == reported && out_c[j] == c)
+      return;
+  out_a.push_back(reported);
+  out_c.push_back(c);
+}
+
+// a set fires the row of <action> when it holds that action or one that copies the row through 'useBinding',
+// and a clash there is a clash for the player just the same
+static bool set_fires_binding_of(const dainput::ActionSet &set, dainput::action_handle_t action)
+{
+  using namespace dainput;
+  for (dainput::action_handle_t a : set.actions)
+    if (uses_same_binding(a, action))
+      return true;
+  return false;
+}
+
 bool dainput::check_bindings_conflicts(action_handle_t action, const DataBlock &binding, Tab<action_handle_t> &out_a, Tab<int> &out_c)
 {
   dainput::DigitalActionBinding adb;
@@ -1743,9 +1770,9 @@ bool dainput::check_bindings_conflicts(action_handle_t action, const DataBlock &
     return false;
 
   for (dainput::ActionSet &set : actionSets)
-    if (find_value_idx(set.actions, action) >= 0)
+    if (set_fires_binding_of(set, action))
       for (dainput::action_handle_t a : set.actions)
-        if (a != action && (!get_action_excl_tag(action) || get_action_excl_tag(action) != get_action_excl_tag(a)))
+        if (!uses_same_binding(a, action) && (!get_action_excl_tag(action) || get_action_excl_tag(action) != get_action_excl_tag(a)))
           for (int c = 0; c < agData.bindingsColumnCount; c++)
           {
             if (is_action_binding_empty(a, c))
@@ -1759,20 +1786,7 @@ bool dainput::check_bindings_conflicts(action_handle_t action, const DataBlock &
               conflicts = is_action_masked(umask1, action, adb, aab, asb);
 
             if (conflicts)
-            {
-              bool already_added = false;
-              for (int j = 0; j < out_a.size(); j++)
-                if (out_a[j] == a && out_c[j] == c)
-                {
-                  already_added = true;
-                  break;
-                }
-              if (!already_added)
-              {
-                out_a.push_back(a);
-                out_c.push_back(c);
-              }
-            }
+              report_conflict(out_a, out_c, a, c);
             umask1.reset();
           }
 
@@ -1781,7 +1795,7 @@ bool dainput::check_bindings_conflicts(action_handle_t action, const DataBlock &
 
 bool dainput::check_bindings_conflicts_one(action_handle_t a1, int c1, action_handle_t a2, int c2)
 {
-  if (a1 == a2 || a1 == BAD_ACTION_HANDLE || a2 == BAD_ACTION_HANDLE)
+  if (a1 == BAD_ACTION_HANDLE || a2 == BAD_ACTION_HANDLE || uses_same_binding(a1, a2))
     return false;
   if (is_action_binding_empty(a1, c1) || is_action_binding_empty(a2, c2))
     return false;
@@ -1793,6 +1807,16 @@ bool dainput::check_bindings_conflicts_one(action_handle_t a1, int c1, action_ha
   mask_with_action(umask1, a1, b_idx1);
   mask_with_action(umask2, a2, b_idx2);
   return is_action_masked(umask2, a1, b_idx1) || is_action_masked(umask1, a2, b_idx2);
+}
+
+// a set exclusive with every set that fires the binding is never active when it can be pressed, so it hides nothing
+static bool is_set_never_active_with(dainput::action_set_handle_t set, const Tab<dainput::action_set_handle_t> &firing_sets)
+{
+  using namespace dainput;
+  for (action_set_handle_t s : firing_sets)
+    if (!are_action_sets_exclusive(set, s))
+      return false;
+  return !firing_sets.empty();
 }
 
 bool dainput::check_bindings_hides_action(action_handle_t action, const DataBlock &binding, Tab<action_handle_t> &out_a,
@@ -1808,25 +1832,20 @@ bool dainput::check_bindings_hides_action(action_handle_t action, const DataBloc
   if (!load_and_mask_action_binding(umask0, action, binding, adb, aab, asb))
     return false;
 
-  for (dainput::ActionSet &set : actionSets)
-    if (find_value_idx(set.actions, action) < 0)
-      for (dainput::action_handle_t a : set.actions)
-        for (int c = 0; c < agData.bindingsColumnCount; c++)
-          if (!is_action_binding_empty(a, c) && is_action_masked(umask0, a, agData.get_binding_idx(a, c)))
-          {
-            bool already_added = false;
-            for (int j = 0; j < out_a.size(); j++)
-              if (out_a[j] == a && out_c[j] == c)
-              {
-                already_added = true;
-                break;
-              }
-            if (!already_added)
-            {
-              out_a.push_back(a);
-              out_c.push_back(c);
-            }
-          }
+  Tab<action_set_handle_t> firingSets; // where the binding can be pressed: a set holding the action, or one holding a copy
+  for (int i = 0; i < actionSets.size(); i++)
+    if (set_fires_binding_of(actionSets[i], action))
+      firingSets.push_back(action_set_handle_t(i));
+
+  for (int i = 0; i < actionSets.size(); i++)
+  {
+    if (find_value_idx(firingSets, action_set_handle_t(i)) >= 0 || is_set_never_active_with(action_set_handle_t(i), firingSets))
+      continue;
+    for (dainput::action_handle_t a : actionSets[i].actions)
+      for (int c = 0; c < agData.bindingsColumnCount; c++)
+        if (!is_action_binding_empty(a, c) && is_action_masked(umask0, a, agData.get_binding_idx(a, c)))
+          report_conflict(out_a, out_c, a, c);
+  }
 
   return out_a.size() > 0;
 }

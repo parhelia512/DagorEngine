@@ -1196,7 +1196,7 @@ void start_render();
 // setup render parameters. call it before any GUI rendering.
 // set screen logical resolution in pixels.
 // if resolution is zero, use current device resolution.
-void start_render(int screen_width, int screen_height);
+void start_render(int screen_width, int screen_height, int prerotate_angle = 0);
 
 // continue with current target
 void continue_render();

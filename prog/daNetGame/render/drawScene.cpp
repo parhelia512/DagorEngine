@@ -8,6 +8,8 @@
 #include <drv/3d/dag_texture.h>
 #include <drv/3d/dag_driver.h>
 #include <3d/dag_render.h>
+#include <3d/dag_resPtr.h>
+#include <shaders/dag_shaders.h>
 #include <3d/dag_picMgr.h>
 #include <3d/dag_texPackMgr2.h>
 #include <render/dag_cur_view.h>
@@ -60,7 +62,7 @@
 #include "main/console.h"
 #include "main/gameLoad.h"
 #include "render/skies.h"
-#include "render/world/cameraParams.h"
+#include <render/cameraParams.h>
 
 #include <drv/3d/dag_commands.h>
 #include <drv/3d/dag_resetDevice.h>
@@ -74,7 +76,7 @@
 #include <daRg/dag_guiScene.h>
 #include <util/dag_threadPool.h>
 
-#include "animatedSplashScreen.h"
+#include <animated_splash_screen_api.h>
 #include <debug/dag_memReport.h>
 #include <render/deviceResetTelemetry/deviceResetTelemetry.h>
 #include <render/world/wrDispatcher.h>
@@ -134,16 +136,12 @@ public:
     uirender::prepare_to_start_ui_before_render_job();
     return this;
   }
-  const char *getJobName(bool &) const override { return "AdditionalGameJob"; }
+  const char *getJobName(bool &) const override { return DAPROFILER_STRING("AdditionalGameJob"); }
   void doJob() override
   {
-    // Worker thread runs ParallelUpdateFrameDelayed -> ECS broadcast -> das ES handlers
-    // that read get_sync_time(). Main thread's net_update may publish concurrently, so
-    // assumeSingleUpdate=false (long-running scope spanning at most one publish boundary).
-    net::NetSnapshotScope snapshotScope(/*assumeSingleUpdate*/ false, "AdditionalGameJob");
-
+    // Worker ParallelUpdateFrameDelayed broadcast needs EM owner on this thread.
     int64_t ownedThread = g_entity_mgr->getOwnerThreadId();
-    net::change_em_ownership(*g_entity_mgr, get_current_thread_id());
+    g_entity_mgr->setOwnerThreadId(get_current_thread_id());
 
     uirender::start_ui_before_render_job();
 
@@ -173,7 +171,7 @@ public:
 
     dacoll::phys_world_set_invalid_fetch_sim_res_thread(-1); // set to invalid
 
-    net::change_em_ownership(*g_entity_mgr, ownedThread);
+    g_entity_mgr->setOwnerThreadId(ownedThread);
     free_reserved_tp_worker(); // Allow Jolt to use all threadpool workers
   }
 } additional_game_job;
@@ -347,6 +345,34 @@ static void final_blit()
     d3d::set_srgb_backbuffer_write(false);
     d3d::stretch_rect(get_world_renderer()->getFinalTargetTex().getTex2D(), d3d::get_backbuffer_tex());
   }
+}
+
+static volatile int splash_over_game_active = 0;
+// a load can start inside the rush, and then no draw publishes 0 for it
+bool is_splash_over_game_active()
+{
+  return interlocked_acquire_load(splash_over_game_active) != 0 && animated_splash_screen_rush_under_way();
+}
+
+// the final target is the linear pre-encode buffer in HDR and the
+// display-referred one otherwise, and only one variant writes each
+static bool splash_writes_target_space() { return is_animated_splash_screen_encoding() != hdrrender::is_hdr_enabled(); }
+
+// the scene declared a rush AND this host can draw it
+bool splash_opens_onto_game()
+{
+  return animated_splash_screen_exit_seconds().rush > 0.f && animated_splash_screen_opens_onto_game() && splash_writes_target_space();
+}
+
+static void draw_splash_over_game()
+{
+  TIME_D3D_PROFILE(splash_over_game);
+  ManagedTexView finalTex = get_world_renderer()->getFinalTargetTex();
+  d3d::set_render_target({}, DepthAccess::RW, {{finalTex.getTex2D(), 0, 0}});
+  ShaderElement::invalidate_cached_state_block();
+  animated_splash_screen_set_over_game(true);
+  animated_splash_screen_draw();
+  animated_splash_screen_set_over_game(false);
 }
 
 void reset_async_game_tasks_flags()
@@ -601,11 +627,19 @@ void draw_scene(uint32_t frame_id)
   reset_async_game_tasks_flags();
   if (get_world_renderer())
   {
+    // the level's own start reads it, and it spawns while the rush runs
+    const bool opensOntoGame = splash_opens_onto_game();
+    set_loading_splash_opens_onto_game(opensOntoGame);
+    const bool splashOverGame =
+      is_level_loaded() && is_level_loaded_not_empty() && animated_splash_screen_rush_under_way() && opensOntoGame;
+    // the input catcher asks from the gamepad poll thread, where neither the
+    // level status nor this frame's decision is safe to read directly
+    interlocked_release_store(splash_over_game_active, splashOverGame ? 1 : 0);
     if (is_level_loaded())
     {
-      if (is_animated_splash_screen_started())
+      if (is_animated_splash_screen_started() && !splashOverGame)
         animated_splash_screen_stop();
-      else if (ddsx::get_streaming_mode() != ddsx::BackgroundSerial)
+      if (ddsx::get_streaming_mode() != ddsx::BackgroundSerial)
         ddsx::set_streaming_mode(ddsx::BackgroundSerial);
 
       if (is_level_loaded_not_empty())
@@ -613,16 +647,19 @@ void draw_scene(uint32_t frame_id)
         TIME_D3D_PROFILE(draw_frame);
         get_world_renderer()->draw(frame_id, last_realtime_elapsed_usec * 1e-6f);
       }
-
-      debug_animated_splash_screen();
+      if (is_animated_splash_screen_started())
+      {
+        draw_splash_over_game();
+        if (animated_splash_screen_exit_done())
+          animated_splash_screen_stop();
+      }
     }
     else
     {
       if (ddsx::get_streaming_mode() != ddsx::MultiDecoders)
         ddsx::set_streaming_mode(ddsx::MultiDecoders);
-      if (loading_ui::is_fully_covering())
-        d3d::clearview(CLEAR_TARGET, 0, 0, 0);
-      else
+      d3d::clearview(CLEAR_TARGET, 0, 0, 0);
+      if (!loading_ui::is_fully_covering())
       {
         if (is_animated_splash_screen_encoding() && hdrrender::is_hdr_enabled())
         {
@@ -817,6 +854,14 @@ static struct Reset3DCallback : public IDrv3DResetCB
 
     if (get_world_renderer())
       get_world_renderer()->afterDeviceReset(full_reset);
+    else
+    {
+      // HDR can be toggled by a mode reset while no level is loaded; the world renderer
+      // is what re-inits the encoder otherwise.
+      int w, h;
+      d3d::get_render_target_size(w, h, 0, 0);
+      hdrrender::init(w, h, true, false);
+    }
 
     uishared::after_device_reset();
 

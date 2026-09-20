@@ -12,7 +12,7 @@
 #include "render/fx/fx.h"
 #include <shaders/dag_shaderVar.h>
 
-#include <render/world/cameraParams.h>
+#include <render/cameraParams.h>
 #include <render/daFrameGraph/daFG.h>
 #include <render/rendererFeatures.h>
 #include <drv/3d/dag_matricesAndPerspective.h>

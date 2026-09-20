@@ -5,7 +5,7 @@
 #include "globals.h"
 #include "device_context.h"
 #include "physical_device_set.h"
-#include "translate_d3d_to_vk.h"
+#include <drv/shadersMetaData/spirv/translate_d3d_to_vk.h>
 #include "backend/cmd/resources.h"
 
 using namespace drv3d_vulkan;

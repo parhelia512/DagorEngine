@@ -36,7 +36,7 @@ void messagebox_win_report_fatal_error(const char *title, const char *msg, const
     utf8_to_wcs(title, titlewcs, countof(titlewcs));
     utf8_to_wcs(text, textwcs, countof(textwcs));
 
-    ScopeDetachAllWndComponents wndCompsGuard; // stop handling windows input events during fatal message box
+    ScopeSuspendWndProcComponents wndCompsGuard; // stop handling windows input events during fatal message box
     MessageBoxW(NULL, textwcs, titlewcs, MB_OK | MB_ICONERROR | MB_SETFOREGROUND);
   }
 }

@@ -106,15 +106,9 @@ void DynModelRenderingState::process_animchar(uint32_t start_stage,
       {
         if (!elem.e)
           continue;
-        uint32_t prog;
-        ShaderStateBlockId state;
-        shaders::TexStateIdx tstate;
-        shaders::ConstStateIdx cstate;
-        shaders::RenderStateId rstate;
         ShaderElement *s = (shader_override != nullptr) ? shader_override : static_cast<ShaderElement *>(elem.e);
-        int curVar;
-        curVar = get_dynamic_variant_states(gvars_state, s->native(), prog, state, rstate, cstate, tstate);
-        if (curVar < 0)
+        shaders::CombinedDynVariantState dynVarState = get_dynamic_variant_states(gvars_state, s->native());
+        if (!is_valid(dynVarState))
           continue;
         RenderPriority renderPriority = priority;
         int drawOrder;
@@ -127,12 +121,12 @@ void DynModelRenderingState::process_animchar(uint32_t start_stage,
           else
             renderPriority = RenderPriority::LOW;
         }
-        if (!is_packed_material(cstate))
-          list.emplace_back(s, curVar, prog, state, rstate, tstate, cstate, elem.vertexData, reqLevel, renderPriority,
-            (uint8_t)counter, instId, elem.si, elem.numf, elem.baseVertex, bindposeBufferOffset);
+        if (!is_packed_material(dynVarState.const_state))
+          list.emplace_back(s, dynVarState, elem.vertexData, reqLevel, renderPriority, (uint8_t)counter, instId, elem.si, elem.numf,
+            elem.baseVertex, bindposeBufferOffset);
         else
-          multidrawList.emplace_back(s, curVar, prog, state, rstate, tstate, cstate, elem.vertexData, reqLevel, renderPriority,
-            (uint8_t)counter, instId, elem.si, elem.numf, elem.baseVertex, bindposeBufferOffset);
+          multidrawList.emplace_back(s, dynVarState, elem.vertexData, reqLevel, renderPriority, (uint8_t)counter, instId, elem.si,
+            elem.numf, elem.baseVertex, bindposeBufferOffset);
       }
   };
   // rigids
@@ -290,12 +284,12 @@ void DynModelRenderingState::coalesceDrawcalls()
   TIME_D3D_PROFILE(dyn_model_coalesce_drawcalls);
 
   const auto mergeComparator = [](const RenderElement &a, const RenderElement &b) -> bool {
-    return a.vData == b.vData && a.priority == b.priority && a.rstate == b.rstate &&
-           get_material_id(a.cstate) == get_material_id(b.cstate) && a.prog == b.prog;
+    return a.vData == b.vData && a.priority == b.priority && a.dvState.render_state == b.dvState.render_state &&
+           get_material_id(a.dvState.const_state) == get_material_id(b.dvState.const_state) && a.dvState.program == b.dvState.program;
   };
 
   drawcallRanges.push_back(PackedDrawCallsRange{0, 1});
-  bindlessStatesToUpdateTexLevels.emplace(multidrawList[0].cstate, multidrawList[0].reqTexLevel);
+  bindlessStatesToUpdateTexLevels.emplace(multidrawList[0].dvState.const_state, multidrawList[0].reqTexLevel);
 
   for (uint32_t i = 1, ie = multidrawList.size(); i < ie; ++i)
   {
@@ -305,9 +299,9 @@ void DynModelRenderingState::coalesceDrawcalls()
       drawcallRanges.back().count++;
     else
       drawcallRanges.push_back(PackedDrawCallsRange{drawcallRanges.back().count + drawcallRanges.back().start, 1});
-    auto iter = bindlessStatesToUpdateTexLevels.find(currentRelem.cstate);
+    auto iter = bindlessStatesToUpdateTexLevels.find(currentRelem.dvState.const_state);
     if (iter == bindlessStatesToUpdateTexLevels.end())
-      bindlessStatesToUpdateTexLevels.emplace(currentRelem.cstate, currentRelem.reqTexLevel);
+      bindlessStatesToUpdateTexLevels.emplace(currentRelem.dvState.const_state, currentRelem.reqTexLevel);
     else
       iter->second = max(iter->second, currentRelem.reqTexLevel);
   }
@@ -320,17 +314,17 @@ void DynModelRenderingState::prepareForRender()
     stlsort::sort(list.begin(), list.end(), [&](const RenderElement &a, const RenderElement &b) {
       if (a.priority != b.priority)
         return a.priority < b.priority;
-      if (a.rstate != b.rstate)
-        return a.rstate < b.rstate;
-      if (a.tstate != b.tstate) // maybe split state into sampler state (heavy) and const buffer (cheap)?
-        return a.tstate < b.tstate;
+      if (a.dvState.render_state != b.dvState.render_state)
+        return a.dvState.render_state < b.dvState.render_state;
+      if (a.dvState.tex_state != b.dvState.tex_state) // maybe split state into sampler state (heavy) and const buffer (cheap)?
+        return a.dvState.tex_state < b.dvState.tex_state;
       if (a.vData != b.vData)
         return (uintptr_t)a.vData < (uintptr_t)b.vData;
-      if (a.prog != b.prog)
-        return a.prog < b.prog;
+      if (a.dvState.program != b.dvState.program)
+        return a.dvState.program < b.dvState.program;
 
-      if (a.state != b.state) // maybe split state into sampler state (heavy) and const buffer (cheap)?
-        return a.state < b.state;
+      if (a.dvState.state_index != b.dvState.state_index) // maybe split state into sampler state (heavy) and const buffer (cheap)?
+        return a.dvState.state_index < b.dvState.state_index;
       if (a.instanceId != b.instanceId)
         return a.instanceId < b.instanceId;
       if (a.bindposeBufferOffset != b.bindposeBufferOffset)
@@ -347,20 +341,20 @@ void DynModelRenderingState::prepareForRender()
   {
     TIME_PROFILE(sort_packed_dynm);
     stlsort::sort(multidrawList.begin(), multidrawList.end(), [&](const RenderElement &a, const RenderElement &b) {
-      if (get_material_id(a.cstate) != get_material_id(b.cstate))
-        return get_material_id(a.cstate) < get_material_id(b.cstate);
+      if (get_material_id(a.dvState.const_state) != get_material_id(b.dvState.const_state))
+        return get_material_id(a.dvState.const_state) < get_material_id(b.dvState.const_state);
       if (a.priority != b.priority)
         return a.priority < b.priority;
-      if (a.rstate != b.rstate)
-        return a.rstate < b.rstate;
+      if (a.dvState.render_state != b.dvState.render_state)
+        return a.dvState.render_state < b.dvState.render_state;
       // TODO: split it on vbuffer/vstride comparator, because different vdata ofthen uses the same buffers
       if (a.vData != b.vData)
         return (uintptr_t)a.vData < (uintptr_t)b.vData;
-      if (a.prog != b.prog)
-        return a.prog < b.prog;
+      if (a.dvState.program != b.dvState.program)
+        return a.dvState.program < b.dvState.program;
 
-      if (a.state != b.state)
-        return a.state < b.state;
+      if (a.dvState.state_index != b.dvState.state_index)
+        return a.dvState.state_index < b.dvState.state_index;
       if (a.bindposeBufferOffset != b.bindposeBufferOffset)
         return a.bindposeBufferOffset < b.bindposeBufferOffset;
       return false;
@@ -409,9 +403,10 @@ void DynModelRenderingState::render_no_packed(int offset) const
     for (++rliI; rliI != e; rliI++)
     {
       auto &rlj = *rliI;
-      if (rli.instanceId == rlj.instanceId && rli.bindposeBufferOffset == rlj.bindposeBufferOffset && rli.curVar == rlj.curVar &&
-          rli.state == rlj.state && rli.prog == rlj.prog && rli.bv == rlj.bv && rli.vData == rlj.vData &&
-          rli.curShader == rlj.curShader && rlj.si == nextInd)
+      if (rli.instanceId == rlj.instanceId && rli.bindposeBufferOffset == rlj.bindposeBufferOffset &&
+          rli.dvState.variant == rlj.dvState.variant && rli.dvState.state_index == rlj.dvState.state_index &&
+          rli.dvState.program == rlj.dvState.program && rli.bv == rlj.bv && rli.vData == rlj.vData && rli.curShader == rlj.curShader &&
+          rlj.si == nextInd)
       {
         currentDipFaces += rlj.numf;
       }
@@ -438,7 +433,7 @@ void DynModelRenderingState::render_no_packed(int offset) const
       }
     }
     rli.curShader->setReqTexLevel(rli.reqTexLevel);
-    set_states_for_variant(rli.curShader->native(), rli.curVar, rli.prog, rli.state);
+    set_states_for_variant(rli.curShader->native(), rli.dvState);
 
     // workaround: vertex data can be empty during geom reloading
     if (!rli.vData->isEmpty())
@@ -470,13 +465,13 @@ void DynModelRenderingState::render_multidraw(int offset) const
       const uint32_t instanceOffset = currentRelem.instanceId;
       if (DAGOR_UNLIKELY(instanceOffset >= MAX_MATRIX_OFFSET))
       {
-        logerr("Too big offset in instance matrix buffer %d.", instanceOffset);
+        LOGERR_ONCE("Too big offset in instance matrix buffer %d.", instanceOffset);
         instanceCount = 0;
       }
-      const uint32_t materialOffset = get_material_offset(currentRelem.cstate);
+      const uint32_t materialOffset = get_material_offset(currentRelem.dvState.const_state);
       if (DAGOR_UNLIKELY(materialOffset >= MAX_MATERIAL_OFFSET))
       {
-        logerr("Too big material offset %d.", materialOffset);
+        LOGERR_ONCE("Too big material offset %d.", materialOffset);
         instanceCount = 0;
       }
       perDrawData = (instanceOffset << MATERIAL_OFFSET_BITS) | materialOffset;
@@ -492,7 +487,7 @@ void DynModelRenderingState::render_multidraw(int offset) const
     auto &rli = multidrawList[dcParams.start];
 
     debug_mesh::set_debug_value(rli.lodNo); // TODO: Support show_gbuffer lods for multidraw
-    set_states_for_variant(rli.curShader->native(), rli.curVar, rli.prog, rli.state);
+    set_states_for_variant(rli.curShader->native(), rli.dvState);
 
     // workaround: vertex data can be empty during geom reloading
     if (!rli.vData->isEmpty())

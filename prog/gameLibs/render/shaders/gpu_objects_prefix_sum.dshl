@@ -162,5 +162,16 @@ shader gpu_objects_sum_area_cs, gpu_objects_mesh_sum_area_cs
 
     }
   }
-  compile("cs_5_0", "sum_area");
+
+  if (hardware.vulkan)
+  {
+    // override profile to compile with sm5.0 in sm6.0 dumps
+    // as some NV drivers fail to handle this shader in vulkan1.1/spirv1.3 env
+    compile("cs_set_target", "cs_5_0");
+    compile("target_cs", "sum_area");
+  }
+  else
+  {
+    compile("cs_5_0", "sum_area");
+  }
 }

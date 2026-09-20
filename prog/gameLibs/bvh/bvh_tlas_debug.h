@@ -25,6 +25,9 @@ struct TlasSizes
   uint32_t gpuGrassCount = 0;
 
   uint32_t terrainCount = 0;
+  // The terrain TLAS is only rebuilt when a patch BLAS changes; on the other frames its upload
+  // buffer ring entry holds stale data, so the debug tools must not read it.
+  bool terrainBuilt = false;
 
   uint32_t fxCount = 0;
   uint32_t smokeTracerCount = 0;

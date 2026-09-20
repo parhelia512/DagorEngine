@@ -11,11 +11,7 @@ AddIncludes =
   $(Root)/prog/gameLibs/publicInclude
 ;
 
-Sources =
-  meshCommon.cpp
-  meshSlicing.cpp
-  cutFaceGraphPrepare.cpp
-  cutFaceBoundarySearch.cpp
-;
+Sources = ;
+AutoscanBuildLists . : *.cpp : Sources ;
 
 include $(Root)/prog/_jBuild/build.jam ;

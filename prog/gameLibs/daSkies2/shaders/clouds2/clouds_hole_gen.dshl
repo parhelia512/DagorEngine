@@ -8,7 +8,8 @@ buffer clouds_hole_buf;
 float clouds_hole_density;
 
 macro USE_CLOUDS_HOLE(stage)
-  (stage) {clouds_shadows_volume@smp = clouds_shadows_volume hlsl {Texture3D<float2> clouds_shadows_volume@smp; }}
+  (stage) {clouds_shadows_volume@tex = clouds_shadows_volume hlsl {Texture3D<float2> clouds_shadows_volume@tex; }}
+  (stage) {clouds_shadows_volume_samplerstate@sampler = clouds_shadows_volume_samplerstate;}
   (stage) {clouds_hole_density@f1 = (clouds_hole_density);}
   hlsl(stage) {
     #include <cloud_settings.hlsli>

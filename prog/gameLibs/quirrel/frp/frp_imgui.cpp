@@ -2,6 +2,7 @@
 
 #include <ctype.h>
 #include <generic/dag_sort.h>
+#include <memory/dag_framemem.h>
 #include <osApiWrappers/dag_files.h>
 #include <osApiWrappers/dag_miscApi.h>
 #include <ska_hash_map/flat_hash_map2.hpp>
@@ -41,7 +42,7 @@ struct VisualNode
     {
       bool visible : 1;
       bool computedHasActiveConsumers : 1;
-      bool needImmediate : 1;
+      bool propagatesImmediate : 1;
       bool collected : 1;
       bool selected : 1;
       bool linkHovered : 1;
@@ -328,14 +329,15 @@ void sqfrp::graph_viewer()
 
       VisualNodeIndex ni = 0;
       cur_graph->forEachNode([&](NodeId id, const NodeSlot &slot) {
+        const NodeSlotData &slotData = cur_graph->nodeData(id);
         auto &n = all_nodes[ni];
         n.flags = 0;
         n.nodeId = id;
-        n.numSubscribers = slot.scriptSubscribers.size();
+        n.numSubscribers = slotData.scriptSubscribers.size();
         num_subscribers += n.numSubscribers;
         node_map[id.index] = ni;
 
-        if (auto *info = slot.initInfo.get())
+        if (auto *info = slotData.initInfo.get())
         {
           if (info->initFuncName == "__main__")
             n.name = String(0, "(%s:%u)", info->initSourceFileName.c_str(), info->initSourceLine);
@@ -347,7 +349,7 @@ void sqfrp::graph_viewer()
         }
         else
         {
-          String s;
+          String s(framemem_ptr());
           cur_graph->fillInfo(id, s);
           n.name = s;
           n.sourceLine = 0;
@@ -359,15 +361,15 @@ void sqfrp::graph_viewer()
           if (slot.computedHasActiveConsumers)
             num_used_computed++;
           n.computedHasActiveConsumers = slot.computedHasActiveConsumers;
-          n.needImmediate = slot.needImmediate;
+          n.propagatesImmediate = slot.propagatesImmediate;
         }
         else
         {
-          n.computedHasActiveConsumers = !slot.scriptSubscribers.empty();
-          if (!n.computedHasActiveConsumers && !slot.watchers.empty())
+          n.computedHasActiveConsumers = !slotData.scriptSubscribers.empty();
+          if (!n.computedHasActiveConsumers && !slotData.watchers.empty())
             n.computedHasActiveConsumers = true;
           if (!n.computedHasActiveConsumers)
-            for (NodeId dep : slot.dependents)
+            for (NodeId dep : slotData.dependents)
               if (auto *ds = cur_graph->resolve(dep); ds && ds->computedHasActiveConsumers)
               {
                 n.computedHasActiveConsumers = true;
@@ -391,8 +393,9 @@ void sqfrp::graph_viewer()
         if (!slot || !slot->isComputed)
           continue;
         num_computed++;
-        n.sources.reserve(slot->sources.size());
-        for (auto &s : slot->sources)
+        const NodeSlotData &slotData = cur_graph->nodeData(n.nodeId);
+        n.sources.reserve(slotData.sources.size());
+        for (auto &s : slotData.sources)
         {
           auto it = node_map.find(s.id.index);
           if (it == node_map.end())
@@ -1045,7 +1048,7 @@ void sqfrp::graph_viewer()
       }
       else if (!n.computedHasActiveConsumers || !n.collected)
         textColor = IM_COL32(180, 50, 50, 255);
-      else if (n.needImmediate)
+      else if (n.propagatesImmediate)
         textColor = IM_COL32(180, 50, 180, 255);
       else
         textColor = IM_COL32(180, 180, 180, 255);
@@ -1091,7 +1094,7 @@ void sqfrp::graph_viewer()
           ImGui::Text("%s:%u", n.sourceFile.c_str(), n.sourceLine);
         if (!n.computedHasActiveConsumers)
           ImGui::TextColored(ImVec4(1, 0.1f, 0.1f, 1), "NOT USED");
-        if (n.needImmediate)
+        if (n.propagatesImmediate)
           ImGui::TextColored(ImVec4(1, 0.1f, 1, 1), "IMMEDIATE");
         if (n.numSubscribers > 0)
           ImGui::TextColored(ImVec4(1, 0.9f, 0, 1), "%u subscribers", n.numSubscribers);

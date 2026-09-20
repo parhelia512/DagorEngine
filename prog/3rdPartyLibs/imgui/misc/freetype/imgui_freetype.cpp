@@ -496,7 +496,11 @@ static bool ImGui_ImplFreeType_FontBakedLoadGlyph(ImFontAtlas* atlas, ImFontConf
     const float rasterizer_density = src->RasterizerDensity * baked->RasterizerDensity;
 
     // Load metrics only mode
-    const float advance_x = (slot->advance.x / FT_SCALEFACTOR) / rasterizer_density;
+    // MODIFICATION BY GAIJIN: see ImGuiFreeTypeLoaderFlags_LinearMetrics. linearHoriAdvance is 16.16
+    // and is never grid-fit (freetype ftobjs.c, autofit/afloader.c both round slot->advance.x).
+    const float advance_x = ((bd_font_data->UserFlags & ImGuiFreeTypeLoaderFlags_LinearMetrics)
+        ? (slot->linearHoriAdvance / 65536.0f)
+        : (slot->advance.x / FT_SCALEFACTOR)) / rasterizer_density;
     if (out_advance_x != NULL)
     {
         IM_ASSERT(out_glyph == NULL);

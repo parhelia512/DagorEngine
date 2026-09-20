@@ -4,7 +4,7 @@
 #include <ecs/render/updateStageRender.h>
 #include <render/cascadeShadows.h>
 #include <render/rendererFeatures.h>
-#include <render/world/cameraParams.h>
+#include <render/cameraParams.h>
 #include <daECS/core/entityManager.h>
 #include <daECS/core/entitySystem.h>
 #include "frameGraphNodes.h"
@@ -103,7 +103,6 @@ static void create_transparents_ecs_nodes_es(const OnCameraNodeConstruction &evt
 
   // We expose the transparent attachements to the outside world
   evt.nodes->push_back(dafg::register_node("transparent_publish_node", DAFG_PP_NODE_SRC, [](dafg::Registry registry) {
-    registry.orderMeBefore("water_normal_late_node");
     auto prevNs = registry.root() / "transparent" / "close";
     prevNs.rename("color_target_done", "target_for_transparency");
     prevNs.rename("depth_done", "depth_before_water_late");

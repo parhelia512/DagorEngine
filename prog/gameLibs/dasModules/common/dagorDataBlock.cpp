@@ -134,25 +134,11 @@ public:
       SIDE_EFFECT, "das_call_member<" #SIGNATURE ", &DataBlock::" #FUNC_NAME ">::invoke");                                \
   }
 
-    struct removeRefFn : das::defaultTempFn
-    {
-      removeRefFn(int idx_) : idx{idx_} {}
-      ___noinline bool operator()(das::Function *fn)
-      {
-        defaultTempFn::operator()(fn);
-        fn->arguments[idx]->type->ref = false;
-        return true;
-      }
-      const int idx = 2;
-    };
-
-// macro for bind class member function and remove ref from 1 argument.
-//  void f(const Point3 &) -> void f(Point3). It's need to pass rvalue in this functions
-#define BLK_MEMBER_REMOVE_REF(FUNC_NAME, SYNONIM, SIDE_EFFECT, SIGNATURE, REF_IDX)                                         \
-  {                                                                                                                        \
-    using memberMethod = das::das_call_member<SIGNATURE, &DataBlock::FUNC_NAME>;                                           \
-    das::addExtern<DAS_CALL_METHOD(memberMethod), das::SimNode_ExtFuncCall, removeRefFn>(*this, lib, SYNONIM, SIDE_EFFECT, \
-      "das_call_member<" #SIGNATURE ", &DataBlock::" #FUNC_NAME ">::invoke", removeRefFn(REF_IDX));                        \
+#define BLK_MEMBER_REMOVE_REF(FUNC_NAME, SYNONIM, SIDE_EFFECT, SIGNATURE, REF_IDX)       \
+  {                                                                                      \
+    using memberMethod = das::das_call_member_no_ref2<SIGNATURE, &DataBlock::FUNC_NAME>; \
+    das::addExtern<DAS_CALL_METHOD(memberMethod)>(*this, lib, SYNONIM, SIDE_EFFECT,      \
+      "das_call_member_no_ref2<" #SIGNATURE ", &DataBlock::" #FUNC_NAME ">::invoke");    \
   }
 
     BLK_MEMBER(clearData, "datablock_clear_data", das::SideEffects::modifyArgument, void(DataBlock::*)())

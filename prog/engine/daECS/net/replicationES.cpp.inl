@@ -2,6 +2,7 @@
 
 #include <daECS/net/object.h>
 #include <daECS/net/compBlacklist.h>
+#include <daECS/net/netEvents.h>
 #include <daECS/core/entityManager.h>
 #include <daECS/core/entitySystem.h>
 #include <daECS/core/coreEvents.h>
@@ -25,8 +26,9 @@ void client_validate_replication_cb(ecs::EntityManager &mgr, ecs::EntityId eid, 
   net::replicated_component_on_client_change(mgr, eid, cidx);
 }
 
+// Null the cb while "net" is still armed (session end / pre-clear), not only on EM clear.
 ECS_TAG(server, net)
-ECS_ON_EVENT(ecs::EventEntityManagerBeforeClear, ecs::EventEntityManagerEsOrderSet)
+ECS_ON_EVENT(EventOnNetworkDestroyed, ecs::EventEntityManagerBeforeClear, ecs::EventEntityManagerEsOrderSet)
 inline void reset_replication_es_event_handler(const ecs::Event &, ecs::EntityManager &manager) { manager.setReplicationCb(NULL); }
 
 

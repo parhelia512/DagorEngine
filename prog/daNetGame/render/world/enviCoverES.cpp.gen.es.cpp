@@ -26,7 +26,7 @@ static ecs::EntitySystemDesc envi_cover_es_es_desc
   make_span(envi_cover_es_comps+0, 1)/*ro*/,
   empty_span(),
   empty_span(),
-  ecs::EventSetBuilder<OnLevelLoaded>::build(),
+  ecs::EventSetBuilder<EventRenderSceneLoaded>::build(),
   0
 ,"render");
 static constexpr ecs::ComponentDesc envi_cover_unload_es_comps[] =
@@ -109,7 +109,7 @@ static ecs::EntitySystemDesc set_envi_cover_params_es_es_desc
   make_span(set_envi_cover_params_es_comps+0, 18)/*ro*/,
   empty_span(),
   empty_span(),
-  ecs::EventSetBuilder<OnLevelLoaded>::build(),
+  ecs::EventSetBuilder<EventRenderSceneLoaded>::build(),
   0
 ,"render",nullptr,"*");
 static constexpr ecs::ComponentDesc envi_cover_intensity_map_unload_es_comps[] =
@@ -158,7 +158,7 @@ static ecs::EntitySystemDesc envi_cover_rt_on_es_es_desc
   make_span(envi_cover_rt_on_es_comps+0, 1)/*ro*/,
   empty_span(),
   empty_span(),
-  ecs::EventSetBuilder<OnLevelLoaded>::build(),
+  ecs::EventSetBuilder<EventRenderSceneLoaded>::build(),
   0
 ,"render");
 static constexpr ecs::ComponentDesc envi_cover_rt_off_es_comps[] =

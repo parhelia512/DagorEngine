@@ -13,7 +13,7 @@ rejector()
 
 async function consume() {
     try { let _ = await wt; print("BUG: fulfilled\n") }
-    catch (e) { print("wt: " + e + "\n") }
+    catch (e) { println($"wt: {e}") }
 }
 consume()
 

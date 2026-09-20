@@ -54,7 +54,7 @@ public:
   CollisionInstances(const CICollisionObject &obj) : originalObj(obj) {}
 
   CollisionInstances(const CollisionInstances &) = delete;
-  CollisionInstances(CollisionInstances &&);
+  CollisionInstances(CollisionInstances &&) = delete; // Relocatable
   APEX_VIRTUAL ~CollisionInstances();
 
   CollisionInstances &operator=(CollisionInstances &&) = delete; // This need to be implemented only if you need to erase from
@@ -63,12 +63,10 @@ public:
 
   void clear();
   APEX_VIRTUAL void clearInstances();
-  void unlink();
-  bool empty() const { return bulletInstances.empty(); }
+  void unlink() { prevNotEmpty = nextNotEmpty = NOT_IN_LIST; }
+  bool hasPhysBodyInstances() const { return !bulletInstances.empty(); }
 
   void removeCollisionObject(const rendinst::RendInstDesc &desc);
-  void enableDisableCollisionObject(const rendinst::RendInstDesc &desc, bool flag);
-  bool isCollisionObjectEnabled(const rendinst::RendInstDesc &desc) const;
   CollisionObject updateTm(const rendinst::RendInstDesc &desc, const TMatrix &tm, TMatrix *out_ntm = nullptr,
     bool update_scale = false, bool instant = false);
   CollisionObject getCollisionObject(const rendinst::RendInstDesc &desc, TMatrix &tm, bool instant = false)
@@ -83,23 +81,18 @@ public:
   }
   APEX_VIRTUAL bool deletePhysXCollisionObject(const rendinst::RendInstDesc &) { return false; }
 
-  APEX_VIRTUAL bool update(float dt); // Return false if empty
+  APEX_VIRTUAL bool update(float cur_time); // Return false if empty
 
 private:
   ScaledBulletInstance *getScaledInstance(const rendinst::RendInstDesc &desc, vec3f scl, bool &out_created);
 
 protected:
+  static constexpr int NOT_IN_LIST = -1;
   // We can probably get away with 16 bit indexes but there is no padding in this struct so there is no point
-  int prevNotEmpty = -1, nextNotEmpty = -1;
+  int prevNotEmpty = NOT_IN_LIST, nextNotEmpty = NOT_IN_LIST;
 
   dag::Vector<ScaledBulletInstance> bulletInstances;
   CICollisionObject originalObj;
-
-  // Be default all instances are enabled and we want to keep a compact list of disabled instances.
-  // These instances can become disabled so they'll not interact *physically* with other objects,
-  // for instance it's beneficial to disable these instances when we want to process collision of
-  // this object in an alternative way (physobj, of physbody)
-  dag::Vector<rendinst::RendInstDesc> disabledInstances;
 
   friend void *register_collision_cb(const CollisionResource *collRes, const char *debug_name);
   friend void unregister_collision_cb(void *&handle);

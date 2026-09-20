@@ -139,7 +139,9 @@ bool WinMouseDevice::getCursorPos(POINT &pt, RECT *wr)
 
   bool isIn = (pt.x >= 0 && pt.y >= 0 && pt.x <= r.right && pt.y <= r.bottom);
 
-#if _TARGET_PC_WIN || _TARGET_PC_LINUX
+  // state.mouse is in render space, so any window-to-backbuffer factor has to cancel here;
+  // clip rect and clients (imgui, darg) assume d3d::get_screen_size() units
+#if _TARGET_PC_WIN || _TARGET_PC_LINUX || _TARGET_PC_MACOSX
   int w = 1, h = 1;
   d3d::get_screen_size(w, h);
   if (w && h)
@@ -966,7 +968,8 @@ void WinMouseDevice::deviceSetPosition(int x, int y)
   POINT pt;
   pt.x = x;
   pt.y = y;
-#if _TARGET_PC_WIN || _TARGET_PC_LINUX
+  // inverse of the mapping getCursorPos() applies, keep both in sync
+#if _TARGET_PC_WIN || _TARGET_PC_LINUX || _TARGET_PC_MACOSX
   RECT r;
   ::mouse_api_GetClientRect(win32_get_main_wnd(), &r);
   int w = 1, h = 1;

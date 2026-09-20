@@ -104,6 +104,8 @@ struct DestructableCreationParams
   float disintegrationDuration = -1.0f;
   float disintegrationScale = -1.0f;
   bool isDestroyedByExplosion = false;
+  bool keepAlive = false;
+  bool interactiveDebris = false;
 
   dag::Vector<gamephys::FracturePhysObject> fracturePhysObjects;
 };
@@ -129,6 +131,7 @@ private:
   float inactiveTimeBeforeSink = 3.f;
   float timeToSinkUnderground = 3.f;
   float minInteractiveTime = 2.f;
+  bool keepAlive = false;
   float scaleDt;
   bool floatEnabled = false;
   float disintegrationTime = 0.0f;

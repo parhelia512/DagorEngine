@@ -52,6 +52,13 @@ struct AutoLockWritePrimaryAndExtra
 };
 
 int getRIGenMaterialId(const RendInstDesc &desc, bool need_lock = true);
+// Destruction strings of the pool, never null ("" when unset). They are owned by the pool
+// props, so use the result inside the call and never store it. Read without riRwCs, like
+// the other pool prop readers on the destruction paths (see rendinst::fillTreeInstData).
+const char *getRIGenDestrPropsTag(const RendInstDesc &desc);
+const char *getRIGenDestrPropsDestroyedByTag(const RendInstDesc &desc);
+const char *getRIGenDestrPropsFxTemplate(const RendInstDesc &desc);
+bool getRIGenOverrideMaterialForTraces(const RendInstDesc &desc, bool need_lock = true);
 bool getRIGenCanopyBBox(const RendInstDesc &desc, const TMatrix &tm, BBox3 &out_canopy_bbox, bool need_lock = true);
 int getRIGenCanopyShape(const RendInstDesc &desc);
 CollisionResource *getRIGenCollInfo(const RendInstDesc &desc);
@@ -63,6 +70,8 @@ bool isRIGenOnlyPosInst(int layer_ix, int pool_ix);
 bool isDestroyedRIExtraFromNextRes(const RendInstDesc &desc);
 bool isValidRILayerAndPool(const RendInstDesc &desc);
 int getRIExtraNextResIdx(int pool_id);
+
+const char *getRIGenResNameByPool(int layer, int pool);
 
 TMatrix getRIGenMatrix(const RendInstDesc &desc);
 // Assumes that everything required is already locked
@@ -116,6 +125,13 @@ bool resolve_rigen_desc_subcell(RendInstDesc &desc);
 
 RenderableInstanceLodsResource *getRIGenRes(RendInstGenData *rgl, const RendInstDesc &desc);
 RenderableInstanceLodsResource *getRIGenRes(int layer_ix, int pool_ix);
+// the pool res with a ref taken, or null while riGen loads (the fill holds no lock;
+// outside the isLoading window the tables only append). delRef when done. out_res_name,
+// when asked for, is set whenever the pool exists, even with a null res (a dedicated
+// build pool); the chars live only as long as the layer, so use them in place
+RenderableInstanceLodsResource *getRIGenResAddRef(int layer_ix, int pool_ix, const char **out_res_name = nullptr);
+int getRIGenLayersCount();
+int getRIGenPoolsCount(int layer_ix); // 0 when the layer is absent or not loaded yet
 
 using RiGenIterator = void (*)(int layer_ix, int pool_ix, int lod_ix, int last_lod_ix, bool impostor, mat44f_cref tm,
   const E3DCOLOR *colors, uint32_t bvh_id, uint64_t unique_id, void *user_data, uint32_t palette_id);

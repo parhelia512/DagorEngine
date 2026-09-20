@@ -19,13 +19,13 @@
 #include "block.h"
 #include "globalManager.h"
 #include <render/world/bvh.h>
+#include <render/world/dynamicShadowRenderExtender.h>
 #include "CSMShadows.h"
 
 namespace var
 {
 static ShaderVariableInfo dyn_region("dagdp__dyn_region", true);
 static ShaderVariableInfo dyn_counters_num("dagdp__dyn_counters_num", true);
-static ShaderVariableInfo global_density_mul("dagdp__global_density_mul", true);
 }; // namespace var
 
 using TmpName = eastl::fixed_string<char, 256>;
@@ -51,9 +51,82 @@ struct ViewPersistentData
 
 float GlobalManager::globalDensityMul = 1;
 
+// Caps for grow_limit, so that content with excessive demands cannot grow the
+// GPU buffers without bound. Each cap must stay above the template default of
+// its dagdp__max_* setting, else growth cannot engage for default-configured
+// levels. The volumes cap is also a hard bound: grid3d packs volume start/end
+// indices into 16 bits each (see packVolumeRange), and a 1 << 16 limit would
+// overflow that packing.
+static constexpr uint32_t GROWN_LIMIT_CAP_MESHES = 1 << 16;
+static constexpr uint32_t GROWN_LIMIT_CAP_TILES = 1 << 16;
+static constexpr uint32_t GROWN_LIMIT_CAP_3D_TILES = 1 << 16;
+static constexpr uint32_t GROWN_LIMIT_CAP_VOLUMES = 0xFFFF;
+static constexpr uint32_t GROWN_LIMIT_CAP_TRIANGLES = 1 << 22;
+static constexpr uint32_t GROWN_LIMIT_CAP_OBJECTS = 1 << 16;
+
+RequiredLimits GlobalManager::requiredLimits;
+
+void GlobalManager::updateRequiredLimits(const RequiredLimits &required)
+{
+  requiredLimits.maxMeshes = max(requiredLimits.maxMeshes, required.maxMeshes);
+  requiredLimits.maxTiles = max(requiredLimits.maxTiles, required.maxTiles);
+  requiredLimits.max3dTiles = max(requiredLimits.max3dTiles, required.max3dTiles);
+  requiredLimits.maxVolumes = max(requiredLimits.maxVolumes, required.maxVolumes);
+  requiredLimits.maxObjects = max(requiredLimits.maxObjects, required.maxObjects);
+  requiredLimits.maxTriangles = max(requiredLimits.maxTriangles, required.maxTriangles);
+}
+
+// Grows limit to 1.5x the required count, up to cap. Returns true if the limit changed. grown_limit records the new floor.
+static bool grow_limit(uint32_t required, uint32_t &limit, uint32_t &grown_limit, uint32_t cap, const char *what)
+{
+  if (required <= limit)
+    return false;
+
+  const uint32_t newLimit = min(cap, required + required / 2);
+  if (newLimit <= limit)
+  {
+    LOGERR_ONCE("daGdp: %u %s needed, but the limit (%u) cannot grow past the cap (%u). Placement will be incomplete. "
+                "Reduce the amount of content covered by daGdp placers.",
+      required, what, limit, cap);
+    return false;
+  }
+
+  logwarn("daGdp: growing max. number of %s: %u -> %u (%u needed). Views will be rebuilt.", what, limit, newLimit, required);
+  limit = newLimit;
+  grown_limit = newLimit;
+  return true;
+}
+
+void GlobalManager::applyRequiredLimits()
+{
+  const RequiredLimits required = requiredLimits;
+  requiredLimits = {};
+
+  // Note: only the max* scalars of rulesBuilder are mutated; they are consumed
+  // at view build time and no pointers into rulesBuilder are affected.
+  bool grown = false;
+  grown |= grow_limit(required.maxMeshes, rulesBuilder.maxMeshes, grownLimits.maxMeshes, GROWN_LIMIT_CAP_MESHES, "volume meshes");
+  grown |= grow_limit(required.maxTiles, rulesBuilder.maxTiles, grownLimits.maxTiles, GROWN_LIMIT_CAP_TILES, "volume tiles");
+  grown |= grow_limit(required.max3dTiles, rulesBuilder.max3dTiles, grownLimits.max3dTiles, GROWN_LIMIT_CAP_3D_TILES, "3d tiles");
+  grown |= grow_limit(required.maxVolumes, rulesBuilder.maxVolumes, grownLimits.maxVolumes, GROWN_LIMIT_CAP_VOLUMES, "volumes");
+
+  grown |=
+    grow_limit(required.maxObjects, rulesBuilder.maxObjects, grownLimits.maxObjects, GROWN_LIMIT_CAP_OBJECTS, "dynamic objects");
+  grown |= grow_limit(required.maxTriangles, rulesBuilder.maxTriangles, grownLimits.maxTriangles, GROWN_LIMIT_CAP_TRIANGLES,
+    "volume triangles");
+
+  if (grown)
+    invalidateViews();
+}
+
 void GlobalManager::reconfigure(const GlobalConfig &new_config)
 {
   config = new_config;
+  if (!config.enabled)
+  {
+    grownLimits = {};
+    requiredLimits = {};
+  }
   destroyViews();
 }
 
@@ -128,6 +201,8 @@ void GlobalManager::invalidateViews()
 
 void GlobalManager::update(ecs::EntityManager &manager)
 {
+  applyRequiredLimits();
+
   if (!viewsAreCreated)
   {
     const auto startRef = ref_time_ticks();
@@ -148,8 +223,6 @@ void GlobalManager::update(ecs::EntityManager &manager)
     rebuildViews(manager);
     ::debug("daGdp: rebuildViews took %d us", get_time_usec(startRef));
   }
-
-  refined_block::get_global().set(var::global_density_mul, globalDensityMul);
 }
 
 void GlobalManager::rebuildRules()
@@ -163,6 +236,16 @@ void GlobalManager::rebuildRules()
   }
 
   queryLevelSettings(rulesBuilder);
+
+  // Grown limits are floors over the level settings, so that a rules rebuild
+  // does not shrink the buffers back and later re-hitch on the same overflow.
+  rulesBuilder.maxMeshes = max(rulesBuilder.maxMeshes, grownLimits.maxMeshes);
+  rulesBuilder.maxTiles = max(rulesBuilder.maxTiles, grownLimits.maxTiles);
+  rulesBuilder.max3dTiles = max(rulesBuilder.max3dTiles, grownLimits.max3dTiles);
+  rulesBuilder.maxVolumes = max(rulesBuilder.maxVolumes, grownLimits.maxVolumes);
+  rulesBuilder.maxObjects = max(rulesBuilder.maxObjects, grownLimits.maxObjects);
+  rulesBuilder.maxTriangles = max(rulesBuilder.maxTriangles, grownLimits.maxTriangles);
+
   accumulateObjectGroups(rulesBuilder);
   accumulatePlacers(rulesBuilder);
 
@@ -399,13 +482,11 @@ void GlobalManager::rebuildViews(ecs::EntityManager &manager)
 #else
               G_UNUSED(view);
 #endif
-              if (totalCapacity > 0 && totalPlaced > totalCapacity * DYNAMIC_THRESHOLD_MULTIPLIER)
+              if (totalCapacity > 0 && totalPlaced > totalCapacity * DYNAMIC_GROW_THRESHOLD)
               {
-                globalDensityMul *= totalCapacity * DYNAMIC_THRESHOLD_MULTIPLIER / float(totalPlaced + 1);
-#if DAGDP_DEBUG
-                logerr("daGdp: dynamic placement overflow detected! %" PRIu32 " > %" PRIu32 " * %g, setting global density to %g",
-                  totalPlaced, totalCapacity, DYNAMIC_THRESHOLD_MULTIPLIER, globalDensityMul);
-#endif
+                RequiredLimits required;
+                required.maxObjects = static_cast<uint32_t>(totalPlaced / DYNAMIC_GROW_THRESHOLD) + 1;
+                GlobalManager::updateRequiredLimits(required);
               }
 
               persistentData->readback.unlock();
@@ -444,7 +525,7 @@ void GlobalManager::rebuildViews(ecs::EntityManager &manager)
     const auto declare = [views = eastl::move(dynShadowsViews)](dafg::Registry registry) {
       view_multiplex(registry, ViewKind::DYN_SHADOWS);
 
-      auto updatesHandle = registry.readBlob<dynamic_shadow_render::FrameUpdates>("scene_shadow_updates").handle();
+      auto updatesHandle = registry.readBlob<SceneShadowRenderData>("scene_shadow_render_data").handle();
       auto mappingHandle = registry.createBlob<dynamic_shadow_render::FrameVector<int>>("scene_shadow_updates_mapping").handle();
 
       dag::Vector<dafg::VirtualResourceHandle<ViewPerFrameData, false, false>> viewDataHandles;
@@ -460,7 +541,7 @@ void GlobalManager::rebuildViews(ecs::EntityManager &manager)
       }
 
       return [viewDataHandles = eastl::move(viewDataHandles), views, updatesHandle, mappingHandle] {
-        const auto &updates = updatesHandle.ref();
+        const auto &updates = updatesHandle.ref().volumeData.staticUpdates;
         auto &mapping = mappingHandle.ref();
         mapping.assign(updates.size(), -1);
 

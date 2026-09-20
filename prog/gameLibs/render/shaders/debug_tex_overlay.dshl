@@ -5,6 +5,10 @@ int swizzled_texture_type = 0;
 interval swizzled_texture_type : swizzled_texture_2d < 1, swizzled_texture_cube < 2, swizzled_texture_array < 3, swizzled_texture_3d < 4, swizzled_texture_2d_depth < 5, swizzled_texture_cube_array;
 
 texture swizzled_texture;
+sampler swizzled_texture_cmp_samplerstate
+{
+  comparison_func = less;
+};
 float4 swizzled_texture_size;
 float4 swizzled_texture_face_mip;
 float4 swizzled_texture_tc_scale = (1, 1, 0, 0);
@@ -31,29 +35,41 @@ shader debug_tex_overlay
 
   if (swizzled_texture_type == swizzled_texture_2d)
   {
-    (ps) { swizzled_texture@smp2d = swizzled_texture; }
+    (ps) { swizzled_texture@tex2d = swizzled_texture; }
   }
   else if (swizzled_texture_type == swizzled_texture_cube)
   {
-    (ps) { swizzled_texture@smpCube = swizzled_texture; }
+    (ps) { swizzled_texture@texCube = swizzled_texture; }
   }
   else if (swizzled_texture_type == swizzled_texture_3d)
   {
-    (ps) { swizzled_texture@smp3d = swizzled_texture; }
+    (ps) { swizzled_texture@tex3d = swizzled_texture; }
   }
   else if (swizzled_texture_type == swizzled_texture_array)
   {
-    (ps) { swizzled_texture@smpArray = swizzled_texture; }
+    (ps) { swizzled_texture@texArray = swizzled_texture; }
   }
   else if (swizzled_texture_type == swizzled_texture_2d_depth)
   {
-    (ps) { swizzled_texture@shd = swizzled_texture; }
+    (ps) {
+      swizzled_texture@tex2d = swizzled_texture;
+      swizzled_texture_cmpSampler@cmpSampler = swizzled_texture_cmp_samplerstate;
+    }
   }
   else if ((swizzled_texture_type == swizzled_texture_cube_array) && (hardware.dx11 || hardware.dx12 || hardware.vulkan))
   {
     (ps) {
-      swizzled_texture@smpCubeArray = swizzled_texture;
+      swizzled_texture@texCubeArray = swizzled_texture;
       cube_index@f1 = (cube_index);
+    }
+  }
+
+  // the depth branch binds its own comparison sampler; all other types use the default sampler
+  if (swizzled_texture_type != swizzled_texture_2d_depth)
+  {
+    INIT_GLOBAL_LINEAR_WRAP_SAMPLER(ps)
+    hlsl(ps) {
+      #define swizzled_texture_samplerstate global_linear_wrap_sampler
     }
   }
 
@@ -87,6 +103,7 @@ shader debug_tex_overlay
   }
 
   USE_POSTFX_VERTEX_POSITIONS()
+  USE_PRE_ROTATION(vs)
 
   hlsl(vs) {
     #include <get_cubemap_vector.hlsl>
@@ -97,6 +114,7 @@ shader debug_tex_overlay
       output.pos = float4(pos.x, pos.y, 1, 1);
       output.pos.xy *= abs(swizzled_texture_size.xy);
       output.pos.xy += swizzled_texture_size.zw;
+      output.pos.xy = apply_pre_rotation(output.pos.xy);
 
       float2 tc = screen_to_texcoords(pos);
       tc *=  swizzled_texture_tc_scale.xy;

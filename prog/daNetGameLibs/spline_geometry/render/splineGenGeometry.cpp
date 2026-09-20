@@ -22,6 +22,8 @@ void SplineGenGeometry::reset()
   instance.objCount = 0;
   instance.flags = 0;
   inactiveFrames = 0;
+  splineLength = 0;
+  meterBetweenObjs = 0;
   instance.bbox_lim0 = float3(100000, 100000, 100000);
   instance.bbox_lim1 = float3(-100000, -100000, -100000);
 }
@@ -98,7 +100,8 @@ void SplineGenGeometry::updateInstancingData(const eastl::vector<SplineGenSpline
   uint32_t stripes = manager.stripes;
   const IPoint2 &displacementTexSize = manager.getDisplacementTexSize();
 
-  float splineLength = 0;
+  splineLength = 0;
+  meterBetweenObjs = meter_between_objs;
   BBox3 bbox;
   bbox += spline_vec[stripes].pos;
 
@@ -120,13 +123,7 @@ void SplineGenGeometry::updateInstancingData(const eastl::vector<SplineGenSpline
 
   instance.objSizeMul = obj_size_mul;
   if (manager.hasObj())
-  {
-    SplineGenGeometryAsset &asset = manager.getAsset();
-    extension += obj_size_mul * asset.getObjectDiameter();
-    uint32_t requestedObjCount = meter_between_objs > 0.0f ? floor(splineLength / meter_between_objs) : 0;
-    asset.updateInstancingData(instance, batchIds, requestedObjCount);
-  }
-  instance.objStripeMul = safediv(instance.objCount * meter_between_objs, splineLength);
+    extension += obj_size_mul * manager.getAsset().getObjectDiameter();
 
   bbox.inflate(extension);
   instance.bbox_lim0 = bbox.lim[0];
@@ -145,14 +142,24 @@ void SplineGenGeometry::updateInstancingData(const eastl::vector<SplineGenSpline
   instance.mediumTint = medium_tint;
   instance.isShell = is_shell;
 
-  manager.updateInstancingData(id, instance, spline_vec);
+  manager.writeSplineData(id, instance, spline_vec);
 }
 
 void SplineGenGeometry::updateAttachmentBatchIds()
 {
-  if (!isActive())
+  SplineGenGeometryManager &manager = getManager();
+  if (isActive())
+  {
+    if (manager.hasObj())
+    {
+      uint32_t requestedObjCount = meterBetweenObjs > 0.0f ? floor(splineLength / meterBetweenObjs) : 0;
+      manager.getAsset().updateInstancingData(instance, batchIds, requestedObjCount);
+    }
+    instance.objStripeMul = safediv(instance.objCount * meterBetweenObjs, splineLength);
+  }
+  else
     instance.flags = 0; // position doesn't change if inactive, so turn off reading the prev buffer
-  getManager().updateAttachmentBatchIds(id, instance, batchIds);
+  manager.updateAttachmentBatchIds(id, instance, batchIds);
   instance.flags |= PREV_SB_VALID | PREV_ATTACHMENT_DATA_VALID;
 }
 

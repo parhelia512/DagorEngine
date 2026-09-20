@@ -109,11 +109,12 @@ public:
 };
 
 
-template <int type>
-AnimcharAdditionalDataVec prepare_fixed_space(dag::ConstSpan<Point4> additional_data)
+// C may be any Point4 container, use a fixed one (payload + 2 metadata elements) to keep it off the heap
+template <int type, typename C = AnimcharAdditionalDataVec>
+C prepare_fixed_space(dag::ConstSpan<Point4> additional_data)
 {
   G_STATIC_ASSERT(type >= 0 && type < 8);
-  AnimcharAdditionalDataVec data;
+  C data;
   data.resize(additional_data.size() + 2);
   if (additional_data.empty())
   {

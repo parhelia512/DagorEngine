@@ -81,6 +81,7 @@ void FormattedText::clear()
   }
 
   lines.clear();
+  freeFragments();
   embeddedComps.clear();
   for (TextBlock *block : blocks)
     freeTextBlock(block);
@@ -115,6 +116,56 @@ void FormattedText::freeTextBlock(TextBlock *block)
   }
   block->~TextBlock();
   textBlockAllocator.freeOneBlock(block);
+}
+
+
+TextBlock *FormattedText::allocateFragment(const TextBlock *src, int begin, int end)
+{
+  TextBlock *frag = allocateTextBlock();
+  frag->type = TextBlock::TBT_TEXT;
+  frag->text.assign(src->text.c_str() + begin, end - begin);
+  frag->fontId = src->fontId;
+  frag->fontHt = src->fontHt;
+  frag->customColor = src->customColor;
+  frag->useCustomColor = src->useCustomColor;
+  fragments.push_back(frag);
+  return frag;
+}
+
+
+void FormattedText::freeFragments()
+{
+  for (TextBlock *frag : fragments)
+    freeTextBlock(frag);
+  fragments.clear();
+}
+
+
+// Same measure as shapeBlock
+static int fit_prefix_len(const TextBlock *block, const StdGuiFontContext &fontCtx, float max_w)
+{
+  const char *text = block->text.c_str();
+  const char *end = text + block->text.length();
+
+  Tab<int> cpEnds(framemem_ptr());
+  for (const char *p = text; p < end;)
+  {
+    utf8::next(p, end);
+    cpEnds.push_back(p - text);
+  }
+  if (cpEnds.empty())
+    return 0;
+
+  int lo = 0, hi = cpEnds.size() - 1;
+  while (lo < hi)
+  {
+    int mid = (lo + hi + 1) / 2;
+    if (StdGuiRender::get_str_bbox(text, cpEnds[mid], fontCtx).right() <= max_w)
+      lo = mid;
+    else
+      hi = mid - 1;
+  }
+  return cpEnds[lo];
 }
 
 
@@ -750,6 +801,7 @@ void FormattedText::format(const FormatParams &params)
       block->hasValidShape = false;
 
   lastFormatParamsForCurText = params;
+  freeFragments();
 
   formatErrorMsg.clear();
 
@@ -779,6 +831,7 @@ void FormattedText::format(const FormatParams &params)
   fontCtx.monoW = params.monoWidth;
 
   const bool allowWrap = (preformattedFlags & FMT_NO_WRAP) == 0;
+  const bool breakLongWords = allowWrap && params.maxWidth > 0 && params.breakLongWords;
 
   // Form lines
 
@@ -790,6 +843,26 @@ void FormattedText::format(const FormatParams &params)
   curLine.paragraphStart = true;
   if (lines.empty()) // first format call with no previous data
     curLine.blocks.reserve(::min(blocks.size(), 8u));
+
+  auto startNewLine = [&]() {
+    linesBuilder.pushBack(eastl::move(curLine));
+    curLine.reset();
+    curMaxDescent = 0;
+    linesBuilder.aquireNextLineBlocksVector(curLine);
+  };
+
+  auto appendToLine = [&](TextBlock *block, float ascent, float descent) {
+    curLine.blocks.push_back(block);
+    curLine.contentWidth += block->indent + block->size.x;
+    if (block->type == TextBlock::TBT_COMPONENT)
+      curLine.baseLineY = max(curLine.baseLineY, block->size.y);
+    else
+    {
+      curLine.baseLineY = max(curLine.baseLineY, ascent);
+      curMaxDescent = max(curMaxDescent, descent);
+    }
+    curLine.contentHeight = curLine.baseLineY + curMaxDescent;
+  };
 
   for (int blockIdx = 0; blockIdx < blocks.size(); blockIdx++)
   {
@@ -814,15 +887,39 @@ void FormattedText::format(const FormatParams &params)
     if (allowWrap && params.maxWidth > 0 && curLine.contentWidth > 0 && (curLine.contentWidth + block->size.x > params.maxWidth) &&
         block->type != TextBlock::TBT_LINE_BREAK) // no duplicate line breaks (TODO: review logic)
     {
-      linesBuilder.pushBack(eastl::move(curLine));
-      curLine.reset();
-      curMaxDescent = 0;
-      linesBuilder.aquireNextLineBlocksVector(curLine);
+      startNewLine();
       block->indent = params.hangingIndent;
     }
 
     if (should_skip_leading_space_block(curLine, block, preformattedFlags))
       continue;
+
+    // Only fragments are edited in place, never parsed blocks.
+    while (breakLongWords && block->type == TextBlock::TBT_TEXT && block->indent + block->size.x > params.maxWidth)
+    {
+      const int headLen = fit_prefix_len(block, fontCtx, params.maxWidth - block->indent);
+      if (headLen <= 0 || headLen >= int(block->text.length()))
+        break;
+
+      TextBlock *head = allocateFragment(block, 0, headLen);
+      head->indent = block->indent;
+      shapeBlock(head, fontCtx, ascent, descent);
+      appendToLine(head, ascent, descent);
+      startNewLine();
+
+      TextBlock *tail;
+      if (block == blocks[blockIdx])
+        tail = allocateFragment(block, headLen, block->text.length());
+      else
+      {
+        tail = block;
+        tail->text.erase(0, headLen);
+        tail->hasValidShape = false;
+      }
+      tail->indent = params.hangingIndent;
+      shapeBlock(tail, fontCtx, ascent, descent);
+      block = tail;
+    }
 
     // add new line block to the _next_ line for consistent cursor positioning
     if (block->type == TextBlock::TBT_LINE_BREAK)
@@ -832,23 +929,11 @@ void FormattedText::format(const FormatParams &params)
         curLine.baseLineY = max(curLine.baseLineY, ascent);
         curLine.contentHeight = curLine.baseLineY + max(curMaxDescent, descent);
       }
-      linesBuilder.pushBack(eastl::move(curLine));
-      curLine.reset();
-      curMaxDescent = 0;
-      linesBuilder.aquireNextLineBlocksVector(curLine);
+      startNewLine();
       curLine.paragraphStart = true;
     }
 
-    curLine.blocks.push_back(block);
-    curLine.contentWidth += block->indent + block->size.x;
-    if (block->type == TextBlock::TBT_COMPONENT)
-      curLine.baseLineY = max(curLine.baseLineY, block->size.y);
-    else
-    {
-      curLine.baseLineY = max(curLine.baseLineY, ascent);
-      curMaxDescent = max(curMaxDescent, descent);
-    }
-    curLine.contentHeight = curLine.baseLineY + curMaxDescent;
+    appendToLine(block, ascent, descent);
   }
 
   if (curLine.blocks.size())

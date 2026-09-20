@@ -8,6 +8,7 @@
 #include <EASTL/type_traits.h>
 #include <drv/3d/dag_consts_base.h>
 #include <drv/3d/dag_samplerHandle.h>
+#include <drv/3d/dag_multi_interface.h>
 #include <math/dag_color.h>
 
 //
@@ -100,7 +101,10 @@ struct SamplerInfo
 
   auto operator<=>(const SamplerInfo &) const = default;
 };
+} // namespace d3d
 
+namespace d3d _MULTI_INTERFACE
+{
 /**
  * @brief Request a sampler handle with the given sampler info
  *
@@ -121,7 +125,7 @@ SamplerHandle request_sampler(const SamplerInfo &sampler_info);
  * @param sampler The handle to the sampler to be bound
  */
 void set_sampler(unsigned shader_stage, unsigned slot, SamplerHandle sampler);
-} // namespace d3d
+} // namespace d3d _MULTI_INTERFACE
 
 #if _TARGET_D3D_MULTI
 #include <drv/3d/dag_interface_table.h>

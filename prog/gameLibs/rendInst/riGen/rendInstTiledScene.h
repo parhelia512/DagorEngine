@@ -281,6 +281,13 @@ struct TiledScenePoolInfo
   bool isDynamic;
 };
 
+inline const TiledScenePoolInfo *get_pool_info_if_ready(const eastl::vector<TiledScenePoolInfo> &pools, scene::pool_index pool_id)
+{
+  if (pool_id >= pools.size() || pools[pool_id].poolIdx == TiledScenePoolInfo::INVALID_POOL)
+    return nullptr;
+  return &pools[pool_id];
+}
+
 template <int N>
 class TiledScenesGroup
 {

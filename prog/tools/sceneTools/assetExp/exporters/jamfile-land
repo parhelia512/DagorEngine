@@ -13,14 +13,13 @@ AddIncludes =
   $(Root)/prog/tools/sceneTools/daEditorX/include
 ;
 
-UseProgLibs =
+UseProgLibs +=
   engine/startup
   engine/image
 
   3rdPartyLibs/hash
 
   tools/libTools/assetMgr
-  tools/libTools/util
   tools/sceneTools/daEditorX/services/bitMaskMgr
 ;
 

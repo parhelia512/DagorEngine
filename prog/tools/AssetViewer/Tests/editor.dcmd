@@ -77,4 +77,4 @@ wait.time 100
 // revert and exit:
 editor.command Main.LoadDefaultLayout
 wait.time 500
-app.terminate 0
+app.exit

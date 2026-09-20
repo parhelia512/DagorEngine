@@ -18,6 +18,7 @@ extern bool context_is_owned;
 extern float dt_mul;
 extern float accum_dt;
 extern int particles_resolution_preview;
+inline eastl::vector<eastl::string> cull_tags;
 } // namespace dafx_helper_globals
 
 extern void dafx_sparksfx_set_context(dafx::ContextId ctx);
@@ -52,7 +53,13 @@ inline void set_up_dafx_context(dafx::ContextId &dafx_ctx, dafx::CullingId &dafx
     descs.push_back(dafx::CullingDesc("distortion", dafx::SortingType::BY_SHADER));
     descs.push_back(dafx::CullingDesc("xray", dafx::SortingType::NONE, 0, 0, true));
     descs.push_back(dafx::CullingDesc("water_proj", dafx::SortingType::BACK_TO_FRONT));
+    descs.push_back(dafx::CullingDesc("thermal", dafx::SortingType::BACK_TO_FRONT));
     dafx_cull = dafx::create_culling_state(dafx_ctx, descs);
+
+    dafx_helper_globals::cull_tags.clear();
+    for (const dafx::CullingDesc &desc : descs)
+      dafx_helper_globals::cull_tags.push_back(desc.tag);
+
     descs.clear();
     descs.push_back(dafx::CullingDesc("fom", dafx::SortingType::NONE));
     dafx_fom_cull = dafx::create_culling_state(dafx_ctx, descs);
@@ -191,7 +198,7 @@ inline void before_render_dafx(dafx::ContextId dafx_ctx, dafx::CullingId dafx_cu
 
   dafx::update_culling_state(dafx_ctx, dafx_cull, Frustum(globtm), Point3::xyz(itm.getcol(3)));
   dafx::sync_instance_flags(dafx_ctx);
-  dafx::before_render(dafx_ctx, {"highres", "lowres", "underwater", "distortion", "xray", "water_proj"});
+  dafx::before_render(dafx_ctx, dafx_helper_globals::cull_tags);
 
   prevGlobTm = globtm;
 }

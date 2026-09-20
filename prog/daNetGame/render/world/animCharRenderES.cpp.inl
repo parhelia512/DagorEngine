@@ -18,9 +18,7 @@
 #include <shaders/dag_shaderBlock.h>
 #include "game/player.h"
 #include "game/gameEvents.h"
-#include <util/dag_convar.h>
 #include <util/dag_finally.h>
-#include <util/dag_console.h>
 
 #define INSIDE_RENDERER 1 // fixme: move to jam
 
@@ -33,11 +31,6 @@
 #include <daECS/core/utility/ecsRecreate.h>
 #include <render/world/frameGraphHelpers.h>
 #include <render/daFrameGraph/ecs/frameGraphNode.h>
-
-// for console command
-#include <ioSys/dag_fileIo.h>
-#include <osApiWrappers/dag_files.h>
-#include <shaders/dag_shaderVarsUtils.h>
 
 #include <render/world/dynModelRenderPass.h>
 #include <render/world/wrDispatcher.h>
@@ -64,11 +57,6 @@ template <typename Callable>
 inline void draw_shadow_occlusion_boxes_ecs_query(ecs::EntityManager &manager, Callable c);
 template <typename Callable>
 inline void process_animchar_ecs_query(ecs::EntityManager &manager, ecs::EntityId eid, Callable c);
-
-template <typename Callable>
-inline void count_animchar_renderer_ecs_query(ecs::EntityManager &manager, Callable c);
-template <typename Callable>
-inline void gather_animchar_renderer_ecs_query(ecs::EntityManager &manager, Callable c);
 
 class AnimCharShadowOcclusionManager;
 AnimCharShadowOcclusionManager *get_animchar_shadow_occlusion();
@@ -144,6 +132,7 @@ static __forceinline void animchar_before_render_es(const UpdateStageInfoBeforeR
 
   vec4f dirFromSunV = v_ldu(&stg.dirFromSun.x);
   const bool bvhDoEarlyOcclusionCulling = bvh_do_early_occlusion_culling();
+  const float bvhAnimcharLodDistMul = get_bvh_animchar_lod_dist_mul();
 
   animchar_render_objects_prepare_ecs_query(manager,
     [&](AnimV20::AnimcharRendComponent &animchar_render, const AnimcharNodesMat44 &animchar_node_wtm,
@@ -153,7 +142,8 @@ static __forceinline void animchar_before_render_es(const UpdateStageInfoBeforeR
       bbox3f &animchar_shadow_cull_bbox, animchar_visbits_t &animchar_visbits, float &animchar_render__shadow_cast_dist,
       bool *animchar__switched_lod = nullptr, bool animchar__usePrecalculatedData = false, bool animchar_render__enabled = true,
       const ecs::Tag *animchar__actOnDemand = nullptr, bool animchar__updatable = true, float animchar_extra_culling_dist = 100,
-      bool animchar__use_precise_shadow_culling = false) {
+      bool animchar__use_precise_shadow_culling = false, bool *animchar_attach__isAttached = nullptr,
+      ecs::EntityId animchar_attach__attachedTo = ecs::INVALID_ENTITY_ID) {
       if (animchar__usePrecalculatedData)
       {
         // note: this data already calculated in skeleton_attach_es (no reason to calculate it again for attaches)
@@ -169,6 +159,9 @@ static __forceinline void animchar_before_render_es(const UpdateStageInfoBeforeR
 
       if (animchar__switched_lod)
         *animchar__switched_lod = false;
+
+      if (animchar_attach__isAttached)
+        *animchar_attach__isAttached = !!animchar_attach__attachedTo;
 
       animchar_visbits = 0;
       if (!animchar_render__enabled)
@@ -223,7 +216,7 @@ static __forceinline void animchar_before_render_es(const UpdateStageInfoBeforeR
             (!stg.mainOcclusion || stg.mainOcclusion->isVisibleSphere(animchar_bsph, v_splat_w(animchar_bsph))))
           animchar_visbits |= VISFLG_BVH_MAIN_VISIBLE;
         else
-          lodDistMul = get_bvh_animchar_lod_dist_mul();
+          lodDistMul = bvhAnimcharLodDistMul;
       }
 
       update_animchar_lods(animchar__switched_lod, scene, animchar_bsph, camPos, lodDistMul);
@@ -258,9 +251,11 @@ static __forceinline void animchar_before_render_es(const UpdateStageInfoBeforeR
     TIME_PROFILE(deform_hmap_update_geom_tree)
     vec4f hmapDeformRect = // same as in RenderHmapDeform
       v_make_vec4f(hmapDeformRectOpt->z, hmapDeformRectOpt->w, -hmapDeformRectOpt->x, -hmapDeformRectOpt->y);
+    // excludeFromHmapDeform is for animchars that lie on the ground but are far too small to press it in,
+    // like ejected shell casings: the deform is in world units and does not care how tiny the model is
     update_animchar_hmap_deform_ecs_query(manager,
       [&](ECS_REQUIRE_NOT(ecs::Tag excludeFromAnimcharRender) ECS_REQUIRE_NOT(ecs::Tag invisibleUpdatableAnimchar)
-            AnimV20::AnimcharRendComponent &animchar_render,
+            ECS_REQUIRE_NOT(ecs::Tag excludeFromHmapDeform) AnimV20::AnimcharRendComponent &animchar_render,
         const AnimcharNodesMat44 &animchar_node_wtm, const bbox3f &animchar_bbox, animchar_visbits_t &animchar_visbits,
         const ecs::Tag *animchar__actOnDemand, const ecs::Tag *slot_attach, bool animchar__updatable = true) {
         if ((!animchar__updatable || animchar__actOnDemand != nullptr) && slot_attach == nullptr)
@@ -354,10 +349,11 @@ void update_csm_length(const Frustum &frustum, const Point3 &dir_from_sun, float
   TIME_D3D_PROFILE(update_csm_length);
   const AnimCharShadowOcclusionManager *animCharShadowOcclMgr = get_animchar_shadow_occlusion();
   animchar_csm_distance_ecs_query(*g_entity_mgr,
-    [&](ECS_REQUIRE_NOT(ecs::Tag cockpitEntity) animchar_visbits_t &animchar_visbits, const vec4f &animchar_bsph,
-      const bbox3f &animchar_bbox, const bbox3f &animchar_shadow_cull_bbox, float &animchar_render__shadow_cast_dist,
-      const ecs::EidList *attaches_list, ecs::EntityId animchar_attach__attachedTo = ecs::INVALID_ENTITY_ID) {
-      if (!(animchar_visbits & VISFLG_MAIN_AND_SHADOW_VISIBLE) || !!animchar_attach__attachedTo)
+    [&](ECS_REQUIRE_NOT(ecs::Tag cockpitEntity) ECS_REQUIRE(eastl::false_type animchar_attach__isAttached = false)
+          animchar_visbits_t &animchar_visbits,
+      const vec4f &animchar_bsph, const bbox3f &animchar_bbox, const bbox3f &animchar_shadow_cull_bbox,
+      float &animchar_render__shadow_cast_dist, const ecs::EidList *attaches_list) {
+      if (!(animchar_visbits & VISFLG_MAIN_AND_SHADOW_VISIBLE))
         return;
       if (!frustum.testSphereB(animchar_bsph, v_splat_w(animchar_bsph)) ||
           !is_bbox_visible_in_shadows(animCharShadowOcclMgr, animchar_shadow_cull_bbox))
@@ -384,12 +380,11 @@ void compute_csm_visibility(const Occlusion &occlusion, const Point3 &dir_from_s
 {
   TIME_D3D_PROFILE(csm_occlusion);
   animchar_csm_visibility_ecs_query(*g_entity_mgr,
-    [&](ECS_REQUIRE_NOT(ecs::Tag cockpitEntity) ECS_REQUIRE_NOT(ecs::Tag attachedToParent) animchar_visbits_t &animchar_visbits,
+    [&](ECS_REQUIRE_NOT(ecs::Tag cockpitEntity) /*ignore non roots of attaches */ ECS_REQUIRE(
+          eastl::false_type animchar_attach__isAttached = false) animchar_visbits_t &animchar_visbits,
       const bbox3f &animchar_bbox, const bbox3f *animchar_attaches_bbox, const float &animchar_render__shadow_cast_dist,
-      const ecs::EidList *attaches_list, const ecs::EntityId *animchar_attach__attachedTo) {
-      if (animchar_render__shadow_cast_dist < 0.0f ||
-          (animchar_attach__attachedTo && *animchar_attach__attachedTo /* ignore non roots of attaches */) ||
-          !(animchar_visbits & VISFLG_MAIN_AND_SHADOW_VISIBLE))
+      const ecs::EidList *attaches_list) {
+      if (animchar_render__shadow_cast_dist < 0.0f || !(animchar_visbits & VISFLG_MAIN_AND_SHADOW_VISIBLE))
         return;
       bbox3f extendedBbox = animchar_attaches_bbox ? *animchar_attaches_bbox : animchar_bbox;
       if (is_shadow_volume_occluded(occlusion, dir_from_sun, extendedBbox, animchar_render__shadow_cast_dist))
@@ -407,9 +402,8 @@ void debug_draw_shadow_occlusion_bboxes(const Point3 &dir_from_sun, bool final_e
 {
   draw_shadow_occlusion_boxes_ecs_query(*g_entity_mgr,
     [&](const animchar_visbits_t &animchar_visbits, bbox3f &animchar_bbox, float &animchar_render__shadow_cast_dist,
-      const bbox3f *animchar_attaches_bbox, const ecs::EntityId *animchar_attach__attachedTo) {
-      if (animchar_render__shadow_cast_dist < 0.0f || !(animchar_visbits & VISFLG_MAIN_AND_SHADOW_VISIBLE) ||
-          (animchar_attach__attachedTo && *animchar_attach__attachedTo != ecs::INVALID_ENTITY_ID))
+      const bbox3f *animchar_attaches_bbox ECS_REQUIRE(eastl::false_type animchar_attach__isAttached = false)) {
+      if (animchar_render__shadow_cast_dist < 0.0f || !(animchar_visbits & VISFLG_MAIN_AND_SHADOW_VISIBLE))
         return;
 
       bbox3f extendedBbox = animchar_attaches_bbox ? *animchar_attaches_bbox : animchar_bbox;
@@ -603,10 +597,9 @@ static void animchar_render_opaque(ecs::EntityId eid, const UpdateStageInfoRende
       });
   }
 
-  if (!context_has_data(ctx))
-    return;
+  if (context_has_data(ctx))
+    render_dynrend_ctx(ctx, (stg.hints & UpdateStageInfoRender::RENDER_COLOR) ? dynamicSceneBlockId : dynamicDepthSceneBlockId);
 
-  render_dynrend_ctx(ctx, (stg.hints & UpdateStageInfoRender::RENDER_COLOR) ? dynamicSceneBlockId : dynamicDepthSceneBlockId);
   d3d::settm(TM_VIEW, stg.viewTm);
 }
 
@@ -965,98 +958,3 @@ static void init_vehicle_reactive_mask_node_es_event_handler(
     };
   });
 }
-
-static bool animchar_console_handler(const char *argv[], int argc)
-{
-  int found = 0;
-  CONSOLE_CHECK_NAME("animchar", "verify_lods", 1, 2)
-  {
-    float fov = argc > 1 ? console::to_real(argv[1]) : 90.f;
-    float tg = tan(fov / 180.f * PI * 0.5f);
-
-    eastl::string cvs_dump = "name;count;rendered;bBox rad;"
-                             "L0 dips;L1 dips;L2 dips;L3 dips;"
-                             "L0 tris;L1 tris;L2 tris;L3 tris;"
-                             "L0 dist;L1 dist;L2 dist;L3 dist;"
-                             "L0 screen%;L1 screen%;L2 screen%;L3 screen%;"
-                             "\n";
-    eastl::vector_map<ecs::string, IPoint2> nameCountMap;
-
-    count_animchar_renderer_ecs_query(*g_entity_mgr, [&](const ecs::string &animchar__res, animchar_visbits_t animchar_visbits) {
-      IPoint2 &count_rendered = nameCountMap[animchar__res];
-      count_rendered.x += 1;
-      count_rendered.y +=
-        (animchar_visbits & (VISFLG_MAIN_CAMERA_RENDERED | VISFLG_SEMI_TRANS_RENDERED | VISFLG_COCKPIT_VISIBLE)) != 0;
-    });
-
-    gather_animchar_renderer_ecs_query(*g_entity_mgr,
-      [&](const AnimV20::AnimcharRendComponent &animchar_render, const ecs::string &animchar__res) {
-        auto lodsResources = animchar_render.getSceneInstance()->getLodsResource();
-        if (!lodsResources)
-          return;
-        IPoint2 &count_rendered_ref = nameCountMap[animchar__res];
-        IPoint2 count_rendered = count_rendered_ref;
-        if (count_rendered.x == 0) // already processed animchars with that name
-          return;
-        count_rendered_ref.x = 0;
-        Point3 bboxWidth = lodsResources->bbox.width();
-        float maxBoxEdge = max(max(bboxWidth.x, bboxWidth.y), bboxWidth.z) * 0.5f; // half of edge like a radius
-
-        cvs_dump += eastl::string(eastl::string::CtorSprintf{}, "%s;%d;%d;%f;", animchar__res.c_str(), count_rendered.x,
-          count_rendered.y, maxBoxEdge);
-
-
-        struct LodInfo
-        {
-          int totalTris, totalDrawcalls;
-          int skinTris, skinDrawcalls, rigidsTris, rigidsDrawcalls;
-          float lodDistance, screenPercent;
-          LodInfo() = default;
-        };
-        constexpr int MAX_LODS = 4;
-        eastl::fixed_vector<LodInfo, MAX_LODS> lodsInfo;
-
-
-        for (const auto &lod : lodsResources->lods)
-        {
-          LodInfo info = LodInfo();
-          for (const auto &skin : lod.scene->getSkins())
-          {
-            skin->getMesh()->bonesCount();
-            const auto &mesh = skin->getMesh()->getShaderMesh();
-            info.skinTris += mesh.calcTotalFaces();
-            info.skinDrawcalls += mesh.getAllElems().size();
-          }
-          for (const auto &rigid : lod.scene->getRigidsConst())
-          {
-            const auto &mesh = *rigid.mesh->getMesh();
-            info.rigidsTris += mesh.calcTotalFaces();
-            info.rigidsDrawcalls += mesh.getAllElems().size();
-          }
-
-          float lodDistance = lod.range;
-          float sizeScale = 2.f / (tg * lodDistance);
-          // float spherePartOfScreen = bSphereRad * sizeScale;
-          float boxPartOfScreen = maxBoxEdge * sizeScale;
-          info.totalTris = info.rigidsTris + info.skinTris;
-          info.totalDrawcalls = info.rigidsDrawcalls + info.skinDrawcalls;
-          info.screenPercent = boxPartOfScreen * 100;
-          info.lodDistance = lodDistance;
-          lodsInfo.emplace_back(info);
-        }
-#define DUMP(format, var_name)                  \
-  for (uint32_t lod = 0; lod < MAX_LODS; lod++) \
-    cvs_dump += lod < lodsInfo.size() ? eastl::string(eastl::string::CtorSprintf{}, format, lodsInfo[lod].var_name) : ";";
-        DUMP("%d;", totalDrawcalls)
-        DUMP("%d;", totalTris)
-        DUMP("%.0f;", lodDistance)
-        DUMP("%.1f;", screenPercent)
-        cvs_dump += "\n";
-      });
-    FullFileSaveCB cb("animchar_profiling_statistic.csv", DF_WRITE | DF_CREATE);
-    cb.write(cvs_dump.c_str(), cvs_dump.size() - 1);
-  }
-  return found;
-}
-
-REGISTER_CONSOLE_HANDLER(animchar_console_handler);

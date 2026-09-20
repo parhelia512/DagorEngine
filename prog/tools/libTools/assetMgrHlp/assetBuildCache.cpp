@@ -175,6 +175,11 @@ int dabuildcache::bind_with_mgr(DagorAssetMgr &mgr, DataBlock &appblk, const cha
   int pcount = dabuild->init(startDir, mgr, appblk, appdir, ddsx_plugins_path);
   if (pcount)
   {
+    // These are passed to the plugin DLLs in loadExporterPlugins(), so they must be set up before that.
+    assetlocalprops::mkDir("cache");
+    AssetExportCache::createSharedData(assetlocalprops::makePath("assets-hash.bin"));
+    dabuild->setExpCacheSharedData(AssetExportCache::getSharedDataPtr());
+
     dabuild->loadExporterPlugins();
 
     resMap.reset();
@@ -191,9 +196,6 @@ int dabuildcache::bind_with_mgr(DagorAssetMgr &mgr, DataBlock &appblk, const cha
     assetMgr->subscribeBaseUpdateNotify(&updater);
     assetMgr->subscribeUpdateNotify(&updater, -1, texTypeId);
     install_gameres_hooks();
-    assetlocalprops::mkDir("cache");
-    AssetExportCache::createSharedData(assetlocalprops::makePath("assets-hash.bin"));
-    dabuild->setExpCacheSharedData(AssetExportCache::getSharedDataPtr());
   }
 
   assetExpTypes.reserve(assetTypeToClassId.size());
@@ -530,7 +532,7 @@ static void ensure_mat_descs_loaded()
     // gameres_append_desc() dedups by file path forever (sets a same-named bool once loaded), so a
     // stale invalidate_respack_caches() reload would otherwise silently keep the old data - force a
     // clean reread of every path here.
-    t.desc->reset();
+    gameres_reset_desc(*t.desc);
 
     for (int pkid = -1; pkid < (int)pkgblk.blockCount(); pkid++)
     {

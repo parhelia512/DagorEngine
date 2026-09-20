@@ -32,6 +32,7 @@
 #include <osApiWrappers/dag_stackHlp.h>
 #include <EASTL/bitset.h>
 #include <EASTL/fixed_vector.h>
+#include <osApiWrappers/dag_atomic.h>
 #include <osApiWrappers/dag_atomic_types.h>
 #include <mutex>
 
@@ -192,7 +193,9 @@ struct AndroidProcessResult
 
 static std::mutex g_android_done_command_mutex;
 static std::condition_variable g_android_done_command_condition;
+static std::condition_variable g_android_pending_command_condition;
 
+// written and reset only under g_android_done_command_mutex, in one critical section with the matching notify
 static dag::AtomicInteger<int32_t> g_android_pending_command(-1);
 
 // Normally we don't have so many input events.
@@ -446,6 +449,31 @@ struct DagorInputThread final : public DaThread
 static DagorMainThread g_dagor_main_thread;
 static DagorInputThread g_dagor_input_thread;
 
+static std::mutex g_android_cmd_mode_mutex;
+static bool g_android_cmd_on_main_thread = false;
+
+
+static void dagor_android_restart_input_thread(struct android_app *app)
+{
+  g_dagor_input_thread.terminate(true);
+
+  g_dagor_input_thread.inputQueue = app->inputQueue;
+
+  if (g_dagor_input_thread.inputQueue)
+    g_dagor_input_thread.start();
+}
+
+
+void dagor_android_set_window_cmd_processing_on_main_thread(bool on_main_thread)
+{
+  std::lock_guard<std::mutex> lock(g_android_cmd_mode_mutex);
+  if (g_android_cmd_on_main_thread == on_main_thread)
+    return;
+
+  g_android_cmd_on_main_thread = on_main_thread;
+  debug("CMD: window commands are processed %s", on_main_thread ? "on main thread" : "in android_main");
+}
+
 
 static int push_android_input(const AndroidProcessResult &result)
 {
@@ -468,22 +496,25 @@ static void push_android_command_and_wait(int32_t cmd)
 
   int waitTimeMs = get_time_msec();
 
-  g_android_pending_command.store(cmd, dag::memory_order_release);
-
   {
     // After that time Android may generate ANR (Application Not Responsive)
     static const std::chrono::seconds ANR_TIMEOUT_SEC = std::chrono::seconds(5);
 
     std::unique_lock<std::mutex> lock(g_android_done_command_mutex);
+    g_android_pending_command.store(cmd, dag::memory_order_release);
+    g_android_pending_command_condition.notify_all();
+
     if (!g_android_done_command_condition.wait_for(lock, ANR_TIMEOUT_SEC,
           [] { return g_android_pending_command.load(dag::memory_order_acquire) < 0; }))
     {
+      lock.unlock();
       logerr("android: ANR: Handling of %s is taking more than %d sec. Context: %s", cmdName, ANR_TIMEOUT_SEC.count(),
         dagor_android_app_get_anr_execution_context ? dagor_android_app_get_anr_execution_context() : "<unknown>");
 
       if (dagor_anr_handler)
         dagor_anr_handler(cmd);
 
+      lock.lock();
       g_android_done_command_condition.wait(lock, [] { return g_android_pending_command.load(dag::memory_order_acquire) < 0; });
     }
   }
@@ -496,6 +527,8 @@ static void push_android_command_and_wait(int32_t cmd)
 
 
 static void run_android_command_as_delayed_action(int32_t cmd);
+static bool is_android_window_cmd(int32_t cmd);
+static bool dagor_android_handle_cmd_nonblocking(struct android_app *app, int32_t cmd);
 
 
 static void dagor_android_handle_cmd_thread(struct android_app *app, int32_t cmd)
@@ -503,24 +536,22 @@ static void dagor_android_handle_cmd_thread(struct android_app *app, int32_t cmd
   const char *cmdName = android::app_command_to_string(cmd);
   debug("CMD: Received: %s", cmdName);
 
+  if (dagor_android_handle_cmd_nonblocking(app, cmd))
+  {
+    debug("CMD: Done: %s (nonblocking)", cmdName);
+    return;
+  }
+
   if (dagor_allow_to_delay_android_cmd && dagor_allow_to_delay_android_cmd(cmd))
   {
     run_android_command_as_delayed_action(cmd);
     return;
   }
 
-  switch (cmd)
-  {
-    case APP_CMD_INPUT_CHANGED:
-    case APP_CMD_GAINED_FOCUS:
-    case APP_CMD_LOST_FOCUS:
-    case APP_CMD_CONTENT_RECT_CHANGED:
-    case APP_CMD_INIT_WINDOW:
-    case APP_CMD_WINDOW_RESIZED:
-    case APP_CMD_WINDOW_REDRAW_NEEDED:
-    case APP_CMD_TERM_WINDOW: push_android_command_and_wait(cmd); break;
-    default: debug("CMD: Ignored: %s", cmdName); break;
-  }
+  if (is_android_window_cmd(cmd))
+    push_android_command_and_wait(cmd);
+  else
+    debug("CMD: Ignored: %s", cmdName);
 }
 
 
@@ -557,37 +588,99 @@ dag::AtomicInteger<bool> dagor_android_in_fatal_state = false;
 bool android_should_ignore_cmd(int8_t cmd) { return dagor_should_ignore_android_cmd ? dagor_should_ignore_android_cmd(cmd) : false; }
 
 
-static void dagor_android_handle_cmd(struct android_app *app, int32_t cmd)
+static void quit_game_on_fatal_state(int32_t cmd)
 {
-  if (dagor_android_in_fatal_state.load())
+  if (!dagor_android_in_fatal_state.load())
+    return;
+
+  switch (cmd)
   {
+    case APP_CMD_INIT_WINDOW:
+    case APP_CMD_WINDOW_RESIZED:
+    case APP_CMD_TERM_WINDOW:
+    case APP_CMD_DESTROY:
+      debug("CMD: Commands can't be process during Fatal. Exit.");
+      quit_game(-1);
+      break;
+  };
+}
+
+
+static bool is_android_window_cmd(int32_t cmd)
+{
+  switch (cmd)
+  {
+    case APP_CMD_INIT_WINDOW:
+    case APP_CMD_TERM_WINDOW:
+    case APP_CMD_WINDOW_RESIZED:
+    case APP_CMD_WINDOW_REDRAW_NEEDED:
+    case APP_CMD_CONTENT_RECT_CHANGED:
+    case APP_CMD_GAINED_FOCUS:
+    case APP_CMD_LOST_FOCUS: return true;
+    default: return false;
+  }
+}
+
+
+static void call_user_message_loop_handler_delayed(struct android_app *app, int32_t cmd)
+{
+  delayed_call([app, cmd] {
+    if (dagor_android_user_message_loop_handler)
+      dagor_android_user_message_loop_handler(app, cmd);
+  });
+}
+
+
+static bool dagor_android_handle_cmd_nonblocking(struct android_app *app, int32_t cmd)
+{
+  if (cmd == APP_CMD_INPUT_CHANGED)
+  {
+    dagor_android_restart_input_thread(app);
+    call_user_message_loop_handler_delayed(app, cmd);
+    return true;
+  }
+
+  if (!is_android_window_cmd(cmd))
+    return false;
+
+  {
+    std::lock_guard<std::mutex> lock(g_android_cmd_mode_mutex);
+    if (g_android_cmd_on_main_thread)
+      return false;
+
+    quit_game_on_fatal_state(cmd);
+
     switch (cmd)
     {
       case APP_CMD_INIT_WINDOW:
-      case APP_CMD_WINDOW_RESIZED:
-      case APP_CMD_TERM_WINDOW:
-      case APP_CMD_DESTROY:
-        debug("CMD: Commands can't be process during Fatal. Exit.");
-        quit_game(-1);
+        debug("CMD: init window %p (no d3d)", app->window);
+        win32_set_main_wnd(app->window);
         break;
-    };
+      case APP_CMD_TERM_WINDOW:
+        debug("CMD: term window (no d3d)");
+        android_hide_soft_input();
+        android_invalidate_soft_input();
+        win32_set_main_wnd(NULL);
+        break;
+      case APP_CMD_GAINED_FOCUS: dgs_app_active = true; break;
+      case APP_CMD_LOST_FOCUS: dgs_app_active = false; break;
+      default: break;
+    }
   }
+
+  call_user_message_loop_handler_delayed(app, cmd);
+  return true;
+}
+
+
+static void dagor_android_handle_cmd(struct android_app *app, int32_t cmd)
+{
+  quit_game_on_fatal_state(cmd);
 
   static uint32_t lastReinitFrameNo = 0;
 
   switch (cmd)
   {
-    case APP_CMD_INPUT_CHANGED:
-      if (app->externalInputProcessing)
-      {
-        if (g_dagor_input_thread.isThreadStarted())
-          g_dagor_input_thread.terminate(true);
-        g_dagor_input_thread.inputQueue = app->inputQueue;
-
-        if (g_dagor_input_thread.inputQueue)
-          g_dagor_input_thread.start();
-      }
-      break;
     case APP_CMD_INIT_WINDOW:
       // The window is being shown, get it ready.
       if (app->window != NULL)
@@ -643,9 +736,6 @@ static void dagor_android_handle_cmd(struct android_app *app, int32_t cmd)
       debug("CMD: destroy: %s", dagor_fast_shutdown ? "fast" : "normal");
 
       android_invalidate_soft_input();
-
-      if (app->externalInputProcessing)
-        g_dagor_input_thread.terminate(true);
 
       if (!dagor_fast_shutdown && d3d::is_inited())
       {
@@ -987,6 +1077,7 @@ static void android_looper_poll_all_blocking()
     // Check if we are exiting.
     if (app->destroyRequested != 0)
     {
+      g_dagor_input_thread.terminate(true);
       push_android_command_and_wait(APP_CMD_DESTROY);
       debug("--- application destroyed ---");
 
@@ -1227,13 +1318,20 @@ void dagor_process_sys_messages(bool /*input_only*/)
   if (!app)
     return;
 
-  const int32_t pendingCommand = g_android_pending_command.load(dag::memory_order_acquire);
-  if (pendingCommand >= 0)
+  static const std::chrono::milliseconds CHAINED_CMD_WAIT_MS = std::chrono::milliseconds(5);
+
+  int32_t pendingCommand = g_android_pending_command.load(dag::memory_order_acquire);
+  while (pendingCommand >= 0)
   {
     dagor_android_handle_cmd(app, pendingCommand);
 
+    std::unique_lock<std::mutex> lock(g_android_done_command_mutex);
     g_android_pending_command.store(-1, dag::memory_order_release);
     g_android_done_command_condition.notify_all();
+
+    const bool hasNext = g_android_pending_command_condition.wait_for(lock, CHAINED_CMD_WAIT_MS,
+      [] { return g_android_pending_command.load(dag::memory_order_acquire) >= 0; });
+    pendingCommand = hasNext ? g_android_pending_command.load(dag::memory_order_acquire) : -1;
   }
 
   int inputCallsSize = 0;

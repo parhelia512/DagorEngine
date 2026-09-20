@@ -1,0 +1,62 @@
+include "shader_global.dshl"
+
+// suppresses temporally unstable input evidence (sub-pixel shimmer, specular on/off) by lowering
+// the input confidence TSR blends with, so such pixels average over more frames instead of tracking
+
+float tsr_stability_sigma = 0.1;
+float tsr_stability_motion_sigma = 2;
+float tsr_stability_edge_sigma = 0.003;
+
+int tsr_stability_filter_allowed = 0;
+int tsr_stability_filter = 0;
+interval tsr_stability_filter_allowed : no < 1, yes;
+interval tsr_stability_filter : off < 1, on;
+// to allow assuming per project
+assume_if_not_assumed tsr_stability_filter_allowed = no;
+
+macro INIT_TSR_STABILITY_FILTER(code)
+  (code) {
+    stabilitySigma@f1 = tsr_stability_sigma;
+    stabilityMotionSigma@f1 = tsr_stability_motion_sigma;
+    stabilityEdgeSigma@f1 = tsr_stability_edge_sigma;
+  }
+endmacro
+
+macro USE_TSR_STABILITY_FILTER(code)
+  hlsl(code) {
+    struct TsrStability
+    {
+      float edginess; // 0 on planar depth, 1 on a geometric discontinuity
+      float scale;    // input confidence multiplier
+    };
+
+    float tsrStabilityGauss(float x, float sigma)
+    {
+      float exponentTerm = x * rcp(max(1e-9, sigma));
+      return exp(-0.5 * exponentTerm * exponentTerm);
+    }
+
+    // the input-vs-rectified-history luma residual is what the blend fights over; a large residual is
+    // temporally unstable evidence. legit scene changes are exempt (the clip box already pulled history
+    // to the new value, residual ~ 0) and so are disocclusions (historyConfidence ~ 0 forces
+    // updateRate -> 1 regardless of input confidence)
+    TsrStability calcTsrStability(float input_luma, float rectified_history_luma, float depth_laplacian, float depth,
+      float2 motion_pixels, float reactive)
+    {
+      TsrStability result;
+      float stability = tsrStabilityGauss(abs(input_luma - rectified_history_luma), stabilitySigma);
+      // specular shimmer lives on geometric edges/facets: gate the suppression by the depth Laplacian so
+      // it never touches flat content - texture detail, stochastic dither and no-MV brightness changes
+      // (moving-caster shadows, light sweeps) are all luma events on planar depth and stay fully
+      // responsive by construction
+      result.edginess = 1 - tsrStabilityGauss(abs(depth_laplacian) * rcp(max(1e-9, depth)), stabilityEdgeSigma);
+      stability = lerp(1, stability, result.edginess);
+      // high-contrast edges keep a wide clip box even in motion (spatial sigma is large there), so the
+      // residual alone would suppress legitimately changing pixels and get them stuck; fade the
+      // suppression out with screen-space motion - sub-pixel shimmer is a (near-)static phenomenon
+      stability = lerp(1, stability, tsrStabilityGauss(length(motion_pixels), stabilityMotionSigma));
+      result.scale = lerp(stability, 1, reactive); // reactive content must stay responsive
+      return result;
+    }
+  }
+endmacro

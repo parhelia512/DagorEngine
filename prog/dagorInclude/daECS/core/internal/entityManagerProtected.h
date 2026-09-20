@@ -748,6 +748,7 @@ template <class T>
 void destroyEvents(T &storage);
 template <class T>
 void destroyAndLogEvents(T &storage, uint32_t max_logged_cnt);
+uint32_t logAliveEntities(uint32_t max_logged_cnt) const;
 // should be out-of-line
 template <class EventStorage>
 uint32_t processEventsExhausted(uint32_t count, EventStorage &);

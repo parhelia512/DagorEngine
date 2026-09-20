@@ -76,10 +76,12 @@ function getStartPath(){
   if (fullPath)
     return getStartPathImpl(fullPath)
 
-  foreach(arg in argv)
-    if (arg.indexof(":\\") == 1)
-      return getStartPathImpl(arg)
-  return null
+  local finalPath = null
+  foreach(i, arg in argv)
+    if (i != 0 && arg.indexof(":\\") == 1) //ignore first argument because it is path to exe file, but it has other folder
+      finalPath = arg
+
+  return finalPath == null ? null : getStartPathImpl(finalPath)
 }
 
 let { startPath = ".", startFile = null } = getStartPath()

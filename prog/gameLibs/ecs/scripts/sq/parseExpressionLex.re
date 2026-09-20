@@ -140,7 +140,7 @@ static Token lex(const char *&s)
         frc = [0-9]* "." [0-9]+ | [0-9]+ ".";
         exp = 'e' [+-]? [0-9]+;
         flt = (frc exp? | [0-9]+ exp) [fFlL]?;
-        flt {  Token tok(FLT); if (!lex_flt(s, tok.val.f)) return error; return tok; }
+        @fs flt {  Token tok(FLT); if (!lex_flt(fs, tok.val.f)) return error; return tok; }
         minus @fs flt {Token tok(FLT); if (!lex_flt(fs, tok.val.f)) return error; tok.val.f = -tok.val.f;return tok;}
 
         // boolean literals

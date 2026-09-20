@@ -122,6 +122,8 @@ void PipelineCache::init(const SetupParameters &params)
     // just report an error but don't abort, library is not essential
     DX12_DEBUG_RESULT(params.device->CreatePipelineLibrary(nullptr, 0, COM_ARGS(&library)));
   }
+
+  setupBuildInPipelineLibrary(params, deviceFeatures);
 #endif
 }
 
@@ -147,6 +149,9 @@ void PipelineCache::shutdown(const ShutdownParameters &params)
     graphicsSignatures.clear();
     graphicsMeshSignatures.clear();
   });
+
+  storeBuildInPipelineLibraryFile(params);
+  shutdownBuildInPipelineLibrary();
 
   if ((hasChanged || params.alwaysGenerateBlks) && params.generateBlks)
   {
@@ -374,12 +379,6 @@ bool PipelineCache::containsGraphicsPipeline(const BasePipelineIdentifier &ident
   return ref != end(graphicsCache);
 }
 
-size_t PipelineCache::getGraphicsPipelineVariantCount(GraphicsPipelineBaseCacheId base_id)
-{
-  OSSpinlockScopedLock lock(pipelineCacheGuard);
-  return graphicsCache[base_id.get()].variantCache.size();
-}
-
 size_t PipelineCache::addGraphicsPipelineVariant(GraphicsPipelineBaseCacheId base_id, D3D12_PRIMITIVE_TOPOLOGY_TYPE topology,
   const InputLayout &input_layout, bool is_wire_frame, const RenderStateSystem::StaticState &static_state,
   const FramebufferLayout &fb_layout, ID3D12PipelineState *pipeline)
@@ -493,21 +492,6 @@ size_t PipelineCache::addGraphicsMeshPipelineVariant(GraphicsPipelineBaseCacheId
   G_UNUSED(pipeline);
 #endif
   return 0;
-}
-
-size_t PipelineCache::removeGraphicsPipelineVariant(GraphicsPipelineBaseCacheId base_id, size_t index)
-{
-  OSSpinlockScopedLock lock(pipelineCacheGuard);
-
-  auto &base = graphicsCache[base_id.get()];
-  auto &variants = base.variantCache;
-  variants.erase(begin(variants) + index);
-  hasChanged = true;
-  // TODO: This does not queue regeneration of the pipeline library, as it has no remove functionality.
-  //       So to remove one, we have to create a new empty pipeline library, and migrate all still existing
-  //       entries over, which may be very time consuming. Better approach is possibly to not store the
-  //       library in the cache and start with a empty one on next run.
-  return variants.size();
 }
 
 ComPtr<ID3D12PipelineState> PipelineCache::loadGraphicsPipelineVariant(GraphicsPipelineBaseCacheId base_id,
@@ -638,65 +622,6 @@ ComPtr<ID3D12PipelineState> PipelineCache::loadGraphicsMeshPipelineVariant(Graph
   G_UNUSED(fb_layout);
   G_UNUSED(desc);
   G_UNUSED(blob_target);
-#endif
-  return nullptr;
-}
-
-D3D12_PRIMITIVE_TOPOLOGY_TYPE
-PipelineCache::getGraphicsPipelineVariantDesc(GraphicsPipelineBaseCacheId base_id, size_t index, InputLayout &input_layout,
-  bool &is_wire_frame, RenderStateSystem::StaticState &static_state, FramebufferLayout &fb_layout)
-{
-  OSSpinlockScopedLock lock(pipelineCacheGuard);
-  auto &base = graphicsCache[base_id.get()];
-  auto &variant = base.variantCache[index];
-  fb_layout = framebufferLayouts[variant.framebufferLayoutIndex];
-  static_state = staticRenderStates[variant.staticRenderStateIndex];
-  input_layout = inputLayouts[variant.inputLayoutIndex];
-  is_wire_frame = variant.isWireFrame != 0;
-  return variant.topology;
-}
-
-ComPtr<ID3D12PipelineState> PipelineCache::loadGraphicsPipelineVariantFromIndex(GraphicsPipelineBaseCacheId base_id, size_t index,
-  D3D12_PIPELINE_STATE_STREAM_DESC desc, D3D12_CACHED_PIPELINE_STATE &blob_target)
-{
-  G_UNUSED(base_id);
-  G_UNUSED(index);
-  G_UNUSED(desc);
-  G_UNUSED(blob_target);
-#if _TARGET_PC_WIN
-  OSSpinlockScopedLock lock(pipelineCacheGuard);
-  ComPtr<ID3D12PipelineState> result;
-  auto &base = graphicsCache[base_id.get()];
-  auto &variant = base.variantCache[index];
-  if (usePSOBlobs())
-  {
-    if (!variant.blob.empty())
-    {
-      blob_target.pCachedBlob = variant.blob.data();
-      blob_target.CachedBlobSizeInBytes = variant.blob.size();
-      CACHE_INFO_VERBOSE("DX12: Graphics pipeline cache hit");
-    }
-    else
-    {
-      CACHE_INFO_VERBOSE("DX12: Graphics pipeline cache miss (no blob)");
-    }
-  }
-  else if (library)
-  {
-    GraphicsPipelineVariantName name;
-    name.generate(base.ident, variant.topology, variant.inputLayoutIndex, variant.isWireFrame != 0, variant.staticRenderStateIndex,
-      variant.framebufferLayoutIndex);
-    auto errorCode = library->LoadPipeline(name.str, &desc, COM_ARGS(&result));
-    if (SUCCEEDED(errorCode))
-    {
-      CACHE_INFO_VERBOSE("DX12: Graphics pipeline cache hit");
-    }
-    else
-    {
-      CACHE_INFO_VERBOSE("DX12: Graphics pipeline cache miss");
-    }
-  }
-  return result;
 #endif
   return nullptr;
 }
@@ -835,6 +760,7 @@ void PipelineCache::preRecovery()
   {
     library.Reset();
   }
+  preRecoveryBuildInPipelineLibrary();
 #endif
 }
 
@@ -864,6 +790,8 @@ void PipelineCache::recover(ID3D12Device1 *device, D3D12_SHADER_CACHE_SUPPORT_FL
       DX12_DEBUG_RESULT(device->CreatePipelineLibrary(nullptr, 0, COM_ARGS(&library)));
     }
   }
+
+  recoverBuildInPipelineLibrary(device, deviceFeatures);
 #else
   G_UNUSED(device);
   G_UNUSED(allowed_modes);
@@ -905,6 +833,125 @@ bool PipelineCache::onBindumpLoad(ID3D12Device1 *device, eastl::span<const dxil:
   hasChanged = true;
   return false;
 }
+
+#if _TARGET_PC_WIN
+namespace
+{
+struct BuildInFormatNameStore
+{
+  static constexpr uint32_t name_len = 255;
+  wchar_t name[name_len + 1];
+  BuildInFormatNameStore(const wchar_t *prefix, DXGI_FORMAT format)
+  {
+    _snwprintf(name, name_len, L"%s%X", prefix, static_cast<uint32_t>(format));
+    name[name_len] = L'\0';
+  }
+};
+const wchar_t blit_prefix[] = L"B:";
+const wchar_t clear_prefix[] = L"C:";
+} // namespace
+
+dag::Expected<ComPtr<ID3D12PipelineState>, HRESULT> PipelineCache::loadPipeline(FormatBasedBuildInPipelineType type,
+  const D3D12_PIPELINE_STATE_STREAM_DESC &desc, DXGI_FORMAT out_format)
+{
+  if (!buildInPipelineLibrary)
+  {
+    return dag::Unexpected<HRESULT>{DXGI_ERROR_UNSUPPORTED};
+  }
+  dag::Vector<DXGI_FORMAT> *formatTable = nullptr;
+  const wchar_t *prefix = nullptr;
+  switch (type)
+  {
+    case FormatBasedBuildInPipelineType::Blit:
+      prefix = blit_prefix;
+      formatTable = &blitOutputFormats;
+      break;
+    case FormatBasedBuildInPipelineType::Clear:
+      prefix = clear_prefix;
+      formatTable = &clearOutputFormats;
+      break;
+  }
+  if (!prefix || !formatTable)
+  {
+    D3D_ERROR("DX12: PipelineCache::loadPipeline invalid FormatBasedBuildInPipelineType value %u", static_cast<uint32_t>(type));
+    return dag::Unexpected<HRESULT>{E_INVALIDARG};
+  }
+
+  if (formatTable->end() == eastl::find(formatTable->begin(), formatTable->end(), out_format))
+  {
+    return dag::Unexpected<HRESULT>{E_INVALIDARG};
+  }
+  BuildInFormatNameStore name{prefix, out_format};
+  ComPtr<ID3D12PipelineState> result;
+  auto errorCode = buildInPipelineLibrary->LoadPipeline(name.name, &desc, COM_ARGS(&result));
+  if (!result)
+  {
+    return dag::Unexpected<HRESULT>{errorCode};
+  }
+  return result;
+}
+
+dag::Expected<void, HRESULT> PipelineCache::storePipeline(FormatBasedBuildInPipelineType type, ID3D12PipelineState *pipeline,
+  DXGI_FORMAT out_format)
+{
+  if (!buildInShouldRecord)
+  {
+    return {};
+  }
+  dag::Vector<DXGI_FORMAT> *formatTable = nullptr;
+  const wchar_t *prefix = nullptr;
+  switch (type)
+  {
+    case FormatBasedBuildInPipelineType::Blit:
+      prefix = blit_prefix;
+      formatTable = &blitOutputFormats;
+      break;
+    case FormatBasedBuildInPipelineType::Clear:
+      prefix = clear_prefix;
+      formatTable = &clearOutputFormats;
+      break;
+  }
+  if (!prefix || !formatTable)
+  {
+    D3D_ERROR("DX12: PipelineCache::storePipeline invalid FormatBasedBuildInPipelineType value %u", static_cast<uint32_t>(type));
+    return dag::Unexpected<HRESULT>{E_INVALIDARG};
+  }
+  // always add the format
+  if (formatTable->end() == eastl::find(formatTable->begin(), formatTable->end(), out_format))
+  {
+    formatTable->push_back(out_format);
+    buildInUpdated = true;
+  }
+  if (!buildInPipelineLibrary)
+  {
+    return {};
+  }
+  BuildInFormatNameStore name{prefix, out_format};
+  auto errorCode = buildInPipelineLibrary->StorePipeline(name.name, pipeline);
+  if (FAILED(errorCode))
+  {
+    return dag::Unexpected<HRESULT>{errorCode};
+  }
+  buildInUpdated = true;
+  return {};
+}
+
+const dag::Vector<DXGI_FORMAT> *PipelineCache::getKnownPipelineFormats(FormatBasedBuildInPipelineType type)
+{
+  switch (type)
+  {
+    case FormatBasedBuildInPipelineType::Blit: return &blitOutputFormats;
+    case FormatBasedBuildInPipelineType::Clear: return &clearOutputFormats;
+  }
+  D3D_ERROR("DX12: PipelineCache::getKnownPipelineFormats invalid FormatBasedBuildInPipelineType value %u",
+    static_cast<uint32_t>(type));
+  return nullptr;
+}
+
+bool PipelineCache::hasFormatBasedBuildInLibrary() { return static_cast<bool>(buildInPipelineLibrary); }
+
+bool PipelineCache::hasExistingFormatBasedBuildInLibrary() { return 0 < loadedBuildInPipelineLibraryBlob.size(); }
+#endif
 
 bool PipelineCache::loadFromFile(const SetupParameters &params)
 {
@@ -1345,3 +1392,339 @@ bool PipelineCache::loadFromFile(const SetupParameters &params)
 
   return true;
 }
+
+#if _TARGET_PC_WIN
+void PipelineCache::setupBuildInPipelineLibrary(const SetupParameters &params, const D3D12_SHADER_CACHE_SUPPORT_FLAGS cache_support)
+{
+  buildInShouldRecord = params.recordBuildInCache;
+
+  loadBuildInPipelineLibraryFile(params);
+
+  recoverBuildInPipelineLibrary(params.device, cache_support);
+}
+
+namespace
+{
+enum class ReaderWrapperErrorCode
+{
+  GenericReadError,
+};
+template <typename S>
+class ReadWrapper
+{
+  S &source;
+
+public:
+  ReadWrapper(S &s) : source{s} {}
+  using ErrorCode = ReaderWrapperErrorCode;
+  dag::Expected<void, ErrorCode> readBytes(void *ptr, size_t sz)
+  {
+    if (sz != source.tryRead(ptr, sz))
+    {
+      return dag::Unexpected{ErrorCode::GenericReadError};
+    }
+    return {};
+  }
+  template <typename T>
+  dag::Expected<void, ErrorCode> readArray(T *ptr, size_t cnt)
+  {
+    return readBytes(ptr, sizeof(T) * cnt);
+  }
+  template <typename T>
+  dag::Expected<T, ErrorCode> readValue()
+  {
+    T value;
+    return readBytes(&value, sizeof(T)).and_then([&]() -> dag::Expected<T, ErrorCode> { return eastl::move(value); });
+  }
+  template <typename T>
+  dag::Expected<T, ErrorCode> readContainer(uint32_t count)
+  {
+    T data;
+    data.resize(count);
+    return readArray(data.data(), data.size()).and_then([&]() -> dag::Expected<T, ErrorCode> { return eastl::move(data); });
+  }
+};
+} // namespace
+
+void PipelineCache::loadBuildInPipelineLibraryFile(const SetupParameters &params)
+{
+  buildInUpdated = false;
+
+  if (!params.buildInCacheFileName || '\0' == params.buildInCacheFileName[0])
+  {
+    logwarn("DX12: Can not de-serialize build in pipeline cache, as no name was provided");
+    return;
+  }
+
+  FullFileLoadCB cacheFile{params.buildInCacheFileName, DF_IGNORE_MISSING | DF_READ};
+  if (!cacheFile.fileHandle)
+  {
+    logwarn("DX12: Failed to open %s to load build in pipeline cache", params.buildInCacheFileName);
+    return;
+  }
+
+  ReadWrapper reader{cacheFile};
+
+  [[maybe_unused]] auto readResult =
+    reader.readValue<BuildInPipelineLibraryFileHeader>()
+      .transform_error([&](auto error_code) {
+        logwarn("DX12: Failed to load build in pipeline cache, can't read header");
+        return error_code;
+      })
+      .and_then([&](const auto &header) -> dag::Expected<bool, ReaderWrapperErrorCode> {
+        if ((BuildInPipelineLibraryFileHeader::magic_value != header.magic) ||
+            (BuildInPipelineLibraryFileHeader::version_value != header.version))
+        {
+          logwarn("DX12: Failed to load build in pipeline cache, header versioning check failed");
+          return dag::Unexpected{ReaderWrapperErrorCode::GenericReadError};
+        }
+
+        return reader.readValue<ShaderHashValue>()
+          .transform_error([&](auto error_code) {
+            logwarn("DX12: Failed to load build in pipeline cache, can't read header hash");
+            return error_code;
+          })
+          .and_then([&](const auto &header_hash) -> dag::Expected<bool, ReaderWrapperErrorCode> {
+            if (header_hash != ShaderHashValue::calculate(&header, 1))
+            {
+              logwarn("DX12: Failed to load build in pipeline cache, header integrity check failed");
+              return dag::Unexpected{ReaderWrapperErrorCode::GenericReadError};
+            }
+
+            logdbg("DX12: Restoring pipeline cache for build in pipelines");
+            return reader.readContainer<decltype(blitOutputFormats)>(header.blitCount)
+              .transform_error([&](auto error_code) {
+                logwarn("DX12: Failed to load blit output formats");
+                return error_code;
+              })
+              .and_then([&](decltype(blitOutputFormats) &&bof) -> dag::Expected<bool, ReaderWrapperErrorCode> {
+                if (ShaderHashValue::calculate(bof.data(), bof.size()) != header.blitFormatsHash)
+                {
+                  logwarn("DX12: Failed to load blit output formats, hash mismatch");
+                  return dag::Unexpected{ReaderWrapperErrorCode::GenericReadError};
+                }
+                blitOutputFormats = eastl::move(bof);
+                logdbg("DX12: Restored blit formats: %u", header.blitCount);
+
+                return reader.readContainer<decltype(clearOutputFormats)>(header.clearCount)
+                  .transform_error([&](auto error_code) {
+                    logwarn("DX12: Failed to load clear output formats");
+                    return error_code;
+                  })
+                  .and_then([&](decltype(clearOutputFormats) &&cof) -> dag::Expected<bool, ReaderWrapperErrorCode> {
+                    if (ShaderHashValue::calculate(cof.data(), cof.size()) != header.clearFormatsHash)
+                    {
+                      logwarn("DX12: Failed to load clear output formats, hash mismatch");
+                      return dag::Unexpected{ReaderWrapperErrorCode::GenericReadError};
+                    }
+                    clearOutputFormats = eastl::move(cof);
+                    logdbg("DX12: Restored clear formats: %u", header.clearCount);
+
+                    if (0 == (deviceFeatures & D3D12_SHADER_CACHE_SUPPORT_LIBRARY))
+                    {
+                      logdbg("DX12: Skipping restore of build in pipeline library, pipeline libraries disabled");
+                      return false;
+                    }
+
+                    if ((params.blitByteCodeHash != header.blitHash) || (params.clearByteCodeHash != header.clearHash))
+                    {
+                      logdbg("DX12: Skipping restore of build in pipeline library, hash mismatch");
+                      return false;
+                    }
+
+                    return reader.readContainer<decltype(loadedBuildInPipelineLibraryBlob)>(header.librarySize)
+                      .transform_error([&](auto error_code) {
+                        logwarn("DX12: Failed to load pipeline library");
+                        return error_code;
+                      })
+                      .transform([&](decltype(loadedBuildInPipelineLibraryBlob) &&lbiplb) {
+                        ByteUnits loadedLibrarySizeInBytes{header.librarySize};
+                        logdbg("DX12: Loaded pipeline library size: %.4f %s", loadedLibrarySizeInBytes.units(),
+                          loadedLibrarySizeInBytes.name());
+                        loadedBuildInPipelineLibraryBlob = eastl::move(lbiplb);
+                        return true;
+                      });
+                  });
+              });
+          });
+      });
+}
+
+namespace
+{
+template <typename T>
+class WriteWrapper
+{
+  T &target;
+  bool ok = true;
+
+public:
+  WriteWrapper(T &t) : target{t} {}
+  void writeBytes(const void *ptr, size_t sz) { ok = ok && ((0 == sz) || ((nullptr != ptr) && (sz == target.tryWrite(ptr, sz)))); }
+  template <typename U>
+  void write(const U &value)
+  {
+    return writeBytes(&value, sizeof(U));
+  }
+  bool close()
+  {
+    target.close();
+    return ok;
+  }
+};
+} // namespace
+
+void PipelineCache::storeBuildInPipelineLibraryFile(const ShutdownParameters &params)
+{
+  if (!buildInUpdated)
+  {
+    logdbg("DX12: Skipping serializing build in pipeline cache, no changes");
+    return;
+  }
+  if (!params.buildInCacheFileName || '\0' == params.buildInCacheFileName[0])
+  {
+    logwarn("DX12: Can not serialize build in pipeline cache, as no name was provided");
+    return;
+  }
+  BuildInPipelineLibraryFileHeader header{
+    .magic = BuildInPipelineLibraryFileHeader::magic_value,
+    .version = BuildInPipelineLibraryFileHeader::version_value,
+    .blitHash = params.blitByteCodeHash,
+    .clearHash = params.clearByteCodeHash,
+    .blitFormatsHash = ShaderHashValue::calculate(blitOutputFormats.data(), blitOutputFormats.size()),
+    .clearFormatsHash = ShaderHashValue::calculate(clearOutputFormats.data(), clearOutputFormats.size()),
+    .blitCount = static_cast<uint32_t>(blitOutputFormats.size()),
+    .clearCount = static_cast<uint32_t>(clearOutputFormats.size()),
+    .librarySize = static_cast<uint32_t>(buildInPipelineLibrary ? buildInPipelineLibrary->GetSerializedSize() : 0),
+  };
+  DynamicArray<uint8_t> buffer;
+  if (buildInPipelineLibrary)
+  {
+    if (buildInPipelineLibrary->GetSerializedSize() == header.librarySize)
+    {
+      buffer.resize(header.librarySize);
+
+      if (FAILED(buildInPipelineLibrary->Serialize(buffer.data(), buffer.size())))
+      {
+        header.librarySize = 0;
+        buffer.resize(0);
+      }
+    }
+    else
+    {
+      // Chances to end up here is pretty much 0. If we still end up here, there is something wrong with the library and we better
+      // drop it anyways.
+      header.librarySize = 0;
+    }
+  }
+
+  FullFileSaveCB cacheFile{params.buildInCacheFileName, DF_WRITE | DF_CREATE | DF_IGNORE_MISSING};
+  if (!cacheFile.fileHandle)
+  {
+    logwarn("DX12: Failed to open %s to serialize pipeline cache, missing cache folder or insufficient privileges might be the cause "
+            "for this error",
+      params.buildInCacheFileName);
+    return;
+  }
+
+  WriteWrapper writer{cacheFile};
+  writer.write(header);
+  writer.write(ShaderHashValue::calculate(&header, 1));
+  writer.writeBytes(blitOutputFormats.data(), sizeof(blitOutputFormats[0]) * blitOutputFormats.size());
+  writer.writeBytes(clearOutputFormats.data(), sizeof(clearOutputFormats[0]) * clearOutputFormats.size());
+  writer.writeBytes(buffer.data(), buffer.size());
+
+  if (writer.close())
+  {
+    logdbg("DX12: Written build in pipeline cache to <%s>", params.buildInCacheFileName);
+    logdbg("DX12: Blit formats: %u", header.blitCount);
+    logdbg("DX12: Clear formats: %u", header.clearCount);
+    ByteUnits librarySizeInBytes{header.librarySize};
+    logdbg("DX12: Pipeline library size: %.4f %s", librarySizeInBytes.units(), librarySizeInBytes.name());
+  }
+  else
+  {
+    logwarn("DX12: Error while attempting to write the build in pipeline cache file to <%s>", params.buildInCacheFileName);
+  }
+}
+
+void PipelineCache::preRecoveryBuildInPipelineLibrary()
+{
+  if (!buildInPipelineLibrary)
+  {
+    return;
+  }
+
+  DynamicArray<uint8_t> rescue;
+  if (buildInUpdated)
+  {
+    logdbg("DX12: Attempting to rescue updated build in pipeline library binary");
+    // attempt to rescue the changed shader library binary
+    rescue.resize(buildInPipelineLibrary->GetSerializedSize());
+    if (0 != rescue.size())
+    {
+      if (FAILED(buildInPipelineLibrary->Serialize(rescue.data(), rescue.size())))
+      {
+        rescue.resize(0);
+      }
+    }
+    if (0 != rescue.size())
+    {
+      logdbg("DX12: Successfully rescued build in pipeline library binary");
+    }
+    else
+    {
+      logwarn("DX12: Failed to rescue build in pipeline library binary");
+    }
+  }
+  buildInPipelineLibrary.Reset();
+  if (0 != rescue.size())
+  {
+    loadedBuildInPipelineLibraryBlob = eastl::move(rescue);
+  }
+}
+
+void PipelineCache::recoverBuildInPipelineLibrary(ID3D12Device1 *device, D3D12_SHADER_CACHE_SUPPORT_FLAGS cache_support)
+{
+  if (0 == (cache_support & D3D12_SHADER_CACHE_SUPPORT_LIBRARY))
+  {
+    logdbg("DX12: Pipeline library disabled, not creating library for build in pipelines");
+    // just in case the blob is not empty
+    loadedBuildInPipelineLibraryBlob.resize(0);
+    return;
+  }
+
+  if (0 != loadedBuildInPipelineLibraryBlob.size())
+  {
+    if (FAILED(device->CreatePipelineLibrary(loadedBuildInPipelineLibraryBlob.data(), loadedBuildInPipelineLibraryBlob.size(),
+          COM_ARGS(&buildInPipelineLibrary))))
+    {
+      loadedBuildInPipelineLibraryBlob.resize(0);
+      logwarn("DX12: Failed to restore pipeline library");
+    }
+    else
+    {
+      logdbg("DX12: Restored pipeline library");
+    }
+  }
+
+  if (!buildInPipelineLibrary && buildInShouldRecord)
+  {
+    // load may not be able to create a restored pipeline library, so we have to create a new one when we need one
+    if (SUCCEEDED(device->CreatePipelineLibrary(nullptr, 0, COM_ARGS(&buildInPipelineLibrary))))
+    {
+      logdbg("DX12: Created new pipeline library for build in pipelines");
+    }
+    else
+    {
+      logwarn("DX12: Failed to create new pipeline library for build in pipelines");
+    }
+  }
+}
+
+void PipelineCache::shutdownBuildInPipelineLibrary()
+{
+  buildInPipelineLibrary.Reset();
+  loadedBuildInPipelineLibraryBlob.resize(0);
+}
+#endif

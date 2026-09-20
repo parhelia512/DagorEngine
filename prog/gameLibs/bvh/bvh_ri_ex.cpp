@@ -8,7 +8,6 @@
 #include <generic/dag_enumerate.h>
 #include <osApiWrappers/dag_cpuJobs.h>
 #include <math/dag_mathUtils.h>
-#include <osApiWrappers/dag_rwLock.h>
 #include <memory/dag_framemem.h>
 #include <memory/dag_linearHeapAllocator.h>
 
@@ -16,6 +15,7 @@
 #include "bvh_ri_common.h"
 #include "bvh_tools.h"
 #include "bvh_add_instance.h"
+#include "bvh_voxel_activity.h"
 #include <util/dag_convar.h>
 
 CONSOLE_BOOL_VAL("raytracing", invalidate_ri_ex_instances, false);
@@ -33,8 +33,6 @@ static constexpr float bvh_ri_extra_range = 0;
 
 namespace bvh::ri
 {
-static OSReadWriteLock flag_lock;
-
 OSSpinlock typeDirtListLock;
 static eastl::unordered_set<int> typeDirtList DAG_TS_GUARDED_BY(typeDirtListLock) = {-1};
 static eastl::unordered_set<int> typeDirtListStaging DAG_TS_GUARDED_BY(typeDirtListLock) = {-1};
@@ -46,8 +44,10 @@ static void do_type_reset()
   typeDirtList = {-1};
 }
 
+template <map_rendinst_fn mapper>
 static void handle_flag(ContextId context_id, ShaderMesh::RElem &elem, uint64_t mesh_id, mat44f_cref tm,
-  rendinst::riex_handle_t handle, eastl::optional<TMatrix4> &inv_world_tm, FlagInfo &flagInfo, MeshMetaAllocator::AllocId &metaAllocId)
+  rendinst::riex_handle_t handle, int lod_ix, eastl::optional<TMatrix4> &inv_world_tm, FlagInfo &flagInfo,
+  MeshMetaAllocator::AllocId &metaAllocId, void *user_data)
 {
   if (!inv_world_tm.has_value())
   {
@@ -62,23 +62,8 @@ static void handle_flag(ContextId context_id, ShaderMesh::RElem &elem, uint64_t 
     v_stu(&inv_world_tm.value().row[3], inv44.col3);
   }
 
-  flag_lock.lockRead();
-  ReferencedTransformData *dataPtr = nullptr;
-  if (auto handleIter = context_id->uniqueRiExtraFlagBuffers.find(handle); handleIter != context_id->uniqueRiExtraFlagBuffers.cend())
-  {
-    if (auto meshIdIter = handleIter->second.find(mesh_id); meshIdIter != handleIter->second.cend())
-    {
-      dataPtr = &meshIdIter->second;
-    }
-  }
-  flag_lock.unlockRead();
-  if (dataPtr == nullptr)
-  {
-    flag_lock.lockWrite();
-    dataPtr = &context_id->uniqueRiExtraFlagBuffers[handle][mesh_id];
-    flag_lock.unlockWrite();
-  }
-  auto &data = *dataPtr;
+  int animIndex = -1;
+  auto &data = *mapper(context_id, mesh_id, handle, lod_ix, user_data, flagInfo.recycled, animIndex);
 
   if (data.metaAllocId == MeshMetaAllocator::INVALID_ALLOC_ID)
     data.metaAllocId = context_id->allocateMetaRegion(1, "riExtraFlag");
@@ -86,8 +71,7 @@ static void handle_flag(ContextId context_id, ShaderMesh::RElem &elem, uint64_t 
   metaAllocId = data.metaAllocId;
 
   flagInfo.invWorldTm = inv_world_tm.value();
-  flagInfo.transformedBuffer = &data.buffer;
-  flagInfo.transformedBlas = &data.blas;
+  flagInfo.transformedData = &data;
 
   static int wind_typeVarId = VariableMap::getVariableId("wind_type");
   static int frequency_amplitudeVarId = VariableMap::getVariableId("frequency_amplitude");
@@ -227,9 +211,12 @@ struct RiExtraBVHJob : public cpujobs::IJob
   unsigned handleCount;
   unsigned instanceCount;
   unsigned elemCount;
+  uint32_t voxelConsidered;
+  uint32_t voxelCulled;
 
   dag::AtomicInteger<int> *nextGroupIx = nullptr;
   eastl::unordered_map<uint64_t, ReferencedTransformDatasForInstance> newUniqueRiExtraTreeBuffers[Context::maxUniqueLods];
+  eastl::unordered_map<uint64_t, ReferencedTransformDatasForInstance> newUniqueRiExtraFlagBuffers[Context::maxUniqueLods];
   RiExtraBVHJob *otherFlip = nullptr;
   threadpool::JobPriority prio = threadpool::PRIO_DEFAULT;
   dag::AtomicInteger<unsigned> chunkBudgetItems = 0;
@@ -241,16 +228,28 @@ struct RiExtraBVHJob : public cpujobs::IJob
   static ReferencedTransformData *mapTreeRiEx(ContextId context_id, uint64_t object_id, uint64_t id, int lod_ix, void *user_data,
     bool &recycled, int &anim_index)
   {
-    MapTreePointers pointers;
-    pointers.uniqueTreeBuffers = make_span(context_id->uniqueRiExtraTreeBuffers, Context::maxUniqueLods);
-    pointers.newUniqueTreeBuffers =
+    MapRendinstPointers pointers;
+    pointers.uniqueBuffers = make_span(context_id->uniqueRiExtraTreeBuffers, Context::maxUniqueLods);
+    pointers.newUniqueBuffers =
       make_span(static_cast<RiExtraBVHJob *>(user_data)->newUniqueRiExtraTreeBuffers, Context::maxUniqueLods);
     pointers.contextId = context_id;
-    pointers.freeUniqueTreeBLASes = &context_id->freeUniqueRiExtraTreeBLASes;
-    return map_tree_base<false>(object_id, id, lod_ix, recycled, anim_index, pointers);
+    pointers.freeUniqueBLASes = &context_id->freeUniqueRiExtraTreeBLASes;
+    return map_rendinst_base<false>(object_id, id, lod_ix, recycled, anim_index, pointers);
   }
 
-  const char *getJobName(bool &) const override { return "RiExtraBVHJob"; }
+  static ReferencedTransformData *mapFlagRiEx(ContextId context_id, uint64_t object_id, uint64_t id, int lod_ix, void *user_data,
+    bool &recycled, int &anim_index)
+  {
+    MapRendinstPointers pointers;
+    pointers.uniqueBuffers = make_span(context_id->uniqueRiExtraFlagBuffers, Context::maxUniqueLods);
+    pointers.newUniqueBuffers =
+      make_span(static_cast<RiExtraBVHJob *>(user_data)->newUniqueRiExtraFlagBuffers, Context::maxUniqueLods);
+    pointers.contextId = context_id;
+    pointers.freeUniqueBLASes = &context_id->freeUniqueRiExtraFlagBLASes;
+    return map_rendinst_base<false>(object_id, id, lod_ix, recycled, anim_index, pointers);
+  }
+
+  const char *getJobName(bool &) const override { return DAPROFILER_STRING("RiExtraBVHJob"); }
 
   template <bool useMinLod, bool cullDistIncreased, bool riBaked, bool rangeCheck, bool treeOrFlagsCheck, bool instanceHasNode>
   void doJobHotPath(int riType, IPoint2 interval, float maxLodDistSq, float distSqMul, float distSqMulOOC, float rangeCheckSq,
@@ -272,7 +271,7 @@ struct RiExtraBVHJob : public cpujobs::IJob
       isTessellated = globalObjectTessellationEnabled && riRes->isTessellated();
     }
     else if (riRes->isTessellated())
-      isTessellated = rendinst::isRIGenExtraRendinstClipmap(riType) || globalObjectTessellationEnabled;
+      isTessellated = rendinst::isRIGenExtraRendinstClipmapOrLandclass(riType) || globalObjectTessellationEnabled;
 
     if constexpr (useMinLod)
       bestLod = max<int>(bestLod, riRes->getBvhMinLod());
@@ -281,18 +280,18 @@ struct RiExtraBVHJob : public cpujobs::IJob
     {
       ++handleCount;
 
-#if _TARGET_SCARLETT
-      if ((handleCount & ~32) == 0)
-        bvh_yield();
-#endif
-
       float distCheckSq;
       vec4f worldBsphereForAnimation;
+      vec4f voxelCheckBsphere;
       if constexpr (!instanceHasNode)
       {
         // The instance has no node. This can happen for some trees which are fallen
         // as far as I have seen it. Lets just use its position and calculate the LOD
         // the old way.
+
+        bbox3f lbb = rendinst::riex_get_lbb(riType);
+        vec4f center = v_bbox3_center(lbb);
+        auto approxRadius = v_mul(v_length3(v_bbox3_size(lbb)), V_C_HALF);
 
         vec3f pos;
         {
@@ -304,12 +303,12 @@ struct RiExtraBVHJob : public cpujobs::IJob
             continue;
           G_UNUSED(hashVal);
           pos = transform_ptr->col3;
+          // the pose rotates the box center away from the pivot, so the sphere needs the transform
+          voxelCheckBsphere = v_mat44_mul_bsph(*transform_ptr, v_perm_xyzd(center, approxRadius));
         }
-        bbox3f lbb = rendinst::riex_get_lbb(riType);
-        vec4f center = v_bbox3_center(lbb);
         auto riPosition = v_madd(center, v_make_vec4f(0.0f, 1.0f, 0.0f, 0.0f), pos);
         vec4f difference = v_sub(riPosition, lodAnchorPositionVec);
-        float distSq = v_extract_x(v_dot3(difference, difference));
+        float distSq = v_extract_x(v_length3_sq_x(difference));
         if (distSq < 0)
           distSq = 0;
 
@@ -318,7 +317,6 @@ struct RiExtraBVHJob : public cpujobs::IJob
             continue;
 
         distCheckSq = distSq * rendinst::getCullDistSqMul();
-        auto approxRadius = v_mul(v_length3(v_bbox3_size(lbb)), V_C_HALF);
         worldBsphereForAnimation = v_perm_xyzd(center, approxRadius);
       }
       else
@@ -342,6 +340,7 @@ struct RiExtraBVHJob : public cpujobs::IJob
 
         distCheckSq = distSqScaledNormalized;
         worldBsphereForAnimation = bsphere;
+        voxelCheckBsphere = bsphere;
       }
 
       if (maxLodDistSq <= distCheckSq)
@@ -357,6 +356,9 @@ struct RiExtraBVHJob : public cpujobs::IJob
       rendinst::riex_handle_t handle = cacheDataHandleArr[i];
       // it's pretty much alive at this point, but get a few more safety checks + retrieve transform and hash
       if (DAGOR_UNLIKELY(!rendinst::isNodeVisible(handle, riType, transform_ptr, hashVal)))
+        continue;
+
+      if (!voxel_activity::keep_instance(contextId, voxelCheckBsphere, voxelConsidered, voxelCulled))
         continue;
 
       if constexpr (riBaked)
@@ -384,8 +386,10 @@ struct RiExtraBVHJob : public cpujobs::IJob
       }
       else
       {
+        // TODO: can use getRiExtraPerInstanceRenderAdditionalDataFlags, but only with at most read lock, to avoid serialization
+        uint32_t dataOffset = 0, additionalDataFlags = 0, optionalFlags = 0;
+        rendinst::getRiExtraPerInstanceRenderAdditionalData(handle, dataOffset, additionalDataFlags, optionalFlags);
         // Tree burns fully immediately
-        uint32_t additionalDataFlags = rendinst::getRiExtraPerInstanceRenderAdditionalDataFlags(handle);
         bool isBurning = additionalDataFlags & eastl::to_underlying(rendinst::RiExtraPerInstanceDataType::TREE_BURNING);
 
         auto &lod = riRes->lods[lodIx];
@@ -435,8 +439,8 @@ struct RiExtraBVHJob : public cpujobs::IJob
                                // template filter
                   v_test_vec_x_gt(v_length3_sq_x(v_sub(worldBsphereForAnimation, viewPositionVec)), ri_tree_anim_max_distance_sq_v);
               bool isOk = isStationary
-                            ? handle_tree<map_tree_stationary, true>(contextId, elem, meshId, lodIx, false, tm44, originalPos, colors,
-                                handle, invWorldTm, treeInfo, metaAllocId, this, true, isBurning, hashVal)
+                            ? handle_tree<map_rendinst_stationary, true>(contextId, elem, meshId, lodIx, false, tm44, originalPos,
+                                colors, handle, invWorldTm, treeInfo, metaAllocId, this, true, isBurning, hashVal)
                             : handle_tree<mapTreeRiEx, true>(contextId, elem, meshId, lodIx, false, tm44, originalPos, colors, handle,
                                 invWorldTm, treeInfo, metaAllocId, this, false, isBurning, hashVal);
               if (!isOk)
@@ -460,7 +464,7 @@ struct RiExtraBVHJob : public cpujobs::IJob
               FlagInfo flagInfo;
               flagInfo.data.hashVal = hashVal;
               MeshMetaAllocator::AllocId metaAllocId = MeshMetaAllocator::INVALID_ALLOC_ID;
-              handle_flag(contextId, elem, meshId, tm44, handle, invWorldTm, flagInfo, metaAllocId);
+              handle_flag<mapFlagRiEx>(contextId, elem, meshId, tm44, handle, lodIx, invWorldTm, flagInfo, metaAllocId, this);
               add_riExtra_instance(contextId, meshId, transform, &flagInfo, metaAllocId, threadIx);
             }
           }
@@ -485,6 +489,7 @@ struct RiExtraBVHJob : public cpujobs::IJob
     vec4f lodAnchorPositionVec = v_make_vec4f(lodAnchorPosition.x, lodAnchorPosition.y, lodAnchorPosition.z, 0);
 
     handleCount = instanceCount = elemCount = 0;
+    voxelConsidered = voxelCulled = 0;
 
     auto rangeCheckSq = sqr(bvh_ri_extra_range);
 
@@ -577,6 +582,9 @@ struct RiExtraBVHJob : public cpujobs::IJob
     hitChunkBudget = false;
 
     doJobWrapper(*this, distSqMul, distSqMulOOC, cullDistIncreased, riBaked, bvh_ri_extra_range_enable, useMinLod);
+
+    contextId->voxelActivity.riExConsidered.fetch_add(voxelConsidered);
+    contextId->voxelActivity.riExCulled.fetch_add(voxelCulled);
 
     DA_PROFILE_TAG_DESC(getJobNameProfDesc(), "handles: %d, instances: %d, elems: %d", handleCount, instanceCount, elemCount);
 
@@ -825,6 +833,7 @@ void update_ri_extra_instances(ContextId context_id, const Point3 &view_position
   auto &jobGroup = riExtraJobGroups[context_id];
 
   jobGroup.nextGroupIx.store(0);
+  voxel_activity::begin_ri_extra_placement(context_id);
 
   const vec4f lightDirection = v_ldu_p3_safe(&light_direction.x);
   const unsigned chunkBudgetItems = bvh_ri_extra_split_enabled ? (unsigned)bvh_ri_extra_split_chunk_budget.get() : ~0u;
@@ -898,11 +907,18 @@ void collect_riex_staged_blas_addresses(ContextId context_id, dag::Vector<uint64
 {
   for (auto &jobFlips : riExtraJobGroups[context_id].jobs)
     for (int flip = 0; flip < 2; ++flip)
+    {
       for (auto &lodRes : jobFlips[flip].newUniqueRiExtraTreeBuffers)
         for (auto &tree : lodRes)
           for (auto &elem : tree.second.elems)
             if (elem.second.blas)
               addresses.push_back(elem.second.blas.getGPUAddress());
+      for (auto &lodRes : jobFlips[flip].newUniqueRiExtraFlagBuffers)
+        for (auto &flag : lodRes)
+          for (auto &elem : flag.second.elems)
+            if (elem.second.blas)
+              addresses.push_back(elem.second.blas.getGPUAddress());
+    }
 }
 
 void tidy_up_riex_trees(ContextId context_id)
@@ -928,11 +944,41 @@ void tidy_up_riex_trees(ContextId context_id)
     }
   }
 
-  TidyUpTreePointers pointers;
-  pointers.uniqueTreeBuffers = make_span(context_id->uniqueRiExtraTreeBuffers, Context::maxUniqueLods);
+  TidyUpRendinstPointers pointers;
+  pointers.uniqueBuffers = make_span(context_id->uniqueRiExtraTreeBuffers, Context::maxUniqueLods);
   pointers.contextId = context_id;
-  pointers.freeUniqueTreeBLASes = &context_id->freeUniqueRiExtraTreeBLASes;
-  tidy_up_trees_base<false>(context_id, pointers);
+  pointers.freeUniqueBLASes = &context_id->freeUniqueRiExtraTreeBLASes;
+  tidy_up_rendinsts_base<false>(context_id, pointers);
+}
+
+void tidy_up_riex_flags(ContextId context_id)
+{
+  TIME_PROFILE(tidy_up_riex_flags)
+
+  for (auto &jobFlips : riExtraJobGroups[context_id].jobs)
+  {
+    for (int flip = 0; flip < 2; ++flip)
+    {
+      auto &job = jobFlips[flip];
+      for (auto [lodIndex, lodRes] : enumerate(job.newUniqueRiExtraFlagBuffers))
+      {
+        for (auto &flag : lodRes)
+        {
+          auto [it, inserted] = context_id->uniqueRiExtraFlagBuffers[lodIndex].insert(std::move(flag));
+          if (!inserted)
+            for (auto &elem : flag.second.elems)
+              context_id->freeMetaRegion(elem.second.metaAllocId);
+        }
+        lodRes.clear();
+      }
+    }
+  }
+
+  TidyUpRendinstPointers pointers;
+  pointers.uniqueBuffers = make_span(context_id->uniqueRiExtraFlagBuffers, Context::maxUniqueLods);
+  pointers.contextId = context_id;
+  pointers.freeUniqueBLASes = &context_id->freeUniqueRiExtraFlagBLASes;
+  tidy_up_rendinsts_base<false>(context_id, pointers);
 }
 
 } // namespace bvh::ri

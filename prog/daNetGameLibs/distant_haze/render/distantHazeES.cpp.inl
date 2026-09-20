@@ -137,7 +137,7 @@ ECS_REGISTER_BOXED_TYPE(DistantHazeManager, nullptr);
 ECS_AUTO_REGISTER_COMPONENT(DistantHazeManager, "distant_haze__manager", nullptr, 0);
 
 ECS_TAG(render)
-ECS_ON_EVENT(OnLevelLoaded)
+ECS_ON_EVENT(EventRenderSceneLoaded)
 static void init_distant_haze_manager_es_event_handler(const ecs::Event &, DistantHazeManager &distant_haze__manager)
 {
   distant_haze__manager.init_for_level();

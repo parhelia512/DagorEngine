@@ -12,17 +12,19 @@
 #include <startup/dag_globalSettings.h>
 #include <util/dag_string.h>
 
+#include <EASTL/algorithm.h>
+#include <EASTL/sort.h>
 #include <EASTL/utility.h>
 
 namespace bvh
 {
 
-Sbuffer *alloc_scratch_buffer(uint32_t size, uint32_t &offset);
-
 static bool bvh_enable_omm = false;
 static bool bvh_retain_omm_bake_results = false;
 static bool bvh_strict_asset_checks = false;
 static uint32_t bvh_omm_data_array_budget = 0xFFFFFFFFu;
+static uint32_t bvh_omm_cache_retention_frames = 900;
+static uint64_t bvh_omm_cache_idle_budget = 64 << 20;
 
 void set_omm_settings(const AdditionalSettings &settings)
 {
@@ -30,6 +32,8 @@ void set_omm_settings(const AdditionalSettings &settings)
   bvh_omm_data_array_budget = settings.ommDataArrayBudget <= 0 ? 0xFFFFFFFFu : static_cast<uint32_t>(settings.ommDataArrayBudget);
   bvh_retain_omm_bake_results = settings.retainOmmBakeResults;
   bvh_strict_asset_checks = settings.strictAssetChecks;
+  bvh_omm_cache_retention_frames = max(settings.ommCacheRetentionFrames, 0);
+  bvh_omm_cache_idle_budget = max(settings.ommCacheIdleBudget, 0);
 }
 
 bool init_omm_context(ContextId context_id)
@@ -100,6 +104,178 @@ static bool is_valid_omm_bake_source(const OmmBakeSource &source)
 static bool is_omm_candidate(ContextId context_id, const Mesh &mesh, const OmmBakeSource &source)
 {
   return mesh_wants_omm(context_id, mesh) && is_valid_omm_bake_source(source);
+}
+
+bool has_secondary_geometry(const MeshInfo &mesh)
+{
+  return mesh.vertexProcessor && mesh.vertexProcessor->isGeneratingSecondaryVertices();
+}
+
+uint32_t omm_mesh_layout_hash(const MeshInfo &mesh, uint32_t mesh_index)
+{
+  uint32_t hash = 0x811C9DC5u;
+  for (uint32_t field : {mesh_index, mesh.indexCount, mesh.vertexCount, mesh.texcoordFormat, mesh.texcoordOffset, mesh.vertexSize})
+    hash = (hash ^ field) * 0x01000193u;
+  return hash;
+}
+
+static OmmCacheKey make_omm_cache_key(const Mesh &mesh, uint64_t object_id, int slot_id, TEXTUREID bake_tex_id)
+{
+  return {object_id, uint32_t(slot_id), bake_tex_id, mesh.ommLayoutHash};
+}
+
+static OmmCacheKey make_omm_cache_key(const MeshInfo &mesh, uint64_t object_id, uint32_t mesh_index, int slot_id)
+{
+  return {object_id, uint32_t(slot_id), get_omm_texture_id(mesh), omm_mesh_layout_hash(mesh, mesh_index)};
+}
+
+// None of these is a property of the asset: the alpha source may load and a bake slot may free up.
+static bool is_transient_omm_failure(OmmFailure failure)
+{
+  return failure == OmmFailure::AlphaTextureNeverLoaded || failure == OmmFailure::BakeStartFailed ||
+         failure == OmmFailure::ReadbackInvalid;
+}
+
+// The resolve restarts such an entry and the wait bypass refuses to skip it, thus the two must agree.
+static bool omm_entry_needs_bake(const OmmCacheEntry *entry)
+{
+  return !entry || entry->state == OmmState::None || (entry->state == OmmState::Failed && is_transient_omm_failure(entry->failure));
+}
+
+// Physical sizes, not the sizes the bake reported: the budget must count the VRAM the entry pins.
+uint32_t omm_entry_bytes(const OmmCacheEntry &entry)
+{
+  auto bs = [](const UniqueBuf &buffer) { return buffer ? buffer->getSize() : 0u; };
+  return entry.omm.getASSize() + bs(entry.bakeResult.indexBuffer) + bs(entry.bakeResult.arrayData) + bs(entry.bakeResult.descArray);
+}
+
+OmmEntryRef::OmmEntryRef(Context *context, OmmCacheEntry *entry) : context(context), entry(entry)
+{
+  if (entry)
+    entry->refCount++;
+}
+
+void OmmEntryRef::reset()
+{
+  if (!entry)
+    return;
+
+  {
+    OSSpinlockScopedLock lock(context->deferredOmmReleaseLock);
+    context->deferredOmmReleases.push_back(entry);
+  }
+  context = nullptr;
+  entry = nullptr;
+}
+
+// Only drops references, so the deferral can delay an eviction, never free a linked OMM too early.
+static void drain_deferred_omm_releases(ContextId context_id)
+{
+  dag::Vector<OmmCacheEntry *> pending;
+  {
+    OSSpinlockScopedLock lock(context_id->deferredOmmReleaseLock);
+    if (context_id->deferredOmmReleases.empty())
+      return;
+    pending.swap(context_id->deferredOmmReleases);
+  }
+
+  for (OmmCacheEntry *entry : pending)
+    if (--entry->refCount == 0)
+      entry->zeroRefFrame = dagor_frame_no();
+}
+
+OmmEntryRef acquire_omm_entry(ContextId context_id, const OmmCacheKey &key)
+{
+  return OmmEntryRef(context_id, &context_id->ommCache[key]);
+}
+
+OmmCacheEntry *find_omm_entry(ContextId context_id, const OmmCacheKey &key)
+{
+  auto iter = context_id->ommCache.find(key);
+  return iter != context_id->ommCache.end() ? &iter->second : nullptr;
+}
+
+OmmCacheEntry *acquire_mesh_omm_entry(ContextId context_id, uint64_t object_id, Mesh &mesh, int slot_id)
+{
+  if (mesh.ommEntries[slot_id])
+    return mesh.ommEntries[slot_id].get();
+
+  OmmEntryRef ref = acquire_omm_entry(context_id, make_omm_cache_key(mesh, object_id, slot_id, get_omm_texture_id(mesh)));
+  if (omm_entry_needs_bake(ref.get()))
+    ref->resetBakeState();
+
+  mesh.ommEntries[slot_id] = eastl::move(ref);
+  return mesh.ommEntries[slot_id].get();
+}
+
+void release_omm_result(render::omm::Context &omm_ctx, render::omm::BakeResult &result)
+{
+  if (bvh_retain_omm_bake_results)
+    render::omm::clear_result(result);
+  else
+    render::omm::recycle_result(omm_ctx, result, /*keep_index_buffer*/ false);
+}
+
+static void erase_baking_omm_entry(ContextId context_id, const OmmCacheEntry *entry)
+{
+  auto &entries = context_id->bakingOmmEntries;
+  if (auto iter = eastl::find(entries.begin(), entries.end(), entry); iter != entries.end())
+    entries.erase(iter);
+}
+
+// Gives the pending bake slot back. Leaves the bake result alone: a failed readback still publishes its
+// buffers to the viewer.
+static void abort_omm_entry_bake(ContextId context_id, OmmCacheEntry &entry)
+{
+  render::omm::discard_bake(context_id->ommContext, entry.bakeHandle);
+  entry.bakeHandle = {};
+  erase_baking_omm_entry(context_id, &entry);
+}
+
+// The entry starts over from None on its next resolve.
+static void discard_omm_entry_bake(ContextId context_id, OmmCacheEntry &entry)
+{
+  abort_omm_entry_bake(context_id, entry);
+  release_omm_result(context_id->ommContext, entry.bakeResult);
+  entry.resetBakeState();
+}
+
+// Half-baked-object membership proves liveness where the resolve is budget-limited; elsewhere only the
+// poll stamp does, and a live dynamic instance re-stamps it every frame.
+static bool omm_bake_is_inactive(ContextId context_id, const OmmCacheEntry &entry, uint32_t inactive_frames)
+  DAG_TS_REQUIRES_SHARED(context_id->objectsLock)
+{
+  return context_id->halfBakedObjects.count(entry.bakeObjectId) == 0 && dagor_frame_no() - entry.lastPollFrame > inactive_frames;
+}
+
+// A live waiter polls its bake at least this often; a bigger lag means the object is gone.
+static constexpr uint32_t OMM_BAKE_POLL_LAG_FRAMES = 2;
+// Retry interval of a transient override bake failure; not the cache retention, which may be 0.
+static constexpr uint32_t OMM_OVERRIDE_RETRY_FRAMES = 900;
+
+// The poll stamp cannot tell a dead object from a live one whose instances are culled, thus a bake is
+// given up only after this many unpolled frames.
+static constexpr uint32_t OMM_BAKE_GIVE_UP_FRAMES = 60;
+
+// A dead object's bake must not starve a live one: with the pool full, take one slot back at once in
+// place of waiting out the periodic grace window.
+static bool reclaim_inactive_omm_bake_slot(ContextId context_id) DAG_TS_REQUIRES_SHARED(context_id->objectsLock)
+{
+  for (OmmCacheEntry *entry : context_id->bakingOmmEntries)
+    if (omm_bake_is_inactive(context_id, *entry, OMM_BAKE_POLL_LAG_FRAMES))
+    {
+      discard_omm_entry_bake(context_id, *entry);
+      return true;
+    }
+  return false;
+}
+
+bool has_active_omm_bakes(ContextId context_id)
+{
+  for (const OmmCacheEntry *entry : context_id->bakingOmmEntries)
+    if (!omm_bake_is_inactive(context_id, *entry, OMM_BAKE_GIVE_UP_FRAMES))
+      return true;
+  return false;
 }
 
 template <typename Container>
@@ -220,20 +396,38 @@ OmmBakeSource make_omm_bake_source(ContextId context_id, const Mesh &mesh, const
 
 static bool omm_texture_at_max_quality(TEXTUREID tex_id) { return get_managed_res_cur_tql(tex_id) == get_managed_res_max_tql(tex_id); }
 
+static void request_omm_texture(TEXTUREID tex_id)
+{
+  prefetch_and_check_managed_texture_loaded(tex_id, true);
+  mark_managed_tex_lfu(tex_id);
+  mark_managed_textures_important({&tex_id, 1});
+}
+
+// Wait bypass: an entry past state None has already passed this wait once. A transient failure does not
+// count, so that its retry postpones the add in place of adding the object with the mesh withheld.
+static bool omm_bakes_already_resolved(ContextId context_id, uint64_t object_id, uint32_t mesh_index, const MeshInfo &mesh)
+{
+  const int slotCount = has_secondary_geometry(mesh) ? 2 : 1;
+  for (int slotId = 0; slotId < slotCount; ++slotId)
+    if (omm_entry_needs_bake(find_omm_entry(context_id, make_omm_cache_key(mesh, object_id, mesh_index, slotId))))
+      return false;
+  return true;
+}
+
 OmmTextureWait should_wait_for_omm_texture(ContextId context_id, uint64_t object_id, const ObjectInfo &object_info)
 {
   dag::Vector<TEXTUREID, framemem_allocator> waitingTextures;
 
-  for (const MeshInfo &mesh : object_info.meshes)
+  for (uint32_t meshIndex = 0; meshIndex < object_info.meshes.size(); ++meshIndex)
   {
-    if (!is_omm_candidate(context_id, mesh))
+    const MeshInfo &mesh = object_info.meshes[meshIndex];
+    if (!is_omm_candidate(context_id, mesh) || omm_bakes_already_resolved(context_id, object_id, meshIndex, mesh))
       continue;
 
     const TEXTUREID texId = get_omm_texture_id(mesh);
     if (!omm_texture_at_max_quality(texId))
     {
-      prefetch_and_check_managed_texture_loaded(texId, true);
-      mark_managed_tex_lfu(texId);
+      request_omm_texture(texId);
       if (!contains_omm_texture(waitingTextures, texId))
         waitingTextures.push_back(texId);
     }
@@ -261,8 +455,7 @@ OmmTextureWait wait_for_grass_omm_texture(TEXTUREID alpha_tex_id, uint32_t &wait
   if (omm_texture_at_max_quality(alpha_tex_id))
     return OmmTextureWait::Ready;
 
-  prefetch_and_check_managed_texture_loaded(alpha_tex_id, true);
-  mark_managed_tex_lfu(alpha_tex_id);
+  request_omm_texture(alpha_tex_id);
   if (++wait_attempts <= MAX_OMM_TEXTURE_WAIT_ATTEMPTS)
     return OmmTextureWait::Wait;
 
@@ -320,12 +513,23 @@ static uint8_t get_budgeted_omm_max_subdivision_level(uint32_t triangle_count, u
   return 0;
 }
 
-static bool start_omm_bake(ContextId context_id, Mesh &mesh, const OmmBakeSource &source, int slot_id, bool in_delayed_sync_window)
+// The OMM must agree with the any-hit shader, which takes the channel from this flag: 0 is the red of a
+// dedicated alpha texture, 3 the alpha of the albedo the alpha slot falls back to.
+static uint32_t omm_alpha_channel(uint32_t material_type)
+{
+  // An impostor bakes from its albedo whatever its alpha slot holds, thus the flag cannot speak for it.
+  if (material_type & MeshMeta::bvhMaterialImpostor)
+    return 3;
+  return (material_type & MeshMeta::bvhMaterialAlphaInRed) ? 0 : 3;
+}
+
+static bool start_omm_bake(ContextId context_id, const Mesh &mesh, OmmCacheEntry &entry, const OmmBakeSource &source, int slot_id,
+  TEXTUREID bake_tex_id, uint32_t alpha_channel, bool in_delayed_sync_window)
 {
   // Record before the early returns, thus the diagnostics can give the format even when it is the cause.
-  mesh.ommSlots[slot_id].bakeTexcoordFormat = source.texCoordFormat;
+  entry.bakeTexcoordFormat = source.texCoordFormat;
 
-  const TEXTUREID texId = get_omm_texture_id(mesh);
+  const TEXTUREID texId = bake_tex_id;
   BaseTexture *texture = acquire_managed_tex(texId);
   if (!texture)
     return false;
@@ -348,8 +552,8 @@ static bool start_omm_bake(ContextId context_id, Mesh &mesh, const OmmBakeSource
   input.indexCount = source.indexCount;
   input.indexStrideInBytes = source.indexStrideInBytes;
   input.indexBufferOffsetInBytes = source.indexBufferOffsetInBytes;
-  input.globalFormat = render::omm::Format::OC1_2_State,
-  input.alphaTextureChannel = (mesh.materialType & MeshMeta::bvhMaterialImpostor) || mesh.alphaTextureId == BAD_TEXTUREID ? 3 : 0;
+  input.globalFormat = render::omm::Format::OC1_2_State;
+  input.alphaTextureChannel = alpha_channel;
   input.maxOutOmmArraySize = bvh_omm_data_array_budget;
   // Adaptive: dynamicSubdivisionScale picks a level for each triangle to get ~2x2 texel micro-triangles.
   // maxSubdivisionLevel is only the ceiling, which the budget can lower.
@@ -364,11 +568,11 @@ static bool start_omm_bake(ContextId context_id, Mesh &mesh, const OmmBakeSource
     input.runtimeSamplerDesc.addressingMode = d3d::AddressMode::Border;
     input.runtimeSamplerDesc.borderAlpha = 0.f;
     input.uvCutout = make_impostor_uv_cutout(mesh, slot_id);
-    mesh.ommSlots[slot_id].bakeUvCutout = input.uvCutout.enabled;
+    entry.bakeUvCutout = input.uvCutout.enabled;
   }
 
 #if DAGOR_DBGLEVEL > 0
-  mesh.ommSlots[slot_id].debugBakeSource = render::omm::make_debug_bake_source(input, texId);
+  entry.debugBakeSource = render::omm::make_debug_bake_source(input, texId);
 #endif
 
   // The bake fires a chain of interdependent compute dispatches. Inside a delayed-sync window their
@@ -376,79 +580,102 @@ static bool start_omm_bake(ContextId context_id, Mesh &mesh, const OmmBakeSource
   // run the bake with immediate sync, matching the BLAS-build handling there.
   if (in_delayed_sync_window)
     d3d::driver_command(Drv3dCommand::CONTINUE_SYNC);
-  const bool dispatched = render::omm::begin_bake(context_id->ommContext, input, mesh.ommSlots[slot_id].bakeHandle);
+  const bool dispatched = render::omm::begin_bake(context_id->ommContext, input, entry.bakeHandle);
   // Only a dispatched bake gets a level, thus the diagnostics do not claim a bake that never ran.
   if (dispatched)
-    mesh.ommSlots[slot_id].bakeSubdivisionLevel = input.maxSubdivisionLevel;
+    entry.bakeSubdivisionLevel = input.maxSubdivisionLevel;
   if (in_delayed_sync_window)
     d3d::driver_command(Drv3dCommand::DELAY_SYNC);
   release_managed_tex(texId);
   return dispatched;
 }
 
-static void poll_baking_omm_slot(ContextId context_id, Mesh::OmmSlot &slot)
+static void poll_baking_omm_entry(ContextId context_id, OmmCacheEntry &entry)
 {
-  if (slot.state != Mesh::OmmState::Baking)
+  if (entry.state != OmmState::Baking)
     return;
 
-  slot.lastPollFrame = dagor_frame_no();
   const render::omm::ConsumeBakeResult result =
-    render::omm::consume_bake(context_id->ommContext, slot.bakeHandle, slot.bakeResult, &slot.bakeStats);
+    render::omm::consume_bake(context_id->ommContext, entry.bakeHandle, entry.bakeResult, &entry.bakeStats);
   if (result == render::omm::ConsumeBakeResult::NotReady)
     return;
   if (result == render::omm::ConsumeBakeResult::Failed)
   {
-    slot.bakeHandle = {};
-    fail_omm_slot(slot, Mesh::OmmFailure::ReadbackInvalid);
+    fail_omm_entry(context_id, entry, OmmFailure::ReadbackInvalid);
     return;
   }
-  slot.state = Mesh::OmmState::Ready;
+  entry.state = OmmState::Ready;
+  entry.bakeHandle = {};
+  erase_baking_omm_entry(context_id, &entry);
 }
 
-static bool start_new_omm_bake(ContextId context_id, uint64_t object_id, Mesh &mesh, uint32_t geometry_index,
-  const OmmBakeSource &source, bool in_delayed_sync_window, int slot_id = OMM_PRIMARY_SLOT)
+enum class OmmBakeAdvance
+{
+  Waiting, // the texture is loading or no bake slot is free
+  Failed,  // the failure is recorded on the entry and published
+  Started  // the entry moved to Baking
+};
+
+// The None-to-Baking transition, shared by the mesh-shared and the override bake starts.
+static OmmBakeAdvance advance_unbaked_omm_entry(ContextId context_id, uint64_t object_id, const Mesh &mesh, OmmCacheEntry &entry,
+  const OmmBakeSource &source, int slot_id, TEXTUREID bake_tex_id, uint32_t alpha_channel, bool in_delayed_sync_window)
+  DAG_TS_REQUIRES_SHARED(context_id->objectsLock)
+{
+  if (!omm_texture_at_max_quality(bake_tex_id))
+  {
+    // Several resolves can poll the entry in one frame; count one wait attempt per frame.
+    if (entry.textureWaitFrame != dagor_frame_no())
+    {
+      entry.textureWaitFrame = dagor_frame_no();
+      ++entry.textureWaitAttempts;
+      request_omm_texture(bake_tex_id);
+    }
+    if (entry.textureWaitAttempts <= MAX_OMM_TEXTURE_WAIT_ATTEMPTS)
+      return OmmBakeAdvance::Waiting;
+    fail_omm_entry(context_id, entry, OmmFailure::AlphaTextureNeverLoaded);
+    entry.debugPublished = true;
+    publish_omm_debug_result(mesh, entry, object_id, mesh.firstGeometryIndex, slot_id, in_delayed_sync_window, bake_tex_id);
+    return OmmBakeAdvance::Failed;
+  }
+
+  if (!render::omm::has_free_bake_slot(context_id->ommContext) && !reclaim_inactive_omm_bake_slot(context_id))
+    return OmmBakeAdvance::Waiting;
+
+  if (!start_omm_bake(context_id, mesh, entry, source, slot_id, bake_tex_id, alpha_channel, in_delayed_sync_window))
+  {
+    fail_omm_entry(context_id, entry, OmmFailure::BakeStartFailed);
+    entry.debugPublished = true;
+    publish_omm_debug_result(mesh, entry, object_id, mesh.firstGeometryIndex, slot_id, in_delayed_sync_window, bake_tex_id);
+    return OmmBakeAdvance::Failed;
+  }
+
+  entry.state = OmmState::Baking;
+  entry.bakeObjectId = object_id;
+  context_id->bakingOmmEntries.push_back(&entry);
+  return OmmBakeAdvance::Started;
+}
+
+static bool start_new_omm_bake(ContextId context_id, uint64_t object_id, Mesh &mesh, const OmmBakeSource &source,
+  bool in_delayed_sync_window, int slot_id = OMM_PRIMARY_SLOT) DAG_TS_REQUIRES_SHARED(context_id->objectsLock)
 {
   if (slot_id == OMM_SECONDARY_SLOT && !needs_secondary_omm(mesh))
     return true;
-
-  Mesh::OmmSlot &slot = mesh.ommSlots[slot_id];
-  Mesh::OmmState &state = slot.state;
-  if (!is_omm_candidate(context_id, mesh, source) || state == Mesh::OmmState::Built || state == Mesh::OmmState::Failed)
+  if (!is_omm_candidate(context_id, mesh, source))
     return true;
 
-  if (state == Mesh::OmmState::None)
+  OmmCacheEntry &entry = *acquire_mesh_omm_entry(context_id, object_id, mesh, slot_id);
+  OmmState &state = entry.state;
+  if (state == OmmState::Built || state == OmmState::Failed)
+    return true;
+
+  entry.lastPollFrame = dagor_frame_no();
+
+  if (state == OmmState::None)
   {
     // The object wait covers only the add step: dynmodel instances reach here with no other gate.
-    const TEXTUREID alphaTexId = get_omm_texture_id(mesh);
-    if (!omm_texture_at_max_quality(alphaTexId))
-    {
-      // Every instance of the object polls this shared slot in each frame.
-      if (slot.textureWaitFrame != dagor_frame_no())
-      {
-        slot.textureWaitFrame = dagor_frame_no();
-        ++slot.textureWaitAttempts;
-        prefetch_and_check_managed_texture_loaded(alphaTexId, true);
-        mark_managed_tex_lfu(alphaTexId);
-      }
-      if (slot.textureWaitAttempts <= MAX_OMM_TEXTURE_WAIT_ATTEMPTS)
-        return false;
-      fail_omm_slot(slot, Mesh::OmmFailure::AlphaTextureNeverLoaded);
-      publish_omm_debug_result(mesh, slot, object_id, geometry_index, slot_id, in_delayed_sync_window);
+    if (advance_unbaked_omm_entry(context_id, object_id, mesh, entry, source, slot_id, get_omm_texture_id(mesh),
+          omm_alpha_channel(mesh.materialType), in_delayed_sync_window) == OmmBakeAdvance::Failed)
       return true;
-    }
-
-    if (!render::omm::has_free_bake_slot(context_id->ommContext))
-      return false;
-
-    if (!start_omm_bake(context_id, mesh, source, slot_id, in_delayed_sync_window))
-    {
-      fail_omm_slot(slot, Mesh::OmmFailure::BakeStartFailed);
-      publish_omm_debug_result(mesh, slot, object_id, geometry_index, slot_id, in_delayed_sync_window);
-      return true;
-    }
-    state = Mesh::OmmState::Baking;
-    slot.lastPollFrame = dagor_frame_no();
-    context_id->objectsWithBakingOmm.insert(object_id);
   }
 
   return false;
@@ -468,26 +695,27 @@ bool bake_is_all_transparent(const render::omm::BakeStats &stats)
          stats.totalOpaqueCount == 0 && stats.totalUnknownCount == 0;
 }
 
-void publish_omm_debug_result(const Mesh &mesh, Mesh::OmmSlot &slot, uint64_t object_id, uint32_t geometry_index, int slot_id,
-  bool in_delayed_sync_window)
+void publish_omm_debug_result(const Mesh &mesh, OmmCacheEntry &entry, uint64_t object_id, uint32_t geometry_index, int slot_id,
+  bool in_delayed_sync_window, TEXTUREID label_tex_id)
 {
   if (!bvh_retain_omm_bake_results)
     return;
 
-  const bool failed = slot.state == Mesh::OmmState::Failed;
+  const bool failed = entry.state == OmmState::Failed;
 
-  // Mesh-level on purpose: a failed slot whose sibling disagrees still drops the object.
-  if (failed && (mesh_should_be_opaque(mesh) || mesh_should_be_skipped(mesh)))
+  // Mesh-level on purpose: a failed slot whose sibling disagrees still drops the object. Applies to the
+  // mesh's own slots only; an override entry's absorb is decided at its resolve.
+  if (failed && mesh.ommEntries[slot_id].get() == &entry && (mesh_should_be_opaque(mesh) || mesh_should_be_skipped(mesh)))
     return;
 
-  const TEXTUREID texId = get_omm_texture_id(mesh);
+  const TEXTUREID texId = label_tex_id != BAD_TEXTUREID ? label_tex_id : get_omm_texture_id(mesh);
   const char *texName = texId != BAD_TEXTUREID ? get_managed_texture_name(texId) : nullptr;
   const String label(0, "%s%s object=%llu geometry=%u slot=%u%s", failed ? "[FAILED] " : "", texName ? texName : "<no tex>",
     static_cast<unsigned long long>(object_id), geometry_index, uint32_t(slot_id), slot_id == OMM_SECONDARY_SLOT ? " secondary" : "");
 
   render::omm::DebugBakeResultInfo info;
 #if DAGOR_DBGLEVEL > 0
-  info.source = slot.debugBakeSource;
+  info.source = entry.debugBakeSource;
 #endif
   info.label = label.c_str();
   info.objectId = object_id;
@@ -503,11 +731,11 @@ void publish_omm_debug_result(const Mesh &mesh, Mesh::OmmSlot &slot, uint64_t ob
     d3d::driver_command(Drv3dCommand::CONTINUE_SYNC);
 
   if (!failed)
-    render::omm::debug_register_bake_result(slot.bakeResult, info);
+    render::omm::debug_register_bake_result(entry.bakeResult, info);
   else
   {
-    info.failReason = omm_failure_text(slot.failure);
-    render::omm::debug_adopt_bake_result(eastl::move(slot.bakeResult), info);
+    info.failReason = omm_failure_text(entry.failure);
+    render::omm::debug_adopt_bake_result(eastl::move(entry.bakeResult), info);
   }
 
   if (in_delayed_sync_window)
@@ -528,40 +756,46 @@ void publish_failed_grass_omm_debug_result(render::omm::BakeResult &result, cons
   render::omm::debug_adopt_bake_result(eastl::move(result), info);
 }
 
-static bool build_omm_if_ready(Mesh &mesh, OmmBuildInfos &omm_builds, OmmBuildResults &omm_build_results, int slot_id,
-  uint64_t object_id, uint32_t geometry_index, bool in_delayed_sync_window)
+// mesh is null when the object that started the bake is gone; the bake still finishes into the cache.
+static bool build_omm_if_ready(ContextId context_id, OmmCacheEntry &entry, const Mesh *mesh, int slot_id, OmmBuildInfos &omm_builds,
+  OmmBuildResults &omm_build_results, bool in_delayed_sync_window)
 {
-  Mesh::OmmSlot &slot = mesh.ommSlots[slot_id];
-  Mesh::OmmState &state = slot.state;
-  render::omm::BakeResult &result = slot.bakeResult;
-  UniqueOMM &omm = slot.omm;
+  OmmState &state = entry.state;
+  render::omm::BakeResult &result = entry.bakeResult;
 
-  if (state != Mesh::OmmState::Ready)
+  if (state != OmmState::Ready)
     return true;
 
-  const auto fail = [&](Mesh::OmmFailure failure) {
-    fail_omm_slot(slot, failure);
-    // Publish before clear_result: the viewer can adopt the buffers.
-    publish_omm_debug_result(mesh, slot, object_id, geometry_index, slot_id, in_delayed_sync_window);
-    render::omm::clear_result(result);
+  const auto publish = [&] {
+    if (mesh)
+      publish_omm_debug_result(*mesh, entry, entry.bakeObjectId, mesh->firstGeometryIndex, slot_id, in_delayed_sync_window);
+  };
+
+  const auto fail = [&](OmmFailure failure) {
+    fail_omm_entry(context_id, entry, failure);
+    // Publish before the release: the viewer can adopt the buffers.
+    publish();
+    // No owner mesh: the override resolve publishes later, so the buffers must stay for it.
+    if (mesh || !bvh_retain_omm_bake_results)
+      release_omm_result(context_id->ommContext, result);
     return true;
   };
 
   if (!result.arrayData || !result.descArray || !result.indexBuffer)
-    return fail(Mesh::OmmFailure::NoOutputBuffers);
+    return fail(OmmFailure::NoOutputBuffers);
 
   if (result.arrayBuildDescs.empty() || result.blasLinkageDescs.empty())
-    return fail(bake_is_all_opaque(slot.bakeStats)        ? Mesh::OmmFailure::AllTrianglesOpaque
-                : bake_is_all_transparent(slot.bakeStats) ? Mesh::OmmFailure::AllTrianglesTransparent
-                                                          : Mesh::OmmFailure::NoDescriptors);
+    return fail(bake_is_all_opaque(entry.bakeStats)        ? OmmFailure::AllTrianglesOpaque
+                : bake_is_all_transparent(entry.bakeStats) ? OmmFailure::AllTrianglesTransparent
+                                                           : OmmFailure::NoDescriptors);
 
   auto sizeInfo = render::omm::make_array_build_info(result, nullptr, 0, 0, RaytraceBuildFlags::FAST_TRACE);
   const raytrace::AccelerationStructureSizes sizes = d3d::raytrace::calculate_acceleration_structure_sizes(sizeInfo);
   if (!sizes.structureSizeInBytes)
-    return fail(Mesh::OmmFailure::ZeroArraySize);
+    return fail(OmmFailure::ZeroArraySize);
 
-  omm = UniqueOMM::create_omm(sizes.structureSizeInBytes);
-  HANDLE_LOST_DEVICE_STATE(omm, false);
+  entry.omm = UniqueOMM::create_omm(sizes.structureSizeInBytes);
+  HANDLE_LOST_DEVICE_STATE(entry.omm, false);
 
   uint32_t scratchOffset = 0;
   Sbuffer *scratchBuffer = alloc_scratch_buffer(sizes.buildScratchBufferSizeInBytes, scratchOffset);
@@ -569,50 +803,165 @@ static bool build_omm_if_ready(Mesh &mesh, OmmBuildInfos &omm_builds, OmmBuildRe
     HANDLE_LOST_DEVICE_STATE(scratchBuffer, false);
 
   raytrace::BatchedOpacityMicroMapTriangleArrayBuildInfo build;
-  build.omm = omm.get();
+  build.omm = entry.omm.get();
   build.ommtabi = render::omm::make_array_build_info(result, scratchBuffer, scratchOffset, sizes.buildScratchBufferSizeInBytes,
     RaytraceBuildFlags::FAST_TRACE);
   omm_builds.push_back(build);
   omm_build_results.push_back(&result);
-  state = Mesh::OmmState::Built;
+  state = OmmState::Built;
 
-  publish_omm_debug_result(mesh, slot, object_id, geometry_index, slot_id, in_delayed_sync_window);
-
-  return true;
-}
-
-bool start_new_omm_bakes(ContextId context_id, uint64_t object_id, Mesh &mesh, uint32_t geometry_index, const OmmBakeSource &source,
-  bool in_delayed_sync_window)
-{
-  if (!start_new_omm_bake(context_id, object_id, mesh, geometry_index, source, in_delayed_sync_window, OMM_PRIMARY_SLOT))
-    return false;
-  if (needs_secondary_omm(mesh) &&
-      !start_new_omm_bake(context_id, object_id, mesh, geometry_index, source, in_delayed_sync_window, OMM_SECONDARY_SLOT))
-    return false;
+  publish();
 
   return true;
 }
 
-static void consume_mesh_omm_slot(ContextId context_id, uint64_t object_id, Mesh &mesh, int slot_id, uint32_t geometry_index,
-  OmmBuildInfos &build_infos, OmmBuildResults &build_results, bool in_delayed_sync_window)
+bool start_new_omm_bakes(ContextId context_id, uint64_t object_id, Mesh &mesh, const OmmBakeSource &source,
+  bool in_delayed_sync_window) DAG_TS_REQUIRES_SHARED(context_id->objectsLock)
 {
-  Mesh::OmmSlot &slot = mesh.ommSlots[slot_id];
-  const bool wasBaking = slot.state == Mesh::OmmState::Baking;
-  poll_baking_omm_slot(context_id, slot);
-  // A failed readback never reaches the publication in build_omm_if_ready: its state is not Ready.
-  if (wasBaking && slot.state == Mesh::OmmState::Failed)
-    publish_omm_debug_result(mesh, slot, object_id, geometry_index, slot_id, in_delayed_sync_window);
-  build_omm_if_ready(mesh, build_infos, build_results, slot_id, object_id, geometry_index, in_delayed_sync_window);
+  if (!start_new_omm_bake(context_id, object_id, mesh, source, in_delayed_sync_window, OMM_PRIMARY_SLOT))
+    return false;
+  if (
+    needs_secondary_omm(mesh) && !start_new_omm_bake(context_id, object_id, mesh, source, in_delayed_sync_window, OMM_SECONDARY_SLOT))
+    return false;
+
+  return true;
 }
 
-void consume_mesh_omm_bakes(ContextId context_id, uint64_t object_id, Mesh &mesh, uint32_t geometry_index, OmmBuildInfos &build_infos,
+// The alpha texture an instance overrides its mesh with. Only the bindless index survives in the meta,
+// thus the id comes back from the allocator that handed it out.
+static TEXTUREID get_override_alpha_texture_id(ContextId context_id, const MeshMeta &meta)
+{
+  if (meta.alphaTextureIndex == MeshMeta::INVALID_TEXTURE)
+    return BAD_TEXTUREID;
+
+  WinAutoLock lock(context_id->bindlessTextureLock);
+  auto texture = context_id->bindlessTextureAllocator.get_resource(meta.alphaTextureIndex);
+  return texture ? texture->getTID() : BAD_TEXTUREID;
+}
+
+// The same state walk as the mesh-shared bake, on an entry that no Mesh owns; thus the terminal states
+// publish to the debug viewer from here, as no build or consume path has a mesh to publish under.
+static OverrideOmmResult advance_override_omm_entry(ContextId context_id, uint64_t object_id, const Mesh &mesh, OmmCacheEntry &entry,
+  const OmmBakeSource &source, TEXTUREID override_tex_id, uint32_t alpha_channel, bool in_delayed_sync_window)
+  DAG_TS_REQUIRES_SHARED(context_id->objectsLock)
+{
+  entry.lastPollFrame = dagor_frame_no();
+
+  const auto publishOnce = [&] {
+    if (entry.debugPublished)
+      return;
+    entry.debugPublished = true;
+    publish_omm_debug_result(mesh, entry, object_id, mesh.firstGeometryIndex, OMM_PRIMARY_SLOT, in_delayed_sync_window,
+      override_tex_id);
+  };
+
+  switch (entry.state)
+  {
+    case OmmState::Built: publishOnce(); return OverrideOmmResult::UseEntry;
+    case OmmState::Failed:
+      // Failed but absorbed: the instance takes the result as geometry flags in place of dropping out of
+      // the BVH, and an absorbed result is not shown, as the mesh path.
+      if (omm_entry_should_be_opaque(&entry) || omm_entry_should_be_skipped(&entry))
+      {
+        // The build kept these buffers for a later publish that the absorb never makes. The resolve runs
+        // for every instance in every frame, thus release them on the first one.
+        if (entry.bakeResult.arrayData)
+          release_omm_result(context_id->ommContext, entry.bakeResult);
+        return OverrideOmmResult::UseEntry;
+      }
+      publishOnce();
+      // The per-frame resolve keeps this entry alive, thus the eviction never gives it a fresh start;
+      // retry a transient failure on its own interval instead.
+      if (!is_transient_omm_failure(entry.failure) || dagor_frame_no() - entry.failFrame <= OMM_OVERRIDE_RETRY_FRAMES)
+        return OverrideOmmResult::WithholdAndReportFailure;
+      entry.resetBakeState();
+      break;
+    // An ownerless bake still reaches a terminal state through the baking list.
+    case OmmState::Baking:
+    case OmmState::Ready: return OverrideOmmResult::Withhold;
+    case OmmState::None: break;
+  }
+
+  return advance_unbaked_omm_entry(context_id, object_id, mesh, entry, source, OMM_PRIMARY_SLOT, override_tex_id, alpha_channel,
+           in_delayed_sync_window) == OmmBakeAdvance::Failed
+           ? OverrideOmmResult::WithholdAndReportFailure
+           : OverrideOmmResult::Withhold;
+}
+
+OverrideOmmResult resolve_override_omm_entry(ContextId context_id, uint64_t object_id, const Mesh &mesh, const MeshMeta &meta,
+  const OmmBakeSource &source, bool in_delayed_sync_window, OmmCacheEntry *&out_entry, TEXTUREID &out_override_tex_id)
+  DAG_TS_REQUIRES_SHARED(context_id->objectsLock)
+{
+  out_entry = nullptr;
+  out_override_tex_id = BAD_TEXTUREID;
+
+  // An impostor bakes from its albedo texture, thus an alpha override says nothing about its bake source.
+  if (mesh.materialType & MeshMeta::bvhMaterialImpostor)
+    return OverrideOmmResult::WithholdAndReportOverride;
+
+  const TEXTUREID overrideTexId = get_override_alpha_texture_id(context_id, meta);
+  if (overrideTexId == BAD_TEXTUREID)
+    return OverrideOmmResult::WithholdAndReportOverride;
+  out_override_tex_id = overrideTexId;
+
+  // A bake source no bake can read is a property of the mesh, thus reporting it as an override problem
+  // sends the reader after the wrong cause.
+  if (!is_valid_omm_bake_source(source))
+    return OverrideOmmResult::WithholdAndReportBakeSource;
+
+  // The ref goes on return, and its drop restamps the idle age: an entry an instance keeps resolving
+  // cannot age out while it bakes. The blas that links the entry is what holds it past this scope.
+  OmmEntryRef ref = acquire_omm_entry(context_id, make_omm_cache_key(mesh, object_id, OMM_PRIMARY_SLOT, overrideTexId));
+  const OverrideOmmResult result = advance_override_omm_entry(context_id, object_id, mesh, *ref, source, overrideTexId,
+    omm_alpha_channel(meta.materialType), in_delayed_sync_window);
+  if (result == OverrideOmmResult::UseEntry || result == OverrideOmmResult::WithholdAndReportFailure)
+    out_entry = ref.get();
+  return result;
+}
+
+static void consume_mesh_omm_slot(ContextId context_id, Mesh &mesh, int slot_id, OmmBuildInfos &build_infos,
   OmmBuildResults &build_results, bool in_delayed_sync_window)
 {
-  consume_mesh_omm_slot(context_id, object_id, mesh, OMM_PRIMARY_SLOT, geometry_index, build_infos, build_results,
-    in_delayed_sync_window);
+  OmmCacheEntry *entry = mesh.ommEntries[slot_id].get();
+  if (!entry)
+    return;
+
+  const bool wasBaking = entry->state == OmmState::Baking;
+  entry->lastPollFrame = dagor_frame_no();
+  poll_baking_omm_entry(context_id, *entry);
+  // A failed readback is never Ready, thus the build step cannot publish it.
+  if (wasBaking && entry->state == OmmState::Failed)
+    publish_omm_debug_result(mesh, *entry, entry->bakeObjectId, mesh.firstGeometryIndex, slot_id, in_delayed_sync_window);
+  build_omm_if_ready(context_id, *entry, &mesh, slot_id, build_infos, build_results, in_delayed_sync_window);
+}
+
+void consume_mesh_omm_bakes(ContextId context_id, Mesh &mesh, OmmBuildInfos &build_infos, OmmBuildResults &build_results,
+  bool in_delayed_sync_window)
+{
+  consume_mesh_omm_slot(context_id, mesh, OMM_PRIMARY_SLOT, build_infos, build_results, in_delayed_sync_window);
   if (needs_secondary_omm(mesh))
-    consume_mesh_omm_slot(context_id, object_id, mesh, OMM_SECONDARY_SLOT, geometry_index, build_infos, build_results,
-      in_delayed_sync_window);
+    consume_mesh_omm_slot(context_id, mesh, OMM_SECONDARY_SLOT, build_infos, build_results, in_delayed_sync_window);
+}
+
+// Diagnostics only: mesh is null while the object that started the bake is torn down.
+struct OmmEntryOwner
+{
+  Mesh *mesh = nullptr;
+  int slotId = OMM_PRIMARY_SLOT;
+};
+
+static OmmEntryOwner find_omm_entry_owner(ContextId context_id, const OmmCacheEntry *entry)
+  DAG_TS_REQUIRES_SHARED(context_id->objectsLock)
+{
+  Object *object = find_half_baked_object(context_id, entry->bakeObjectId);
+  if (!object)
+    return {};
+
+  for (Mesh &mesh : object->meshes)
+    for (int slotId = OMM_PRIMARY_SLOT; slotId <= OMM_SECONDARY_SLOT; ++slotId)
+      if (mesh.ommEntries[slotId].get() == entry)
+        return {&mesh, slotId};
+  return {};
 }
 
 void consume_ready_omm_bakes(ContextId context_id, OmmBuildInfos &build_infos, OmmBuildResults &build_results)
@@ -620,44 +969,53 @@ void consume_ready_omm_bakes(ContextId context_id, OmmBuildInfos &build_infos, O
   if (!context_id->ommEnabled)
     return;
 
-  for (uint64_t objectId : context_id->objectsWithBakingOmm)
+  TIME_PROFILE(consume_ready_omm_bakes);
+
+  dag::Vector<OmmCacheEntry *, framemem_allocator> entries(context_id->bakingOmmEntries.begin(), context_id->bakingOmmEntries.end());
+  for (OmmCacheEntry *entry : entries)
   {
-    if (!context_id->halfBakedObjects.count(objectId))
+    poll_baking_omm_entry(context_id, *entry);
+    if (entry->state != OmmState::Ready && entry->state != OmmState::Failed)
       continue;
 
-    Object *object = find_half_baked_object(context_id, objectId);
-    if (!object)
-      continue;
-
-    for (uint32_t geometryIndex = 0; auto &mesh : object->meshes)
+    const OmmEntryOwner owner = find_omm_entry_owner(context_id, entry);
+    if (entry->state == OmmState::Failed)
     {
-      const uint32_t meshGeometryIndex = geometryIndex;
-      geometryIndex += mesh.hasSecondaryGeometry ? 2 : 1;
-
-      // consume_ready_omm_bakes runs outside of a delayed-sync window
-      consume_mesh_omm_bakes(context_id, objectId, mesh, meshGeometryIndex, build_infos, build_results, false);
+      if (owner.mesh)
+        publish_omm_debug_result(*owner.mesh, *entry, entry->bakeObjectId, owner.mesh->firstGeometryIndex, owner.slotId, false);
+      continue;
     }
+
+    // Runs outside of any delayed-sync window.
+    build_omm_if_ready(context_id, *entry, owner.mesh, owner.slotId, build_infos, build_results, false);
   }
+}
+
+OmmCacheEntry *linkable_omm_entry(OmmCacheEntry *entry)
+{
+  return entry && entry->state == OmmState::Built && entry->omm ? entry : nullptr;
+}
+
+OmmCacheEntry *linkable_omm_entry(const Mesh &mesh, int slot_id) { return linkable_omm_entry(mesh.ommEntries[slot_id].get()); }
+
+void set_omm_linkage(RaytraceGeometryDescription &desc, OmmCacheEntry *entry)
+{
+  entry = linkable_omm_entry(entry);
+  if (!entry)
+    return;
+
+  desc.ommLinkage = render::omm::make_geometry_linkage(entry->bakeResult, entry->omm.get());
+  desc.extraDataAvailableMask.hasOpacityMicroMapLinkage = true;
 }
 
 void set_omm_linkage(RaytraceGeometryDescription &desc, Mesh &mesh, int slot_id)
 {
-  Mesh::OmmSlot &slot = mesh.ommSlots[slot_id];
-  Mesh::OmmState &state = slot.state;
-  render::omm::BakeResult &result = slot.bakeResult;
-  UniqueOMM &omm = slot.omm;
-
-  if (state == Mesh::OmmState::Built && omm)
-  {
-    desc.ommLinkage = render::omm::make_geometry_linkage(result, omm.get());
-    desc.extraDataAvailableMask.hasOpacityMicroMapLinkage = true;
-  }
+  set_omm_linkage(desc, mesh.ommEntries[slot_id].get());
 }
 
 bool mesh_omms_built(const Mesh &mesh)
 {
-  auto slotBuilt = [](const Mesh::OmmSlot &slot) { return slot.state == Mesh::OmmState::Built && slot.omm; };
-  return slotBuilt(mesh.ommSlots[OMM_PRIMARY_SLOT]) && (!needs_secondary_omm(mesh) || slotBuilt(mesh.ommSlots[OMM_SECONDARY_SLOT]));
+  return linkable_omm_entry(mesh, OMM_PRIMARY_SLOT) && (!needs_secondary_omm(mesh) || linkable_omm_entry(mesh, OMM_SECONDARY_SLOT));
 }
 
 bool instance_can_use_mesh_omm(const Mesh &mesh, const MeshMeta &meta, const MeshMeta &base_meta)
@@ -676,25 +1034,28 @@ bool instance_can_use_mesh_omm(const Mesh &mesh, const MeshMeta &meta, const Mes
   return meta.alphaTextureIndex != MeshMeta::INVALID_TEXTURE && meta.alphaTextureIndex == base_meta.alphaTextureIndex;
 }
 
+bool omm_entry_should_be_opaque(const OmmCacheEntry *entry)
+{
+  return !bvh_strict_asset_checks && entry && entry->failure == OmmFailure::AllTrianglesOpaque;
+}
+
+bool omm_entry_should_be_skipped(const OmmCacheEntry *entry)
+{
+  return !bvh_strict_asset_checks && entry && entry->failure == OmmFailure::AllTrianglesTransparent;
+}
+
 bool mesh_should_be_opaque(const Mesh &mesh)
 {
-  if (bvh_strict_asset_checks)
-    return false;
-
   // All slots must agree: the flag applies to the full mesh, thus secondary geometry with a cutout blocks
   // this.
-  auto slotOpaque = [](const Mesh::OmmSlot &slot) { return slot.failure == Mesh::OmmFailure::AllTrianglesOpaque; };
-  return slotOpaque(mesh.ommSlots[OMM_PRIMARY_SLOT]) && (!needs_secondary_omm(mesh) || slotOpaque(mesh.ommSlots[OMM_SECONDARY_SLOT]));
+  return omm_entry_should_be_opaque(mesh.ommEntries[OMM_PRIMARY_SLOT].get()) &&
+         (!needs_secondary_omm(mesh) || omm_entry_should_be_opaque(mesh.ommEntries[OMM_SECONDARY_SLOT].get()));
 }
 
 bool mesh_should_be_skipped(const Mesh &mesh)
 {
-  if (bvh_strict_asset_checks)
-    return false;
-
-  auto slotTransparent = [](const Mesh::OmmSlot &slot) { return slot.failure == Mesh::OmmFailure::AllTrianglesTransparent; };
-  return slotTransparent(mesh.ommSlots[OMM_PRIMARY_SLOT]) &&
-         (!needs_secondary_omm(mesh) || slotTransparent(mesh.ommSlots[OMM_SECONDARY_SLOT]));
+  return omm_entry_should_be_skipped(mesh.ommEntries[OMM_PRIMARY_SLOT].get()) &&
+         (!needs_secondary_omm(mesh) || omm_entry_should_be_skipped(mesh.ommEntries[OMM_SECONDARY_SLOT].get()));
 }
 
 void make_mesh_opaque(Mesh &mesh, MeshMeta &base_meta)
@@ -705,35 +1066,38 @@ void make_mesh_opaque(Mesh &mesh, MeshMeta &base_meta)
   base_meta.materialType &= ~MeshMeta::bvhMaterialAlphaTest;
 }
 
-void fail_omm_slot(Mesh::OmmSlot &slot, Mesh::OmmFailure failure)
+void fail_omm_entry(ContextId context_id, OmmCacheEntry &entry, OmmFailure failure)
 {
-  slot.state = Mesh::OmmState::Failed;
-  slot.failure = failure;
+  if (entry.state == OmmState::Baking)
+    abort_omm_entry_bake(context_id, entry);
+  entry.state = OmmState::Failed;
+  entry.failure = failure;
+  entry.failFrame = dagor_frame_no();
 }
 
-const char *omm_failure_text(Mesh::OmmFailure failure)
+const char *omm_failure_text(OmmFailure failure)
 {
   switch (failure)
   {
-    case Mesh::OmmFailure::None: return "no reason was recorded";
-    case Mesh::OmmFailure::UnsupportedTexcoordFormat: return "its texcoord packing is not one the OMM bake can decode";
-    case Mesh::OmmFailure::NoAlphaSource: return "no alpha or albedo texture is available to bake an OMM from";
-    case Mesh::OmmFailure::AlphaTextureNeverLoaded:
+    case OmmFailure::None: return "no reason was recorded";
+    case OmmFailure::UnsupportedTexcoordFormat: return "its texcoord packing is not one the OMM bake can decode";
+    case OmmFailure::NoAlphaSource: return "no alpha or albedo texture is available to bake an OMM from";
+    case OmmFailure::AlphaTextureNeverLoaded:
       return "its alpha source never reached full quality within the wait budget, so no OMM could be baked from it";
-    case Mesh::OmmFailure::BakeStartFailed: return "the bake could not be started (alpha texture acquire or texcoord setup failed)";
-    case Mesh::OmmFailure::ReadbackInvalid: return "the GPU bake readback returned no valid data";
-    case Mesh::OmmFailure::NoOutputBuffers: return "the bake produced no output buffers";
-    case Mesh::OmmFailure::NoDescriptors:
+    case OmmFailure::BakeStartFailed: return "the bake could not be started (alpha texture acquire or texcoord setup failed)";
+    case OmmFailure::ReadbackInvalid: return "the GPU bake readback returned no valid data";
+    case OmmFailure::NoOutputBuffers: return "the bake produced no output buffers";
+    case OmmFailure::NoDescriptors:
       return "the bake produced no OMM descriptors (every micro-triangle collapsed to a single state, and not all to opaque or all "
              "to transparent)";
-    case Mesh::OmmFailure::AllTrianglesOpaque:
+    case OmmFailure::AllTrianglesOpaque:
       return "its alpha source is fully opaque over the whole mesh, so the material should not be alpha-tested at all";
-    case Mesh::OmmFailure::AllTrianglesTransparent:
+    case OmmFailure::AllTrianglesTransparent:
       return "its alpha source is fully transparent over the whole mesh, so the raster draws none of it: delete this dead geometry";
-    case Mesh::OmmFailure::ZeroArraySize: return "the OMM array reported a zero acceleration-structure size";
-    case Mesh::OmmFailure::InstanceAlphaSourceOverride:
-      return "this instance alpha-tests against a texture of its own, which no OMM is baked for yet: the mesh-shared "
-             "OMM is baked from the mesh's own alpha source, and a correct one needs a per-override BLAS";
+    case OmmFailure::ZeroArraySize: return "the OMM array reported a zero acceleration-structure size";
+    case OmmFailure::InstanceAlphaSourceOverride:
+      return "this instance alpha-tests against a texture of its own that no OMM can be baked from: an impostor bakes from its "
+             "albedo, and an override texture must resolve to a texture id";
   }
   return "unrecognized failure";
 }
@@ -741,11 +1105,11 @@ const char *omm_failure_text(Mesh::OmmFailure failure)
 // The shared texts tell the artist to remove the alpha test on a fully opaque bake, and to delete a
 // fully transparent mesh. Grass is always a cutout and can do neither, thus both results mean that
 // its alpha source is bad.
-const char *grass_omm_failure_text(Mesh::OmmFailure failure)
+const char *grass_omm_failure_text(OmmFailure failure)
 {
-  if (failure == Mesh::OmmFailure::AllTrianglesOpaque)
+  if (failure == OmmFailure::AllTrianglesOpaque)
     return "its alpha source came back fully opaque, and grass is always a cutout -- the alpha texture is wrong";
-  if (failure == Mesh::OmmFailure::AllTrianglesTransparent)
+  if (failure == OmmFailure::AllTrianglesTransparent)
     return "its alpha source came back fully transparent, and grass is always a cutout -- the alpha texture is wrong";
   return omm_failure_text(failure);
 }
@@ -764,22 +1128,25 @@ static String bvh_texcoord_format_desc(uint32_t fmt)
   }
 }
 
-static String describe_omm_bake_attempt(const Mesh::OmmSlot &slot)
+static String describe_omm_bake_attempt(const OmmCacheEntry *entry)
 {
-  if (slot.bakeSubdivisionLevel == Mesh::OmmSlot::NO_BAKE_STARTED)
-    return slot.bakeTexcoordFormat
-             ? String(0, "; no bake was started, texcoords %s", bvh_texcoord_format_desc(slot.bakeTexcoordFormat).c_str())
+  if (!entry)
+    return String("; no bake was started");
+
+  if (entry->bakeSubdivisionLevel == OmmCacheEntry::NO_BAKE_STARTED)
+    return entry->bakeTexcoordFormat
+             ? String(0, "; no bake was started, texcoords %s", bvh_texcoord_format_desc(entry->bakeTexcoordFormat).c_str())
              : String("; no bake was started");
 
   String desc(0, "; baked texcoords %s at a maximum subdivision level of %u%s",
-    bvh_texcoord_format_desc(slot.bakeTexcoordFormat).c_str(), slot.bakeSubdivisionLevel,
-    slot.bakeUvCutout ? " through a texcoord cutout" : "");
-  if (slot.bakeSubdivisionLevel == 0)
+    bvh_texcoord_format_desc(entry->bakeTexcoordFormat).c_str(), entry->bakeSubdivisionLevel,
+    entry->bakeUvCutout ? " through a texcoord cutout" : "");
+  if (entry->bakeSubdivisionLevel == 0)
     desc += " (the data array budget allowed no subdivision, so every triangle is a single micro-triangle "
             "and can only resolve to a uniform state)";
 
   // All counts zero means no bake completed, not that the bake found nothing.
-  const render::omm::BakeStats &s = slot.bakeStats;
+  const render::omm::BakeStats &s = entry->bakeStats;
   if (s.totalOpaqueCount || s.totalTransparentCount || s.totalUnknownCount || s.totalFullyOpaqueCount ||
       s.totalFullyTransparentCount || s.totalFullyUnknownCount)
     desc.aprintf(0,
@@ -796,36 +1163,27 @@ String describe_missing_omm(ContextId context_id, const Mesh &mesh)
   const String texDesc(0, "texture '%s'", texName ? texName : "<none>");
 
   if (!mesh_wants_omm(context_id, mesh))
-    return String(0, "%s", omm_failure_text(Mesh::OmmFailure::NoAlphaSource));
+    return String(0, "%s", omm_failure_text(OmmFailure::NoAlphaSource));
 
   render::omm::TexCoordFormat unusedFormat;
   if (!get_omm_texcoord_format(mesh.texcoordFormat, unusedFormat))
-    return String(0, "%s (%s); %s", omm_failure_text(Mesh::OmmFailure::UnsupportedTexcoordFormat),
+    return String(0, "%s (%s); %s", omm_failure_text(OmmFailure::UnsupportedTexcoordFormat),
       bvh_texcoord_format_desc(mesh.texcoordFormat).c_str(), texDesc.c_str());
 
   String failures;
-  for (const Mesh::OmmSlot &slot : mesh.ommSlots)
-    if (slot.state == Mesh::OmmState::Failed)
-      failures.aprintf(0, "%s%s%s%s", failures.empty() ? "" : " / ",
-        &slot == &mesh.ommSlots[OMM_SECONDARY_SLOT] ? "secondary geometry: " : "", omm_failure_text(slot.failure),
-        describe_omm_bake_attempt(slot).c_str());
+  for (int slotId = OMM_PRIMARY_SLOT; slotId <= OMM_SECONDARY_SLOT; ++slotId)
+  {
+    const OmmCacheEntry *entry = mesh.ommEntries[slotId].get();
+    if (!entry || entry->state != OmmState::Failed)
+      continue;
+    failures.aprintf(0, "%s%s%s%s", failures.empty() ? "" : " / ", slotId == OMM_SECONDARY_SLOT ? "secondary geometry: " : "",
+      omm_failure_text(entry->failure), describe_omm_bake_attempt(entry).c_str());
+  }
   if (!failures.empty())
     return String(0, "%s; %s", failures.c_str(), texDesc.c_str());
 
   return String(0, "the bake has not produced a usable result; %s%s", texDesc.c_str(),
-    describe_omm_bake_attempt(mesh.ommSlots[OMM_PRIMARY_SLOT]).c_str());
-}
-
-static void discard_baking_omm_slot(ContextId context_id, Mesh::OmmSlot &slot)
-{
-  if (slot.state != Mesh::OmmState::Baking)
-    return;
-
-  render::omm::discard_bake(context_id->ommContext, slot.bakeHandle);
-  render::omm::clear_result(slot.bakeResult);
-  slot.bakeHandle = {};
-  slot.state = Mesh::OmmState::None;
-  slot.failureLogged = false;
+    describe_omm_bake_attempt(mesh.ommEntries[OMM_PRIMARY_SLOT].get()).c_str());
 }
 
 void discard_inactive_omm_bakes(ContextId context_id)
@@ -833,54 +1191,85 @@ void discard_inactive_omm_bakes(ContextId context_id)
   if (!context_id->ommEnabled)
     return;
 
-  // A bake that no longer belongs to a live object would hold a pending bake slot forever, so it must
-  // be discarded. Liveness is judged differently per source: half-baked objects are alive as long as
-  // they are queued in halfBakedObjects (their resolve poll is budget-limited, so lastPollFrame can
-  // lag without the bake being inactive); dynamic bakes have no such queue, but add_instances polls
-  // them every frame -- with no budget gate -- while a live instance exists, so a stale poll stamp
-  // there does mean the object went inactive. The tracked set is a superset of objects with baking
-  // slots and is cleaned up here as bakes finish or objects vanish.
-  constexpr uint32_t inactiveFrameThreshold = 2;
-  for (auto iter = context_id->objectsWithBakingOmm.begin(); iter != context_id->objectsWithBakingOmm.end();)
+  // The grace window lets a dead object's in-flight bake finish and be adopted by a quick re-add; past
+  // it the slot is taken back.
+  auto &entries = context_id->bakingOmmEntries;
+  for (size_t i = 0; i < entries.size();)
   {
-    const uint64_t objectId = *iter;
-    Object *object = nullptr;
-    if (auto objectIter = context_id->objects.find(objectId); objectIter != context_id->objects.end())
-      object = &objectIter->second;
-    else if (auto impostorIter = context_id->impostors.find(objectId); impostorIter != context_id->impostors.end())
-      object = &impostorIter->second;
-    if (!object)
+    OmmCacheEntry &entry = *entries[i];
+    if (!omm_bake_is_inactive(context_id, entry, OMM_BAKE_GIVE_UP_FRAMES))
     {
-      iter = context_id->objectsWithBakingOmm.erase(iter);
+      ++i;
       continue;
     }
-
-    const bool stillQueuedForBuild = context_id->halfBakedObjects.count(objectId) != 0;
-    bool hasBaking = false;
-    bool hasStale = false;
-    for (Mesh &mesh : object->meshes)
-      for (Mesh::OmmSlot &slot : mesh.ommSlots)
-        if (slot.state == Mesh::OmmState::Baking)
-        {
-          hasBaking = true;
-          if (!stillQueuedForBuild && dagor_frame_no() - slot.lastPollFrame > inactiveFrameThreshold)
-            hasStale = true;
-        }
-
-    if (hasStale)
-      for (Mesh &mesh : object->meshes)
-        for (Mesh::OmmSlot &slot : mesh.ommSlots)
-          discard_baking_omm_slot(context_id, slot);
-
-    if (!hasBaking || hasStale)
-      iter = context_id->objectsWithBakingOmm.erase(iter);
-    else
-      ++iter;
+    discard_omm_entry_bake(context_id, entry);
   }
 }
 
-void release_omm_bake_build_inputs(OmmBuildResults &omm_build_results)
+// The release also removes the debug-viewer registration that a publish may have made.
+// Never reached with a bake in flight: both eviction paths skip those.
+static OmmCache::iterator evict_omm_entry(ContextId context_id, OmmCache::iterator iter)
 {
+  release_omm_result(context_id->ommContext, iter->second.bakeResult);
+  return context_id->ommCache.erase(iter);
+}
+
+void evict_idle_omm_entries(ContextId context_id)
+{
+  if (!context_id->ommEnabled)
+    return;
+
+  drain_deferred_omm_releases(context_id);
+
+  const uint32_t frame = dagor_frame_no();
+  // Recomputed, not tracked on the refcount edges: an entry's byte count still changes while it is idle.
+  uint64_t idleBytes = 0;
+  dag::Vector<OmmCache::iterator, framemem_allocator> idleEntries;
+  for (auto iter = context_id->ommCache.begin(); iter != context_id->ommCache.end();)
+  {
+    const OmmCacheEntry &entry = iter->second;
+    // A recent poll means the entry is in use whatever the refcount says: a same-frame re-add drops its
+    // refs before the resolve takes them again, and an override entry holds none between its resolves.
+    if (entry.refCount || frame - entry.lastPollFrame <= 1)
+    {
+      ++iter;
+      continue;
+    }
+    // An in-flight bake is never evicted, by age or by budget: it always reaches a terminal state
+    // through the baking list, and dropping it only makes the next resolve start the same bake again.
+    const bool baking = entry.state == OmmState::Baking;
+    if (!baking && frame - entry.zeroRefFrame > bvh_omm_cache_retention_frames)
+    {
+      iter = evict_omm_entry(context_id, iter);
+      continue;
+    }
+    // Only the evictable bytes drive the budget, thus what it counts is what a pass over it can free.
+    if (!baking)
+    {
+      idleBytes += omm_entry_bytes(entry);
+      idleEntries.push_back(iter);
+    }
+    ++iter;
+  }
+
+  if (idleBytes > bvh_omm_cache_idle_budget)
+  {
+    eastl::sort(idleEntries.begin(), idleEntries.end(),
+      [](const OmmCache::iterator &a, const OmmCache::iterator &b) { return a->second.zeroRefFrame < b->second.zeroRefFrame; });
+    for (const OmmCache::iterator &iter : idleEntries)
+    {
+      if (idleBytes <= bvh_omm_cache_idle_budget)
+        break;
+      idleBytes -= omm_entry_bytes(iter->second);
+      evict_omm_entry(context_id, iter);
+    }
+  }
+}
+
+void release_omm_bake_build_inputs(render::omm::Context &omm_ctx, OmmBuildResults &omm_build_results)
+{
+  // The viewer draws from these buffers, thus with it on they stay with the result until the owner of
+  // the result releases it.
   if (bvh_retain_omm_bake_results)
   {
     omm_build_results.clear();
@@ -888,40 +1277,33 @@ void release_omm_bake_build_inputs(OmmBuildResults &omm_build_results)
   }
 
   for (render::omm::BakeResult *result : omm_build_results)
-  {
-    if (!result)
-      continue;
-
-    result->arrayData.close();
-    result->descArray.close();
-    result->arrayDataSizeInBytes = 0;
-    result->descArraySizeInBytes = 0;
-  }
+    if (result)
+      render::omm::recycle_result(omm_ctx, *result, /*keep_index_buffer*/ true);
   omm_build_results.clear();
 }
 
-Mesh::OmmFailure build_grass_omm_array(render::omm::BakeResult &result, const render::omm::BakeStats &stats, UniqueOMM &out_omm,
+OmmFailure build_grass_omm_array(render::omm::BakeResult &result, const render::omm::BakeStats &stats, UniqueOMM &out_omm,
   OmmBuildInfos &build_infos, OmmBuildResults &build_results)
 {
   if (!result.arrayData || !result.descArray || !result.indexBuffer)
-    return Mesh::OmmFailure::NoOutputBuffers;
+    return OmmFailure::NoOutputBuffers;
   if (result.arrayBuildDescs.empty() || result.blasLinkageDescs.empty())
-    return bake_is_all_opaque(stats)        ? Mesh::OmmFailure::AllTrianglesOpaque
-           : bake_is_all_transparent(stats) ? Mesh::OmmFailure::AllTrianglesTransparent
-                                            : Mesh::OmmFailure::NoDescriptors;
+    return bake_is_all_opaque(stats)        ? OmmFailure::AllTrianglesOpaque
+           : bake_is_all_transparent(stats) ? OmmFailure::AllTrianglesTransparent
+                                            : OmmFailure::NoDescriptors;
 
   auto sizeInfo = render::omm::make_array_build_info(result, nullptr, 0, 0, RaytraceBuildFlags::FAST_TRACE);
   const raytrace::AccelerationStructureSizes sizes = d3d::raytrace::calculate_acceleration_structure_sizes(sizeInfo);
   if (!sizes.structureSizeInBytes)
-    return Mesh::OmmFailure::ZeroArraySize;
+    return OmmFailure::ZeroArraySize;
 
   out_omm = UniqueOMM::create_omm(sizes.structureSizeInBytes);
-  HANDLE_LOST_DEVICE_STATE(out_omm, Mesh::OmmFailure::None);
+  HANDLE_LOST_DEVICE_STATE(out_omm, OmmFailure::None);
 
   uint32_t scratchOffset = 0;
   Sbuffer *scratchBuffer = alloc_scratch_buffer(sizes.buildScratchBufferSizeInBytes, scratchOffset);
   if (sizes.buildScratchBufferSizeInBytes)
-    HANDLE_LOST_DEVICE_STATE(scratchBuffer, Mesh::OmmFailure::None);
+    HANDLE_LOST_DEVICE_STATE(scratchBuffer, OmmFailure::None);
 
   raytrace::BatchedOpacityMicroMapTriangleArrayBuildInfo build;
   build.omm = out_omm.get();
@@ -929,10 +1311,10 @@ Mesh::OmmFailure build_grass_omm_array(render::omm::BakeResult &result, const re
     RaytraceBuildFlags::FAST_TRACE);
   build_infos.push_back(build);
   build_results.push_back(&result);
-  return Mesh::OmmFailure::None;
+  return OmmFailure::None;
 }
 
-void build_pending_omm_arrays(OmmBuildInfos &omm_builds, OmmBuildResults &omm_build_results)
+void build_pending_omm_arrays(render::omm::Context &omm_ctx, OmmBuildInfos &omm_builds, OmmBuildResults &omm_build_results)
 {
   if (omm_builds.empty())
     return;
@@ -945,7 +1327,7 @@ void build_pending_omm_arrays(OmmBuildInfos &omm_builds, OmmBuildResults &omm_bu
     });
   }
   omm_builds.clear();
-  release_omm_bake_build_inputs(omm_build_results);
+  release_omm_bake_build_inputs(omm_ctx, omm_build_results);
 }
 
 } // namespace bvh

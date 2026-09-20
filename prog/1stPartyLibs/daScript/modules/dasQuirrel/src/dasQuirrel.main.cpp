@@ -2,7 +2,6 @@
 
 #include "daScript/ast/ast.h"
 #include "daScript/ast/ast_interop.h"
-#include "daScript/ast/ast_typefactory_bind.h"
 #include "daScript/ast/ast_handle.h"
 
 #include "dasQUIRREL.h"
@@ -94,17 +93,6 @@ void Module_dasQUIRREL::initMain() {
         SideEffects::modifyExternal, "sqdas_register");
 
     // fixup module functions, so that there is a string cast
-    for ( auto & pfn : this->functions.each() ) {
-        bool anyString = false;
-        for ( auto & arg : pfn->arguments ) {
-            if ( arg->type->isString() && !arg->type->ref ) {
-                anyString = true;
-            }
-        }
-        if ( anyString ) {
-            pfn->needStringCast = true;
-        }
-    }
 }
 
 ModuleAotType Module_dasQUIRREL::aotRequire ( TextWriter & tw ) const {

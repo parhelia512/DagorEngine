@@ -9,7 +9,7 @@ inline constexpr const char *SHOW_GRAPH = "Plugin.GraphEditor.ShowGraph";
 inline constexpr const char *SHOW_TEXTURE_PREVIEW = "Plugin.GraphEditor.ShowTexturePreview";
 inline constexpr const char *SHOW_HISTOGRAM = "Plugin.GraphEditor.ShowHistogram";
 inline constexpr const char *SHOW_LANDSCAPE_PREVIEW = "Plugin.GraphEditor.ShowLandscapePreview";
-inline constexpr const char *SHOW_BASE_NODES = "Plugin.GraphEditor.ShowBaseNodes";
+inline constexpr const char *SHOW_NODE_LIBRARY = "Plugin.GraphEditor.ShowNodeLibrary";
 inline constexpr const char *SHOW_PROPERTIES = "Plugin.GraphEditor.ShowProperties";
 inline constexpr const char *SHOW_SHORTCUTS = "Plugin.GraphEditor.ShowShortcuts";
 inline constexpr const char *NEW_GRAPH = "Plugin.GraphEditor.NewGraph";
@@ -23,10 +23,8 @@ inline constexpr const char *FORCE_REBUILD = "Plugin.GraphEditor.ForceRebuild";
 
 // Canvas-local shortcuts. Dispatched by graph_panel.cpp via ImGui::Shortcut with
 // RouteFocused; imgui-node-editor's matching built-ins are suppressed at editor
-// creation (see disable_node_editor_shortcuts).
+// creation (see apply_editor_defaults).
 inline constexpr const char *CANVAS_DELETE_SELECTED = "Plugin.GraphEditor.Canvas.DeleteSelected";
-inline constexpr const char *CANVAS_FRAME_SELECTED = "Plugin.GraphEditor.Canvas.FrameSelected";
-inline constexpr const char *CANVAS_FRAME_SELECTED_WITH_MARGIN = "Plugin.GraphEditor.Canvas.FrameSelectedWithMargin";
 inline constexpr const char *CANVAS_COPY = "Plugin.GraphEditor.Canvas.Copy";
 inline constexpr const char *CANVAS_CUT = "Plugin.GraphEditor.Canvas.Cut";
 inline constexpr const char *CANVAS_PASTE = "Plugin.GraphEditor.Canvas.Paste";
@@ -38,3 +36,7 @@ inline constexpr const char *CANVAS_REMOVE_EDGES_AT_PIN = "Plugin.GraphEditor.Ca
 inline constexpr const char *CANVAS_MODIFY_EDGE_AT_PIN = "Plugin.GraphEditor.Canvas.ModifyEdgeAtPin";
 inline constexpr const char *CANVAS_JUMP_OPPOSITE_PIN = "Plugin.GraphEditor.Canvas.JumpToOppositePin";
 inline constexpr const char *CANVAS_COMMENT_PIN = "Plugin.GraphEditor.Canvas.CommentPin";
+inline constexpr const char *CANVAS_DUPLICATE = "Plugin.GraphEditor.Canvas.Duplicate";
+inline constexpr const char *CANVAS_TOGGLE_AUTOUPDATE = "Plugin.GraphEditor.Canvas.ToggleAutoUpdate";
+inline constexpr const char *CANVAS_ADD_NODE_AT_PIN = "Plugin.GraphEditor.Canvas.AddNodeAtPin";
+inline constexpr const char *CANVAS_ADD_TRANSIT_NODE = "Plugin.GraphEditor.Canvas.AddTransitNode";

@@ -97,6 +97,10 @@ shader dof_downsample
     dof_coc_history@tex2d = dof_coc_history;
     dof_mask@tex2d = dof_mask;
   }
+  if (dof_blend_depth_tex != NULL)
+  {
+    (ps) { dof_blend_depth_tex@smp2d = dof_blend_depth_tex; }
+  }
   INIT_GLOBAL_LINEAR_CLAMP_SAMPLER(ps)
   NEAR_FAR_DEFINES()
 
@@ -168,7 +172,13 @@ shader dof_downsample
         farDepth = min(farDepth, downsampled_far_depth_tex.SampleLevel(downsampled_far_depth_tex_samplerstate, far_depth_tc, 0, int2(0,0)).x);
         ##endif
         //center sample of close_depth is considered as depth to let thin objects be capable to belong to near layer
-        depth = texelFetch(downsampled_close_depth_tex, int2(posDepth.xy), 0).x;
+        ##if dof_blend_depth_tex != NULL
+          //close_depth is downsampled before water is drawn, so near CoC would stay zero over water.
+          float4 blendDepths = dof_blend_depth_tex.GatherRed(dof_blend_depth_tex_samplerstate, IN.tc.xy);
+          depth = max4(blendDepths.x, blendDepths.y, blendDepths.z, blendDepths.w);
+        ##else
+          depth = texelFetch(downsampled_close_depth_tex, int2(posDepth.xy), 0).x;
+        ##endif
         ##if simplified_dof == on
         depths = downsampled_close_depth_tex.GatherRed(downsampled_close_depth_tex_samplerstate, far_depth_tc, int2(0, 0));
         nearDepth = min4(depths.x, depths.y, depths.z, depths.w);

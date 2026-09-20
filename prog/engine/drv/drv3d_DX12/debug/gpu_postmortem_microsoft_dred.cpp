@@ -2,6 +2,7 @@
 
 #include "gpu_postmortem_microsoft_dred.h"
 #include "configuration.h"
+#include "names.h"
 #include <platform.h>
 
 namespace

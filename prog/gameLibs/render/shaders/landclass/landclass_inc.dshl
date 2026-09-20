@@ -2,6 +2,14 @@ int ri_landclass_changed_indicex_bits = 0;
 float4 rendinst_landscape_area_left_top_right_bottom = (-2048, 2048, 2048, -2048);
 buffer ri_landclass_data_buffer;
 texture deform_hmap_ri_landclass_arr;
+sampler deform_hmap_ri_landclass_arr_samplerstate
+{
+  mipmap_mode = linear;
+  filter = linear;
+  address_u = wrap;
+  address_v = wrap;
+  address_w = wrap;
+};
 
 macro DECLARE_CLIPMAP_INDIRECTION_OFFSET(use_landclass_params)
   if (use_landclass_params)
@@ -165,7 +173,8 @@ macro INIT_LANDCLASS_DISPLACEMENT(stage, landclass_displacement_enabled, base_on
   {
     (stage)
     {
-      deform_hmap_ri_landclass_arr@smpArray = deform_hmap_ri_landclass_arr;
+      deform_hmap_ri_landclass_arr@texArray = deform_hmap_ri_landclass_arr;
+      deform_hmap_ri_landclass_arr_samplerstate@sampler = deform_hmap_ri_landclass_arr_samplerstate;
     }
   }
 endmacro

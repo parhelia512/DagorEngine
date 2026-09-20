@@ -1404,6 +1404,10 @@
           "Command": "-config:video/threadedWindow:b=yes"
         },
         {
+          "Id": "3e755bda-9beb-410f-bbf9-7153b81834c4",
+          "Command": "-config:graphics/enableShaderAsserts:b=yes"
+        },
+        {
           "Id": "ef4fb293-3815-4309-b6f3-a02b4941d76c",
           "Command": "-config:video/vsync:b=no"
         },

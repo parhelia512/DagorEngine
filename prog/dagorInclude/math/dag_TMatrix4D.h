@@ -36,11 +36,7 @@ public:
   static const TMatrix4D IDENT, ZERO;
 
   INLINE TMatrix4D() = default;
-  INLINE explicit TMatrix4D(double a)
-  {
-    memset(m, 0, sizeof(m));
-    _11 = _22 = _33 = _44 = a;
-  }
+  constexpr INLINE explicit TMatrix4D(double a) : m{{a, 0, 0, 0}, {0, a, 0, 0}, {0, 0, a, 0}, {0, 0, 0, a}} {}
   INLINE TMatrix4D(const TMatrix &tm)
   {
     m[0][0] = tm.m[0][0], m[0][1] = tm.m[0][1], m[0][2] = tm.m[0][2], m[0][3] = 0;
@@ -347,6 +343,9 @@ INLINE TMatrix4D orthonormalized_inverse(const TMatrix4D &a)
   return r;
 }
 
+
+inline constexpr TMatrix4D TMatrix4D::IDENT(1.0);
+inline constexpr TMatrix4D TMatrix4D::ZERO(0.0);
 
 #undef INLINE
 /// @}

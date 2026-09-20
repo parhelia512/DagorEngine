@@ -83,10 +83,11 @@ public:
     }
     char* GetScratchPad(SQInteger size);
     SQInteger GetMetaMethodIdxByName(const SQObjectPtr &name);
-#if SQ_STORE_DOC_OBJECTS
-    void RemoveDocObjects(const void *obj);
-    void CopyDocObjects(const void *from, const void *to);
-#endif
+    SQDocStringId AddDocString(const char *text);
+    SQDocStringId AddNativeStrings(const char *docstring, const char *declstring);
+    SQString *GetDocString(SQDocStringId id) const;
+    SQString *GetNativeDeclString(SQDocStringId id) const;
+    SQUnsignedInteger32 GetDocStringRegistrySlotCount() const;
 #ifndef NO_GARBAGE_COLLECTOR
     SQInteger CollectGarbage(SQVM *vm);
     void RunMark(SQVM *vm,SQCollectable **tchain);
@@ -160,8 +161,9 @@ public:
     // the refs table and root VM are still live so the runtime can sq_release cleanly.
     sqasync::AsyncState *_asyncState;
 
-    SQObjectPtr doc_objects;
-    int doc_object_index;
+#if SQ_STORE_DOC_OBJECTS
+    sqvector<SQString *> *_docstrings;
+#endif
     SQUnsignedInteger32 rand_seed;
     SQUnsignedInteger32 table_iter_seed;
     SQUnsignedInteger32 watchdog_last_alive_time_msec;

@@ -15,11 +15,6 @@
 
 // forward declarations for external classes
 
-namespace PropPanel
-{
-class ContainerPropertyControl;
-}
-
 class IGenLoad;
 class Point3;
 class BBox3;
@@ -39,7 +34,6 @@ class IDagorEdCustomCollider
 {
 public:
   virtual bool traceRay(const Point3 &p, const Point3 &dir, real &maxt, Point3 *norm) = 0;
-  virtual bool shadowRayHitTest(const Point3 &p, const Point3 &dir, real maxt) = 0;
   virtual const char *getColliderName() const = 0;
 
   virtual bool isColliderVisible() const = 0;
@@ -71,28 +65,10 @@ void set_disabled_colliders(const Tab<String> &names);
 void get_enabled_colliders(Tab<String> &names);
 void get_disabled_colliders(Tab<String> &names);
 
-// enable/disable shadow tracers
-void enable_all_custom_shadows();
-void enable_custom_shadow(const char *name);
-void disable_custom_shadow(const char *name);
-bool is_custom_shadow_enabled(const IDagorEdCustomCollider *collider);
-
 void set_custom_colliders(dag::ConstSpan<IDagorEdCustomCollider *> colliders, unsigned filter_mask);
 void restore_editor_colliders();
 
 dag::ConstSpan<IDagorEdCustomCollider *> get_current_colliders(unsigned &filter_mask);
-
-// custom colliders Property Panel routine
-// collider_pid -- first collider checkbox's PID
-// you have to reserve some number of PIDs to hold all colliders PIDs
-// shadow means custom shadows instead of custom colliders
-bool fill_custom_colliders_list(PropPanel::ContainerPropertyControl &panel, const char *grp_caption, int grp_pid, int collider_pid,
-  bool shadow, bool open_grp = false);
-// check collider checkbox on Property Panel and enable/disable collider
-// collider_pid -- first collider checkbox's PID
-// shadow means custom shadows instead of custom colliders
-// return true if collider state changed
-bool on_pp_collider_check(int pid, const PropPanel::ContainerPropertyControl &panel, int collider_pid, bool shadow);
 
 
 // dagor phys engine collision

@@ -1,6 +1,6 @@
 
 macro INIT_LOAD_STENCIL_BASE(code, texture_name, shadervar_name)
-  (code) { texture_name@smp = shadervar_name hlsl { Texture2D<uint2> texture_name@smp; } }
+  (code) { texture_name@tex = shadervar_name hlsl { Texture2D<uint2> texture_name@tex; } }
 endmacro
 
 macro INIT_LOAD_STENCIL_GBUFFER()

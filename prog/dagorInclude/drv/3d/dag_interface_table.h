@@ -25,7 +25,7 @@
 #include <generic/dag_functionRef.h>
 
 class D3dEventQuery;
-struct ShaderSource;
+struct ShaderSourceExt;
 namespace d3d
 {
 typedef D3dEventQuery EventQuery;
@@ -123,6 +123,11 @@ struct D3dInterfaceTable
   bool (*stretch_rect_0)(BaseTexture *src, BaseTexture *dst, const RectInt *rsrc, const RectInt *rdst);
   bool (*copy_from_current_render_target)(BaseTexture *to_tex);
 
+  BaseTexture *(*down_size_tex)(BaseTexture *tex, int width, int height, int depth, int mips, unsigned start_src_level,
+    unsigned level_offset);
+  BaseTexture *(*up_size_tex)(BaseTexture *tex, int width, int height, int depth, int mips, unsigned start_src_level,
+    unsigned level_offset);
+
   void (*get_texture_statistics)(uint32_t *num_textures, uint64_t *total_mem, String *out_dump);
 
   d3d::SamplerHandle (*request_sampler)(const d3d::SamplerInfo &sampler_info);
@@ -133,12 +138,12 @@ struct D3dInterfaceTable
 
   PROGRAM (*create_program_0)(VPROG, FSHADER, VDECL, unsigned *, unsigned);
 
-  PROGRAM (*create_program_cs)(const ShaderSource &cs_native, CSPreloaded preloaded);
+  PROGRAM (*create_program_cs)(const ShaderSourceExt &cs_native, CSPreloaded preloaded);
 
   bool (*set_program)(PROGRAM);
   void (*delete_program)(PROGRAM);
 
-  VPROG (*create_vertex_shader)(const ShaderSource &native_code);
+  VPROG (*create_vertex_shader)(const ShaderSourceExt &native_code);
   VPROG (*create_vertex_shader_hlsl)(const char *hlsl_text);
   void (*delete_vertex_shader)(VPROG vs);
 
@@ -146,13 +151,11 @@ struct D3dInterfaceTable
   bool (*set_const)(unsigned stage, unsigned reg_base, const void *data, unsigned num_regs);
   bool (*set_immediate_const)(unsigned stage, const uint32_t *data, unsigned num_words);
 
-  FSHADER (*create_pixel_shader)(const ShaderSource &native_code);
+  FSHADER (*create_pixel_shader)(const ShaderSourceExt &native_code);
   FSHADER (*create_pixel_shader_hlsl)(const char *hlsl_text);
   void (*delete_pixel_shader)(FSHADER ps);
 
   bool (*set_pixel_shader)(FSHADER ps);
-  int (*set_vs_constbuffer_register_count)(int required_size);
-  int (*set_cs_constbuffer_register_count)(int required_size);
   bool (*set_const_buffer)(unsigned stage, unsigned slot, Sbuffer *buffer);
 
   uint32_t (*register_bindless_sampler)(d3d::SamplerHandle sampler);
@@ -175,6 +178,11 @@ struct D3dInterfaceTable
   bool (*clear_rt)(const RenderTarget &rt, const ResourceClearValue &clear_val);
 
   bool (*discard_tex)(BaseTexture *tex);
+
+  int (*update_sub_region)(BaseTexture *src, int src_subres_idx, int src_x, int src_y, int src_z, int src_w, int src_h, int src_d,
+    BaseTexture *dst, int dst_subres_idx, int dst_x, int dst_y, int dst_z);
+  int (*update_sub_region_no_order)(BaseTexture *src, int src_subres_idx, int src_x, int src_y, int src_z, int src_w, int src_h,
+    int src_d, BaseTexture *dst, int dst_subres_idx, int dst_x, int dst_y, int dst_z);
 
   bool (*set_buffer)(unsigned shader_stage, unsigned slot, Sbuffer *buffer);
   bool (*set_rwbuffer)(unsigned shader_stage, unsigned slot, Sbuffer *buffer);

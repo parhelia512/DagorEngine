@@ -115,10 +115,6 @@ int d3d::driver_command(Drv3dCommand command, void *par1, void *par2, [[maybe_un
         Globals::ctx.dispatchCmdNoLock(cmd);
       }
       return 1;
-    case Drv3dCommand::SET_VS_DEBUG_INFO:
-    case Drv3dCommand::SET_PS_DEBUG_INFO:
-      Globals::shaderProgramDatabase.setShaderDebugName(ShaderID(*(int *)par1), (const char *)par2);
-      break;
     case Drv3dCommand::D3D_FLUSH:
     case Drv3dCommand::GPU_BARRIER_WAIT_ALL_COMMANDS: // TODO: Implement GPU_BARRIER_WAIT_ALL_COMMANDS separately
       // driver can merge multiple queue submits
@@ -389,6 +385,7 @@ int d3d::driver_command(Drv3dCommand command, void *par1, void *par2, [[maybe_un
       }
       return Globals::VK::phy.getAvailableVideoMemoryKb();
     }
+    case Drv3dCommand::GET_PRESENTED_FRAME_COUNT: return Backend::interop.lastPresentedFrameCount.load(std::memory_order_relaxed);
 
 #if USE_STREAMLINE_FOR_DLSS
     case Drv3dCommand::GET_STREAMLINE:
@@ -439,6 +436,26 @@ int d3d::driver_command(Drv3dCommand command, void *par1, void *par2, [[maybe_un
       nv::DlssOptions &options = *(nv::DlssOptions *)par1;
       int viewIndex = par2 ? *(int *)par2 : 0;
       Globals::ctx.dispatchCmd<CmdSetDlssOptions>({options, viewIndex});
+      return 1;
+    }
+    break;
+    case Drv3dCommand::EXECUTE_DLSS_NR:
+    {
+      nv::DlssNRParams<BaseTexture> &dlssNRParamsDrv = *(nv::DlssNRParams<BaseTexture> *)par1;
+      int viewIndex = par2 ? *(int *)par2 : 0;
+
+      nv::DlssNRParams<Image> dlssNRParams =
+        nv::convertDlssNRParams(dlssNRParamsDrv, [](BaseTexture *t) { return t ? cast_to_texture_base(t)->image : nullptr; });
+
+      Globals::ctx.dispatchCmd<CmdExecuteStreamlineDLSSNR>({dlssNRParams, viewIndex});
+      return 1;
+    }
+    break;
+    case Drv3dCommand::SET_DLSS_NR_OPTIONS:
+    {
+      nv::DlssNROptions &options = *(nv::DlssNROptions *)par1;
+      int viewIndex = par2 ? *(int *)par2 : 0;
+      Globals::ctx.dispatchCmd<CmdSetDlssNROptions>({options, viewIndex});
       return 1;
     }
     break;
@@ -540,12 +557,6 @@ int d3d::driver_command(Drv3dCommand command, void *par1, void *par2, [[maybe_un
     {
       auto &frames = *reinterpret_cast<int *>(par1);
       frames = 0;
-      return 1;
-    }
-    case Drv3dCommand::GET_FSR_PRESENTED_FRAME_COUNT:
-    {
-      auto &presentedFrames = *reinterpret_cast<int *>(par1);
-      presentedFrames = 1;
       return 1;
     }
     case Drv3dCommand::GET_FSR_FG_ENABLED:
@@ -955,13 +966,6 @@ int d3d::driver_command(Drv3dCommand command, void *par1, void *par2, [[maybe_un
     {
       auto &frames = *(int *)par1;
       frames = Globals::xess.isFrameGenerationSupported() ? 1 : 0;
-      return 1;
-    }
-
-    case Drv3dCommand::GET_XESS_PRESENTED_FRAME_COUNT:
-    {
-      auto &presented_frames = *(int *)par1;
-      presented_frames = Globals::xess.getPresentedFrameCount();
       return 1;
     }
 

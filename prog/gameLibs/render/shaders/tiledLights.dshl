@@ -315,7 +315,7 @@ shader spot_lights_tiles, omni_lights_tiles
       uint2 tileIdx = screenpos.xy;
       uint2 depthTile = tileIdx;
       uint2 tiledGridSize = (screen_size.xy + TILE_EDGE - 1) / TILE_EDGE;
-      depthTile = tileIdx * TILE_EDGE + TILE_EDGE - 1 < screen_size.xy ? depthTile : depthTile - 1;
+      depthTile = select(tileIdx * TILE_EDGE + TILE_EDGE - 1 < screen_size.xy, depthTile, depthTile - 1);
       uint index = input.index;
       uint finalIdx = (tileIdx.x * tiledGridSize.y + (tileIdx.y)) * DWORDS_PER_TILE + (index / BITS_IN_UINT);
       ##if use_downsampled_depth_in_tiled_lights == no

@@ -644,6 +644,10 @@ public:
   {
     return state_idx >= 0 ? make_span_const(stRec).subspan(state_idx * stDest.size(), stDest.size()) : make_span_const(stRec).first(0);
   }
+  inline dag::Span<StateRec> getStateRW(int state_idx)
+  {
+    return state_idx >= 0 ? make_span(stRec).subspan(state_idx * stDest.size(), stDest.size()) : make_span(stRec).first(0);
+  }
   // TODO: decouple these two functions
   void enqueueState(AnimGraphStateHolder &st, dag::ConstSpan<StateRec> state, float force_dur = -1, float force_speed = -1);
   void setStateSpeed(AnimGraphStateHolder &st, dag::ConstSpan<StateRec> state, float force_speed);

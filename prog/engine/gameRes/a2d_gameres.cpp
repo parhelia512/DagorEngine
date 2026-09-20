@@ -150,7 +150,7 @@ public:
     unsigned int blockFlags = 0;
     const int compr_data_sz = cb.beginBlock(&blockFlags);
 
-    uint8_t zcrdStorage[max(sizeof(ZstdLoadCB), sizeof(OodleLoadCB))];
+    alignas(ZstdLoadCB) alignas(OodleLoadCB) uint8_t zcrdStorage[max(sizeof(ZstdLoadCB), sizeof(OodleLoadCB))];
     IGenLoad *zcrd = nullptr;
     if (blockFlags == btag_compr::ZSTD)
       zcrd = new (zcrdStorage, _NEW_INPLACE) ZstdLoadCB(cb, compr_data_sz);

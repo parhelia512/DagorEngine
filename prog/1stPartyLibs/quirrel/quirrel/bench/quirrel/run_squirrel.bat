@@ -1,4 +1,4 @@
-echo "Squirrel3 original (3.1)"
+echo "Squirrel3 original (3.2)"
 sq3-64.exe fib_recursive.nut
 sq3-64.exe fib_loop.nut
 sq3-64.exe primes.nut

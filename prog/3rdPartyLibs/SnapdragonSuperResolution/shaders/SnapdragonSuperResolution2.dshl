@@ -21,6 +21,7 @@
 // 5) Motion vectors and reprojection don't need sign change and scaling to apply
 // All changes are marked with "Modified for dagor" comments
 // 6) Alpha output is set to 1 as some devices sometimes hate non-1 alpha
+// 7) The ps upscale writes to swapchain and history in one MRT pass, with prerotation folded into its vs
 //
 //============================================================================================================
 
@@ -137,7 +138,7 @@ shader sgsr2_2pass_convert_ps
       float4 EncodedVelocity = texelFetch(InputVelocity, int2(InputPos), 0);
 
       float2 motion;
-      if (EncodedVelocity.x != 0.0 && EncodedVelocity.y != 0.0)
+      if (EncodedVelocity.x < 1.0f && EncodedVelocity.y > -1.0f)
       {
         // Modified for dagor: we already encode motion without multiplier and offset
         // motion = decodeVelocityFromTexture(EncodedVelocity.xy);
@@ -169,7 +170,10 @@ shader sgsr2_2pass_upscale_ps
   z_test = false;
   z_write = false;
 
+  USE_PRE_ROTATION(vs)
+  hlsl(vs) { #define POSTFX_PRE_ROTATION 1 }
   POSTFX_VS_TEXCOORD(0, texCoord)
+  USE_PRE_ROTATION(ps)
 
   (ps) {
     PrevOutput@smp2d = sgsr2_prev_output;
@@ -200,7 +204,14 @@ shader sgsr2_2pass_upscale_ps
       return y_temp * y2;
     }
 
-    half4 main_ps(VsOutput input) : SV_Target0
+    // Modified for dagor: see (7)
+    struct Sgsr2UpscaleOutput
+    {
+      float4 color : SV_Target0;
+      float4 history : SV_Target1;
+    };
+
+    Sgsr2UpscaleOutput main_ps(VsOutput input)
     {
       half Biasmax_viewportXScale = p_scaleRatio.x;
       half scalefactor = p_scaleRatio.y;
@@ -225,6 +236,7 @@ shader sgsr2_2pass_upscale_ps
 
       half depthfactor = mda.z;
 
+      PrevUV = apply_pre_rotation_uv(PrevUV);
       half3 HistoryColor = tex2Dlod(PrevOutput, float4(PrevUV, 0.0, 0.0)).xyz;
 
       /////upsample and compute box
@@ -439,7 +451,10 @@ shader sgsr2_2pass_upscale_ps
 
       Upsampledcw.xyz = lerp(HistoryColor, Upsampledcw.xyz, alpha);
 
-      return half4(Upsampledcw.xyz, 1.0);
+      Sgsr2UpscaleOutput ret;
+      ret.color = float4(Upsampledcw.xyz, 1.0);
+      ret.history = ret.color;
+      return ret;
     }
   }
   compile("target_ps_half", "main_ps");
@@ -582,7 +597,7 @@ shader sgsr2_2pass_convert_cs
 shader sgsr2_2pass_upscale_cs
 {
   (cs) {
-    YCoCgColor@smp = sgsr2_ycocg_color hlsl { Texture2D<uint> YCoCgColor@smp; };
+    YCoCgColor@tex = sgsr2_ycocg_color hlsl { Texture2D<uint> YCoCgColor@tex; };
     PrevHistoryOutput@smp2d = sgsr2_prev_output;
     MotionDepthClipAlphaBuffer@smp2d = sgsr2_motion_depth_clip_alpha_buffer;
 
@@ -599,6 +614,10 @@ shader sgsr2_2pass_upscale_cs
     p_preExposure@f1 = sgsr2_pre_exposure;
     p_reset@i1 = sgsr2_reset;
     p_sameCameraFrmNum@i1 = sgsr2_same_camera_frame_num;
+  }
+  INIT_GLOBAL_POINT_CLAMP_SAMPLER(cs)
+  hlsl(cs) {
+    #define YCoCgColor_samplerstate global_point_clamp_sampler
   }
 
   hlsl(cs)

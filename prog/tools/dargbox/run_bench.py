@@ -30,6 +30,8 @@ SCENES = [
     "bench_field_watch",
     "bench_bound_props",
     "bench_bound_text",
+    "bench_virtual_list",
+    "bench_virtual_list_off",
 ]
 
 # limit_updates counts RENDER frames while the runner counts acts; this is

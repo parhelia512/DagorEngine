@@ -259,10 +259,10 @@ bool rubgeneric::update_texture_and_release_update_buffer(ResUpdateBuffer *&src_
     int dest_slice = src_rub->destSlice;
     D3D_CONTRACT_ASSERTF_RETURN((dest->getType() == D3DResourceType::VOLTEX) == voltex, false, "dest->type=%d staging->type=%d",
       eastl::to_underlying(dest->getType()), eastl::to_underlying(src_rub->staging->getType()));
-    if (!dest->updateSubRegion(/*src*/ src_rub->staging, 0, 0, 0, 0, /*size*/ src_rub->w, src_rub->h, src_rub->d,
-          /*dest*/ dest->calcSubResIdx(dest_mip, dest_slice), src_rub->x, src_rub->y, src_rub->z))
+    if (!d3d::update_sub_region(/*src*/ src_rub->staging, 0, 0, 0, 0, /*size*/ src_rub->w, src_rub->h, src_rub->d,
+          /*dest*/ dest, dest->calcSubResIdx(dest_mip, dest_slice), src_rub->x, src_rub->y, src_rub->z))
       if (!d3d::is_in_device_reset_now())
-        D3D_ERROR("%s: updateSubRegion(%dx%d) -> %d:%d failed", dest->getTexName(), src_rub->w, src_rub->h, dest_mip, dest_slice);
+        D3D_ERROR("%s: update_sub_region(%dx%d) -> %d:%d failed", dest->getTexName(), src_rub->w, src_rub->h, dest_mip, dest_slice);
   }
   release_update_buffer(src_rub);
   return true;

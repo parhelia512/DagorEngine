@@ -1,93 +1,46 @@
 // Copyright (C) Gaijin Games KFT.  All rights reserved.
 
-#include <math/dag_TMatrix4D.h>
-
 #include <daECS/core/entityManager.h>
 #include <daECS/core/entitySystem.h>
-#include <ecs/camera/getActiveCameraSetup.h>
 #include <render/daFrameGraph/daFG.h>
 #include <render/daFrameGraph/ecs/frameGraphNode.h>
 
 #include <render/renderEvent.h>
-#include <render/world/cameraInCamera.h>
-#include <render/world/cameraParams.h>
-#include <render/world/reprojectionTm.h>
+#include <render/cameraInCamera/cameraInCamera.h>
+#include <render/cameraInCamera/cameraInCameraNodes.h>
+#include <render/cameraParams.h>
 #include <render/world/frameGraphNodes/frameGraphNodes.h>
 
 #define INSIDE_RENDERER 1
 #include <render/world/private_worldRenderer.h>
 
-// root/view0 - always exists; root/view1 - only while camcam is active
-dafg::NodeHandle makeViewCameraProviderNode(const char *view_ns, const char *src_camera_blob)
+dafg::NodeHandle makeLensAreaCameraSourceNode()
 {
-  return (dafg::root() / view_ns).registerNode("view_camera_provider", DAFG_PP_NODE_SRC, [src_camera_blob](dafg::Registry registry) {
-    auto srcHndl = registry.root().readBlob<CameraParams>(src_camera_blob).handle();
-    auto dstHndl = registry.createBlob<CameraParams>("current_camera").withHistory().handle();
-    return [srcHndl, dstHndl]() { dstHndl.ref() = srcHndl.ref(); };
-  });
-}
+  return dafg::register_node("lens_area_camera_source_node", DAFG_PP_NODE_SRC, [](dafg::Registry registry) {
+    auto srcHndl = registry.createBlob<CameraParams>(camera_in_camera::LENS_AREA_CAMERA_SOURCE_BLOB).handle();
+    registry.multiplex(dafg::multiplexing::Mode::None);
 
-eastl::fixed_vector<dafg::NodeHandle, 2, false> makeCameraInCameraSetupNodes()
-{
-  eastl::fixed_vector<dafg::NodeHandle, 2, false> nodes;
-  nodes.emplace_back(dafg::register_node("lens_camera_provider_node", DAFG_PP_NODE_SRC, [](dafg::Registry registry) {
-    auto lensCameraHndl = registry.createBlob<CameraParams>("lens_area_camera").withHistory().handle();
-    auto prevLensCameraHndl = registry.readBlobHistory<CameraParams>("lens_area_camera").handle();
-    auto cockpitCameraHndl = registry.readBlob<CameraParams>("current_cockpit_camera").handle();
-    auto prevCockpitCameraHndl = registry.readBlobHistory<CameraParams>("current_cockpit_camera").handle();
-
-    return [lensCameraHndl, prevLensCameraHndl, cockpitCameraHndl, prevCockpitCameraHndl]() {
-      if (!camera_in_camera::is_lens_render_active())
-        return;
-
-      const auto &camera = cockpitCameraHndl.ref();
+    return [srcHndl]() {
       auto *wr = static_cast<WorldRenderer *>(get_world_renderer());
-
-      auto &lensCamera = lensCameraHndl.ref();
-      lensCamera = *wr->camcamParams;
-      lensCamera.jobsMgr = &wr->camcamVisibilityMgr;
-      lensCamera.jitterPersp.ox = camera.jitterPersp.ox;
-      lensCamera.jitterPersp.oy = camera.jitterPersp.oy;
-      matrix_perspective_add_jitter(lensCamera.jitterProjTm, lensCamera.jitterPersp.ox, lensCamera.jitterPersp.oy);
-      lensCamera.jitterGlobtm = TMatrix4(lensCamera.viewTm) * lensCamera.jitterProjTm;
-      lensCamera.jitterOffsetUv = camera.jitterOffsetUv;
-      lensCamera.jitterOffset = camera.jitterOffset;
-
-      ReprojectionTransforms reprojectionTms = calc_reprojection_transforms(prevLensCameraHndl.ref(), lensCameraHndl.ref());
-      lensCamera.jitteredCamPosToUnjitteredHistoryClip = reprojectionTms.jitteredCamPosToUnjitteredHistoryClip;
-
-      lensCamera.viewVecs = calc_view_vecs(lensCamera.viewTm, lensCamera.jitterProjTm);
-
-      camera_in_camera::update_transforms(cockpitCameraHndl.ref(), prevCockpitCameraHndl.ref(), lensCamera);
+      if (!wr->camcamParams)
+      {
+        G_ASSERT(!camera_in_camera::is_lens_render_active());
+        return;
+      }
+      srcHndl.ref() = *wr->camcamParams;
+      srcHndl.ref().jobsMgr = &wr->camcamVisibilityMgr;
     };
-  }));
-
-  nodes.emplace_back(dafg::register_node("lens_camera_multiplex_node", DAFG_PP_NODE_SRC, [](dafg::Registry registry) {
-    auto lensCameraHndl = registry.readBlob<CameraParams>("lens_area_camera").handle();
-    auto mainCameraHndl = registry.readBlob<CameraParams>("current_camera").handle();
-
-    auto outputCameraHndl = registry.createBlob<CameraParams>("camera_in_camera").withHistory().handle();
-
-    registry.multiplex(dafg::multiplexing::Mode::FullMultiplex);
-
-    return [lensCameraHndl, mainCameraHndl, outputCameraHndl](const dafg::multiplexing::Index &multiplexing_index) {
-      CameraParams &outCameraParams = outputCameraHndl.ref();
-
-      if (camera_in_camera::is_lens_render_active())
-        outCameraParams = multiplexing_index.subCamera == 0 ? mainCameraHndl.ref() : lensCameraHndl.ref();
-      else
-        outCameraParams = mainCameraHndl.ref();
-    };
-  }));
-
-  return nodes;
+  });
 }
 
 ECS_TAG(render)
 ECS_ON_EVENT(OnCameraNodeConstruction)
 static void create_camera_in_camera_setup_nodes_es(const OnCameraNodeConstruction &evt)
 {
-  if (renderer_has_feature(CAMERA_IN_CAMERA))
-    for (auto &&n : makeCameraInCameraSetupNodes())
-      evt.nodes->push_back(eastl::move(n));
+  if (!renderer_has_feature(CAMERA_IN_CAMERA))
+    return;
+
+  evt.nodes->push_back(makeLensAreaCameraSourceNode());
+  for (auto &&n : camera_in_camera::make_camera_nodes())
+    evt.nodes->push_back(eastl::move(n));
 }

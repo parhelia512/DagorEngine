@@ -6,23 +6,23 @@ from "async" import Future
 
 let p = Future()
 p.reject("nope")
-print("state: " + p.getState() + "\n")        // faulted
-print("getValue: " + p.getValue() + "\n")      // nope
+println($"state: {p.getState()}")             // faulted
+println($"getValue: {p.getValue()}")           // nope
 
 async function awaitIt() {
     try { let _ = await p; print("BUG: no throw\n") }
-    catch (e) { print("caught: " + e + "\n") } // nope
+    catch (e) { println($"caught: {e}") } // nope
 }
 awaitIt()
 
 let q = Future()
 q.resolve(1)
 q.reject("late")                               // no-op, already settled
-print("q state: " + q.getState() + " value: " + q.getValue() + "\n")  // fulfilled 1
+println($"q state: {q.getState()} value: {q.getValue()}")             // fulfilled 1
 
 async function task() { return 5 }
 let t = task()
 try { t.reject("x"); print("BUG: no throw\n") }
-catch (e) { print("task reject threw: " + e + "\n") }
+catch (e) { println($"task reject threw: {e}") }
 
 print("script done\n")

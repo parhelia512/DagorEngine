@@ -473,6 +473,7 @@ shader water_ssr
   POSTFX_VS(1)
   VIEW_VEC_OPTIMIZED(ps)
   USE_PREV_TC(ps)
+  USE_SCREENPOS_TO_LOWRES_TC()
 
   // force_ignore_history = force_ignore_history || !water_ssr_enabled_prev_frame
   (ps) {
@@ -548,8 +549,7 @@ shader water_ssr
     {
       float4 pos = GET_SCREEN_POS(input.pos);
       int2 pixel = int2(pos.xy);
-      // resolve target == reflection target resolution, so this IS the lowres tc
-      float2 tc = pos.xy * water_reflection_tex_res_inv;
+      float2 tc = screen_pos_to_lowres_tc(pos.xy * 2.0);
 
       // the color/strength targets are shared by camcam sub-views; without a
       // stencil each multiplex iteration must reject the other view's pixels

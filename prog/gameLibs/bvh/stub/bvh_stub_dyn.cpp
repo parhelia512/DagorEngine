@@ -19,6 +19,7 @@ void wait_dynrend_instances() {}
 void wait_animchar_instances() {}
 void tidy_up_skins(ContextId) {}
 void wait_tidy_up_skins() {}
+void tell_active_dynamic_resources(ContextId, const eastl::vector_set<const DynamicRenderableSceneLodsResource *> &) {}
 
 void debug_update() {}
 } // namespace bvh::dyn

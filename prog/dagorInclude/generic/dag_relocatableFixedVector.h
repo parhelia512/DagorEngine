@@ -216,7 +216,8 @@ protected:
 
 template <typename T, size_t inplace_count, bool allow_overflow = true, typename Allocator = MidmemAlloc, typename Counter = uint32_t,
   bool zero_init_scalars = true>
-class RelocatableFixedVector : public RelocatableFixedData<T, inplace_count, allow_overflow, Allocator, Counter, zero_init_scalars>
+class DAGOR_WARN_IF_UNUSED RelocatableFixedVector
+  : public RelocatableFixedData<T, inplace_count, allow_overflow, Allocator, Counter, zero_init_scalars>
 {
 public:
   typedef RelocatableFixedData<T, inplace_count, allow_overflow, Allocator, Counter, zero_init_scalars> base_type;

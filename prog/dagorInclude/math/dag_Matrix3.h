@@ -36,7 +36,7 @@ public:
     Point3 col[3];
   };
   INLINE Matrix3() = default;
-  INLINE explicit Matrix3(real a);
+  constexpr INLINE explicit Matrix3(real a);
   INLINE Matrix3(const float *p) { copy(p); }
 
   INLINE void identity();
@@ -165,11 +165,10 @@ INLINE Matrix3 rotzM3(real a)
   return m;
 }
 
-INLINE Matrix3::Matrix3(real a)
-{
-  memset(m, 0, sizeof(m));
-  m[0][0] = m[1][1] = m[2][2] = a;
-}
+constexpr INLINE Matrix3::Matrix3(real a) : m{{a, 0, 0}, {0, a, 0}, {0, 0, a}} {}
+
+inline constexpr Matrix3 Matrix3::IDENT(1.f);
+inline constexpr Matrix3 Matrix3::ZERO(0.f);
 
 INLINE void Matrix3::zero() { memset(m, 0, sizeof(m)); }
 

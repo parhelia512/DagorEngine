@@ -19,6 +19,8 @@ public:
   unsigned getTypeMaskForSet() const override { return 0; }
   unsigned getTypeMaskForGet() const override { return 0; }
 
+  const char *getImguiTypeName() const override { return "Separator"; }
+
   void updateImgui() override
   {
     if (controlCaption.empty())

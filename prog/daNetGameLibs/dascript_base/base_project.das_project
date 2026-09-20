@@ -16,6 +16,7 @@ let
     "daFrameGraph" => "%gameLibs/das/daFrameGraph",
     "daslib" => "%daslib",
     "imgui" => "%dasImgui",
+    "llvm" => "%dasLLVM",
     "debug" => "%dngdas/debug",
     "remote" => "%dngdas/remote"
   }

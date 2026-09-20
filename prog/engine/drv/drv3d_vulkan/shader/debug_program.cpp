@@ -239,6 +239,9 @@ void ShaderProgramDatabase::initDebugProg(bool has_bindless, DeviceContext &dc)
   il.attribs[1] = cola;
   auto ili = shaderDesc.layouts.add(dc, {il});
 
+  constexpr uint16_t vsImplicitRegCount = 4 * 4;
+  constexpr uint16_t fsImplicitRegCount = 0;
+
   ShaderID vs, fs;
   {
     // configure header for
@@ -250,7 +253,7 @@ void ShaderProgramDatabase::initDebugProg(bool has_bindless, DeviceContext &dc)
     spvHeader.descriptorTypes[0].set(VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC);
     spvHeader.descriptorCounts[0].type.set(VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC);
     spvHeader.descriptorCounts[0].descriptorCount = 1;
-    spvHeader.maxConstantCount = 4 * 4;
+    spvHeader.implicitCbufRegCount = vsImplicitRegCount;
     spvHeader.bRegisterUseMask = 1;
     spvHeader.inputMask = (1ul << 0) | (1ul << 3);
     spvHeader.outputMask = 1ul << 0;
@@ -268,13 +271,17 @@ void ShaderProgramDatabase::initDebugProg(bool has_bindless, DeviceContext &dc)
 
     ShaderModuleBlob smb(vertDump, vertDump + vertDumpSz);
 
+#if VULKAN_LOAD_SHADER_EXTENDED_DEBUG_DATA
+    smb.name = "debugVS";
+#endif
+
     vs = newShader(dc, smh, smb);
 
 #if VULKAN_LOAD_SHADER_EXTENDED_DEBUG_DATA
     ShaderDebugInfo dbgInf;
-    dbgInf.name = "debugVS"; // -V691
-    dbgInf.debugName = "debugVS";
-    attachDebugInfo(vs, dbgInf);
+    dbgInf.name = smb.name;
+    dbgInf.debugName = smb.name;
+    attachDebugInfo(vs, dbgInf, {});
 #endif
   }
 
@@ -286,21 +293,26 @@ void ShaderProgramDatabase::initDebugProg(bool has_bindless, DeviceContext &dc)
     spirv::ShaderHeader &spvHeader = smh.header;
     spvHeader.inputMask = 1ul << 0;
     spvHeader.outputMask = 1ul << 0;
+    spvHeader.implicitCbufRegCount = fsImplicitRegCount;
 
     smh.hash = spirv::HashValue::calculate(&spvHeader, 1);
     smh.stage = VK_SHADER_STAGE_FRAGMENT_BIT;
 
     ShaderModuleBlob smb(debug_frag_program, debug_frag_program + sizeof(debug_frag_program));
 
+#if VULKAN_LOAD_SHADER_EXTENDED_DEBUG_DATA
+    smb.name = "debugFS";
+#endif
+
     fs = newShader(dc, smh, smb);
 
 #if VULKAN_LOAD_SHADER_EXTENDED_DEBUG_DATA
     ShaderDebugInfo dbgInf;
-    dbgInf.name = "debugFS"; // -V691
-    dbgInf.debugName = "debugFS";
-    attachDebugInfo(fs, dbgInf);
+    dbgInf.name = smb.name;
+    dbgInf.debugName = smb.name;
+    attachDebugInfo(fs, dbgInf, {});
 #endif
   }
 
-  debugProgId = progs.graphics.add(dc, {ili, shaders.get(vs), shaders.get(fs)});
+  debugProgId = progs.graphics.add(dc, {ili, shaders.get(vs), shaders.get(fs), vsImplicitRegCount, fsImplicitRegCount});
 }

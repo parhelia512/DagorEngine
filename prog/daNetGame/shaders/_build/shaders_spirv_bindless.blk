@@ -17,6 +17,7 @@ source
   file:t = "../../../../prog/gameLibs/bvh/shaders/bvh_lru_collision_normals.dshl"
 
   include "../../../gameLibs/daGI2/shaders/shadersList.blk"
+  include "../../../gameLibs/voxelizedMedia/_shaders.blk"
   include "../../../gameLibs/daSDF/shaders/daSDFList.blk"
   include shadersList.blk
   include shadersListForTools.blk
@@ -53,3 +54,4 @@ explicit_var_ref
 }
 
 include "raytracing.blk"
+include "../../../gameLibs/render/omm/shaders/build.blk"

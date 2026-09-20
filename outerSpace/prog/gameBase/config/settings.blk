@@ -1,4 +1,13 @@
 log_lut:b= yes
+loadingScreen{
+  screens{
+    screen:t="star_nest"
+    screen:t="protoplanet"
+    screen:t="planet"
+  }
+  default:t="star_nest"
+  mode:t="random"
+}
 circuit:t="internal"
 
 disableRemoteNetServices:b=yes
@@ -139,14 +148,21 @@ vulkan {
   guardVulkanAllocations:b=yes
   vendor {
     AMD {
-      driverProps {
-        multiQueue {
-          entry {
-            // somehow data is corrupted on upload/readback on exactly this GPUs
-            gpu:t="RX 6600"
-            data {
-              allow:b=no
-            }
+      extensions {
+        entry {
+          // spirv with actual barycentric usage crash driver on pipeline compile
+          gpuMask:t="RX 6"
+          data {
+            VK_KHR_fragment_shader_barycentric:b=no
+          }
+        }
+      }
+      multiQueue {
+        entry {
+          // somehow data is corrupted on upload/readback on exactly this GPUs
+          gpu:t="RX 6600"
+          data {
+            allow:b=no
           }
         }
       }

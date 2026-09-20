@@ -12,7 +12,7 @@
 namespace bind_dascript
 {
 #ifndef DAS_HAS_DIRECTORY_WATCH
-#if _TARGET_PC_WIN && DAGOR_DBGLEVEL > 0
+#if (_TARGET_PC_WIN || _TARGET_PC_LINUX) && DAGOR_DBGLEVEL > 0
 #define DAS_HAS_DIRECTORY_WATCH 1
 #endif
 #endif
@@ -127,6 +127,8 @@ struct Scripts
   int getPendingQueriesNum(das::ModuleGroup &group) const;
 
   void storeSharedQueries(das::ModuleGroup &group);
+
+  void preserveSharedQueries(LoadedScript &script);
 
   bool postProcessModuleGroupUserData(const das::string &fname, das::ModuleGroup &group);
 

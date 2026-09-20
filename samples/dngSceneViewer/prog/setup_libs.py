@@ -25,7 +25,6 @@ danetgamelibs = [
   "water_effects",
   "heat_haze",
   "water_flowmap_obstacles",
-  "puddle_query",
   "dynamic_details",
   "nbs_volumes",
   "screen_droplets",
@@ -48,6 +47,7 @@ danetgamelibs = [
 ]
 
 gamelibs = [
+  "render/puddle_query",
   "fast_grass",
   "render_events",
   "pufd_events",

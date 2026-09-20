@@ -6,6 +6,7 @@ include "brunetonSkies.dshl"
 include "skies_special_vision.dshl"
 include "vr_reprojection.dshl"
 include "use_custom_fog_sky.dshl"
+include "camera_in_camera.dshl"
 
 float star_intensity = 1;
 float stars_scale = 1;
@@ -79,6 +80,7 @@ shader daStars, daMoon
   if (disable_volfog_on_stars == no)
   {
     INIT_ZNZFAR_STAGE(ps)
+    INIT_AND_USE_ON_TOP_CAMERA_IN_CAMERA(ps)
     USE_CUSTOM_FOG_SKY(ps)
   }
 

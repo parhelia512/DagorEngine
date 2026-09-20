@@ -66,7 +66,7 @@ public:
 
   // build mesh data
   bool build(Mesh &mesh, MeshBones &mesh_bones, ShaderMaterial **shmat_tab, int mat_count, int max_hw_vpr_const, NameMap *name_map,
-    bool pack_vcolor_to_bones);
+    bool pack_vcolor_to_bones, int uv_err_lod = -1, const char *uv_err_node = nullptr);
 
   void remap(const NameMap &old_nm, NameMap &new_nm);
 

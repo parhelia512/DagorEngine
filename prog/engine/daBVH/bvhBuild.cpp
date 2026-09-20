@@ -583,6 +583,9 @@ template <class IdxT>
 unsigned leafOrderVertexFetch(IdxT *idx, unsigned idxCount, const vec4f *srcVerts, unsigned srcVertCount, dag::Vector<vec4f> &outVerts,
   int minOff, int maxOff)
 {
+  // The SAH build releases its workspaces out of order; framemem returns only its newest block, so
+  // without a region every build leaves them in the arena.
+  FRAMEMEM_REGION;
   // LEAF_OFF_DEFAULT means "default leaf-offset window": resolve to the quad-BLAS range before it reaches
   // dedupWindowDup, which derives blockCap from maxOff and must never see the sentinel. minOff is a real
   // signed bound that may legitimately be negative, so test the exact sentinel rather than minOff < 0.

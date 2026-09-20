@@ -5,6 +5,7 @@
 #include <shaders/dag_dynSceneRes.h>
 #include <shaders/dag_shaderResUnitedData.h>
 #include <generic/dag_enumerate.h>
+#include <generic/dag_relocatableFixedVector.h>
 #include <EASTL/unordered_map.h>
 #include <EASTL/unordered_set.h>
 #include <drv/3d/dag_lock.h>
@@ -15,6 +16,7 @@
 #include "bvh_tools.h"
 #include "bvh_add_instance.h"
 #include "bvh_color_from_pos.h"
+#include "bvh_voxel_activity.h"
 
 #include <math/dag_hlsl_floatx.h>
 #include <render/decals/planar_decals_params.hlsli>
@@ -34,12 +36,16 @@ using RelemChangedContextsReadLock = ScopedLockReadTemplate<NoWritersSpinLockRea
 using RelemChangedContextsWriteLock = ScopedLockWriteTemplate<NoWritersSpinLockReadWriteLock>;
 static NoWritersSpinLockReadWriteLock relem_changed_contexts_lock;
 static eastl::unordered_set<ContextId> relem_changed_contexts DAG_TS_GUARDED_BY(relem_changed_contexts_lock);
+static OSSpinlock dyn_bvh_id_lock;
 static CallbackToken relem_changed_token;
 static constexpr float bvh_force_anim_distance = 30.0f;
 
 static bool bvh_decals = false;
 
 static bool bvh_discard_destr_assets = false;
+static bool bvh_unload_dyn_models = false;
+static bool bvh_build_on_demand = false;
+static int dyn_model_retention_msec = 0;
 
 static int dyn_single_lod_filter_max_faces = 0;
 static float dyn_single_lod_filter_max_range = 0;
@@ -180,18 +186,76 @@ inline const char *get_tag(const DynamicRenderableSceneLodsResource *resource, b
   }
 }
 
+using GunBarrelNodeIds = dag::RelocatableFixedVector<uint16_t, 8>;
+
+// Cannon barrels follow the gun_barrel* node naming convention.
+// The node name map is sorted, so matches form one contiguous range.
+static void collect_gun_barrel_nodes(const RoNameMapEx &names, GunBarrelNodeIds &node_ids)
+{
+  static ShaderVariableInfo assumed = ShaderVariableInfo("bvh_use_group_cannon_barrel");
+  if (!ShaderGlobal::is_var_assumed(assumed))
+    return;
+  if (ShaderGlobal::get_interval_assumed_value(assumed) == 0)
+    return;
+
+  static constexpr char prefix[] = "gun_barrel";
+  constexpr size_t prefixLen = sizeof(prefix) - 1;
+  uint32_t lo = 0, hi = names.map.size();
+  while (lo < hi)
+  {
+    uint32_t mid = (lo + hi) / 2;
+    if (strncmp(names.map[mid], prefix, prefixLen) < 0)
+      lo = mid + 1;
+    else
+      hi = mid;
+  }
+  for (; lo < names.map.size() && strncmp(names.map[lo], prefix, prefixLen) == 0; ++lo)
+    node_ids.push_back(names.id[lo]);
+}
+
 static void on_relem_changed(ContextId context_id, const DynamicRenderableSceneLodsResource *resource, bool deleted, int upper_lod)
 {
   TIME_PROFILE(bvh::on_dyn_relem_changed);
   DA_PROFILE_TAG(bvh::on_dyn_relem_changed, deleted ? "delete" : "modify");
 
-  if (!filter_lod_resources(resource))
+  const bool buildable = filter_lod_resources(resource);
+  if (!buildable && !bvh_unload_dyn_models)
     return;
 
-  if (resource->getBvhId() == 0)
-    resource->setBvhId(bvh_id_gen.add_fetch(1));
+  {
+    OSSpinlockScopedLock lock(dyn_bvh_id_lock);
+    if (resource->getBvhId() == 0)
+      resource->setBvhId(bvh_id_gen.add_fetch(1));
+  }
 
   auto bvhId = resource->getBvhId();
+
+  if (bvh_unload_dyn_models && !deleted) //-V1051
+  {
+    OSSpinlockScopedLock lock(context_id->dynrendObjectsWithTimeoutLock);
+    context_id->dynrendObjectsWithTimeout[bvhId].lastUsedMsec = get_time_msec();
+  }
+
+  if (!buildable)
+    return;
+
+  auto trackObject = [&](uint64_t object_id) {
+    if (!bvh_unload_dyn_models)
+      return;
+    OSSpinlockScopedLock lock(context_id->dynrendObjectsWithTimeoutLock);
+    context_id->dynrendObjectsWithTimeout[bvhId].objectIds.insert(object_id);
+  };
+  auto untrackObject = [&](uint64_t object_id) {
+    if (!bvh_unload_dyn_models)
+      return;
+    OSSpinlockScopedLock lock(context_id->dynrendObjectsWithTimeoutLock);
+    auto iter = context_id->dynrendObjectsWithTimeout.find(bvhId);
+    if (iter == context_id->dynrendObjectsWithTimeout.end())
+      return;
+    iter->second.objectIds.erase(object_id);
+    if (iter->second.objectIds.empty())
+      context_id->dynrendObjectsWithTimeout.erase(iter);
+  };
 
   BSphere3 bounding;
   bounding = resource->getLocalBoundingBox();
@@ -207,6 +271,10 @@ static void on_relem_changed(ContextId context_id, const DynamicRenderableSceneL
     posMul = Point4(1.f, 1.f, 1.f, 0.0f);
     posAdd = Point4(0.f, 0.f, 0.f, 0.0f);
   }
+
+  GunBarrelNodeIds gunBarrelNodes;
+  if (!resource->lods.empty())
+    collect_gun_barrel_nodes(resource->lods[0].scene->getNames().node, gunBarrelNodes);
 
   for (auto [lodIx, lod] : enumerate(resource->lods))
   {
@@ -236,8 +304,11 @@ static void on_relem_changed(ContextId context_id, const DynamicRenderableSceneL
         if (uniqueRefId && ((rigids[rigid_no].uniqueRefId >> 16) != uniqueRefId))
           return;
 
-        G_UNUSED(node_id);
         G_UNUSED(radius);
+        bool isGunBarrel = false;
+        for (uint16_t barrelNodeId : gunBarrelNodes)
+          isGunBarrel |= barrelNodeId == node_id;
+
         auto elems = mesh->getElems(ShaderMesh::STG_opaque, ShaderMesh::STG_atest);
         for (auto [elemIx, elem] : enumerate(elems))
         {
@@ -246,7 +317,10 @@ static void on_relem_changed(ContextId context_id, const DynamicRenderableSceneL
           const uint64_t objectId = make_relem_mesh_id(bvhId, lodIxLocal, elemId);
 
           if (deleted)
+          {
             remove_object(context_id, objectId);
+            untrackObject(objectId);
+          }
           else
           {
             auto isPacked = elem.mat->isPositionPacked();
@@ -255,10 +329,13 @@ static void on_relem_changed(ContextId context_id, const DynamicRenderableSceneL
             if (auto meshInfo = process_relem(context_id, elem, eastl::nullopt, posMulBatch, posAddBatch, bounding, false,
                   PerInstanceDataUse::ALLOWED))
             {
+              meshInfo->isGunBarrel = isGunBarrel;
               bool isAnimated = meshInfo->vertexProcessor && !meshInfo->vertexProcessor->isOneTimeOnly();
               add_object(context_id, objectId,
                 {{eastl::move(meshInfo.value())}, BvhType::Dyn, isAnimated, get_tag(resource, true, lodIx),
                   make_asset_name_ref(resource)});
+
+              trackObject(objectId);
             }
           }
         }
@@ -279,7 +356,10 @@ static void on_relem_changed(ContextId context_id, const DynamicRenderableSceneL
           const uint64_t objectId = make_relem_mesh_id(bvhId, lodIxLocal, elemId);
 
           if (deleted)
+          {
             remove_object(context_id, objectId);
+            untrackObject(objectId);
+          }
           else
           {
             if (auto meshInfo = process_relem(context_id, elem,
@@ -291,6 +371,8 @@ static void on_relem_changed(ContextId context_id, const DynamicRenderableSceneL
               add_object(context_id, objectId,
                 {{eastl::move(meshInfo.value())}, BvhType::Dyn, isAnimated, get_tag(resource, true, lodIx),
                   make_asset_name_ref(resource)});
+
+              trackObject(objectId);
             }
           }
         }
@@ -298,7 +380,14 @@ static void on_relem_changed(ContextId context_id, const DynamicRenderableSceneL
   }
 }
 
-static void on_relem_changed_all(const DynamicRenderableSceneLodsResource *resource, bool deleted, int upper_lod)
+static bool is_tracked(ContextId context_id, const DynamicRenderableSceneLodsResource *resource)
+{
+  OSSpinlockScopedLock lock(context_id->dynrendObjectsWithTimeoutLock);
+  return context_id->dynrendObjectsWithTimeout.find(resource->getBvhId()) != context_id->dynrendObjectsWithTimeout.end();
+}
+
+// With only_tracked, an unloaded model stays unloaded until tell_active_dynamic_resources rebuilds it on use.
+static void on_relem_changed_all(const DynamicRenderableSceneLodsResource *resource, bool deleted, int upper_lod, bool only_tracked)
 {
   G_ASSERT_RETURN(resource, );
 
@@ -314,8 +403,14 @@ static void on_relem_changed_all(const DynamicRenderableSceneLodsResource *resou
   {
     RelemChangedContextsReadLock contextsGuard(relem_changed_contexts_lock);
     for (auto &contextId : relem_changed_contexts)
-      on_relem_changed(contextId, resource, deleted, upper_lod);
+      if (!only_tracked || deleted || is_tracked(contextId, resource))
+        on_relem_changed(contextId, resource, deleted, upper_lod);
   }
+}
+
+static void on_relem_event(const DynamicRenderableSceneLodsResource *resource, bool deleted, int upper_lod)
+{
+  on_relem_changed_all(resource, deleted, upper_lod, bvh_unload_dyn_models);
 }
 
 void wait_dynrend_instances();
@@ -327,8 +422,11 @@ void init(const AdditionalSettings &settings) // int single_lod_filter_max_faces
   dyn_single_lod_filter_max_faces = settings.singleLodFilterMaxFaces;
   dyn_single_lod_filter_max_range = settings.singleLodFilterMaxRange;
   bvh_discard_destr_assets = settings.discardDestrAssets;
+  bvh_unload_dyn_models = settings.unloadDynModels;
+  bvh_build_on_demand = settings.unloadDynModels && settings.buildDynOnDemand;
+  dyn_model_retention_msec = int(settings.dynModelRetentionSec * 1000.f);
   dyn_enable_caching = settings.enableCaching;
-  relem_changed_token = unitedvdata::dmUnitedVdata.on_mesh_relems_updated.subscribe(on_relem_changed_all);
+  relem_changed_token = unitedvdata::dmUnitedVdata.on_mesh_relems_updated.subscribe(on_relem_event);
 }
 
 void teardown(bool device_reset, bool zero_bvh_ids)
@@ -354,10 +452,12 @@ void init(ContextId context_id)
       RelemChangedContextsWriteLock contextsGuard(relem_changed_contexts_lock);
       relem_changed_contexts.insert(context_id);
     }
-    unitedvdata::dmUnitedVdata.availableRElemsAccessor([](dag::Span<DynamicRenderableSceneLodsResource *> resources) {
-      for (DynamicRenderableSceneLodsResource *resource : resources)
-        on_relem_changed_all(resource, false, 0);
-    });
+
+    if (!bvh_build_on_demand)
+      unitedvdata::dmUnitedVdata.availableRElemsAccessor([](dag::Span<DynamicRenderableSceneLodsResource *> resources) {
+        for (DynamicRenderableSceneLodsResource *resource : resources)
+          on_relem_changed_all(resource, false, 0, false);
+      });
   }
 }
 
@@ -386,6 +486,7 @@ void on_unload_scene(ContextId context_id)
           context_id->releaseTexture(meta.alphaTextureIndex);
           context_id->releaseTexture(meta.normalTextureIndex);
           context_id->releaseTexture(meta.extraTextureIndex);
+          context_id->releaseTexture(meta.secondaryMaskTextureIndex);
         }
       }
       context_id->freeMetaRegion(buffer.second.metaAllocId);
@@ -425,19 +526,40 @@ void teardown(ContextId context_id)
 {
   bvh::dyn::on_unload_scene(context_id);
   {
+    OSSpinlockScopedLock lock(context_id->dynrendObjectsWithTimeoutLock);
+    context_id->dynrendObjectsWithTimeout.clear();
+  }
+  {
     RelemChangedContextsWriteLock contextsGuard(relem_changed_contexts_lock);
     relem_changed_contexts.erase(context_id);
   }
 }
 
-struct IterCtx
+struct IterCtx //-V730
 {
   ContextId contextId;
   Point3 viewPosition;
   bool noShadow;
   int count;
   dynrend::ContextId dynrendContextId;
+  uint32_t voxelConsidered = 0;
+  uint32_t voxelCulled = 0;
 };
+
+static bool keep_instance_by_voxel_age(const DynamicRenderableSceneInstance &inst, bool relative_to_camera, IterCtx *ctx)
+{
+  if (!voxel_activity::culling_active(ctx->contextId))
+    return true;
+  BSphere3 bsph;
+  bsph = inst.getLocalBoundingBox();
+  if (bsph.isempty())
+    return true;
+  const TMatrix tm = inst.getNodeWtmRelToOrigin(0);
+  const float scale = sqrtf(max(tm.getcol(0).lengthSq(), max(tm.getcol(1).lengthSq(), tm.getcol(2).lengthSq())));
+  const Point3 c = tm * bsph.c + (relative_to_camera ? ctx->viewPosition : inst.getOrigin());
+  return voxel_activity::keep_instance(ctx->contextId, v_make_vec4f(c.x, c.y, c.z, bsph.r * scale), ctx->voxelConsidered,
+    ctx->voxelCulled, false);
+}
 
 bool has_camo(ShaderMesh::RElem &elem)
 {
@@ -550,6 +672,9 @@ static void iterate_instances(dynrend::ContextId dynrend_context_id, const Dynam
   }
 
   ++ctx->count;
+
+  if (!keep_instance_by_voxel_age(inst, relative_to_camera, ctx))
+    return;
 
   auto &instances = bvh_context_id->dynrendInstances[dynrend_context_id];
 
@@ -712,8 +837,16 @@ static void iterate_instances(dynrend::ContextId dynrend_context_id, const Dynam
     if (mesh.materialType & MeshMeta::bvhMaterialCamo)
     {
       if (!camoDataPtr)
+      {
         camoDataPtr = getCamoData(elem);
-      if (camoDataPtr && bvh_decals)
+        if (!camoDataPtr)
+        {
+          // This means that the camo texture is still being loaded.
+          static PerInstanceData stagingCamoData = {MeshMeta::INVALID_TEXTURE << 16, 0, 0, 0};
+          camoDataPtr = &stagingCamoData;
+        }
+      }
+      if (bvh_decals)
       {
         camoDataPtr->z &= 0xFFFF;
         if (initial_nodes)
@@ -814,8 +947,7 @@ static void iterate_instances(dynrend::ContextId dynrend_context_id, const Dynam
           auto &data = bvh_context_id->uniqueHeliRotorBuffers[inst.getUniqueId()][meshId];
 
           MeshHeliRotorInfo heliRotorInfo;
-          heliRotorInfo.transformedBuffer = &data.buffer;
-          heliRotorInfo.transformedBlas = &data.blas;
+          heliRotorInfo.transformedData = &data;
           heliRotorInfo.invWorldTm = TMatrix4(inverse(tm)).transpose();
           heliRotorInfo.getParamsFn = [=](Point4 &params, Point4 &sec_params) {
             auto allParams = inst_render_data.params.data();
@@ -837,8 +969,7 @@ static void iterate_instances(dynrend::ContextId dynrend_context_id, const Dynam
           auto &data = bvh_context_id->uniqueDeformedBuffers[inst.getUniqueId()][meshId];
 
           DeformedInfo deformedInfo;
-          deformedInfo.transformedBuffer = &data.buffer;
-          deformedInfo.transformedBlas = &data.blas;
+          deformedInfo.transformedData = &data;
           deformedInfo.invWorldTm = TMatrix4(inverse(tm)).transpose();
           deformedInfo.simParams = Point2::ZERO;
 
@@ -897,9 +1028,23 @@ static void iterate_instances(dynrend::ContextId dynrend_context_id, const Dynam
 
         MeshSkinningInfo skinningInfo;
         skinningInfo.invWorldTm = TMatrix4(inverse(tm)).transpose();
-        skinningInfo.setTransformsFn = [=]() {
-          dynrend::set_instance_data_buffer(STAGE_CS, dynrend_context_id, nodeOffsetRenderData, instance_offset_render_data);
-        };
+        if (use_batched_skinned_vertex_processor)
+        {
+          // The batched processor records the offsets into the per-instance params
+          // instead of setting GPU state. It can run on a worker thread.
+          skinningInfo.setTransformsFn = [=]() {
+            auto &processor =
+              static_cast<const SkinnedVertexProcessorBatched &>(ProcessorInstances::getSkinnedVertexProcessorBatched());
+            dynrend::get_instance_data_offsets(dynrend_context_id, nodeOffsetRenderData, instance_offset_render_data,
+              processor.lastInstanceDataDwords, processor.lastInstanceDataBufferId);
+          };
+        }
+        else
+        {
+          skinningInfo.setTransformsFn = [=]() {
+            dynrend::set_instance_data_buffer(STAGE_CS, dynrend_context_id, nodeOffsetRenderData, instance_offset_render_data);
+          };
+        }
 
         Context::BvhObjectReadLock objectsGuard(bvh_context_id->objectsLock);
         for (auto [elemIx, elem] : enumerate(elems))
@@ -920,20 +1065,16 @@ static void iterate_instances(dynrend::ContextId dynrend_context_id, const Dynam
           auto &meshElem = data.elems[meshId];
           meshElem.age = -1;
 
-          if (!meshElem.buffer && dyn_enable_caching)
+          if (!meshElem.buffer && !meshElem.blas && dyn_enable_caching)
           {
             if (auto iter = bvh_context_id->freeUniqueSkinBLASes.find(meshId); iter != bvh_context_id->freeUniqueSkinBLASes.end())
             {
               if (int index = iter->second.cursor.sub_fetch(1); index >= 0)
-              {
-                auto &blas = iter->second.blases[index];
-                meshElem.blas.swap(blas);
-              }
+                take_blas_from_pool(meshElem, iter->second.blases[index]);
             }
           }
 
-          skinningInfo.skinningBuffer = &meshElem.buffer;
-          skinningInfo.skinningBlas = &meshElem.blas;
+          skinningInfo.transformedData = &meshElem;
 
           if (meshElem.metaAllocId == MeshMetaAllocator::INVALID_ALLOC_ID)
             meshElem.metaAllocId = bvh_context_id->allocateMetaRegion(1, "skinned");
@@ -958,7 +1099,8 @@ static void iterate_instances(dynrend::ContextId dynrend_context_id, const Dynam
         }
       }
 
-      nodeOffsetRenderData += 11 + mesh->bonesCount() * 6;
+      nodeOffsetRenderData += dynrend::get_skin_bones_start_in_vecs(dynrend_context_id) +
+                              mesh->bonesCount() * dynrend::get_skin_bone_rows(dynrend_context_id);
     });
 }
 
@@ -1030,6 +1172,9 @@ struct DynrendBVHJob : public cpujobs::IJob
           bvhContextId->initialNodes.data(), VBLOCK_WRITEONLY);
         d3d::resource_barrier(ResourceBarrierDesc(bvhContextId->initialNodesHolder.get(), RB_RO_SRV | RB_STAGE_ALL_SHADERS));
       }
+
+      bvhContextId->voxelActivity.dynConsidered.fetch_add(ctx.voxelConsidered);
+      bvhContextId->voxelActivity.dynCulled.fetch_add(ctx.voxelCulled);
     }
 
     {
@@ -1037,10 +1182,13 @@ struct DynrendBVHJob : public cpujobs::IJob
       IterCtx ctx = {bvhContextId, viewPosition, true, 0, dynrendNoShadowContextId};
       dynrend::iterate_instances(dynrendNoShadowContextId, iterate_instances, &ctx);
       DA_PROFILE_TAG(bvh::update_dynrend_instances_shadow, "count: %d", ctx.count);
+
+      bvhContextId->voxelActivity.dynConsidered.fetch_add(ctx.voxelConsidered);
+      bvhContextId->voxelActivity.dynCulled.fetch_add(ctx.voxelCulled);
     }
   }
 
-  const char *getJobName(bool &) const override { return "DynrendBVHJob"; }
+  const char *getJobName(bool &) const override { return DAPROFILER_STRING("DynrendBVHJob"); }
 } dynrend_bvh_job;
 
 void update_dynrend_instances(ContextId bvh_context_id, dynrend::ContextId dynrend_context_id,
@@ -1057,6 +1205,25 @@ void update_dynrend_instances(ContextId bvh_context_id, dynrend::ContextId dynre
 }
 
 void wait_dynrend_instances() { dynrend_bvh_job.wait(); }
+
+static inline uint32_t pack_paint_color(const Color4 &color)
+{
+  return E3DCOLOR(saturate(color.r) * 255, saturate(color.g) * 255, saturate(color.b) * 255, 255);
+}
+
+static void set_paint_by_mask_colors(PerInstanceData &data, const ShaderMesh::RElem &elem)
+{
+  static const ShaderVariableInfo primary_colorVarId("primary_color", true);
+  static const ShaderVariableInfo secondary_colorVarId("secondary_color", true);
+
+  Color4 primaryColor(1, 1, 1, 1);
+  Color4 secondaryColor(1, 1, 1, 1);
+  elem.mat->getColor4Variable(primary_colorVarId.get_var_id(), primaryColor);
+  elem.mat->getColor4Variable(secondary_colorVarId.get_var_id(), secondaryColor);
+
+  data.z = pack_paint_color(primaryColor);
+  data.w = pack_paint_color(secondaryColor);
+}
 
 static inline void handle_cloth_wind(const ShaderMesh::RElem &elem, SkinData &data)
 {
@@ -1089,8 +1256,7 @@ static inline void handle_cloth_wind(const ShaderMesh::RElem &elem, SkinData &da
 }
 
 static void iterate_instances_dng(const DynamicRenderableSceneInstance &inst, const DynamicRenderableSceneResource &res,
-  const uint8_t *path_filter, uint32_t path_filter_size, uint8_t render_mask, dag::ConstSpan<int> offsets,
-  dynrend::BVHSetInstanceData set_instance_data, bool animate, dynrend::BVHCamoData &camo_data,
+  dag::ConstSpan<int> offsets, dynrend::BVHSetInstanceData set_instance_data, bool animate, dynrend::BVHCamoData &camo_data,
   dynrend::BVHSkinnedMemoryUsage &skin_mem, void *user_data)
 {
   IterCtx *ctx = (IterCtx *)user_data;
@@ -1111,11 +1277,14 @@ static void iterate_instances_dng(const DynamicRenderableSceneInstance &inst, co
       return;
   }
 
+  if (!keep_instance_by_voxel_age(inst, /*relative_to_camera*/ true, ctx))
+    return;
+
   auto &instances = bvh_context_id->dynrendInstances[dynrend_context_id];
 
   auto lodNo = inst.getCurrentLodNo();
   auto rigidCount = res.getRigidsConst().size();
-  auto meshIndexCounter = 0;
+  G_ASSERT_RETURN(offsets.size() == rigidCount + res.getSkinNodes().size(), );
 
   const bool useMemoryLimit = skin_mem.max_bytes >= 0;
   const bool overMemoryLimit = useMemoryLimit && skin_mem.current_bytes >= skin_mem.max_bytes;
@@ -1208,11 +1377,9 @@ static void iterate_instances_dng(const DynamicRenderableSceneInstance &inst, co
   res.getMeshes(
     [&](const ShaderMesh *mesh, int node_id, float radius, int rigid_no) {
       G_UNUSED(radius);
-      bool isVisible = ((!path_filter && !inst.isNodeHidden(node_id)) ||
-                        (path_filter && (node_id >= path_filter_size || (path_filter[node_id] & render_mask) == render_mask)));
-      if (!isVisible)
+      const int currMeshIndex = rigid_no;
+      if (offsets[currMeshIndex] < 0)
         return;
-      int currMeshIndex = meshIndexCounter++;
       if (!bvh_context_id->hasAny(Features::DynrendRigidBaked | Features::DynrendRigidFull))
         return;
 
@@ -1224,7 +1391,7 @@ static void iterate_instances_dng(const DynamicRenderableSceneInstance &inst, co
       if (elems.empty())
         return;
 
-      auto tm = inst.getNodeWtm(node_id); // Camera relative already!
+      const TMatrix &tm = inst.getNodeWtm(node_id); // Camera relative already!
 
 
 #if DAGOR_DBGLEVEL > 0
@@ -1261,27 +1428,32 @@ static void iterate_instances_dng(const DynamicRenderableSceneInstance &inst, co
           return;
         auto &bvhMesh = bvhObject->meshes[0];
 
-        PerInstanceData perInstanceDataWithIndex = PerInstanceData::ZERO;
+        PerInstanceData mergedPerInstanceData = PerInstanceData::ZERO;
         const PerInstanceData *perInstanceDataPtr = getCamoData(bvhMesh, elem);
         if (!perInstanceDataPtr)
           perInstanceDataPtr = getSkinData(bvhMesh, elem);
+        if (bvhMesh.materialType & MeshMeta::bvhMaterialPaintedByMask)
+        {
+          if (perInstanceDataPtr)
+            mergedPerInstanceData = *perInstanceDataPtr;
+          set_paint_by_mask_colors(mergedPerInstanceData, elem);
+          perInstanceDataPtr = &mergedPerInstanceData;
+        }
         if (bvhMesh.materialType & MeshMeta::bvhMaterialAnimcharDecals)
         {
           if (perInstanceDataPtr)
-            perInstanceDataWithIndex = *perInstanceDataPtr;
-          perInstanceDataWithIndex.z = offsets[currMeshIndex];
-          perInstanceDataPtr = &perInstanceDataWithIndex;
+            mergedPerInstanceData = *perInstanceDataPtr;
+          mergedPerInstanceData.z = offsets[currMeshIndex];
+          perInstanceDataPtr = &mergedPerInstanceData;
         }
 
         add_dynrend_instance(instances, meshId, tm43, perInstanceDataPtr, ctx->noShadow, animationUpdateMode);
       }
     },
-    [&](const ShaderSkinnedMesh *mesh, int node_id, int skin_no) {
-      bool isVisible = ((!path_filter && !inst.isNodeHidden(node_id)) ||
-                        (path_filter && (node_id >= path_filter_size || (path_filter[node_id] & render_mask) == render_mask)));
-      if (!isVisible)
+    [&](const ShaderSkinnedMesh *mesh, int /*node_id*/, int skin_no) {
+      const int currMeshIndex = rigidCount + skin_no;
+      if (offsets[currMeshIndex] < 0)
         return;
-      int currMeshIndex = meshIndexCounter++;
       if (overMemoryLimit)
         return;
       if (!bvh_context_id->hasAny(Features::DynrendSkinnedFull))
@@ -1335,20 +1507,16 @@ static void iterate_instances_dng(const DynamicRenderableSceneInstance &inst, co
         auto &meshElem = data.elems[meshId];
         meshElem.age = -1;
 
-        if (!meshElem.buffer && dyn_enable_caching)
+        if (!meshElem.buffer && !meshElem.blas && dyn_enable_caching)
         {
           if (auto iter = bvh_context_id->freeUniqueSkinBLASes.find(meshId); iter != bvh_context_id->freeUniqueSkinBLASes.end())
           {
             if (int index = iter->second.cursor.sub_fetch(1); index >= 0)
-            {
-              auto &blas = iter->second.blases[index];
-              meshElem.blas.swap(blas);
-            }
+              take_blas_from_pool(meshElem, iter->second.blases[index]);
           }
         }
 
-        skinningInfo.skinningBuffer = &meshElem.buffer;
-        skinningInfo.skinningBlas = &meshElem.blas;
+        skinningInfo.transformedData = &meshElem;
 
         if (meshElem.metaAllocId == MeshMetaAllocator::INVALID_ALLOC_ID)
         {
@@ -1371,22 +1539,32 @@ static void iterate_instances_dng(const DynamicRenderableSceneInstance &inst, co
             elem.mat->getTextureVariable(camouflage_texVarId, camouflage_tex);
             meta.holdExtraTex(bvh_context_id, camouflage_tex);
           }
+          else
+            meta.holdExtraTex(bvh_context_id, bvhMesh.extraTextureId);
+          meta.holdSecondaryMaskTex(bvh_context_id, bvhMesh.secondaryMaskTextureId);
           meta.materialType |= MeshMeta::bvhMaterialUseInstanceTextures;
           meta.markInitialized();
         }
 
-        PerInstanceData perInstanceDataWithIndex = PerInstanceData::ZERO;
+        PerInstanceData mergedPerInstanceData = PerInstanceData::ZERO;
         const PerInstanceData *perInstanceDataPtr = getCamoData(bvhMesh, elem);
         if (!perInstanceDataPtr)
           perInstanceDataPtr = getColorModData(bvhMesh, elem);
         if (!perInstanceDataPtr)
           perInstanceDataPtr = getSkinData(bvhMesh, elem);
+        if (bvhMesh.materialType & MeshMeta::bvhMaterialPaintedByMask)
+        {
+          if (perInstanceDataPtr)
+            mergedPerInstanceData = *perInstanceDataPtr;
+          set_paint_by_mask_colors(mergedPerInstanceData, elem);
+          perInstanceDataPtr = &mergedPerInstanceData;
+        }
         if (bvhMesh.materialType & MeshMeta::bvhMaterialAnimcharDecals)
         {
           if (perInstanceDataPtr)
-            perInstanceDataWithIndex = *perInstanceDataPtr;
-          perInstanceDataWithIndex.z = offsets[currMeshIndex];
-          perInstanceDataPtr = &perInstanceDataWithIndex;
+            mergedPerInstanceData = *perInstanceDataPtr;
+          mergedPerInstanceData.z = offsets[currMeshIndex];
+          perInstanceDataPtr = &mergedPerInstanceData;
         }
 
         handle_cloth_wind(elem, skinningInfo.data);
@@ -1405,7 +1583,6 @@ static void iterate_instances_dng(const DynamicRenderableSceneInstance &inst, co
         }
       }
     });
-  G_VERIFY(offsets.size() == meshIndexCounter);
 }
 
 struct AnimcharBVHJob : public cpujobs::IJob
@@ -1439,9 +1616,12 @@ struct AnimcharBVHJob : public cpujobs::IJob
     iterateCallback(iterate_instances_dng, viewPosition, &ctx);
 
     DA_PROFILE_TAG(bvh::update_animchar_instances, "count: %d", ctx.count);
+
+    bvhContextId->voxelActivity.dynConsidered.fetch_add(ctx.voxelConsidered);
+    bvhContextId->voxelActivity.dynCulled.fetch_add(ctx.voxelCulled);
   }
 
-  const char *getJobName(bool &) const override { return "AnimcharBVHJob"; }
+  const char *getJobName(bool &) const override { return DAPROFILER_STRING("AnimcharBVHJob"); }
 } animchar_bvh_job;
 
 void update_animchar_instances(ContextId bvh_context_id, dynrend::ContextId dynrend_context_id,
@@ -1465,7 +1645,7 @@ static struct TidyUpSkinsJob : public cpujobs::IJob
 {
   ContextId contextId;
 
-  const char *getJobName(bool &) const override { return "TidyUpSkinsJob"; }
+  const char *getJobName(bool &) const override { return DAPROFILER_STRING("TidyUpSkinsJob"); }
 
   void doJob() override
   {
@@ -1496,8 +1676,7 @@ static struct TidyUpSkinsJob : public cpujobs::IJob
 
         if (dyn_enable_caching)
         {
-          auto &storage = contextId->freeUniqueSkinBLASes[meshId].blases.push_back();
-          storage.swap(elem.blas);
+          give_blas_to_pool(contextId->freeUniqueSkinBLASes[meshId].blases.push_back(), elem);
         }
 
         if (elem.metaAllocId != MeshMetaAllocator::INVALID_ALLOC_ID)
@@ -1511,6 +1690,7 @@ static struct TidyUpSkinsJob : public cpujobs::IJob
             contextId->releaseTexture(meta.alphaTextureIndex);
             contextId->releaseTexture(meta.normalTextureIndex);
             contextId->releaseTexture(meta.extraTextureIndex);
+            contextId->releaseTexture(meta.secondaryMaskTextureIndex);
           }
         }
 
@@ -1544,5 +1724,49 @@ void tidy_up_skins(ContextId context_id)
 }
 
 void wait_tidy_up_skins() { threadpool::wait(&tidy_up_skins_job); }
+
+void tell_active_dynamic_resources(ContextId context_id,
+  const eastl::vector_set<const DynamicRenderableSceneLodsResource *> &resources)
+{
+  if (!bvh_unload_dyn_models)
+    return;
+
+  const int nowMsec = get_time_msec();
+  dag::Vector<const DynamicRenderableSceneLodsResource *> resourcesToBuild;
+
+  {
+    OSSpinlockScopedLock lock(context_id->dynrendObjectsWithTimeoutLock);
+    auto &usages = context_id->dynrendObjectsWithTimeout;
+
+    for (auto resource : resources)
+    {
+      auto iter = usages.find(resource->getBvhId());
+      if (iter != usages.end())
+        iter->second.lastUsedMsec = nowMsec;
+      else
+        resourcesToBuild.push_back(resource);
+    }
+
+    for (auto iter = usages.begin(); iter != usages.end();)
+    {
+      if (nowMsec - iter->second.lastUsedMsec > dyn_model_retention_msec)
+      {
+        logdbg("[BVH] Dynmodel %d is not required anymore.", iter->first);
+        // Under the lock, so a concurrent event build of the same model queues its adds after these removals.
+        for (auto objectId : iter->second.objectIds)
+          remove_object(context_id, objectId);
+        iter = usages.erase(iter);
+      }
+      else
+        ++iter;
+    }
+  }
+
+  for (auto resource : resourcesToBuild)
+  {
+    logdbg("[BVH] Dynmodel %s is required again.", get_resource_name(resource).c_str());
+    on_relem_changed(context_id, resource, false, 0);
+  }
+}
 
 } // namespace bvh::dyn

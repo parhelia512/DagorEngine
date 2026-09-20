@@ -519,8 +519,17 @@ void shaderbindump::dumpShaderInfo(ScriptedShadersBinDump const &dump, const sha
                 return;
               }
               const ShaderCode::Pass &p = code.passes[idx];
-              debug_("shref[0]=(v%d,p%d,s%d,s%d)", p.rpass ? p.rpass->vprId : -1, p.rpass ? p.rpass->fshId : -1,
+              String shrefDesc(0, "v%d,p%d,s%d,s%d", p.rpass ? p.rpass->vprId : -1, p.rpass ? p.rpass->fshId : -1,
                 p.rpass ? p.rpass->stcodeId : -1, p.rpass ? p.rpass->stblkcodeId : -1);
+              if (p.rpass)
+              {
+                if (p.rpass->threadGroupSizeX && p.rpass->threadGroupSizeY && p.rpass->threadGroupSizeZ)
+                  shrefDesc.aprintf(0, ",tx%d,ty%d,tz%d", p.rpass->threadGroupSizeX, p.rpass->threadGroupSizeY,
+                    p.rpass->threadGroupSizeZ);
+                if (p.rpass->scarlettWave32)
+                  shrefDesc.append(",wv32");
+              }
+              debug_("shref[0]=(%s)", shrefDesc);
 
               if (!code.suppBlockUid.empty())
               {

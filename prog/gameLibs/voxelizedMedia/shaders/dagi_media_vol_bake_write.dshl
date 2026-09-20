@@ -1,0 +1,47 @@
+// media volume bake: while dagi_media_vol_bake.w is on, the albedo voxelization write
+// is redirected into the per type media brick (see voxelizedMedia.cpp bakeType)
+include "giHelpers/voxelize_gs.dshl"
+
+int4 dagi_media_vol_bake;
+buffer dagi_media_vol_bake_bits;
+
+macro DAGI_MEDIA_VOL_BAKE_WRITE_INIT(code)
+  (code) {
+    dagi_media_vol_bake@i4 = dagi_media_vol_bake;
+    // the raster transform doubles as the bit index source, so the two can not drift
+    dagi_media_vol_bake_mul@f3 = voxelize_world_to_rasterize_space_mul;
+    dagi_media_vol_bake_add@f3 = voxelize_world_to_rasterize_space_add;
+    dagi_media_vol_bake_bits@uav = dagi_media_vol_bake_bits hlsl { RWByteAddressBuffer dagi_media_vol_bake_bits@uav; };
+  }
+endmacro
+
+macro DAGI_MEDIA_VOL_BAKE_WRITE_USE(code)
+  hlsl(code) {
+    #include "dagi_media_volumes.hlsli"
+    // the type mesh renders at the origin, so the incoming world pos is model local.
+    // one sub occupancy bit per fragment; albedo accumulates once per NEW bit, which
+    // bounds the contended atomics. the layout matches dagi_media_vol_finalize_cs
+    void dagi_media_vol_bake_write(float3 local_pos, float3 albedo)
+    {
+      float3 rel = (local_pos*dagi_media_vol_bake_mul + dagi_media_vol_bake_add)*0.5 + 0.5;
+      if (any(rel < 0) || any(rel >= 1))
+        return;
+      const uint res = DAGI_MEDIA_VOL_RASTER;
+      uint3 l = min(uint3(rel*res), res - 1);
+      uint bit = (l.z*res + l.y)*res + l.x;
+      uint was;
+      dagi_media_vol_bake_bits.InterlockedOr((bit >> 5) << 2, 1u << (bit & 31), was);
+      BRANCH
+      if ((was & (1u << (bit & 31))) == 0)
+      {
+        const uint ofs = DAGI_MEDIA_VOL_ALBEDO_OFS;
+        uint3 a = uint3(saturate(albedo)*255 + 0.5);
+        uint _d;
+        dagi_media_vol_bake_bits.InterlockedAdd(ofs + 0, a.r, _d);
+        dagi_media_vol_bake_bits.InterlockedAdd(ofs + 4, a.g, _d);
+        dagi_media_vol_bake_bits.InterlockedAdd(ofs + 8, a.b, _d);
+        dagi_media_vol_bake_bits.InterlockedAdd(ofs + 12, 1u, _d);
+      }
+    }
+  }
+endmacro

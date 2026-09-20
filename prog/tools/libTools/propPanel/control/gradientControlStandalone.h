@@ -83,6 +83,10 @@ public:
 
   int getGradientDisplayWidth() const { return gradientDisplaySize.x; }
 
+  // True while a key is grabbed. updateImgui() claims the mouse buttons for its own canvas id, so
+  // this control never takes ImGui's active item.
+  bool isGestureActive() const { return mouseClickKeyIndex >= 0; }
+
   void updateImgui(int width, int height);
 
 private:
@@ -98,7 +102,7 @@ private:
   void onImguiDelayedCallback(void *user_data) override;
 
   Tab<TrackGradientButton *> mKeys;
-  float mCurValue;
+  float mCurValue = 0.0f;
   bool mCycled, mSelected;
   int mMinPtCount, mMaxPtCount;
   float minValue = 0.0f;

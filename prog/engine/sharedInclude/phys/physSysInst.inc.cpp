@@ -44,11 +44,23 @@ PhysSystemInstance::PhysSystemInstance(PhysicsResource *res, PhysWorld *world, c
 
   joints.reserve(jcnt);
 
+  auto jointPos = [&](const Point3 &p) { return tm ? (*tm) * p : p * scale; };
+  auto jointDir = [&](const Point3 &d) { return tm ? normalize((*tm) % d) : d; };
+
   for (const auto &jnt : resource->getRdBallJoints())
   {
-    TMatrix scaledTm = jnt.tm;
-    scaledTm.setcol(3, jnt.tm.getcol(3) * scale);
-    PhysJoint *j = world->createRagdollBallJoint(bodies[jnt.body1].body.get(), bodies[jnt.body2].body.get(), scaledTm, jnt.minLimit,
+    TMatrix jtm;
+    if (tm)
+    {
+      jtm = (*tm) * jnt.tm;
+      unscale_tm(jtm);
+    }
+    else
+    {
+      jtm = jnt.tm;
+      jtm.setcol(3, jnt.tm.getcol(3) * scale);
+    }
+    PhysJoint *j = world->createRagdollBallJoint(bodies[jnt.body1].body.get(), bodies[jnt.body2].body.get(), jtm, jnt.minLimit,
       jnt.maxLimit, jnt.damping, jnt.twistDamping, jnt.stiffness);
 
     if (j)
@@ -59,8 +71,8 @@ PhysSystemInstance::PhysSystemInstance(PhysicsResource *res, PhysWorld *world, c
 
   for (const auto &jnt : resource->getRdHingeJoints())
   {
-    PhysJoint *j = world->createRagdollHingeJoint(bodies[jnt.body1].body.get(), bodies[jnt.body2].body.get(), jnt.pos * scale,
-      jnt.axis, jnt.midAxis, jnt.xAxis, jnt.angleLimit, jnt.damping, jnt.stiffness);
+    PhysJoint *j = world->createRagdollHingeJoint(bodies[jnt.body1].body.get(), bodies[jnt.body2].body.get(), jointPos(jnt.pos),
+      jointDir(jnt.axis), jointDir(jnt.midAxis), jointDir(jnt.xAxis), jnt.angleLimit, jnt.damping, jnt.stiffness);
 
     if (j)
       joints.push_back(j);
@@ -70,9 +82,9 @@ PhysSystemInstance::PhysSystemInstance(PhysicsResource *res, PhysWorld *world, c
 
   for (const auto &jnt : resource->getRevoluteJoints())
   {
-    PhysJoint *j = world->createRevoluteJoint(bodies[jnt.body1].body.get(), bodies[jnt.body2].body.get(), jnt.pos * scale, jnt.axis,
-      jnt.minAngle, jnt.maxAngle, jnt.minRestitution, jnt.maxRestitution, jnt.spring, jnt.projType, jnt.projAngle, jnt.projDistance,
-      jnt.damping, jnt.flags);
+    PhysJoint *j = world->createRevoluteJoint(bodies[jnt.body1].body.get(), bodies[jnt.body2].body.get(), jointPos(jnt.pos),
+      jointDir(jnt.axis), jnt.minAngle, jnt.maxAngle, jnt.minRestitution, jnt.maxRestitution, jnt.spring, jnt.projType, jnt.projAngle,
+      jnt.projDistance, jnt.damping, jnt.flags);
 
     if (j)
       joints.push_back(j);
@@ -82,9 +94,10 @@ PhysSystemInstance::PhysSystemInstance(PhysicsResource *res, PhysWorld *world, c
 
   for (const auto &jnt : resource->getSphericalJoints())
   {
-    PhysJoint *j = world->createSphericalJoint(bodies[jnt.body1].body.get(), bodies[jnt.body2].body.get(), jnt.pos * scale, jnt.dir,
-      jnt.axis, jnt.minAngle, jnt.maxAngle, jnt.minRestitution, jnt.maxRestitution, jnt.swingValue, jnt.swingRestitution, jnt.spring,
-      jnt.damping, jnt.swingSpring, jnt.swingDamping, jnt.twistSpring, jnt.twistDamping, jnt.projType, jnt.projDistance, jnt.flags);
+    PhysJoint *j = world->createSphericalJoint(bodies[jnt.body1].body.get(), bodies[jnt.body2].body.get(), jointPos(jnt.pos),
+      jointDir(jnt.dir), jointDir(jnt.axis), jnt.minAngle, jnt.maxAngle, jnt.minRestitution, jnt.maxRestitution, jnt.swingValue,
+      jnt.swingRestitution, jnt.spring, jnt.damping, jnt.swingSpring, jnt.swingDamping, jnt.twistSpring, jnt.twistDamping,
+      jnt.projType, jnt.projDistance, jnt.flags);
 
     if (j)
       joints.push_back(j);

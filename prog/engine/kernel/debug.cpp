@@ -202,9 +202,9 @@ static bool prepare_file_impl(const char *path, write_stream_t &fpout, int lev_b
     FILE *fp2 = fopen(lastDbgPath, "wt");
     if (fp2)
     {
-      if (fwrite(dbgFilepath, 1, strlen(dbgFilepath) - 5, fp2))
-      { // workaround against gcc's warn_unused_result warning
-      }
+      // the empty body is a workaround against gcc's warn_unused_result warning
+      if (fwrite(dbgFilepath, 1, strlen(dbgFilepath) - 5, fp2)) //-V512 length is checked above
+      {}
       fclose(fp2);
     }
     lastDbgPath[0] = '\0';

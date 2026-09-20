@@ -449,8 +449,7 @@ void send_event(const char *event_name, Json::Value &&data, const char *source_i
 
 void send_event(const char *event_name, const char *source_id) { send_event(event_name, Json::Value(), source_id); }
 
-void write_event_main_thread(const char *event_name, const eastl::fixed_function<sizeof(void *) * 8, void(Value &)> &wcb,
-  const char *source_id)
+void write_event_main_thread(const char *event_name, dag::FunctionRef<void(Value &) const> wcb, const char *source_id)
 {
   G_ASSERTF(is_main_thread(), "This function is for use in main thread only. Use write_event/send_event if threading desired");
 

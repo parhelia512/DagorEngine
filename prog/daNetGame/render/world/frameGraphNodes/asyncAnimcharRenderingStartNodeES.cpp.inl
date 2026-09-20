@@ -9,7 +9,7 @@
 #include <render/world/frameGraphHelpers.h>
 #include <render/world/cameraViewVisibilityManager.h>
 
-#include "render/world/cameraParams.h"
+#include <render/cameraParams.h>
 
 extern ConVarT<bool, false> async_animchars_main;
 

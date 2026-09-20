@@ -36,7 +36,7 @@ void ChildComponent::setRaw(component_type_t component_type, const void *raw_dat
   ComponentTypes &types = EntityManager::shared_component_types();
   const ComponentType typeInfo = types.getTypeInfo(componentTypeIndex);
   componentTypeSize = typeInfo.size;
-  if (!isAttrBoxedBySize())
+  if (!isCompBoxedBySize())
   {
     G_ASSERT(componentTypeSize <= sizeof(Value));
     memcpy(&value, raw_data, componentTypeSize);
@@ -59,6 +59,21 @@ ChildComponent &ChildComponent::operator=(const ChildComponent &a)
 {
   if (DAGOR_UNLIKELY(this == &a))
     return *this;
+  if (!isNull() && componentType == a.componentType) // fast path, assigning over the same type reuses the storage
+  {
+    ComponentTypes &types = EntityManager::shared_component_types();
+    const ComponentType typeInfo = types.getTypeInfo(componentTypeIndex);
+    if (!need_constructor(typeInfo.flags))
+    {
+      memcpy(getRawData(), a.getRawData(), componentTypeSize);
+      return *this;
+    }
+    // a shared component has to start sharing the source object, but its assign writes through the pointer instead
+    if (!(typeInfo.flags & COMPONENT_TYPE_CREATE_ON_TEMPL_INSTANTIATE))
+      if (ComponentTypeManager *tm = types.createTypeManager(componentTypeIndex))
+        if (tm->assign(getRawData(), a.getRawData()))
+          return *this;
+  }
   free();
   setRaw(a.getUserType(), a.getRawData());
   return *this;

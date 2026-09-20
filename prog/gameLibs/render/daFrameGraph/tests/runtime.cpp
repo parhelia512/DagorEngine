@@ -10,8 +10,11 @@
 #include <memory/dag_framemem.h>
 #include <shaders/dag_shaderVar.h>
 #include <debug/dag_assert.h>
+#include <debug/dag_logSys.h>
 #include <EASTL/any.h>
 #include <EASTL/vector.h>
+#include <EASTL/string.h>
+#include <EASTL/sort.h>
 
 
 static D3dInterfaceTable g_interfaceTableCopy;
@@ -1174,8 +1177,8 @@ TEST_CASE("Get optional renamed resource", "[resource renaming][optional request
     testRuntime.executeGraph();
   }
 
-  dafg::NodeHandle producerHandle = dafg::register_node("producer", DAFG_PP_NODE_SRC,
-    [&expectedValue](dafg::Registry registry) { registry.create("original_blob").blob(1u); });
+  dafg::NodeHandle producerHandle =
+    dafg::register_node("producer", DAFG_PP_NODE_SRC, [](dafg::Registry registry) { registry.create("original_blob").blob(1u); });
 
   {
     expectOptionalBlob = true;
@@ -2811,6 +2814,39 @@ TEST_CASE("Evil renderpass recreation", "[render pass]")
 }
 
 
+static int ignore_log_errors(int, const char *, const void *, int, const char *, int) { return 1; }
+
+TEST_CASE("A node ordered after itself still executes", "[cycle]")
+{
+  TestRuntime testRuntime{};
+  int selfRuns = 0;
+  int readerRuns = 0;
+
+  auto selfHandle = dafg::register_node("self", DAFG_PP_NODE_SRC, [&selfRuns](dafg::Registry registry) {
+    registry.executionHas(dafg::SideEffects::External);
+    registry.orderMeAfter("self");
+    registry.create("tex")
+      .texture({.creationFlags = TEXFMT_R8G8B8A8, .resolution = IPoint2{4, 4}})
+      .atStage(dafg::Stage::PS)
+      .useAs(dafg::Usage::COLOR_ATTACHMENT);
+    return [&selfRuns] { ++selfRuns; };
+  });
+  auto readerHandle = dafg::register_node("reader", DAFG_PP_NODE_SRC, [&readerRuns](dafg::Registry registry) {
+    registry.executionHas(dafg::SideEffects::External);
+    registry.read("tex").texture().atStage(dafg::Stage::PS).useAs(dafg::Usage::SHADER_RESOURCE);
+    return [&readerRuns] { ++readerRuns; };
+  });
+
+  {
+    const auto previousLogCallback = debug_set_log_callback(&ignore_log_errors);
+    testRuntime.executeGraph();
+    debug_set_log_callback(previousLogCallback);
+  }
+
+  CHECK(selfRuns == 1);
+  CHECK(readerRuns == 1);
+}
+
 TEST_CASE("texture changing creation info witout changing size", "[resource redefinition]")
 {
   TestRuntime testRuntime{};
@@ -3418,4 +3454,480 @@ TEST_CASE("Preserved history blob is not deactivated when producer changes", "[h
     dummy = {};
     updateValuesAndExecute();
   }
+}
+
+constexpr int ACTIVATION_EVENT = -100;
+constexpr int DEACTIVATION_EVENT = -101;
+
+struct ToggleEvent
+{
+  uint64_t barrier;
+  int marker;
+  int texture;
+
+  bool operator==(const ToggleEvent &) const = default;
+};
+
+struct ToggleActivation
+{
+  ResourceActivationAction action;
+  ResourceClearValue clear;
+
+  bool operator==(const ToggleActivation &) const = default;
+};
+
+struct ToggleTrace
+{
+  eastl::vector<ToggleEvent> events;
+  eastl::vector<BaseTexture *> textures;
+  eastl::vector<ToggleActivation> activations;
+
+  int record(uint64_t barrier, int marker, BaseTexture *tex)
+  {
+    auto it = eastl::find(textures.begin(), textures.end(), tex);
+    if (it == textures.end())
+      it = textures.insert(textures.end(), tex);
+    const int texture = static_cast<int>(it - textures.begin());
+    events.push_back({barrier, marker, texture});
+    return texture;
+  }
+  void recordActivation(BaseTexture *tex, ResourceActivationAction action, const ResourceClearValue &clear)
+  {
+    record(0, ACTIVATION_EVENT, tex);
+    activations.push_back({action, clear});
+  }
+  void mark(int node) { events.push_back({0, node, -1}); }
+};
+
+static bool same_trace(const ToggleTrace &a, const ToggleTrace &b) { return a.events == b.events; }
+
+static bool same_activations(const ToggleTrace &a, const ToggleTrace &b) { return a.activations == b.activations; }
+
+static eastl::vector<ToggleEvent> driver_events(const ToggleTrace &trace)
+{
+  eastl::vector<ToggleEvent> result;
+  for (const auto &event : trace.events)
+    if (event.marker == 0 || event.marker == ACTIVATION_EVENT || event.marker == DEACTIVATION_EVENT)
+      result.push_back(event);
+  return result;
+}
+
+static eastl::vector<eastl::pair<uint64_t, int>> event_kinds(const ToggleTrace &trace)
+{
+  eastl::vector<eastl::pair<uint64_t, int>> kinds;
+  for (const auto &event : trace.events)
+    kinds.push_back({event.barrier, event.marker});
+  eastl::sort(kinds.begin(), kinds.end());
+  return kinds;
+}
+
+static eastl::string describe(const ToggleTrace &trace)
+{
+  eastl::string result;
+  for (const auto &event : trace.events)
+    result.append_sprintf("(%llu,%d,%d) ", static_cast<unsigned long long>(event.barrier), event.marker, event.texture);
+  return result;
+}
+
+static bool has_event(const ToggleTrace &trace, int marker)
+{
+  for (const auto &event : trace.events)
+    if (event.marker == marker)
+      return true;
+  return false;
+}
+
+static bool has_barrier(const ToggleTrace &trace, ResourceBarrier flag)
+{
+  for (const auto &event : trace.events)
+    if ((event.barrier & static_cast<uint64_t>(flag)) != 0)
+      return true;
+  return false;
+}
+
+static eastl::string describe_activations(const ToggleTrace &trace)
+{
+  eastl::string result;
+  for (const auto &activation : trace.activations)
+    result.append_sprintf("(%d,%g,%g,%g,%g) ", static_cast<int>(activation.action), activation.clear.asFloat[0],
+      activation.clear.asFloat[1], activation.clear.asFloat[2], activation.clear.asFloat[3]);
+  return result;
+}
+
+static ToggleTrace g_toggleTrace;
+
+static constexpr int FRAMES_TO_SETTLE = 3;
+
+static ToggleTrace next_frame_trace(TestRuntime &runtime)
+{
+  g_toggleTrace = {};
+  runtime.executeGraph();
+  return g_toggleTrace;
+}
+
+static ToggleTrace steady_trace(TestRuntime &runtime)
+{
+  for (int i = 0; i < FRAMES_TO_SETTLE; ++i)
+    runtime.executeGraph();
+  return next_frame_trace(runtime);
+}
+
+struct ToggleTraceHooks
+{
+  ToggleTraceHooks();
+  ~ToggleTraceHooks() { d3di = g_interfaceTableCopy; }
+};
+
+ToggleTraceHooks::ToggleTraceHooks()
+{
+  g_toggleTrace = {};
+  g_interfaceTableCopy = d3di;
+  d3di.resource_barrier = [](const ResourceBarrierDesc &desc, GpuPipeline gpu_pipeline) {
+    desc.enumerateTextureBarriers([](BaseTexture *tex, ResourceBarrier barrier, unsigned, unsigned) {
+      g_toggleTrace.record(static_cast<uint64_t>(barrier), 0, tex);
+    });
+    g_interfaceTableCopy.resource_barrier(desc, gpu_pipeline);
+  };
+  d3di.activate_texture = [](BaseTexture *tex, ResourceActivationAction action, const ResourceClearValue &value,
+                            GpuPipeline gpu_pipeline) {
+    g_toggleTrace.recordActivation(tex, action, value);
+    g_interfaceTableCopy.activate_texture(tex, action, value, gpu_pipeline);
+  };
+  d3di.deactivate_texture = [](BaseTexture *tex, GpuPipeline gpu_pipeline) {
+    g_toggleTrace.record(0, DEACTIVATION_EVENT, tex);
+    g_interfaceTableCopy.deactivate_texture(tex, gpu_pipeline);
+  };
+}
+
+TEST_CASE("Dropping a resource request from a node removes its barrier", "[incremental]")
+{
+  const ToggleTraceHooks hooks;
+
+  const auto texInfo = dafg::Texture2dCreateInfo{.creationFlags = TEXFMT_R8G8B8A8, .resolution = IPoint2{4, 4}};
+
+  auto regProducer = [texInfo] {
+    return dafg::register_node("producer", DAFG_PP_NODE_SRC, [texInfo](dafg::Registry registry) {
+      registry.executionHas(dafg::SideEffects::External);
+      registry.create("tex").texture(texInfo).atStage(dafg::Stage::PS).useAs(dafg::Usage::COLOR_ATTACHMENT);
+      registry.create("aux").texture(texInfo).atStage(dafg::Stage::PS).useAs(dafg::Usage::COLOR_ATTACHMENT);
+      return [] { g_toggleTrace.mark(-1); };
+    });
+  };
+  auto regModifier = [] {
+    return dafg::register_node("modifier", DAFG_PP_NODE_SRC, [](dafg::Registry registry) {
+      registry.executionHas(dafg::SideEffects::External);
+      registry.modify("tex").texture().atStage(dafg::Stage::PS).useAs(dafg::Usage::COLOR_ATTACHMENT);
+      registry.renameTexture("aux", "aux_modified").atStage(dafg::Stage::PS).useAs(dafg::Usage::COLOR_ATTACHMENT);
+      return [] { g_toggleTrace.mark(-2); };
+    });
+  };
+  auto regToggled = [](bool read_tex) {
+    return dafg::register_node("toggled", DAFG_PP_NODE_SRC, [read_tex](dafg::Registry registry) {
+      registry.executionHas(dafg::SideEffects::External);
+      registry.modify("aux_modified").texture().atStage(dafg::Stage::CS).useAs(dafg::Usage::SHADER_RESOURCE);
+      if (read_tex)
+        registry.read("tex").texture().atStage(dafg::Stage::CS).useAs(dafg::Usage::SHADER_RESOURCE);
+      return [] { g_toggleTrace.mark(-3); };
+    });
+  };
+  auto regReader = [] {
+    return dafg::register_node("reader", DAFG_PP_NODE_SRC, [](dafg::Registry registry) {
+      registry.executionHas(dafg::SideEffects::External);
+      registry.read("tex").texture().atStage(dafg::Stage::PS).useAs(dafg::Usage::SHADER_RESOURCE);
+      registry.read("aux_modified").texture().atStage(dafg::Stage::PS).useAs(dafg::Usage::SHADER_RESOURCE);
+      return [] { g_toggleTrace.mark(-4); };
+    });
+  };
+
+  ToggleTrace fromScratchWithRead;
+  {
+    TestRuntime referenceRuntime{};
+    auto producerHandle = regProducer();
+    auto modifierHandle = regModifier();
+    auto toggledHandle = regToggled(true);
+    auto readerHandle = regReader();
+    fromScratchWithRead = steady_trace(referenceRuntime);
+  }
+
+  TestRuntime testRuntime{};
+  auto producerHandle = regProducer();
+  auto modifierHandle = regModifier();
+  auto toggledHandle = regToggled(false);
+  auto readerHandle = regReader();
+  const ToggleTrace baseline = steady_trace(testRuntime);
+  CHECK((event_kinds(fromScratchWithRead) != event_kinds(baseline)));
+
+  ToggleTrace withRead;
+  for (int i = 0; i < 3; ++i)
+  {
+    toggledHandle = {};
+    toggledHandle = regToggled(true);
+    const ToggleTrace addFrame = next_frame_trace(testRuntime);
+    INFO("incremental:  " << describe(addFrame).c_str());
+    INFO("from scratch: " << describe(fromScratchWithRead).c_str());
+    CHECK((event_kinds(addFrame) == event_kinds(fromScratchWithRead)));
+    if (i == 0)
+      withRead = addFrame;
+    else
+      CHECK(same_trace(addFrame, withRead));
+
+    const ToggleTrace addSteadyFrame = next_frame_trace(testRuntime);
+    INFO("steady after add: " << describe(addSteadyFrame).c_str());
+    CHECK((event_kinds(addSteadyFrame) == event_kinds(fromScratchWithRead)));
+    CHECK(same_trace(addSteadyFrame, withRead));
+
+    toggledHandle = {};
+    toggledHandle = regToggled(false);
+    const ToggleTrace removeFrame = next_frame_trace(testRuntime);
+    CHECK(same_trace(removeFrame, baseline));
+    CHECK(same_trace(next_frame_trace(testRuntime), baseline));
+  }
+}
+
+TEST_CASE("Changing a texture's clear value reaches its activation", "[incremental]")
+{
+  const ToggleTraceHooks hooks;
+  TestRuntime testRuntime{};
+
+  auto regProducer = [](float red) {
+    return dafg::register_node("producer", DAFG_PP_NODE_SRC, [red](dafg::Registry registry) {
+      registry.executionHas(dafg::SideEffects::External);
+      registry.create("tex")
+        .texture({.creationFlags = TEXFMT_R8G8B8A8 | TEXCF_UNORDERED, .resolution = IPoint2{4, 4}})
+        .clear(make_clear_value(red, 0.f, 0.f, 1.f))
+        .atStage(dafg::Stage::CS)
+        .useAs(dafg::Usage::SHADER_RESOURCE);
+    });
+  };
+  auto producerHandle = regProducer(1.f);
+  auto readerHandle = dafg::register_node("reader", DAFG_PP_NODE_SRC, [](dafg::Registry registry) {
+    registry.executionHas(dafg::SideEffects::External);
+    registry.read("tex").texture().atStage(dafg::Stage::PS).useAs(dafg::Usage::SHADER_RESOURCE);
+  });
+
+  const auto executeAndCheckClear = [&testRuntime](float red) {
+    const ToggleTrace frame = next_frame_trace(testRuntime);
+    INFO("activations: " << describe_activations(frame).c_str());
+    REQUIRE(frame.activations.size() == 1);
+    CHECK(frame.activations.front().action == ResourceActivationAction::CLEAR_F_AS_UAV);
+    CHECK((frame.activations.front().clear == make_clear_value(red, 0.f, 0.f, 1.f)));
+  };
+
+  executeAndCheckClear(1.f);
+  executeAndCheckClear(1.f);
+
+  for (float red : {0.f, 1.f, 0.5f})
+  {
+    producerHandle = {};
+    producerHandle = regProducer(red);
+    executeAndCheckClear(red);
+    executeAndCheckClear(red);
+  }
+}
+
+TEST_CASE("A clear value taken from a blob reaches the texture's activation", "[incremental]")
+{
+  const ToggleTraceHooks hooks;
+  TestRuntime testRuntime{};
+
+  ResourceClearValue currentClear = make_clear_value(1.f, 0.f, 0.f, 1.f);
+
+  auto clearSourceHandle = dafg::register_node("clear_source", DAFG_PP_NODE_SRC, [&currentClear](dafg::Registry registry) {
+    registry.executionHas(dafg::SideEffects::External);
+    auto blobHandle = registry.create("clear_value").blob<ResourceClearValue>({}).handle();
+    return [blobHandle, &currentClear] { blobHandle.ref() = currentClear; };
+  });
+
+  auto producerHandle = dafg::register_node("producer", DAFG_PP_NODE_SRC, [](dafg::Registry registry) {
+    registry.executionHas(dafg::SideEffects::External);
+    registry.create("tex")
+      .texture({.creationFlags = TEXFMT_R8G8B8A8 | TEXCF_UNORDERED, .resolution = IPoint2{4, 4}})
+      .clear("clear_value")
+      .atStage(dafg::Stage::CS)
+      .useAs(dafg::Usage::SHADER_RESOURCE);
+  });
+  auto readerHandle = dafg::register_node("reader", DAFG_PP_NODE_SRC, [](dafg::Registry registry) {
+    registry.executionHas(dafg::SideEffects::External);
+    registry.read("tex").texture().atStage(dafg::Stage::PS).useAs(dafg::Usage::SHADER_RESOURCE);
+  });
+
+  const auto executeAndCheckClear = [&testRuntime](const ResourceClearValue &expected) {
+    const ToggleTrace frame = next_frame_trace(testRuntime);
+    INFO("activations: " << describe_activations(frame).c_str());
+    REQUIRE(frame.activations.size() == 1);
+    CHECK(frame.activations.front().action == ResourceActivationAction::CLEAR_F_AS_UAV);
+    CHECK((frame.activations.front().clear == expected));
+    return frame;
+  };
+
+  executeAndCheckClear(currentClear);
+  const ToggleTrace steady = executeAndCheckClear(currentClear);
+
+  for (float red : {0.f, 0.5f, 1.f})
+  {
+    currentClear = make_clear_value(red, 0.f, 0.f, 1.f);
+    for (int i = 0; i < 2; ++i)
+    {
+      const ToggleTrace frame = executeAndCheckClear(currentClear);
+      INFO("blob write frame: " << describe(frame).c_str());
+      INFO("steady frame:     " << describe(steady).c_str());
+      CHECK(same_trace(frame, steady));
+    }
+  }
+}
+
+TEST_CASE("Toggling a history reader reproduces the original barriers", "[incremental]")
+{
+  const ToggleTraceHooks hooks;
+
+  const auto historyMode = GENERATE(dafg::History::DiscardOnFirstFrame, dafg::History::ClearZeroOnFirstFrame);
+
+  const auto texInfo = dafg::Texture2dCreateInfo{.creationFlags = TEXFMT_R8G8B8A8, .resolution = IPoint2{4, 4}};
+
+  auto regProducer = [texInfo, historyMode] {
+    return dafg::register_node("producer", DAFG_PP_NODE_SRC, [texInfo, historyMode](dafg::Registry registry) {
+      registry.executionHas(dafg::SideEffects::External);
+      registry.create("tex").texture(texInfo).withHistory(historyMode).atStage(dafg::Stage::PS).useAs(dafg::Usage::COLOR_ATTACHMENT);
+      return [] { g_toggleTrace.mark(-1); };
+    });
+  };
+  auto regReader = [] {
+    return dafg::register_node("reader", DAFG_PP_NODE_SRC, [](dafg::Registry registry) {
+      registry.executionHas(dafg::SideEffects::External);
+      registry.read("tex").texture().atStage(dafg::Stage::PS).useAs(dafg::Usage::SHADER_RESOURCE);
+      return [] { g_toggleTrace.mark(-2); };
+    });
+  };
+  auto regHistoryReader = [] {
+    return dafg::register_node("history_reader", DAFG_PP_NODE_SRC, [](dafg::Registry registry) {
+      registry.executionHas(dafg::SideEffects::External);
+      registry.readTextureHistory("tex").atStage(dafg::Stage::TRANSFER).useAs(dafg::Usage::COPY);
+      return [] { g_toggleTrace.mark(-3); };
+    });
+  };
+  ToggleTrace fromScratch;
+  {
+    TestRuntime referenceRuntime{};
+    auto producerHandle = regProducer();
+    auto readerHandle = regReader();
+    auto historyHandle = regHistoryReader();
+    fromScratch = steady_trace(referenceRuntime);
+  }
+  CHECK(has_barrier(fromScratch, RB_RO_COPY_SOURCE));
+
+  TestRuntime testRuntime{};
+  auto producerHandle = regProducer();
+  auto readerHandle = regReader();
+  const ToggleTrace baseline = steady_trace(testRuntime);
+  CHECK(!has_barrier(baseline, RB_RO_COPY_SOURCE));
+
+  ToggleTrace withReader;
+  ToggleTrace readerAdded;
+  ToggleTrace readerRemoved;
+  {
+    dafg::NodeHandle firstHistoryHandle = regHistoryReader();
+    testRuntime.executeGraph();
+    testRuntime.executeGraph();
+    firstHistoryHandle = {};
+    testRuntime.executeGraph();
+    testRuntime.executeGraph();
+  }
+
+  for (int i = 0; i < 3; ++i)
+  {
+    dafg::NodeHandle historyHandle = regHistoryReader();
+    const ToggleTrace addFrame = next_frame_trace(testRuntime);
+    CHECK(has_barrier(addFrame, RB_RO_COPY_SOURCE));
+    INFO("recompile frame: " << describe(addFrame).c_str());
+    if (i == 0)
+      readerAdded = addFrame;
+    else
+    {
+      INFO("first add:       " << describe(readerAdded).c_str());
+      CHECK(same_trace(addFrame, readerAdded));
+    }
+    const ToggleTrace addSteadyFrame = next_frame_trace(testRuntime);
+    INFO("incremental:  " << describe(addSteadyFrame).c_str());
+    INFO("from scratch: " << describe(fromScratch).c_str());
+    CHECK((event_kinds(addSteadyFrame) == event_kinds(fromScratch)));
+    if (i == 0)
+      withReader = addSteadyFrame;
+    else
+      CHECK(same_trace(addSteadyFrame, withReader));
+
+    historyHandle = {};
+    const ToggleTrace removeFrame = next_frame_trace(testRuntime);
+    CHECK(!has_barrier(removeFrame, RB_RO_COPY_SOURCE));
+    INFO("recompile frame: " << describe(removeFrame).c_str());
+    if (i == 0)
+      readerRemoved = removeFrame;
+    else
+    {
+      INFO("first remove:    " << describe(readerRemoved).c_str());
+      CHECK(same_trace(removeFrame, readerRemoved));
+    }
+    const ToggleTrace removeSteadyFrame = next_frame_trace(testRuntime);
+    CHECK(same_trace(removeSteadyFrame, baseline));
+  }
+}
+
+TEST_CASE("Replacing a producer and reader pair keeps the steady-state trace", "[incremental]")
+{
+  const ToggleTraceHooks hooks;
+  TestRuntime testRuntime{};
+
+  const auto texInfo = dafg::Texture2dCreateInfo{.creationFlags = TEXFMT_R8G8B8A8, .resolution = IPoint2{4, 4}};
+
+  auto regPair = [texInfo](const char *producer_name, const char *reader_name, const char *tex_name, int producer_mark,
+                   int reader_mark) {
+    eastl::pair<dafg::NodeHandle, dafg::NodeHandle> handles;
+    handles.first = dafg::register_node(producer_name, DAFG_PP_NODE_SRC, [texInfo, tex_name, producer_mark](dafg::Registry registry) {
+      registry.executionHas(dafg::SideEffects::External);
+      registry.create(tex_name).texture(texInfo).atStage(dafg::Stage::PS).useAs(dafg::Usage::COLOR_ATTACHMENT);
+      return [producer_mark] { g_toggleTrace.mark(producer_mark); };
+    });
+    handles.second = dafg::register_node(reader_name, DAFG_PP_NODE_SRC, [tex_name, reader_mark](dafg::Registry registry) {
+      registry.executionHas(dafg::SideEffects::External);
+      registry.read(tex_name).texture().atStage(dafg::Stage::PS).useAs(dafg::Usage::SHADER_RESOURCE);
+      return [reader_mark] { g_toggleTrace.mark(reader_mark); };
+    });
+    return handles;
+  };
+
+  constexpr int PRODUCER_A = -1;
+  constexpr int READER_A = -2;
+  constexpr int PRODUCER_B = -3;
+  constexpr int READER_B = -4;
+
+  auto pairA = regPair("producer_a", "reader_a", "tex_a", PRODUCER_A, READER_A);
+  const ToggleTrace baseline = steady_trace(testRuntime);
+  CHECK(has_barrier(baseline, RB_RO_SRV));
+  CHECK(has_event(baseline, ACTIVATION_EVENT));
+  CHECK(has_event(baseline, DEACTIVATION_EVENT));
+
+  const auto checkSwap = [&testRuntime, &baseline](int live_producer, int live_reader, int gone_producer) {
+    const ToggleTrace swapFrame = next_frame_trace(testRuntime);
+    INFO("swap frame:   " << describe(swapFrame).c_str());
+    INFO("steady frame: " << describe(baseline).c_str());
+    CHECK(has_event(swapFrame, live_producer));
+    CHECK(has_event(swapFrame, live_reader));
+    CHECK_FALSE(has_event(swapFrame, gone_producer));
+    CHECK((driver_events(swapFrame) == driver_events(baseline)));
+    CHECK(same_activations(swapFrame, baseline));
+
+    const ToggleTrace steadyFrame = next_frame_trace(testRuntime);
+    CHECK(has_event(steadyFrame, live_producer));
+    CHECK(has_event(steadyFrame, live_reader));
+    CHECK_FALSE(has_event(steadyFrame, gone_producer));
+    CHECK((driver_events(steadyFrame) == driver_events(baseline)));
+    CHECK(same_activations(steadyFrame, baseline));
+  };
+
+  pairA = {};
+  auto pairB = regPair("producer_b", "reader_b", "tex_b", PRODUCER_B, READER_B);
+  checkSwap(PRODUCER_B, READER_B, PRODUCER_A);
+
+  pairB = {};
+  pairA = regPair("producer_a", "reader_a", "tex_a", PRODUCER_A, READER_A);
+  checkSwap(PRODUCER_A, READER_A, PRODUCER_B);
 }

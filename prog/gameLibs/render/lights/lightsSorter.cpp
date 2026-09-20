@@ -4,34 +4,59 @@
 #include <util/dag_stlqsort.h>
 #include <vecmath/dag_vecMath.h>
 #include <shaders/dag_shaderVar.h>
+#include <shaders/dag_shaderVariableInfo.h>
 #include <render/lights/renderLightsConsts.hlsli>
+#include <render/lights/lightsSorter.hlsli>
+#include <perfMon/dag_statDrv.h>
+#include <3d/dag_resourceTags.h>
+#include <util/dag_string.h>
 
-static int visible_clustered_omni_lights_structured_buf_varId = -1;
-static int visible_clustered_spot_lights_structured_buf_varId = -1;
-static int visible_clustered_omni_lights_structured_buf_count_varId = -1;
-static int visible_clustered_spot_lights_structured_buf_count_varId = -1;
-static int sort_lights_param_varId = -1;
+#define LIGHTS_SORTER_GLOBAL_VARS_LIST \
+  VAR(sort_lights_dispatch_args_buf)   \
+  VAR(sort_lights_stage_data_buf)      \
+  VAR(visible_lights_data_buf)         \
+  VAR(visible_lights_counts_buf)       \
+  VAR(visible_far_max_lights_count)
 
-static void init_sort_shader_vars()
-{
-  visible_clustered_omni_lights_structured_buf_varId = get_shader_variable_id("visible_clustered_omni_lights_structured_buf", true);
-  visible_clustered_spot_lights_structured_buf_varId = get_shader_variable_id("visible_clustered_spot_lights_structured_buf", true);
-  visible_clustered_omni_lights_structured_buf_count_varId =
-    get_shader_variable_id("visible_clustered_omni_lights_structured_buf_count", true);
-  visible_clustered_spot_lights_structured_buf_count_varId =
-    get_shader_variable_id("visible_clustered_spot_lights_structured_buf_count", true);
-  sort_lights_param_varId = get_shader_variable_id("sort_lights_param", true);
-}
+#define VAR(a) static ShaderVariableInfo a##VarId(#a, true);
+LIGHTS_SORTER_GLOBAL_VARS_LIST
+#undef VAR
+#undef LIGHTS_SORTER_GLOBAL_VARS_LIST
 
 LightsSorter::LightsSorter(OmniLightsManager &omni_lights, SpotLightsManager &spot_lights) :
-  omniLights(&omni_lights), spotLights(&spot_lights), sortOmniCS("sort_omni_lights_cs", true), sortSpotCS("sort_spot_lights_cs", true)
+  omniLights(&omni_lights), spotLights(&spot_lights)
+{}
+
+void LightsSorter::initGpuMode()
 {
-  init_sort_shader_vars();
+  prepareSortCS = ComputeShader("prepare_sort_lights_cs", true);
+  sortWaveImplCS = ComputeShader("sort_lights_in_wave_cs", true);
+  sortScalarBasicImplCS = ComputeShader("sort_scalar_basic_impl_lights_cs", true);
+  sortScalarMediumImplCS = ComputeShader("sort_scalar_medium_impl_lights_cs", true);
+  sortScalarHighImplCS = ComputeShader("sort_scalar_high_impl_lights_cs", true);
+  sortBatchedImplCS = ComputeShader("sort_batched_high_impl_lights_cs", true);
+  finalizeSortCS = ComputeShader("finalize_sort_lights_cs", true);
+
+  static uint32_t sort_lights_dispatch_args_buf_counter = 0;
+  String argsBufName, stageDataBufName;
+  argsBufName.printf(0, "lights_sorter_dispatch_args_buf_%u", sort_lights_dispatch_args_buf_counter);
+  stageDataBufName.printf(0, "lights_sorter_stage_data_buf_%u", sort_lights_dispatch_args_buf_counter++);
+  sortDispatchArgsBuf = dag::buffers::create_ua_indirect(dag::buffers::Indirect::Dispatch, SORT_LIGHTS_DISPATCH_ARGS_RECORDS_COUNT,
+    argsBufName, RESTAG_LIGHTS);
+  sortLightsStageDataBuf = dag::buffers::create_ua_sr_structured(sizeof(uint32_t), LIGHTS_SORTER_STAGE_DATA_RECORDS_COUNT,
+    stageDataBufName, d3d::buffers::Init::No, RESTAG_LIGHTS);
+}
+
+bool LightsSorter::isGPUSortAvailable() const
+{
+  return prepareSortCS && sortScalarBasicImplCS && sortScalarMediumImplCS && sortScalarHighImplCS && sortBatchedImplCS &&
+         finalizeSortCS;
 }
 
 template <typename LightsManager>
 static void sort_lights_by_distance(LightsManager &lights, Tab<uint16_t> &visible_ids, vec4f cur_view_pos)
 {
+  TIME_D3D_PROFILE(lightsSorter_cpu_impl);
   stlsort::sort(visible_ids.begin(), visible_ids.end(), [&lights, cur_view_pos](uint16_t i, uint16_t j) {
     const vec3f diffI = v_sub(cur_view_pos, lights.getBoundingSphere(i));
     const vec3f diffJ = v_sub(cur_view_pos, lights.getBoundingSphere(j));
@@ -39,55 +64,104 @@ static void sort_lights_by_distance(LightsManager &lights, Tab<uint16_t> &visibl
   });
 }
 
-void LightsSorter::sortOmniLightsCPU(Tab<uint16_t> &visible_ids, vec4f cur_view_pos)
+void LightsSorter::sortLightsCPU(Tab<uint16_t> &omni_visible_ids, Tab<uint16_t> &spot_visible_ids, vec4f cur_view_pos)
 {
-  sort_lights_by_distance(*omniLights, visible_ids, cur_view_pos);
+  TIME_D3D_PROFILE(lightsSorter_cpu_sortLights);
+  sort_lights_by_distance(*omniLights, omni_visible_ids, cur_view_pos);
+  sort_lights_by_distance(*spotLights, spot_visible_ids, cur_view_pos);
 }
 
-void LightsSorter::sortSpotLightsCPU(Tab<uint16_t> &visible_ids, vec4f cur_view_pos)
+void LightsSorter::bindStageBuffers()
 {
-  sort_lights_by_distance(*spotLights, visible_ids, cur_view_pos);
+  ShaderGlobal::set_buffer(sort_lights_dispatch_args_bufVarId, sortDispatchArgsBuf.getBuf());
+  ShaderGlobal::set_buffer(sort_lights_stage_data_bufVarId, sortLightsStageDataBuf.getBuf());
 }
 
-// sort_omni/spot_lights_cs (lights_partition.dshl) does the entire bitonic sort itself in one
-// dispatch of a single threadgroup: it reads the real count from visible_clustered_lights_buf_count,
-// pads it up to a power of two on the GPU, and sorts in groupshared memory. max_lights_count is
-// only used here to check it matches the shader's kMaxLightsCount (the type's scene capacity,
-// which sizes the shader's groupshared array) - it no longer drives a CPU-side dispatch loop.
-static void dispatch_bitonic_sort(ComputeShader &cs, Sbuffer *buf, int buf_var_id, Sbuffer *count_buf, int count_buf_var_id,
-  const Point3 &view_pos, float zfar, int max_lights_count)
+void LightsSorter::unbindStageBuffers()
 {
-  G_ASSERTF((max_lights_count & (max_lights_count - 1)) == 0, "max_lights_count must be a power of two, got %d", max_lights_count);
-  // max_lights_count doubles as the "invalid" scene index sentinel packed into the low 16 bits of
-  // the shader's gs_sort_data (see lights_partition.dshl) - it must fit there.
-  G_ASSERTF(max_lights_count <= 0xFFFF, "max_lights_count must fit in 16 bits, got %d", max_lights_count);
-  G_ASSERT(zfar > 0.f);
+  ShaderGlobal::set_buffer(sort_lights_dispatch_args_bufVarId, BAD_D3DRESID);
+  ShaderGlobal::set_buffer(sort_lights_stage_data_bufVarId, BAD_D3DRESID);
+}
 
-  if (!cs)
+void LightsSorter::dispatchPrepareSort()
+{
+  if (!prepareSortCS)
     return;
 
-  ShaderGlobal::set_float4(sort_lights_param_varId, view_pos, zfar);
-  ShaderGlobal::set_buffer(buf_var_id, buf);
-  ShaderGlobal::set_buffer(count_buf_var_id, count_buf);
-
-  cs.dispatchThreads(1, 1, 1);
-  d3d::resource_barrier({buf, RB_FLUSH_UAV | RB_SOURCE_STAGE_COMPUTE | RB_STAGE_COMPUTE});
-
-  ShaderGlobal::set_buffer(buf_var_id, BAD_D3DRESID);
-  ShaderGlobal::set_buffer(count_buf_var_id, BAD_D3DRESID);
+  prepareSortCS.dispatchThreads(MAX_SCENE_OMNI_LIGHTS + MAX_SCENE_SPOT_LIGHTS, 1, 1);
 }
 
-// buf/count_buf are the visible_clustered_omni/spot_lights_structured_buf index array and its
-// count (as filled by partition_omni/spot_lights_cs); the caller must still separately bind the
-// matching scene_omni/spot_lights_structured_buf.
-void LightsSorter::sortOmniLightsGPU(Sbuffer *buf, Sbuffer *count_buf, const Point3 &view_pos, float zfar)
+void LightsSorter::dispatchSortImpl(Sbuffer *data_buf)
 {
-  dispatch_bitonic_sort(sortOmniCS, buf, visible_clustered_omni_lights_structured_buf_varId, count_buf,
-    visible_clustered_omni_lights_structured_buf_count_varId, view_pos, zfar, MAX_SCENE_OMNI_LIGHTS);
+  if (!sortScalarBasicImplCS || !sortScalarMediumImplCS || !sortScalarHighImplCS || !sortBatchedImplCS)
+    return;
+
+  Sbuffer *dispatch_args_buf = sortDispatchArgsBuf.getBuf();
+
+  if (sortWaveImplCS)
+  {
+    sortWaveImplCS.dispatchIndirect(dispatch_args_buf, SORT_LIGHTS_DISPATCH_ARGS_WAVE_OFFSET);
+    d3d::resource_barrier({data_buf, RB_FLUSH_UAV | RB_SOURCE_STAGE_COMPUTE | RB_STAGE_COMPUTE});
+  }
+
+  sortScalarBasicImplCS.dispatchIndirect(dispatch_args_buf, SORT_LIGHTS_DISPATCH_ARGS_BASIC_OFFSET);
+  d3d::resource_barrier({data_buf, RB_FLUSH_UAV | RB_SOURCE_STAGE_COMPUTE | RB_STAGE_COMPUTE});
+
+  sortScalarMediumImplCS.dispatchIndirect(dispatch_args_buf, SORT_LIGHTS_DISPATCH_ARGS_MEDIUM_OFFSET);
+  d3d::resource_barrier({data_buf, RB_FLUSH_UAV | RB_SOURCE_STAGE_COMPUTE | RB_STAGE_COMPUTE});
+
+  sortScalarHighImplCS.dispatchIndirect(dispatch_args_buf, SORT_LIGHTS_DISPATCH_ARGS_SCALAR_HIGH_OFFSET);
+  sortBatchedImplCS.dispatchIndirect(dispatch_args_buf, SORT_LIGHTS_DISPATCH_ARGS_BATCHED_HIGH_OFFSET);
 }
 
-void LightsSorter::sortSpotLightsGPU(Sbuffer *buf, Sbuffer *count_buf, const Point3 &view_pos, float zfar)
+void LightsSorter::dispatchFinalizeSort(int max_far_lights_count)
 {
-  dispatch_bitonic_sort(sortSpotCS, buf, visible_clustered_spot_lights_structured_buf_varId, count_buf,
-    visible_clustered_spot_lights_structured_buf_count_varId, view_pos, zfar, MAX_SCENE_SPOT_LIGHTS);
+  if (!finalizeSortCS)
+    return;
+
+  ShaderGlobal::set_int(visible_far_max_lights_countVarId, max_far_lights_count);
+
+  finalizeSortCS.dispatchIndirect(sortDispatchArgsBuf.getBuf(), SORT_LIGHTS_DISPATCH_ARGS_FINALIZE_OFFSET);
+}
+
+void LightsSorter::sortLightsGPU(Sbuffer *data_buf, Sbuffer *counts_buf, int max_far_lights_count, bool update_variables)
+{
+  TIME_D3D_PROFILE(lightsSorter_gpu_sortLights);
+
+  Sbuffer *argsBuf = sortDispatchArgsBuf.getBuf();
+
+  if (update_variables)
+  {
+    bindStageBuffers();
+    ShaderGlobal::set_buffer(visible_lights_data_bufVarId, data_buf);
+    ShaderGlobal::set_buffer(visible_lights_counts_bufVarId, counts_buf);
+  }
+
+  {
+    TIME_D3D_PROFILE(lightsSorter_gpu_prepare);
+    dispatchPrepareSort();
+  }
+
+  d3d::resource_barrier({{data_buf, counts_buf, sortLightsStageDataBuf.getBuf(), argsBuf},
+    {RB_FLUSH_UAV | RB_SOURCE_STAGE_COMPUTE | RB_STAGE_COMPUTE, RB_FLUSH_UAV | RB_SOURCE_STAGE_COMPUTE | RB_STAGE_COMPUTE,
+      RB_FLUSH_UAV | RB_SOURCE_STAGE_COMPUTE | RB_STAGE_COMPUTE, RB_RO_INDIRECT_BUFFER}});
+
+  {
+    TIME_D3D_PROFILE(lightsSorter_gpu_impl);
+    dispatchSortImpl(data_buf);
+  }
+
+  d3d::resource_barrier({data_buf, RB_FLUSH_UAV | RB_SOURCE_STAGE_COMPUTE | RB_STAGE_COMPUTE});
+
+  {
+    TIME_D3D_PROFILE(lightsSorter_gpu_finalize);
+    dispatchFinalizeSort(max_far_lights_count);
+  }
+
+  if (update_variables)
+  {
+    unbindStageBuffers();
+    ShaderGlobal::set_buffer(visible_lights_data_bufVarId, BAD_D3DRESID);
+    ShaderGlobal::set_buffer(visible_lights_counts_bufVarId, BAD_D3DRESID);
+  }
 }

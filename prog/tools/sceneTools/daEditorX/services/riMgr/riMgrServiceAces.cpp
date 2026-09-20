@@ -23,7 +23,7 @@
 #include <rendInst/rendInstExtraAccess.h>
 #include <rendInst/riexHashMap.h>
 #include <riGen/genObjUtil.h>
-#include <gameMath/traceUtils.h>
+#include <rendInst/traceUtils.h>
 #include <oldEditor/de_interface.h>
 #include <oldEditor/de_workspace.h>
 #include <oldEditor/de_common_interface.h>
@@ -156,10 +156,10 @@ static class NavmeshLayers
   int getBiggestLevelSize()
   {
     uint32_t size = 0;
-    if (int riex_sz = rendinst::getRIExtraMapSize())
+    if (int riex_sz = rendinst::getRiGenExtraResCount())
     {
       size = rendinst::RendinstVertexDataCbBase::make_pool_id(riex_sz, true);
-      debug("%s: getRIExtraMapSize()=%d -> size=%d", __FUNCTION__, riex_sz, size);
+      debug("%s: getRiGenExtraResCount()=%d -> size=%d", __FUNCTION__, riex_sz, size);
     }
     FOR_EACH_RG_LAYER_DO (rgl)
       size = max<uint32_t>(rendinst::RendinstVertexDataCbBase::make_pool_id(rgl->rtData->riResName.size(), false), size);
@@ -498,7 +498,7 @@ public:
     inExcludeBoxes(in_exclude_boxes)
   {}
 
-  const char *getJobName(bool &) const override { return "RendinstGatherCollJob"; }
+  const char *getJobName(bool &) const override { return DAPROFILER_STRING("RendinstGatherCollJob"); }
 
   void doJob() override
   {
@@ -1393,6 +1393,8 @@ public:
       debug("destroying riExtra instances in %s before rendinst::termRIGen()", __FUNCTION__);
       LayerHiddenMask lhMask;
       lhMask.setAllHidden();
+
+      rendinst::ScopedRIExtraBulkUpdate riExtraBulkUpdate;
       for (auto *p : riPool.getPools())
         if (p->useRiExtra())
           p->showAndHideRiExtraInstancesOnLayerMaskChanges(0, lhMask);
@@ -2299,7 +2301,7 @@ public:
         v_bbox3_add_pt(box, v_madd(*(vec4f *)&trace.dir.x, v_splat_w(vFrom), vFrom));
         v_bbox3_add_pt(box, v_add(vFrom, rayBoxExt.bmin));
         v_bbox3_add_pt(box, v_add(vFrom, rayBoxExt.bmax));
-        TraceDownMutiRayIgnoreCbType poolFilter = [](const RendInstDesc &d) -> bool {
+        auto poolFilter = [](const RendInstDesc &d) -> bool {
           if (d.isRiExtra() && ri_extras_to_ignore_in_collision.find(d.getRiExtraHandle()) != ri_extras_to_ignore_in_collision.end())
             return true;
 
@@ -2317,7 +2319,7 @@ public:
       }
       else
       {
-        TraceRayIgnoreRiExtraCbType riExtraIgnoreFunc = [](rendinst::riex_handle_t handle) -> bool {
+        auto riExtraIgnoreFunc = [](rendinst::riex_handle_t handle) -> bool {
           if (ri_extras_to_ignore_in_collision.find(handle) != ri_extras_to_ignore_in_collision.end())
             return true;
 
@@ -2347,7 +2349,6 @@ public:
     rendinst::clipCapsuleRI(c, cp1, cp2, md, movedirNormalized, &cachedTraceMeshFaces);
   }
 
-  bool shadowRayHitTest(const Point3 &p, const Point3 &dir, real maxt) override { return false; }
   const char *getColliderName() const override { return getServiceFriendlyName(); }
   bool isColliderVisible() const override { return visible; }
   bool setupColliderParams(int mode, const BBox3 &area) override

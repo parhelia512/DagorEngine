@@ -14,7 +14,7 @@
 #include <sceneRay/dag_sceneRayDecl.h>
 
 #include <math/dag_Point3.h>
-#include <gameMath/traceUtils.h>
+#include <rendInst/traceUtils.h>
 #include <generic/dag_enumBitMask.h>
 #include <phys/dag_physShapeQueryResult.h>
 #include <rendInst/constants.h>
@@ -77,9 +77,25 @@ float exchange_ttl_for_collision_instances(float value);
 
 void init_phys_materials();
 
-void add_static_collision_frt(const StaticSceneRayTracer *frt, const char *name, dag::ConstSpan<unsigned char> *pmid = NULL);
-void set_water_tracer(BuildableStaticSceneRayTracer *tracer);
+// Converts the tracer; the caller frees it after either answer. True for a null or face-less
+// tracer, false when a tracer with faces gave no collision (logged): the level then has none.
+bool add_static_collision_frt(const StaticSceneRayTracer *frt, const char *name, dag::ConstSpan<unsigned char> *pmid = NULL);
+// False: the dump did not read. A tracer that reads but gives no collision is logged, not refused.
 bool load_static_collision_frt(IGenLoad *crd);
+// False: the stream landed empty, the cause already logged.
+bool load_static_collision(IGenLoad &crd);
+CollisionResource *get_static_collision_resource();
+// The level's water surface, its own resource of traceable nodes. Null until a level sets one.
+CollisionResource *get_water_collision();
+// An old level's water faces converted to that resource, which is cleared first. False: no faces
+// were given, or the split refused them (that one is logged).
+bool make_water_collision(dag::ConstSpan<Point3_vec4> verts, dag::ConstSpan<uint32_t> indices);
+// A cooked level's water stream. False: it landed empty, the cause already logged.
+bool load_water_collision(IGenLoad &crd);
+// The TRACEABLE triangles in box as v0 | packed physmat, e1, e2; left takes the budget down.
+// False: the box holds more than left, so the cache cannot serve it.
+bool append_static_collision_tris(bbox3f_cref box, vec4f *out_tris, int &left);
+int resolve_static_cache_tri_mat(int packed_w);
 void add_collision_hmap(LandMeshManager *land, float restitution, float margin);
 void add_collision_hmap_custom(const Point3 &collision_pos, const BBox3 &collision_box, const Point2 &hmap_offset, float hmap_scale,
   int hmap_step);
@@ -90,8 +106,17 @@ void set_water_source(FFTWater *water, bool in_has_only_water2d = false);
 void set_lmesh_phys_map(PhysMap *phys_map);
 void set_lmesh_phys_map_ptr(PhysMap *phys_map);
 const PhysMap *get_lmesh_phys_map();
+bool append_static_collision_mesh(const BBox3 &box, Tab<Point3> &vertices, Tab<int> &indices);
 
 bool traceray_normalized_frt(const Point3 &p, const Point3 &dir, real &t, int *out_pmid, Point3 *out_norm);
+// The static scene straight down. It culls, the rule the FRT's own traceDown and the warmed cache
+// both keep, so a ceiling never answers a down query. Every down entry below answers the static
+// scene through this one, so they all keep that rule; the ray entries stay two-sided.
+bool tracedown_normalized_frt(const Point3 &p, real &t, int *out_pmid, Point3 *out_norm);
+// The level water. The down entry culls like the static one, as the water tracer's own traceDown
+// did; the ray entry does not.
+bool traceray_water(const Point3 &p, const Point3 &dir, real &t, Point3 *out_norm);
+bool tracedown_water(const Point3 &p, real &t, Point3 *out_norm);
 bool traceray_normalized_lmesh(const Point3 &p, const Point3 &dir, real &t, int *out_pmid, Point3 *out_norm);
 bool traceray_normalized_ri(const Point3 &p, const Point3 &dir, real &t, int *out_pmid, Point3 *out_norm,
   rendinst::TraceFlags additional_trace_flags = {}, rendinst::RendInstDesc *out_desc = nullptr, int ray_mat_id = -1,
@@ -149,6 +174,11 @@ float traceht_water_at_time(const Point3 &pos, float time, Point3 *out_displacem
 float traceht_water_at_time(const Point3 &pos, float t, float time, bool &underWater, float minWaterCoastDist = 1.5f);
 float traceht_water_at_time_no_ground(const Point3 &pos, float t, float time, bool &underwater);
 bool is_valid_heightmap_pos(const Point2 &pos);
+// What every water-height answer below returns when there is no water; is_valid_water_height is
+// the test for it, so a consumer never compares against a value of its own.
+inline constexpr float INVALID_WATER_HEIGHT = -1e10f;
+// The water surface height, traced down from t above pos over 2t; invalid when there is none.
+float get_water_height_2d(const Point3 &pos, float t, bool &underwater);
 bool is_valid_water_height(float height);
 bool traceray_water_at_time(const Point3 &start, const Point3 &end, float time, float &t);
 float getSignificantWaterWaveHeight();

@@ -233,6 +233,49 @@ void debug_render_gbuffer_with_vectors(const DynamicShaderHelper &debugVecShader
   debug_render_gbuffer_with_vectors(debugVecShader, gbuffer.getDepth(), mode, vec_count, vec_scale);
 }
 
+void debug_render_gbuffer(const PostFxRenderer &debugRenderer, Texture *dbg_tex, Texture *depth, int32_t mode)
+{
+  if (depth)
+    ShaderGlobal::set_texture_unsafe(get_shader_variable_id("depth_gbuf"), depth);
+
+  if (mode == USE_DEBUG_GBUFFER_MODE)
+    mode = (int32_t)show_gbuffer;
+
+  static int32_t dbgGbuffMode_VarId = get_shader_variable_id("gbuff_dbg_mode", true);
+  static int32_t dbgGbuffer_TexId = get_shader_variable_id("dbg_gbuff_tex");
+
+  const bool needsDebugDump = mode == (int32_t)DebugGbufferMode::mip || mode == (int32_t)DebugGbufferMode::texelDensity;
+  const bool hadDebugDump = prevMode == (int32_t)DebugGbufferMode::mip || prevMode == (int32_t)DebugGbufferMode::texelDensity;
+  bool released = true;
+
+  if (needsDebugDump)
+  {
+    if (!hadDebugDump && !require_debug_shaders())
+    {
+      LOGERR_ONCE("Debug shader dump could not be loaded!");
+      return;
+    }
+
+    ShaderGlobal::set_int(dbgGbuffMode_VarId, mode == (int32_t)DebugGbufferMode::texelDensity);
+    ShaderGlobal::set_texture_unsafe(dbgGbuffer_TexId, dbg_tex);
+  }
+  else
+  {
+    if (hadDebugDump)
+    {
+      released = release_debug_shaders();
+      ShaderGlobal::set_texture_unsafe(dbgGbuffer_TexId, nullptr);
+    }
+
+    ShaderGlobal::set_int(dbgGbuffMode_VarId, -1);
+  }
+
+  // keeping prevMode on a failed restore makes the next frame retry it
+  if (released)
+    prevMode = mode;
+  debug_render_gbuffer(debugRenderer, depth, mode);
+}
+
 void debug_render_gbuffer(const PostFxRenderer &debugRenderer, Texture *depth, int mode)
 {
   if (mode == USE_DEBUG_GBUFFER_MODE)

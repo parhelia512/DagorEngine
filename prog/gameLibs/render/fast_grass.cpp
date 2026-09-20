@@ -102,7 +102,7 @@ void FastGrassRenderer::initOrUpdate(dag::Span<GrassTypeDesc> grass_types, int d
     texNames.insert(gd.impostorName);
   }
 
-  if (usedTypes.empty())
+  if (usedTypes.empty() or hmapRange <= 0)
   {
     debug("no fast grass");
     close();
@@ -193,14 +193,17 @@ void FastGrassRenderer::initOrUpdate(dag::Span<GrassTypeDesc> grass_types, int d
   }
 
   // init rendering
-  if (!hmapRenderer.isInited() || hmapRenderer.getDimBits() != dim_bits)
+  const char *hmapShaderName = useLowShader ? "fast_grass_low" : "fast_grass";
+  const char *curShaderName = hmapRenderer.getShElem() ? hmapRenderer.getShElem()->getShaderClassName() : nullptr;
+  if (
+    !hmapRenderer.isInited() || hmapRenderer.getDimBits() != dim_bits || !curShaderName || strcmp(curShaderName, hmapShaderName) != 0)
   {
     if (hmapRenderer.isInited())
     {
       release_64_noise();
       hmapRenderer.close();
     }
-    if (!hmapRenderer.init("fast_grass", true, dim_bits))
+    if (!hmapRenderer.init(hmapShaderName, true, dim_bits))
       return;
     init_and_get_argb8_64_noise().setVar();
   }
@@ -263,7 +266,7 @@ void FastGrassRenderer::initOrUpdate(dag::Span<GrassTypeDesc> grass_types, int d
       }
     }
 
-    if (auto tex = hmapTex.getTex())
+    if (auto tex = hmapTex.getBaseTex())
     {
       TextureInfo info;
       if (!tex->getinfo(info) || info.w != precompResolution || info.a != precompCascades)
@@ -274,17 +277,14 @@ void FastGrassRenderer::initOrUpdate(dag::Span<GrassTypeDesc> grass_types, int d
       }
     }
 
-    if (!hmapTex.getTex())
+    if (!hmapTex.getBaseTex())
     {
-      hmapTex.set(d3d::create_array_tex(precompResolution, precompResolution, precompCascades, TEXCF_UNORDERED | TEXFMT_L16, 1,
-                    "fast_grass_pre_hmap", RESTAG_GRASS),
-        "fast_grass_pre_hmap");
-      gmapTex.set(d3d::create_array_tex(precompResolution, precompResolution, precompCascades, TEXCF_UNORDERED | TEXFMT_R8UI, 1,
-                    "fast_grass_pre_gmap", RESTAG_GRASS),
-        "fast_grass_pre_gmap");
-      cmapTex.set(d3d::create_array_tex(precompResolution, precompResolution, precompCascades, TEXCF_UNORDERED | TEXFMT_A8R8G8B8, 1,
-                    "fast_grass_pre_cmap", RESTAG_GRASS),
-        "fast_grass_pre_cmap");
+      hmapTex = dag::create_array_tex(precompResolution, precompResolution, precompCascades, TEXCF_UNORDERED | TEXFMT_L16, 1,
+        "fast_grass_pre_hmap", RESTAG_GRASS);
+      gmapTex = dag::create_array_tex(precompResolution, precompResolution, precompCascades, TEXCF_UNORDERED | TEXFMT_R8UI, 1,
+        "fast_grass_pre_gmap", RESTAG_GRASS);
+      cmapTex = dag::create_array_tex(precompResolution, precompResolution, precompCascades, TEXCF_UNORDERED | TEXFMT_A8R8G8B8, 1,
+        "fast_grass_pre_cmap", RESTAG_GRASS);
 
       d3d::SamplerInfo smpInfo;
       smpInfo.address_mode_u = smpInfo.address_mode_v = d3d::AddressMode::Border;

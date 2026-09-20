@@ -25,8 +25,12 @@ float bvh_atmosphere_texture_distance = 10000;
 macro INIT_BVH_ATMOSPHERE(code)
  (code)
  {
-    atmosphere_texture@smpArray = bvh_atmosphere_texture;
+    atmosphere_texture@texArray = bvh_atmosphere_texture;
     atmosphere_texture_distance_inv@f1 = 1.0 / bvh_atmosphere_texture_distance;
+ }
+ INIT_GLOBAL_LINEAR_WRAP_U_CLAMP_V_SAMPLER(code)
+ hlsl(code) {
+   #define atmosphere_texture_samplerstate global_linear_wrap_u_clamp_v_sampler
  }
 endmacro
 

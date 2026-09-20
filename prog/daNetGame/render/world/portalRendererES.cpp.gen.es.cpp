@@ -4,6 +4,32 @@
 #include "portalRendererES.cpp.inl"
 ECS_DEF_PULL_VAR(portalRenderer);
 #include <daECS/core/internal/performQuery.h>
+static constexpr ecs::ComponentDesc portal_wait_visibility_job_es_comps[] =
+{
+//start of 1 ro components at [0]
+  {ECS_HASH("portal_renderer"), ecs::ComponentTypeInfo<PortalRenderer>()}
+};
+static void portal_wait_visibility_job_es_all_events(const ecs::Event &__restrict evt, const ecs::QueryView &__restrict components)
+{
+  G_FAST_ASSERT(evt.is<EventWaitBeforeAct>());
+  auto comp = components.begin(), compE = components.end(); G_ASSERT(comp!=compE); do
+    portal_wait_visibility_job_es(static_cast<const EventWaitBeforeAct&>(evt)
+        , ECS_RO_COMP(portal_wait_visibility_job_es_comps, "portal_renderer", PortalRenderer)
+    );
+  while (++comp != compE);
+}
+static ecs::EntitySystemDesc portal_wait_visibility_job_es_es_desc
+(
+  "portal_wait_visibility_job_es",
+  "prog/daNetGame/render/world/portalRendererES.cpp.inl",
+  ecs::EntitySystemOps(nullptr, portal_wait_visibility_job_es_all_events),
+  empty_span(),
+  make_span(portal_wait_visibility_job_es_comps+0, 1)/*ro*/,
+  empty_span(),
+  empty_span(),
+  ecs::EventSetBuilder<EventWaitBeforeAct>::build(),
+  0
+,"render");
 static constexpr ecs::ComponentDesc update_portal_data_es_comps[] =
 {
 //start of 1 rw components at [0]

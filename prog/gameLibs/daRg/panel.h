@@ -92,6 +92,7 @@ struct PanelSpatialInfo
   uint32_t facingEntityId = 0;
 
   mutable ViewDependentResource<eastl::optional<TMatrix>, 2> lastTransform;
+  mutable ViewDependentResource<unsigned int, 2> lastTransformFrameNo{~0u, ~0u};
 
   eastl::string anchorNodeName;
 };

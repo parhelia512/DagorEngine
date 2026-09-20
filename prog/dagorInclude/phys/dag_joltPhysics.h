@@ -524,3 +524,22 @@ inline void close_jolt_physics_engine() { PhysWorld::term_engine(); }
 
 int phys_body_get_hmap_step(PhysBody *b);
 int phys_body_set_hmap_step(PhysBody *b, int step);
+
+class CollisionResource;
+// A collision over a collision resource mesh node's BLAS chunk as stored (CollisionBlasShape): no
+// MeshShape build, no copy of the geometry. compound_children sizes its sub shape ids: at least the
+// child count of the compound it will sit in (0 = one child per node of the resource). Null for a
+// node without a chunk (a non-mesh node, or a degenerate mesh node: the trimesh path), or when the
+// ids do not fit that compound (logged). A node whose chunk carries no edge flags (it was not
+// PHYS_COLLIDABLE at chunk build) is refused too, with a logerr. The shape pins the resource's Data
+// block: the per-node bind claim (setNodeGeomNodeId) is refused while such a body lives; a first
+// tree bind still stamps geomNodeId on the shared block, a later foreign-layout bind clones it.
+PhysCollision *create_phys_collision_from_coll_resource_node(const CollisionResource &res, int node_id,
+  unsigned compound_children = 0);
+namespace soa4
+{
+struct ChunkRef;
+}
+// A collision over a bare BLAS chunk with its edge flags tail (a land tracer cell), alone in its
+// body; the chunk's owner outlives the body. Null when the shape refuses the chunk (logged).
+PhysCollision *create_phys_collision_from_blas_chunk(const soa4::ChunkRef &chunk);

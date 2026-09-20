@@ -9,7 +9,9 @@
 #include "daGIMediaScene.h"
 #include "mediaScene/dagi_media_scene.hlsli"
 
-CONSOLE_INT_VAL("gi", gi_media_scene_debug, 0, 0, 2);
+CONSOLE_INT_VAL("gi", gi_media_scene_debug, 0, 0, 2); // 1 lit, 2 trace
+// one shot: fully rebuild every clip, one clip per frame, for profiling refill cost
+CONSOLE_BOOL_VAL("gi", gi_media_scene_refill_all, false);
 CONSOLE_INT_VAL("gi", gi_media_scene_update_from_gbuf_speed_min, 64, 64, 32 << 10);
 CONSOLE_INT_VAL("gi", gi_media_scene_update_from_gbuf_speed_count, 2048, 0, 256 << 10);
 CONSOLE_BOOL_VAL("gi", gi_media_scene_update_from_gbuf, true);
@@ -93,7 +95,7 @@ void DaGIMediaScene::init(uint32_t w, uint32_t d, uint32_t media_scene_clips, fl
   afterReset();
 }
 
-bool DaGIMediaScene::updateClip(uint32_t clip_no, const Point3 &world_pos)
+bool DaGIMediaScene::updateClip(uint32_t clip_no, const Point3 &world_pos, const prepare_initial_media_cb &prepare_media_cb)
 {
   DA_PROFILE_GPU;
 
@@ -108,6 +110,8 @@ bool DaGIMediaScene::updateClip(uint32_t clip_no, const Point3 &world_pos)
 
   for (int ui = 0; ui < changedCnt; ++ui)
   {
+    if (prepare_media_cb) // abs coords are world xzy
+      prepare_media_cb(BBox3(Point3::xzy(changed[ui][0]) * voxelSize, Point3::xzy(changed[ui][1]) * voxelSize), voxelSize);
     ShaderGlobal::set_int4(dagi_media_scene_update_lt_coordVarId, changed[ui][0].x, changed[ui][0].y, changed[ui][0].z, clip_no);
     const IPoint3 updateSize = changed[ui].width();
     ShaderGlobal::set_int4(dagi_media_scene_update_sz_coordVarId, updateSize.x, updateSize.y, updateSize.z,
@@ -120,14 +124,21 @@ bool DaGIMediaScene::updateClip(uint32_t clip_no, const Point3 &world_pos)
   return true;
 }
 
-void DaGIMediaScene::updatePos(const Point3 &world_pos, bool update_all)
+void DaGIMediaScene::updatePos(const Point3 &world_pos, bool update_all, const prepare_initial_media_cb &prepare_media_cb)
 {
   initHistory();
 
   DA_PROFILE_GPU;
+  if (gi_media_scene_refill_all.get())
+  {
+    gi_media_scene_refill_all.set(false);
+    // every clip turns fully dirty; the loop below then refills one clip per frame,
+    // a single frame with all clips is one dispatch chain long enough to hang the gpu
+    resetHistoryAge();
+  }
   for (int i = clipmap.size() - 1; i >= 0; --i)
   {
-    bool updated = updateClip(i, world_pos);
+    bool updated = updateClip(i, world_pos, prepare_media_cb);
     if (updated && !update_all)
       break;
   }
@@ -199,7 +210,7 @@ void DaGIMediaScene::debugRender()
   DA_PROFILE_GPU;
   if (gi_media_scene_debug == 2)
     dagi_media_scene_trace_debug.render();
-  else if (gi_media_scene_debug == 1)
+  else
     dagi_media_scene_debug.render();
 }
 

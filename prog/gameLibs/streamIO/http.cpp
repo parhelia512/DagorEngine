@@ -6,6 +6,7 @@
 #include <osApiWrappers/dag_localConv.h>
 #include <osApiWrappers/dag_miscApi.h>
 #include <osApiWrappers/dag_critSec.h>
+#include <osApiWrappers/dag_spinlock.h>
 #include <ioSys/dag_fileIo.h>
 #include <ioSys/dag_memIo.h>
 #include <EASTL/string.h>
@@ -34,23 +35,44 @@ struct HTTPContext;
 
 struct StreamContext
 {
-  eastl::shared_ptr<httprequests::RequestId> reqId;
-  StreamContext() { reqId = eastl::make_shared<httprequests::RequestId>(0); }
+  // async_request publishes the request before its id is stored here, and a poller may run
+  // the completion on another thread at once: readers take the lock so they see the store
+  struct ReqSlot
+  {
+    OSSpinlock lock;
+    httprequests::RequestId id = 0;
+
+    httprequests::RequestId get()
+    {
+      OSSpinlockScopedLock lk(lock);
+      return id;
+    }
+    httprequests::RequestId take()
+    {
+      OSSpinlockScopedLock lk(lock);
+      httprequests::RequestId r = id;
+      id = 0;
+      return r;
+    }
+  };
+  eastl::shared_ptr<ReqSlot> reqId = eastl::make_shared<ReqSlot>();
 
   ~StreamContext()
   {
-    if (*reqId)
-      httprequests::abort_request(*reqId);
+    if (httprequests::RequestId id = reqId->get())
+      httprequests::abort_request(id);
   }
 
-  httprequests::RequestId getReqId() const { return *reqId; }
+  httprequests::RequestId getReqId() const { return reqId->get(); }
 
-  void sendRequest(const char *url, completion_cb_t complete_cb, stream_data_cb_t stream_cb, resp_headers_cb_t resp_headers_cb,
-    progress_cb_t progress_cb, void *cb_arg, int64_t modified_since, CreationParams::Timeouts const &timeouts, HTTPContext *owner);
+  // with self set, hands this stream over to owner; self may be gone on return
+  httprequests::RequestId sendRequest(const char *url, completion_cb_t complete_cb, stream_data_cb_t stream_cb,
+    resp_headers_cb_t resp_headers_cb, progress_cb_t progress_cb, void *cb_arg, int64_t modified_since,
+    CreationParams::Timeouts const &timeouts, HTTPContext *owner, eastl::unique_ptr<StreamContext> *self);
 
   void syncWait()
   {
-    while (*reqId)
+    while (reqId->get())
     {
       httprequests::poll();
       sleep_msec(0);
@@ -90,8 +112,8 @@ struct HTTPContext : public Context
     {
       WinAutoLock lk(streamsCs);
       for (auto &it : streams)
-        if (*it.second->reqId)
-          httprequests::abort_request(*it.second->reqId);
+        if (httprequests::RequestId id = it.second->getReqId())
+          httprequests::abort_request(id);
     }
     httprequests::poll();
 
@@ -116,6 +138,12 @@ struct HTTPContext : public Context
     streams.erase(req_id);
   }
 
+  void registerStream(httprequests::RequestId req_id, eastl::unique_ptr<StreamContext> &&ctx)
+  {
+    WinAutoLock lk(streamsCs);
+    streams.insert(eastl::make_pair(req_id, eastl::move(ctx)));
+  }
+
   intptr_t createStream(const char *name, completion_cb_t complete_cb, stream_data_cb_t stream_cb, resp_headers_cb_t resp_headers_cb,
     progress_cb_t progress_cb, void *cb_arg, int64_t modified_since, bool do_sync) override
   {
@@ -127,15 +155,12 @@ struct HTTPContext : public Context
         if (dd_strnicmp(name, supported_schemes[i], scheme - name) == 0)
         {
           auto ctx = eastl::make_unique<StreamContext>();
-          ctx->sendRequest(name, complete_cb, stream_cb, resp_headers_cb, progress_cb, cb_arg, modified_since, timeouts, this);
-          intptr_t id = ctx->getReqId();
-          if (do_sync)
-            ctx->syncWait();
-          else
-          {
-            WinAutoLock lk(streamsCs);
-            streams.insert(eastl::make_pair(ctx->getReqId(), eastl::move(ctx)));
-          }
+          if (!do_sync)
+            return ctx->sendRequest(name, complete_cb, stream_cb, resp_headers_cb, progress_cb, cb_arg, modified_since, timeouts, this,
+              &ctx);
+          intptr_t id = ctx->sendRequest(name, complete_cb, stream_cb, resp_headers_cb, progress_cb, cb_arg, modified_since, timeouts,
+            this, nullptr);
+          ctx->syncWait();
           return id;
         }
       }
@@ -152,9 +177,9 @@ struct HTTPContext : public Context
 
 Context *create(CreationParams *params) { return new HTTPContext(params); }
 
-void StreamContext::sendRequest(const char *url, completion_cb_t complete_cb, stream_data_cb_t stream_cb,
+httprequests::RequestId StreamContext::sendRequest(const char *url, completion_cb_t complete_cb, stream_data_cb_t stream_cb,
   resp_headers_cb_t resp_headers_cb, progress_cb_t progress_cb, void *cb_arg, int64_t modified_since,
-  CreationParams::Timeouts const &timeouts, HTTPContext *owner)
+  CreationParams::Timeouts const &timeouts, HTTPContext *owner, eastl::unique_ptr<StreamContext> *self)
 {
   httprequests::AsyncRequestParams reqParams;
   eastl::string urlSaved = url;
@@ -170,7 +195,7 @@ void StreamContext::sendRequest(const char *url, completion_cb_t complete_cb, st
   reqParams.connectTimeoutMs = timeouts.connectTimeoutSec * 1000;
   reqParams.lowSpeedTime = timeouts.lowSpeedTimeSec;
   reqParams.lowSpeedLimit = timeouts.lowSpeedLimitBps;
-  eastl::weak_ptr<httprequests::RequestId> reqIdWptr = reqId;
+  eastl::weak_ptr<ReqSlot> reqIdWptr = reqId;
 
   reqParams.callback = httprequests::make_http_callback(
     [complete_cb, cb_arg, urlSaved = eastl::move(urlSaved), reqIdWptr, owner](httprequests::RequestStatus status, int http_code,
@@ -200,25 +225,23 @@ void StreamContext::sendRequest(const char *url, completion_cb_t complete_cb, st
       else if (status == httprequests::RequestStatus::ABORTED || status == httprequests::RequestStatus::SHUTDOWN)
         result = ERR_ABORTED;
 
-      auto reqIdptr = reqIdWptr.lock();
-      if (reqIdptr)
+      auto slot = reqIdWptr.lock();
+      if (slot)
       {
-        complete_cb(urlSaved.c_str(), result, loadCb, cb_arg, lastModified, *reqIdptr);
-        httprequests::RequestId reqId = *reqIdptr; //-V688
-        *reqIdptr = 0;
-        owner->removeRequest(reqId);
+        complete_cb(urlSaved.c_str(), result, loadCb, cb_arg, lastModified, slot->get());
+        owner->removeRequest(slot->take()); // a zero id ends syncWait
       }
     },
     [stream_cb, cb_arg, reqIdWptr](dag::ConstSpan<char> data) {
       if (!stream_cb)
         return false;
-      if (auto reqIdptr = reqIdWptr.lock(); reqIdptr)
+      if (auto slot = reqIdWptr.lock(); slot)
       {
-        switch (stream_cb(data, cb_arg, *reqIdptr))
+        switch (stream_cb(data, cb_arg, slot->get()))
         {
           case ProcessResult::Consumed: return true;
           case ProcessResult::Discarded: return false;
-          case ProcessResult::IoError: httprequests::abort_request(*reqIdptr); return false;
+          case ProcessResult::IoError: httprequests::abort_request(slot->get()); return false;
         }
       }
       return false;
@@ -231,7 +254,15 @@ void StreamContext::sendRequest(const char *url, completion_cb_t complete_cb, st
       if (progress_cb)
         progress_cb(prUrlSaved.c_str(), dltotal, dlnow);
     });
-  *reqId = httprequests::async_request(reqParams);
+  // a completion may run on another thread as soon as the request is published:
+  // hold the slot until the id is stored and the stream is registered. This is the
+  // only site holding both locks (slot before streamsCs); abort()/abort_request()
+  // take them reversed but never deadlock, as the slot lock is freed as we return.
+  OSSpinlockScopedLock slotLock(reqId->lock);
+  reqId->id = httprequests::async_request(reqParams);
+  if (self)
+    owner->registerStream(reqId->id, eastl::move(*self));
+  return reqId->id;
 }
 
 } // namespace streamio

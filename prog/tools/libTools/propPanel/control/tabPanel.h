@@ -52,6 +52,8 @@ public:
   {
     TabPagePropertyControl *newControl = new TabPagePropertyControl(mEventHandler, this, id, 0, 0, hdpi::Px(0), hdpi::Px(0), caption);
 
+    setAutomationNameFromCaption(newControl, caption);
+
     mControlsNewLine.push_back(false);
     mControlArray.push_back(newControl);
 
@@ -86,6 +88,7 @@ public:
       ImGui::PushStyleColor(ImGuiCol_Text, PropPanel::getOverriddenColor(PropPanel::ColorOverride::TAB_BAR_TITLE));
       if (ImGui::TabItemButton(tabPage->getStringCaption()))
         newSelectedId = pageId;
+      tabPage->setImguiTestItemInfo();
       ImGui::PopStyleColor();
 
       if (selected)

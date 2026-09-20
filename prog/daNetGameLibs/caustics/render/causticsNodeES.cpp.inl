@@ -61,18 +61,20 @@ bool use_water_caustics()
          renderer_has_feature(FeatureRenderFlags::COMBINED_SHADOWS);
 }
 
-static void update_caustics_entity(const ecs::string &dafg_camera_registrator__name,
-  bool &caustics__active,
-  UniqueTexWithShaderVar &caustics__indoor_probe_mask,
-  bool &needs_water_heightmap,
-  bool &combined_shadows__use_additional_textures)
+static void request_caustics_nodes_recreation(
+  const ecs::string &dafg_camera_registrator__name, bool &caustics__active, UniqueTexWithShaderVar &caustics__indoor_probe_mask)
 {
   caustics__indoor_probe_mask.close();
   caustics__active = use_water_caustics();
   recreate_camera_registrator_nodes(dafg_camera_registrator__name);
   if (caustics__active)
-  {
     g_entity_mgr->getOrCreateSingletonEntity(ECS_HASH("caustics_settings"));
+}
+
+static void update_caustics_state(bool caustics__active, bool &needs_water_heightmap, bool &combined_shadows__use_additional_textures)
+{
+  if (caustics__active)
+  {
     needs_water_heightmap = true;
     combined_shadows__use_additional_textures = true;
     ShaderGlobal::set_int(combined_shadows_has_causticsVarId, 1);
@@ -96,10 +98,8 @@ ECS_REQUIRE(
 static void caustics_water_quality_changed_es(const ecs::Event &, ecs::EntityManager &manager)
 {
   create_caustics_node_ecs_query(manager,
-    [](const ecs::string &dafg_camera_registrator__name, bool &caustics__active, UniqueTexWithShaderVar &caustics__indoor_probe_mask,
-      bool &needs_water_heightmap, bool &combined_shadows__use_additional_textures) {
-      update_caustics_entity(dafg_camera_registrator__name, caustics__active, caustics__indoor_probe_mask, needs_water_heightmap,
-        combined_shadows__use_additional_textures);
+    [](const ecs::string &dafg_camera_registrator__name, bool &caustics__active, UniqueTexWithShaderVar &caustics__indoor_probe_mask) {
+      request_caustics_nodes_recreation(dafg_camera_registrator__name, caustics__active, caustics__indoor_probe_mask);
     });
 }
 
@@ -108,9 +108,7 @@ ECS_ON_EVENT(ChangeRenderFeatures)
 static void caustics_render_features_changed_es(const ecs::Event &evt,
   const ecs::string &dafg_camera_registrator__name,
   bool &caustics__active,
-  UniqueTexWithShaderVar &caustics__indoor_probe_mask,
-  bool &needs_water_heightmap,
-  bool &combined_shadows__use_additional_textures)
+  UniqueTexWithShaderVar &caustics__indoor_probe_mask)
 {
   if (auto *changedFeatures = evt.cast<ChangeRenderFeatures>())
   {
@@ -118,15 +116,18 @@ static void caustics_render_features_changed_es(const ecs::Event &evt,
         !changedFeatures->isFeatureChanged(FeatureRenderFlags::COMBINED_SHADOWS))
       return;
   }
-  update_caustics_entity(dafg_camera_registrator__name, caustics__active, caustics__indoor_probe_mask, needs_water_heightmap,
-    combined_shadows__use_additional_textures);
+  request_caustics_nodes_recreation(dafg_camera_registrator__name, caustics__active, caustics__indoor_probe_mask);
 }
 
 ECS_TAG(render)
 ECS_ON_EVENT(OnCameraMainViewNodeConstruction)
 ECS_REQUIRE(ecs::Tag caustics_nodes_registrator)
-static void caustics_view_nodes_es(const OnCameraMainViewNodeConstruction &evt, bool caustics__active)
+static void caustics_view_nodes_es(const OnCameraMainViewNodeConstruction &evt,
+  bool caustics__active,
+  bool &needs_water_heightmap,
+  bool &combined_shadows__use_additional_textures)
 {
+  update_caustics_state(caustics__active, needs_water_heightmap, combined_shadows__use_additional_textures);
   if (!caustics__active)
     return;
   evt.nodes->push_back(makeCausticsPerCameraResNode());
@@ -205,15 +206,6 @@ static void caustics_before_render_es(const UpdateStageInfoBeforeRender &,
     texSize.y = min(TEX_SIZE_MAX, get_bigger_pow2(texSize.y));
     caustics__indoor_probe_mask =
       dag::create_tex(nullptr, texSize.x, texSize.y, TEXFMT_DEPTH16 | TEXCF_RTARGET, 1, "caustics__indoor_probe_mask");
-    {
-      d3d::SamplerInfo smpInfo;
-      smpInfo.address_mode_u = smpInfo.address_mode_v = smpInfo.address_mode_w = d3d::AddressMode::Border;
-      smpInfo.filter_mode = d3d::FilterMode::Compare;
-      smpInfo.mip_map_mode = d3d::MipMapMode::Point;
-      smpInfo.border_color = d3d::BorderColor::Color::TransparentBlack;
-      ShaderGlobal::set_sampler(get_shader_variable_id("caustics__indoor_probe_mask_samplerstate", true),
-        d3d::request_sampler(smpInfo));
-    }
     debug("caustics__indoor_probe_mask created with resolution %d x %d", texSize.x, texSize.y);
 
     TMatrix viewItm;

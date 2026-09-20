@@ -14,6 +14,7 @@ bool dgs_dont_use_cpu_in_background = false;
 bool dgs_higher_active_app_priority = false;
 
 bool dgctrl_need_screen_shot = false;
+SimpleString dgctrl_screen_shot_name;
 bool dgctrl_need_print_screen_shot = false;
 int dgctrl_print_screen_shot_multiplier = 3;
 
@@ -32,7 +33,6 @@ void (*dwc_hook_ts_before_frame)() = NULL;
 void (*dwc_hook_fps_log)(int) = NULL;
 void (*dwc_hook_memory_report)() = NULL;
 bool (*dwc_can_draw_next_frame)(int frame, int usec_to_next_act) = NULL;
-int (*volatile dwc_get_frames_presented)() = NULL;
 
 bool dwc_alloc_perform_delayed_actions = true;
 bool dwc_alloc_perform_delayed_actions_in_internal_winloop = true;

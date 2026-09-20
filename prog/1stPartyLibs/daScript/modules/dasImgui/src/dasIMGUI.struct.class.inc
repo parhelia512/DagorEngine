@@ -98,6 +98,8 @@ struct ImGuiStyle_GeneratedAnnotation : ManagedStructureAnnotation<ImGuiStyle> {
 			.adjustAot("das_reinterpret<ImGuiTreeNodeFlags_>::pass(",")");
 		addField<DAS_BIND_MANAGED_FIELD(TreeLinesSize)>("TreeLinesSize","TreeLinesSize");
 		addField<DAS_BIND_MANAGED_FIELD(TreeLinesRounding)>("TreeLinesRounding","TreeLinesRounding");
+		addField<DAS_BIND_MANAGED_FIELD(MenuItemRounding)>("MenuItemRounding","MenuItemRounding");
+		addField<DAS_BIND_MANAGED_FIELD(SelectableRounding)>("SelectableRounding","SelectableRounding");
 		addField<DAS_BIND_MANAGED_FIELD(DragDropTargetRounding)>("DragDropTargetRounding","DragDropTargetRounding");
 		addField<DAS_BIND_MANAGED_FIELD(DragDropTargetBorderSize)>("DragDropTargetBorderSize","DragDropTargetBorderSize");
 		addField<DAS_BIND_MANAGED_FIELD(DragDropTargetPadding)>("DragDropTargetPadding","DragDropTargetPadding");

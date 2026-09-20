@@ -1,15 +1,16 @@
 // Copyright (C) Gaijin Games KFT.  All rights reserved.
 
-#include <gameRes/dag_collisionResource.h>
+#include <gameRes/collisionResourceBuilder.h>
 #include <daECS/core/entityManager.h>
 #include <daECS/core/entitySystem.h>
 #include <daECS/core/componentTypes.h>
 #include <scene/dag_physMat.h>
 
-void add_collres_nodes_from_ecs_object(CollisionResource *collres, const ecs::Array &desc)
+// The primitive nodes of a collres desc appended to the builder, then the resource built from it
+// (a desc_add builds a new resource next to the entity's copy). The block is midmem, as the owner
+// destroys it.
+CollisionResource *build_collres_from_ecs_object(CollisionResourceBuilder &builder, const ecs::Array &desc, const char *res_name)
 {
-  BBox3 totalBBox;
-  BSphere3 totalBSphere;
   for (const auto &nodeIt : desc)
   {
     const ecs::Object &nodeDesc = nodeIt.get<ecs::Object>();
@@ -19,13 +20,13 @@ void add_collres_nodes_from_ecs_object(CollisionResource *collres, const ecs::Ar
     int nodeId = -1;
     if (const Point4 *bsph = nodeDesc[ECS_HASH("bsph")].getNullable<Point4>())
     {
-      nodeId = collres->addSphereNode(name.c_str(), matId, BSphere3(Point3::xyz(*bsph), bsph->w));
+      nodeId = builder.addSphereNode(name.c_str(), matId, BSphere3(Point3::xyz(*bsph), bsph->w));
     }
     else if (const Point3 *bmin = nodeDesc[ECS_HASH("bbox_min")].getNullable<Point3>())
     {
       const Point3 *bmax = nodeDesc[ECS_HASH("bbox_max")].getNullable<Point3>();
       if (bmax)
-        nodeId = collres->addBoxNode(name.c_str(), matId, BBox3(*bmin, *bmax));
+        nodeId = builder.addBoxNode(name.c_str(), matId, BBox3(*bmin, *bmax));
     }
     if (nodeId < 0)
     {
@@ -33,41 +34,27 @@ void add_collres_nodes_from_ecs_object(CollisionResource *collres, const ecs::Ar
       const Point3 *p1 = nodeDesc[ECS_HASH("capsule_p1")].getNullable<Point3>();
       const float *r = nodeDesc[ECS_HASH("capsule_r")].getNullable<float>();
       if (p0 && p1 && r)
-        nodeId = collres->addCapsuleNode(name.c_str(), matId, *p0, *p1, *r);
+        nodeId = builder.addCapsuleNode(name.c_str(), matId, *p0, *p1, *r);
     }
     if (nodeId < 0)
     {
       logerr("Can't detect node <%s> type in collres desc", name.c_str());
       break;
     }
-
-    totalBBox += collres->getNodeBBox(nodeId);
-    totalBSphere += collres->getNodeBSphere(nodeId);
   }
-  if (v_extract_w(collres->vBoundingSphere) > 0.f)
-  {
-    Point3_vec4 c;
-    v_st(&c.x, collres->vBoundingSphere);
-    BSphere3 oldBsph(c, sqrtf(v_extract_w(collres->vBoundingSphere)));
-    totalBSphere += oldBsph;
-  }
-  v_bbox3_add_box(collres->vFullBBox, v_ldu_bbox3(totalBBox));
-  collres->vBoundingSphere = v_perm_xyzd(v_ldu(&totalBSphere.c.x), v_splats(totalBSphere.r2));
-  collres->sortNodesList();
-  collres->rebuildNodesLL();
+  builder.recomputeBounds();
+  builder.sortNodes();
+  return builder.build(res_name, midmem->alloc(sizeof(CollisionResource))); // the decline diagnostics name the template
 }
 
-static CollisionResource *create_collres_from_ecs_object(const ecs::Array &desc)
+static CollisionResource *create_collres_from_ecs_object(const ecs::Array &desc, const char *res_name)
 {
-  CollisionResource *collres = new (midmem->alloc(sizeof(CollisionResource)), _NEW_INPLACE) CollisionResource();
-  v_bbox3_init_empty(collres->vFullBBox);
-  collres->vBoundingSphere = v_zero();
-  add_collres_nodes_from_ecs_object(collres, desc);
-  return collres;
+  CollisionResourceBuilder builder;
+  return build_collres_from_ecs_object(builder, desc, res_name);
 }
 
 CollisionResource *create_collres_from_ecs_object(ecs::EntityManager &mgr, ecs::EntityId eid)
 {
   const ecs::Array *desc = mgr.getNullable<ecs::Array>(eid, ECS_HASH("collres__desc"));
-  return desc ? create_collres_from_ecs_object(*desc) : nullptr;
+  return desc ? create_collres_from_ecs_object(*desc, mgr.getEntityTemplateName(eid)) : nullptr;
 }

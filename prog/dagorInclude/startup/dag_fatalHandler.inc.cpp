@@ -69,7 +69,7 @@ static bool ask_user_fatal_handler(const char *msg, const char *call_stack, cons
     char buf[4096];
     snprintf(buf, sizeof(buf), "%s\n%s", msg, call_stack);
     buf[sizeof(buf) - 1] = 0;
-    ScopeDetachAllWndComponents wndCompsGuard; // stop handling windows input events during fatal message box
+    ScopeSuspendWndProcComponents wndCompsGuard; // stop handling windows input events during fatal message box
 #if _TARGET_PC
     int osmb_flags = dgs_get_window_mode() == WindowMode::FULLSCREEN_EXCLUSIVE ? GUI_MB_RETRY_CANCEL : GUI_MB_ABORT_RETRY_IGNORE;
 #else

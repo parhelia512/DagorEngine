@@ -7,13 +7,24 @@ skeleton_attach_inited{
   "skeletonAttachInited:tag" {}
 }
 
-skeleton_attached{
-  skeleton_attach__attached:b=no
-  _replicated:t="skeleton_attach__attached"
+base_animchar_attach{
+  "animchar_attach__attachedTo:eid"{}
   _replicated:t="animchar_attach__attachedTo"
   _tracked:t="animchar_attach__attachedTo"
+  "animchar_attach__isAttached:b"{
+    _tags:t="render"
+    value:b=no
+  }
+}
 
-  "animchar_attach__attachedTo:eid"{}
+skeleton_attached{
+  _use:t="base_animchar_attach"
+  skeleton_attach__attached:b=no
+  _replicated:t="skeleton_attach__attached"
+}
+
+attached_to_parent{
+  "attachedToParent:tag"{}
 }
 
 saved_animchar{

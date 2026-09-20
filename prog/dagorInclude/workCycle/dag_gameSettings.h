@@ -4,6 +4,8 @@
 //
 #pragma once
 
+#include <util/dag_simpleString.h>
+
 //! if dgs_limit_fps=true, FPS is limited by game rate; default=false
 extern bool dgs_limit_fps;
 
@@ -21,6 +23,9 @@ extern bool dgs_higher_active_app_priority;
 
 //! control flag to make single screenshot and autoreset false
 extern bool dgctrl_need_screen_shot;
+
+//! optional file name for the screenshot asked by dgctrl_need_screen_shot; the consumer clears it
+extern SimpleString dgctrl_screen_shot_name;
 
 //! control flag to make single huge resolutionscreenshot and autoreset false
 extern bool dgctrl_need_print_screen_shot;

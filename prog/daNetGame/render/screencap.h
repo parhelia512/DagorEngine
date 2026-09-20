@@ -32,6 +32,14 @@ void start_pending_request();
 
 bool is_screenshot_scheduled();
 
+// pre-tonemap linear HDR capture: schedule_hdr_screenshot arms a one-frame
+// request, the postfx node serves it via make_hdr_screenshot with the
+// frame_for_postfx texture (linear, scene-referred, after TAA/upscale).
+// Always written as EXR regardless of screenshots{format:t=}.
+void schedule_hdr_screenshot(const char *name_override = nullptr);
+bool is_hdr_screenshot_scheduled();
+void make_hdr_screenshot(const ManagedTex &linear_frame);
+
 void toggle_avi_writer();
 
 void screenshots_saved();

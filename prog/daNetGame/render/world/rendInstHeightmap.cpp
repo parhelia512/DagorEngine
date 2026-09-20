@@ -118,7 +118,7 @@ RendInstHeightmap::RendInstHeightmap(int tex_size, float rect_size, float land_h
 static struct RendinstHeightmapVisibilityJob final : public cpujobs::IJob
 {
   RendInstHeightmap *riHmap;
-  const char *getJobName(bool &) const override { return "rendinst_heightmap_visibility"; }
+  const char *getJobName(bool &) const override { return DAPROFILER_STRING("rendinst_heightmap_visibility"); }
   void doJob() override { riHmap->prepareRiVisibilityAsync(); };
 } visibility_job;
 

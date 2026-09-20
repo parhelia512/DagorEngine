@@ -93,7 +93,7 @@ macro COMMON_RADIANCE_FILTER(code)
         ##if gi_use_r9g9b9e5_tex_fmt == yes
           rad.xyz = Round_R9G9B9E5_FLOAT(rad.xyz);
         ##else
-          rad.xyz = Round_R11G11B10_FLOAT(rad.xyz, rad.xyz*exposure < 1 ? 16 : 15);
+          rad.xyz = Round_R11G11B10_FLOAT(rad.xyz, select(rad.xyz*exposure < 1, uint3(16,16,16), uint3(15,15,15)));
         ##endif
       ##elif dagi_sp_has_exposure_assume == always_rgbe
         rad.xyz = Round_R9G9B9E5_FLOAT(rad.xyz);

@@ -24,7 +24,15 @@ struct BvhSkinnedInstanceData
   uint cloth_noise_combined_tex_slot;
   float cloth_wind__noise_amp;
   float cloth_wind__ambient_influence;
-  uint pad0;
+  uint morph_atlas_tex_slot;
+  // WT dynmodel path: bound pack transform and the two dwords that the
+  // non-batched path passes as immediate consts (node chunk offset|size, instance chunk offset).
+  float4 pos_mul;
+  float4 pos_ofs;
+  uint node_data_dword;
+  uint instance_data_dword;
+  uint morph_uv_offset;
+  uint morph_uv_size;
 };
 
 #endif

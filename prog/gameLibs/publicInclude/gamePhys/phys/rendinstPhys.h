@@ -89,4 +89,5 @@ struct RendInstPhys
   RendInstPhys &operator=(const RendInstPhys &) = delete;
   RendInstPhys &operator=(RendInstPhys &&) = default;
   void cleanup();
+  bool isPhysObject() const { return physModel->physType == gamephys::DynamicPhysModel::E_PHYS_OBJECT; }
 };

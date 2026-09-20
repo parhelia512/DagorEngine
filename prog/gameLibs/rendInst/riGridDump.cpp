@@ -32,21 +32,20 @@ struct SceneObject
 static void collect_scene_objects(dag::Vector<SceneObject> &out)
 {
   out.clear();
-  for (uint32_t type = 0, typeEnd = rendinst::riExtra.size(); type < typeEnd; type++)
-  {
-    const rendinst::RiExtraPool &pool = rendinst::riExtra[type];
+  rendinst::iterateRIExtra([&](int type, const rendinst::RiExtraPool &pool) {
     for (int idx = 0, idxEnd = pool.riXYZR.size(); idx < idxEnd; idx++)
     {
       if (!pool.isValid(idx) || !pool.isInGrid(idx))
         continue;
       out.push_back(SceneObject{rendinst::make_handle(type, idx), pool.riXYZR[idx]});
     }
-  }
+  });
 }
 
 static void dump_scene(const char *path)
 {
   dag::Vector<SceneObject> scene;
+  rendinst::ScopedRIExtraReadLock rd;
   collect_scene_objects(scene);
 
   FullFileSaveCB cb(path);
@@ -66,14 +65,12 @@ static void dump_scene(const char *path)
   rigrid_get_dump_config(hdr.config);
   cb.write(&hdr, sizeof(hdr));
 
-  for (int i = 0; i < poolCount; i++)
-  {
-    const char *name = rendinst::getRIGenExtraName(i);
+  rendinst::iterateRIExtraMap([&](int, const char *name) {
     const int32_t len = name ? (int32_t)strlen(name) : 0;
     cb.write(&len, sizeof(len));
     if (len)
       cb.write(name, len);
-  }
+  });
 
   for (const SceneObject &o : scene)
   {

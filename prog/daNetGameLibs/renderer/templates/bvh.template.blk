@@ -17,10 +17,8 @@ bvh{
   "rtao_trace_node:dafg::NodeHandle"{}
   "rtao_denoise_node:dafg::NodeHandle"{}
   "ptgi_node:dafg::NodeHandle"{}
-  "water_rt_early_before_envi_node:dafg::NodeHandle"{}
-  "water_rt_early_after_envi_node:dafg::NodeHandle"{}
+  "water_rt_node:dafg::NodeHandle"{}
   "bvh_debug_dynmodels_node:dafg::NodeHandle"{}
-  "water_rt_late_node:dafg::NodeHandle"{}
   "bvh__rendinst_visibility:RiGenVisibilityECS"{}
   "bvh__rendinst_oof_visibility:RiGenVisibilityECS"{}
   "rt_persistent_textures:RTPersistentTexturesECS"{}

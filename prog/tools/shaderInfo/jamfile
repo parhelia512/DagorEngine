@@ -13,10 +13,16 @@ AddIncludes =
   $(Root)/prog/engine/shaders
   $(Root)/prog/engine/sharedInclude
   $(Root)/prog/tools/ShaderCompiler2/shaderBlobDisassembler/include
+  $(Root)/prog/gameLibs/publicInclude
+  $(Root)/prog/3rdPartyLibs/vulkan/include
+  $(Root)/prog/3rdPartyLibs/rapidjson/include
+  $(Root)/prog/tools/sharedInclude
 ;
 
 Sources =
   shaderInfo.cpp
+  rga.cpp
+  rgaPipelineState.cpp
   main.cpp
 ;
 
@@ -30,11 +36,14 @@ UseProgLibs =
   engine/math
   engine/lib3d
   engine/drv/drv3d_null
+  engine/drv/shadersMetaData
+  gameLibs/shaderBlobUnpack
   3rdPartyLibs/eastl
   3rdPartyLibs/hash/BLAKE3
   engine/shaders
   engine/perfMon/daProfilerStub
   tools/ShaderCompiler2/shaderBlobDisassembler
+  tools/libTools/util
 ;
 
 if $(Platform) = linux {
@@ -43,6 +52,15 @@ if $(Platform) = linux {
 
 if $(OS) = NT {
   AddLibs += D3dcompiler.lib ;
+}
+
+local rga_dir_rel_to_exe = ../../3rd_party/RDTS ;
+local rga_dir_rel_to_loc = $(Root)/tools/3rd_party/RDTS ;
+if ! [ GLOB $(rga_dir_rel_to_loc) : * ] {
+  echo Missing a RadeonDeveloperTools suite from $(rga_dir_rel_to_loc) ;
+  echo Either pull it from cvs, or set the RDTS_ROOT environment variable for a custom installation ;
+} else {
+  CPPopt += -DRGA_DIR_REL_TO_EXE=$(rga_dir_rel_to_exe) ;
 }
 
 include $(Root)/prog/_jBuild/build.jam ;

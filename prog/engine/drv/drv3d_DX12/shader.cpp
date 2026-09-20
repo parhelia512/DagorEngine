@@ -4,6 +4,7 @@
 #include "device_context.h"
 #include "pipeline/blk_cache.h"
 
+#include <drv/shadersMetaData/dxil/unpack.h>
 #include <EASTL/fixed_vector.h>
 
 using namespace drv3d_dx12;
@@ -119,285 +120,132 @@ bool InputLayout::fromVdecl(DecodeContext &context, const VSDTYPE &decl)
   return true;
 }
 
-StageShaderModule drv3d_dx12::shader_layout_to_module(const bindump::Mapper<dxil::Shader> &layout, const ShaderSource &source)
+static void set_module_debug_name_from_source(auto *module, const ShaderSourceExt &source)
+{
+  G_UNUSED(module);
+  G_UNUSED(source);
+#if DAGOR_DBGLEVEL > 0
+  if (auto debugName = source.getDebugName(); !debugName.empty() && module)
+    module->debugName = debugName;
+#endif
+}
+
+namespace
+{
+StageShaderModule to_stage_module(const dxil::StageModuleRef &ref, const ShaderSource &source)
 {
   StageShaderModule result;
+  result.ident.shaderHash = ref.hash;
+  result.ident.shaderSize = ref.hashedSize;
+  result.header = ref.header;
   result.source = source;
-  result.header = layout.shaderHeader;
-  result.bytecodeOffset = layout.bytecodeOffset;
-  result.bytecodeSize = layout.bytecodeSize;
+  result.bytecodeOffset = ref.bytecodeOffset;
+  result.bytecodeSize = ref.bytecodeSize;
+  if (!ref.debugName.empty())
+    result.debugName.assign(ref.debugName.begin(), ref.debugName.end());
   return result;
 }
 
-StageShaderModule drv3d_dx12::decode_shader_binary(const void *data, uint32_t size, const ShaderSource &source)
+StageShaderModuleInBinaryRef to_stage_module_ref(const dxil::StageModuleRef &ref, const uint8_t *bytecode)
 {
-  StageShaderModule result;
-  // TODO use size bounds checking
-  G_UNUSED(size);
-  auto fileHeader = reinterpret_cast<const dxil::FileHeader *>(data);
-  auto chunkHeaders = reinterpret_cast<const dxil::ChunkHeader *>(fileHeader + 1);
-  auto dataStart = reinterpret_cast<const uint8_t *>(chunkHeaders + fileHeader->chunkCount);
-  const dxil::ShaderHeader *shaderHeader = nullptr;
-  const char *shaderName = nullptr;
-  size_t shaderNameLength = 0;
-  uint32_t shaderModuleOffset = 0;
-  uint32_t shaderModuleSize = 0;
-  dxil::HashValue shaderModuleHash = {};
-  // NOTE redo shader binary format from chunk based to fixed layout with bits to indicate what is available.
-  for (auto &&header : make_span(chunkHeaders, fileHeader->chunkCount))
-  {
-    switch (header.type)
-    {
-      case dxil::ChunkType::SHADER_HEADER:
-        shaderHeader = reinterpret_cast<decltype(shaderHeader)>(dataStart + header.offset);
-        if (header.hash != dxil::HashValue::calculate(shaderHeader, 1))
-        {
-          D3D_ERROR("DX12: Error while decoding shader, shader header hash does not match");
-          return result;
-        }
-        break;
-      case dxil::ChunkType::DXIL:
-        if (!shaderModuleSize)
-        {
-          shaderModuleHash = header.hash;
-          shaderModuleOffset = header.offset;
-          shaderModuleSize = header.size;
-        }
-        break;
-      case dxil::ChunkType::DXBC: logwarn("DX12: DXBC shader chunk seen while decoding a shader module"); break;
-      case dxil::ChunkType::SHADER_NAME:
-        shaderName = reinterpret_cast<const char *>(dataStart + header.offset);
-        shaderNameLength = header.size;
-        if (header.hash != dxil::HashValue::calculate(shaderName, shaderNameLength))
-        {
-          // non fatal as its just some extra info
-          logwarn("DX12: Error while decoding shader, shader name hash does not match");
-          shaderName = nullptr;
-          shaderNameLength = 0;
-        }
-        break;
-      default:
-        D3D_ERROR("DX12: Error while decoding shader, unrecognized chunk header id %u", static_cast<uint32_t>(header.type));
-        return result;
-        break;
-    }
-  }
-
-  if (!shaderHeader)
-  {
-    D3D_ERROR("DX12: Error while decoding shader, unable to locate header chunk");
-    return result;
-  }
-  if (!shaderModuleSize)
-  {
-    D3D_ERROR("DX12: Error while decoding shader, unable to locate shader module chunk");
-    return result;
-  }
-
-  result.ident.shaderHash = shaderModuleHash;
-  result.ident.shaderSize = shaderModuleSize;
-  result.source = source;
-  result.header = *shaderHeader;
-  result.bytecodeOffset = shaderModuleOffset;
-  result.bytecodeSize = shaderModuleSize;
-  if (shaderName)
-    result.debugName.assign(shaderName, shaderName + shaderNameLength);
+  StageShaderModuleInBinaryRef result;
+  result.ident.shaderHash = ref.hash;
+  result.ident.shaderSize = ref.hashedSize;
+  result.header = ref.header;
+  result.byteCode = {bytecode + ref.bytecodeOffset, bytecode + ref.bytecodeOffset + ref.bytecodeSize};
+  if (!ref.debugName.empty())
+    result.debugName.assign(ref.debugName.begin(), ref.debugName.end());
   return result;
 }
+} // namespace
 
-eastl::unique_ptr<VertexShaderModule> drv3d_dx12::decode_vertex_shader(const ShaderSource &source)
+eastl::unique_ptr<VertexShaderModule> drv3d_dx12::decode_vertex_shader(const ShaderSourceExt &source)
 {
-  const void *data = source.metadata.data();
-  uint32_t size = source.metadata.size();
-
-  eastl::unique_ptr<VertexShaderModule> vs;
-  auto fileHeader = reinterpret_cast<const dxil::FileHeader *>(data);
-  if (fileHeader->ident == dxil::COMBINED_SHADER_UNCOMPRESSED_IDENT)
+  dxil::DecodedShaderRef decoded;
+  eastl::string error;
+  if (!dxil::decode_metadata(source.metadata, true, decoded, &error))
   {
-    auto sectionChunksHeaders = reinterpret_cast<const dxil::CombinedChunk *>(fileHeader + 1);
-    auto dataStart = reinterpret_cast<const uint8_t *>(sectionChunksHeaders + fileHeader->chunkCount);
-
-    eastl::unique_ptr<StageShaderModule> gs, hs, ds;
-    for (auto &&sHeader : eastl::span<const dxil::CombinedChunk>(sectionChunksHeaders, fileHeader->chunkCount))
-    {
-      auto basicModule = decode_shader_binary(dataStart + sHeader.offset, sHeader.size, source);
-      if (!basicModule)
-      {
-        vs.reset();
-        break;
-      }
-      auto shaderType = static_cast<dxil::ShaderStage>(basicModule.header.shaderType);
-      switch (shaderType)
-      {
-#if !_TARGET_XBOXONE
-        case dxil::ShaderStage::MESH:
+    D3D_ERROR("DX12: Error while decoding vertex shader, %s", error.c_str());
+    return {};
+  }
+#if _TARGET_XBOXONE
+  // XB1 has no mesh shader stage
+  if (decoded.isMesh)
+  {
+    D3D_ERROR("DX12: Error while decoding vertex shader, unexpected combined shader stage type %u", decoded.main.header.shaderType);
+    return {};
+  }
 #endif
-        case dxil::ShaderStage::VERTEX: vs = eastl::make_unique<VertexShaderModule>(eastl::move(basicModule)); break;
-#if !_TARGET_XBOXONE
-        case dxil::ShaderStage::AMPLIFICATION:
-#endif
-        case dxil::ShaderStage::GEOMETRY: gs = eastl::make_unique<StageShaderModule>(eastl::move(basicModule)); break;
-        case dxil::ShaderStage::DOMAIN: ds = eastl::make_unique<StageShaderModule>(eastl::move(basicModule)); break;
-        case dxil::ShaderStage::HULL: hs = eastl::make_unique<StageShaderModule>(eastl::move(basicModule)); break;
-        case dxil::ShaderStage::PIXEL:
-        case dxil::ShaderStage::COMPUTE:
-        default:
-          D3D_ERROR("DX12: Error while decoding vertex shader, unexpected combined shader stage type "
-                    "%u",
-            basicModule.header.shaderType);
-          return vs;
-      }
-    }
 
-    if (vs)
-    {
-      vs->geometryShader = eastl::move(gs);
-      vs->hullShader = eastl::move(hs);
-      vs->domainShader = eastl::move(ds);
-    }
-  }
-  else if (fileHeader->ident == dxil::SHADER_UNCOMPRESSED_IDENT)
+  auto vs = eastl::make_unique<VertexShaderModule>(to_stage_module(decoded.main, source));
+  if (!decoded.streamOutput.empty())
   {
-    auto basicModule = decode_shader_binary(data, size, source);
-    if (basicModule)
-    {
-      vs = eastl::make_unique<VertexShaderModule>(eastl::move(basicModule));
-    }
+    vs->streamOutputDesc.resize(decoded.streamOutput.size());
+    eastl::copy(decoded.streamOutput.begin(), decoded.streamOutput.end(), vs->streamOutputDesc.begin());
   }
-  else
-  {
-    auto basicModule = decode_shader_layout<VertexShaderModule>((const uint8_t *)data, source);
-    if (basicModule)
-    {
-      vs = eastl::make_unique<VertexShaderModule>(eastl::move(basicModule));
-    }
-    else
-    {
-      D3D_ERROR("DX12: Error while decoding vertex shader, unexpected shader identifier 0x%08X", fileHeader->ident);
-    }
-  }
+  if (decoded.gsOrAs)
+    vs->geometryShader = eastl::make_unique<StageShaderModule>(to_stage_module(decoded.gsOrAs, source));
+  if (decoded.hs)
+    vs->hullShader = eastl::make_unique<StageShaderModule>(to_stage_module(decoded.hs, source));
+  if (decoded.ds)
+    vs->domainShader = eastl::make_unique<StageShaderModule>(to_stage_module(decoded.ds, source));
 
+  set_module_debug_name_from_source(vs.get(), source);
   return vs;
 }
 
-eastl::unique_ptr<PixelShaderModule> drv3d_dx12::decode_pixel_shader(const ShaderSource &source)
+eastl::unique_ptr<PixelShaderModule> drv3d_dx12::decode_pixel_shader(const ShaderSourceExt &source)
 {
-  const void *data = source.metadata.data();
-  uint32_t size = source.metadata.size();
+  dxil::DecodedShaderRef decoded;
+  eastl::string error;
+  if (!dxil::decode_metadata(source.metadata, false, decoded, &error))
+  {
+    D3D_ERROR("DX12: Error while decoding pixel shader, %s", error.c_str());
+    return {};
+  }
 
-  eastl::unique_ptr<PixelShaderModule> ps;
-  auto fileHeader = reinterpret_cast<const dxil::FileHeader *>(data);
-  if (fileHeader->ident == dxil::SHADER_UNCOMPRESSED_IDENT)
-  {
-    auto basicModule = decode_shader_binary(data, size, source);
-    if (basicModule)
-    {
-      ps = eastl::make_unique<PixelShaderModule>(eastl::move(basicModule));
-    }
-  }
-  else
-  {
-    auto basicModule = decode_shader_layout<PixelShaderModule>((const uint8_t *)data, source);
-    if (basicModule)
-    {
-      ps = eastl::make_unique<PixelShaderModule>(eastl::move(basicModule));
-    }
-    else
-    {
-      D3D_ERROR("DX12: Error while decoding pixel shader, unexpected shader identifier 0x%08X", fileHeader->ident);
-    }
-  }
+  auto ps = eastl::make_unique<PixelShaderModule>(to_stage_module(decoded.main, source));
+  set_module_debug_name_from_source(ps.get(), source);
   return ps;
 }
 
-StageShaderModuleInBinaryRef drv3d_dx12::shader_layout_to_module_ref(const bindump::Mapper<dxil::Shader> &layout,
-  const uint8_t *bytecode)
+uint16_t drv3d_dx12::decode_implicit_cbuf_reg_count(dag::ConstSpan<uint8_t> metadata, bool expect_vertex_pipeline)
 {
-  G_ASSERT(bytecode);
-  G_ASSERT(layout.bytecodeSize > 0);
-  StageShaderModuleInBinaryRef result;
-  result.header = layout.shaderHeader;
-  result.byteCode = {bytecode + layout.bytecodeOffset, bytecode + layout.bytecodeOffset + layout.bytecodeSize};
-  return result;
+  dxil::DecodedShaderRef decoded;
+  if (!dxil::decode_metadata(metadata, expect_vertex_pipeline, decoded))
+    return 0;
+  uint32_t count = decoded.main.header.implicitCbufRegCount;
+  for (const dxil::StageModuleRef *sub : {&decoded.gsOrAs, &decoded.hs, &decoded.ds})
+  {
+    if (*sub)
+      count = max(count, sub->header.implicitCbufRegCount);
+  }
+  G_ASSERT(count < UINT16_MAX); // Must be true, max cbuf size is in the 16-bit range
+  return uint16_t(count);
 }
 
-StageShaderModuleInBinaryRef drv3d_dx12::decode_shader_binary_ref(const void *data, uint32_t size, const uint8_t *bytecode)
+static uint32_t vertex_module_implicit_cbuf_reg_count(const VertexShaderModule &vs)
 {
-  StageShaderModuleInBinaryRef result;
-  // TODO use size bounds checking
-  G_UNUSED(size);
-  auto fileHeader = reinterpret_cast<const dxil::FileHeader *>(data);
-  auto chunkHeaders = reinterpret_cast<const dxil::ChunkHeader *>(fileHeader + 1);
-  auto dataStart = reinterpret_cast<const uint8_t *>(chunkHeaders + fileHeader->chunkCount);
-  const dxil::ShaderHeader *shaderHeader = nullptr;
-  const uint8_t *shaderModule = nullptr;
-  const char *shaderName = nullptr;
-  size_t shaderNameLength = 0;
-  uint32_t shaderModuleSize = 0;
-  dxil::HashValue shaderModuleHash = {};
-  // NOTE redo shader binary format from chunk based to fixed layout with bits to indicate what is available.
-  for (auto &&header : make_span(chunkHeaders, fileHeader->chunkCount))
+  uint32_t count = vs.header.implicitCbufRegCount;
+  for (const StageShaderModule *sub : {vs.geometryShader.get(), vs.hullShader.get(), vs.domainShader.get()})
   {
-    switch (header.type)
-    {
-      case dxil::ChunkType::SHADER_HEADER:
-        shaderHeader = reinterpret_cast<decltype(shaderHeader)>(dataStart + header.offset);
-        if (header.hash != dxil::HashValue::calculate(shaderHeader, 1))
-        {
-          D3D_ERROR("DX12: Error while decoding shader, shader header hash does not match");
-          return result;
-        }
-        break;
-      case dxil::ChunkType::DXIL:
-        if (!shaderModule)
-        {
-          shaderModuleHash = header.hash;
-          shaderModule = bytecode + header.offset;
-          shaderModuleSize = header.size;
-          if (header.hash != dxil::HashValue::calculate(shaderModule, shaderModuleSize))
-          {
-            D3D_ERROR("DX12: Error while decoding shader, shader module hash does not match");
-            return result;
-          }
-        }
-        break;
-      case dxil::ChunkType::DXBC: logwarn("DX12: DXBC shader chunk seen while decoding a shader module"); break;
-      case dxil::ChunkType::SHADER_NAME:
-        shaderName = reinterpret_cast<const char *>(dataStart + header.offset);
-        shaderNameLength = header.size;
-        if (header.hash != dxil::HashValue::calculate(shaderName, shaderNameLength))
-        {
-          // non fatal as its just some extra info
-          logwarn("DX12: Error while decoding shader, shader name hash does not match");
-          shaderName = nullptr;
-          shaderNameLength = 0;
-        }
-        break;
-      default:
-        D3D_ERROR("DX12: Error while decoding shader, unrecognized chunk header id %u", static_cast<uint32_t>(header.type));
-        return result;
-        break;
-    }
+    if (sub)
+      count = max(count, sub->header.implicitCbufRegCount);
   }
+  G_ASSERT(count < UINT16_MAX); // Must be true, max cbuf size is in the 16-bit range
+  return uint16_t(count);
+}
 
-  if (!shaderHeader)
+ComputeShaderModule drv3d_dx12::decode_compute_shader(const ShaderSource &source)
+{
+  dxil::DecodedShaderRef decoded;
+  eastl::string error;
+  if (!dxil::decode_metadata(source.metadata, false, decoded, &error))
   {
-    D3D_ERROR("DX12: Error while decoding shader, unable to locate header chunk");
-    return result;
+    D3D_ERROR("DX12: Error while decoding compute shader, %s", error.c_str());
+    return {};
   }
-  if (!shaderModule)
-  {
-    D3D_ERROR("DX12: Error while decoding shader, unable to locate shader module chunk");
-    return result;
-  }
-
-  result.ident.shaderHash = shaderModuleHash;
-  result.ident.shaderSize = shaderModuleSize;
-  result.header = *shaderHeader;
-  result.byteCode = {shaderModule, shaderModule + shaderModuleSize};
-  if (shaderName)
-    result.debugName.assign(shaderName, shaderName + shaderNameLength);
-  return result;
+  return to_stage_module(decoded.main, source);
 }
 
 VertexShaderModuleInBinaryRef drv3d_dx12::decode_vertex_shader_ref(const void *data, uint32_t size, const uint8_t *bytecode)
@@ -405,78 +253,44 @@ VertexShaderModuleInBinaryRef drv3d_dx12::decode_vertex_shader_ref(const void *d
   G_ASSERT(data);
   G_ASSERT(bytecode);
   VertexShaderModuleInBinaryRef vs;
-  auto fileHeader = reinterpret_cast<const dxil::FileHeader *>(data);
-  if (fileHeader->ident == dxil::COMBINED_SHADER_UNCOMPRESSED_IDENT)
+  dxil::DecodedShaderRef decoded;
+  eastl::string error;
+  if (!dxil::decode_metadata(make_span_const(reinterpret_cast<const uint8_t *>(data), size), true, decoded, &error))
   {
-    auto sectionChunksHeaders = reinterpret_cast<const dxil::CombinedChunk *>(fileHeader + 1);
-    auto dataStart = reinterpret_cast<const uint8_t *>(sectionChunksHeaders + fileHeader->chunkCount);
-
-    auto &gs = vs.geometryShader;
-    auto &hs = vs.hullShader;
-    auto &ds = vs.domainShader;
-    for (auto &&sHeader : eastl::span<const dxil::CombinedChunk>(sectionChunksHeaders, fileHeader->chunkCount))
-    {
-      auto basicModule = decode_shader_binary_ref(dataStart + sHeader.offset, sHeader.size, bytecode);
-      if (basicModule.byteCode.empty())
-      {
-        vs = {};
-        break;
-      }
-      auto shaderType = static_cast<dxil::ShaderStage>(basicModule.header.shaderType);
-      switch (shaderType)
-      {
-#if !_TARGET_XBOXONE
-        case dxil::ShaderStage::MESH:
+    D3D_ERROR("DX12: Error while decoding vertex shader, %s", error.c_str());
+    return vs;
+  }
+#if _TARGET_XBOXONE
+  // XB1 has no mesh shader stage
+  if (decoded.isMesh)
+  {
+    D3D_ERROR("DX12: Error while decoding vertex shader, unexpected combined shader stage type %u", decoded.main.header.shaderType);
+    return vs;
+  }
 #endif
-        case dxil::ShaderStage::VERTEX: static_cast<StageShaderModuleInBinaryRef &>(vs) = basicModule; break;
-#if !_TARGET_XBOXONE
-        case dxil::ShaderStage::AMPLIFICATION:
-#endif
-        case dxil::ShaderStage::GEOMETRY: gs = basicModule; break;
-        case dxil::ShaderStage::DOMAIN: ds = basicModule; break;
-        case dxil::ShaderStage::HULL: hs = basicModule; break;
-        case dxil::ShaderStage::PIXEL:
-        case dxil::ShaderStage::COMPUTE:
-        default:
-          D3D_ERROR("DX12: Error while decoding vertex shader, unexpected combined shader stage type "
-                    "%u",
-            basicModule.header.shaderType);
-          return vs;
-      }
-    }
-  }
-  else if (fileHeader->ident == dxil::SHADER_UNCOMPRESSED_IDENT)
-  {
-    static_cast<StageShaderModuleInBinaryRef &>(vs) = decode_shader_binary_ref(data, size, bytecode);
-  }
-  else
-  {
-    vs = decode_shader_layout_ref<VertexShaderModuleInBinaryRef>((const uint8_t *)data, bytecode);
-  }
-  if (vs.byteCode.empty())
-  {
-    D3D_ERROR("DX12: Error while decoding vertex shader, unexpected shader identifier 0x%08X", fileHeader->ident);
-  }
 
+  static_cast<StageShaderModuleInBinaryRef &>(vs) = to_stage_module_ref(decoded.main, bytecode);
+  vs.streamOutputDesc = decoded.streamOutput;
+  if (decoded.gsOrAs)
+    vs.geometryShader = to_stage_module_ref(decoded.gsOrAs, bytecode);
+  if (decoded.hs)
+    vs.hullShader = to_stage_module_ref(decoded.hs, bytecode);
+  if (decoded.ds)
+    vs.domainShader = to_stage_module_ref(decoded.ds, bytecode);
   return vs;
 }
 
 PixelShaderModuleInBinaryRef drv3d_dx12::decode_pixel_shader_ref(const void *data, uint32_t size, const uint8_t *bytecode)
 {
   PixelShaderModuleInBinaryRef result;
-  auto fileHeader = reinterpret_cast<const dxil::FileHeader *>(data);
-  if (fileHeader->ident == dxil::SHADER_UNCOMPRESSED_IDENT)
+  dxil::DecodedShaderRef decoded;
+  eastl::string error;
+  if (!dxil::decode_metadata(make_span_const(reinterpret_cast<const uint8_t *>(data), size), false, decoded, &error))
   {
-    result = decode_shader_binary_ref(data, size, bytecode);
+    D3D_ERROR("DX12: Error while decoding pixel shader, %s", error.c_str());
+    return result;
   }
-  else
-  {
-    result = decode_shader_layout_ref<PixelShaderModuleInBinaryRef>((const uint8_t *)data, bytecode);
-  }
-  if (result.byteCode.empty())
-  {
-    D3D_ERROR("DX12: Error while decoding pixel shader, unexpected shader identifier 0x%08X", fileHeader->ident);
-  }
+  result = to_stage_module_ref(decoded.main, bytecode);
   return result;
 }
 
@@ -487,10 +301,12 @@ void ShaderProgramDatabase::initDebugProgram(DeviceContext &ctx)
   debugVSHeader.inOutSemanticMask = 1ul << dxil::getIndexFromSementicAndSemanticIndex("POSITION", 0);
   debugVSHeader.inOutSemanticMask |= 1ul << dxil::getIndexFromSementicAndSemanticIndex("COLOR", 0);
   debugVSHeader.resourceUsageTable.bRegisterUseMask = 1ul << 0;
+  debugVSHeader.implicitCbufRegCount = 4;
 
   dxil::ShaderHeader debugPSHeader = {};
   debugPSHeader.shaderType = static_cast<uint16_t>(dxil::ShaderStage::PIXEL);
   debugPSHeader.inOutSemanticMask = 0x0000000F;
+  debugPSHeader.implicitCbufRegCount = 0;
 
   VSDTYPE ilDefAry[] = //
     {VSD_STREAM(0), VSD_REG(VSDR_POS, VSDT_FLOAT3), VSD_REG(VSDR_DIFF, VSDT_E3DCOLOR), VSD_END};
@@ -522,7 +338,11 @@ ShaderID ShaderProgramDatabase::newRawVertexShader(DeviceContext &ctx, const dxi
   module->header = header;
   module->source = ShaderSource{.compressedData = byte_code, .uncompressedSize = byte_code.size()};
   module->bytecodeSize = byte_code.size();
-  auto id = shaderProgramGroups.addVertexShader();
+  ShaderID id;
+  {
+    ScopedLockWriteTemplate<OSReadWriteLock> lock(dataGuard);
+    id = shaderProgramGroups.addVertexShader(header.implicitCbufRegCount);
+  }
   ctx.addVertexShader(id, eastl::move(module));
   return id;
 }
@@ -536,29 +356,30 @@ ShaderID ShaderProgramDatabase::newRawPixelShader(DeviceContext &ctx, const dxil
   module->header = header;
   module->source = ShaderSource{.compressedData = byte_code, .uncompressedSize = byte_code.size()};
   module->bytecodeSize = byte_code.size();
-  auto id = shaderProgramGroups.addPixelShader();
+  ShaderID id;
+  {
+    ScopedLockWriteTemplate<OSReadWriteLock> lock(dataGuard);
+    id = shaderProgramGroups.addPixelShader(header.implicitCbufRegCount);
+  }
   ctx.addPixelShader(id, eastl::move(module));
   return id;
 }
 
-ProgramID ShaderProgramDatabase::newComputeProgram(DeviceContext &ctx, const ShaderSource &source, CSPreloaded preloaded)
+ProgramID ShaderProgramDatabase::newComputeProgram(DeviceContext &ctx, const ShaderSourceExt &source, CSPreloaded preloaded)
 {
-  auto basicModule = decode_shader_layout<ComputeShaderModule>(source.metadata.data(), source);
+  auto basicModule = decode_compute_shader(source);
   if (!basicModule)
   {
-    basicModule = decode_shader_binary(source.metadata.data(), source.metadata.size(), source);
-    if (!basicModule)
-    {
-      return ProgramID::Null();
-    }
+    return ProgramID::Null();
   }
 
   auto module = eastl::make_unique<ComputeShaderModule>(eastl::move(basicModule));
+  set_module_debug_name_from_source(module.get(), source);
 
   ProgramID program;
   {
     ScopedLockWriteTemplate<OSReadWriteLock> lock(dataGuard);
-    program = shaderProgramGroups.addComputeShaderProgram();
+    program = shaderProgramGroups.addComputeShaderProgram(module->header.implicitCbufRegCount);
   }
   ctx.addComputeProgram(program, eastl::move(module), preloaded);
 
@@ -611,6 +432,12 @@ GraphicsProgramUsageInfo ShaderProgramDatabase::getGraphicsProgramForStateUpdate
 {
   ScopedLockReadTemplate<OSReadWriteLock> lock(dataGuard);
   return shaderProgramGroups.getUsageInfo(program);
+}
+
+ComputeProgramUsageInfo ShaderProgramDatabase::getComputeProgramForStateUpdate(ProgramID program)
+{
+  ScopedLockReadTemplate<OSReadWriteLock> lock(dataGuard);
+  return {program, shaderProgramGroups.getComputeProgramImplicitCbufRegCount(program)};
 }
 
 InputLayoutID ShaderProgramDatabase::registerInputLayoutInternal(DeviceContext &ctx, const InputLayout &layout)
@@ -667,7 +494,7 @@ void ShaderProgramDatabase::shutdown(DeviceContext &ctx)
   nullPixelShader = ShaderID::Null();
 }
 
-ShaderID ShaderProgramDatabase::newVertexShader(DeviceContext &ctx, const ShaderSource &source)
+ShaderID ShaderProgramDatabase::newVertexShader(DeviceContext &ctx, const ShaderSourceExt &source)
 {
   auto vs = decode_vertex_shader(source);
 
@@ -676,14 +503,14 @@ ShaderID ShaderProgramDatabase::newVertexShader(DeviceContext &ctx, const Shader
   {
     {
       ScopedLockWriteTemplate<OSReadWriteLock> lock(dataGuard);
-      id = shaderProgramGroups.addVertexShader();
+      id = shaderProgramGroups.addVertexShader(vertex_module_implicit_cbuf_reg_count(*vs));
     }
     ctx.addVertexShader(id, eastl::move(vs));
   }
   return id;
 }
 
-ShaderID ShaderProgramDatabase::newPixelShader(DeviceContext &ctx, const ShaderSource &source)
+ShaderID ShaderProgramDatabase::newPixelShader(DeviceContext &ctx, const ShaderSourceExt &source)
 {
   auto ps = decode_pixel_shader(source);
 
@@ -692,7 +519,7 @@ ShaderID ShaderProgramDatabase::newPixelShader(DeviceContext &ctx, const ShaderS
   {
     {
       ScopedLockWriteTemplate<OSReadWriteLock> lock(dataGuard);
-      id = shaderProgramGroups.addPixelShader();
+      id = shaderProgramGroups.addPixelShader(ps->header.implicitCbufRegCount);
     }
 
     ctx.addPixelShader(id, eastl::move(ps));
@@ -762,16 +589,6 @@ void ShaderProgramDatabase::deletePixelShader(DeviceContext &ctx, ShaderID shade
   ctx.removePixelShader(shader);
   for (auto gpid : toRemove)
     ctx.removeGraphicsProgram(gpid);
-}
-
-void ShaderProgramDatabase::updateVertexShaderName(DeviceContext &ctx, ShaderID shader, const char *name)
-{
-  ctx.updateVertexShaderName(shader, name);
-}
-
-void ShaderProgramDatabase::updatePixelShaderName(DeviceContext &ctx, ShaderID shader, const char *name)
-{
-  ctx.updatePixelShaderName(shader, name);
 }
 
 void ShaderProgramDatabase::registerShaderBinDump(DeviceContext &ctx, ScriptedShadersBinDumpOwner *dump, const char *name)
@@ -916,18 +733,6 @@ const dxil::HashValue &backend::ShaderModuleManager::getVertexShaderHash(ShaderI
   return shaderGroupZero.vertex[id.getIndex()]->header.hash;
 }
 
-void backend::ShaderModuleManager::setVertexShaderName(ShaderID id, eastl::span<const char> name)
-{
-  if (0 == id.getGroup())
-  {
-    shaderGroupZero.vertex[id.getIndex()]->header.debugName.assign(begin(name), end(name));
-  }
-  else
-  {
-    shaderGroup[id.getGroup() - 1].vertex[id.getIndex()]->header.debugName.assign(begin(name), end(name));
-  }
-}
-
 const dxil::HashValue &backend::ShaderModuleManager::getPixelShaderHash(ShaderID id) const
 {
   if (0 != id.getGroup())
@@ -936,18 +741,6 @@ const dxil::HashValue &backend::ShaderModuleManager::getPixelShaderHash(ShaderID
   }
 
   return shaderGroupZero.pixel[id.getIndex()]->header.hash;
-}
-
-void backend::ShaderModuleManager::setPixelShaderName(ShaderID id, eastl::span<const char> name)
-{
-  if (0 != id.getGroup())
-  {
-    shaderGroup[id.getGroup() - 1].pixel[id.getIndex()]->header.debugName.assign(begin(name), end(name));
-  }
-  else
-  {
-    shaderGroupZero.pixel[id.getIndex()]->header.debugName.assign(begin(name), end(name));
-  }
 }
 
 backend::VertexShaderModuleRefStore backend::ShaderModuleManager::getVertexShader(ShaderID id)

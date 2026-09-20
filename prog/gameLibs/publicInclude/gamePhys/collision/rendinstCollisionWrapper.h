@@ -50,7 +50,7 @@ struct WrapperRendInstCollisionCB : WrapperRendInstCollisionImplCB
   {
     CollisionObject obj = WrapperRendInstCollisionImplCB::processCollisionInstance(coll_info, alternative_obj, normalized_tm);
 
-    contactCallback.collMatId = rendinst::getRIGenMaterialId(coll_info.desc);
+    contactCallback.collMatId = coll_info.matId;
     contactCallback.originalRIPos = normalized_tm.getcol(3);
 
     return obj;

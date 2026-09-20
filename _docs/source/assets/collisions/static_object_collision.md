@@ -1782,9 +1782,9 @@ collision geometry is placed.
    processing consistently across all assets. These files contain essential
    parameters such as:
 
-   - ``collapseAndOptimize:b=yes``: Enables additional geometry optimization and
-     compression during packaging.
-   - ``buildFRT:b=yes``: Enables building for the FastRayTracer.
+   - ``collapseNodes:b=yes`` (and older equivalent ``collapseAndOptimize:b=yes``): Enables
+     collapsing nodes of the same type to one (mesh geometry optimization).
+   - ``buildFRT:b=yes``: Enables building BLAS for tracing with faces treated as 2-sided.
 
    The exact parameters are less important than the fact that they are
    automatically applied to all render instance collisions via these include

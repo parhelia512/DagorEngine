@@ -744,6 +744,8 @@ public:
 		addIEx("TableAngledHeadersTextAlign", "ImGuiStyleVar_TableAngledHeadersTextAlign", int64_t(ImGuiStyleVar_::ImGuiStyleVar_TableAngledHeadersTextAlign), das::LineInfo());
 		addIEx("TreeLinesSize", "ImGuiStyleVar_TreeLinesSize", int64_t(ImGuiStyleVar_::ImGuiStyleVar_TreeLinesSize), das::LineInfo());
 		addIEx("TreeLinesRounding", "ImGuiStyleVar_TreeLinesRounding", int64_t(ImGuiStyleVar_::ImGuiStyleVar_TreeLinesRounding), das::LineInfo());
+		addIEx("MenuItemRounding", "ImGuiStyleVar_MenuItemRounding", int64_t(ImGuiStyleVar_::ImGuiStyleVar_MenuItemRounding), das::LineInfo());
+		addIEx("SelectableRounding", "ImGuiStyleVar_SelectableRounding", int64_t(ImGuiStyleVar_::ImGuiStyleVar_SelectableRounding), das::LineInfo());
 		addIEx("ButtonTextAlign", "ImGuiStyleVar_ButtonTextAlign", int64_t(ImGuiStyleVar_::ImGuiStyleVar_ButtonTextAlign), das::LineInfo());
 		addIEx("SelectableTextAlign", "ImGuiStyleVar_SelectableTextAlign", int64_t(ImGuiStyleVar_::ImGuiStyleVar_SelectableTextAlign), das::LineInfo());
 		addIEx("SeparatorTextBorderSize", "ImGuiStyleVar_SeparatorTextBorderSize", int64_t(ImGuiStyleVar_::ImGuiStyleVar_SeparatorTextBorderSize), das::LineInfo());

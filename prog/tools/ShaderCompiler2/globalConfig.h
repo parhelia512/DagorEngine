@@ -28,7 +28,7 @@ namespace shc
 struct CompilerConfig
 {
   // See https://gaijinentertainment.github.io/DagorEngine/dagor-tools/shader-compiler/contributing_to_compiler.html#versioning
-  const char *version = "2.83"; // logging only
+  const char *version = "2.84"; // logging only
 
   const char *singleCompilationShName = nullptr;
   const char *intermediateDir = nullptr;
@@ -79,14 +79,15 @@ struct CompilerConfig
   unsigned numProcesses = -1;
   unsigned numWorkers = 0;
 
-  int hlslMaximumVsfAllowed = 2048;
-  int hlslMaximumPsfAllowed = 2048;
+  int hlslMaximumVsfAllowed = 4096;
+  int hlslMaximumPsfAllowed = 4096;
   int hlslOptimizationLevel = 4;
 
   const DataBlock *requiredShaders = &DataBlock::emptyBlock;
   const DataBlock *assumedVarsConfig = &DataBlock::emptyBlock;
 
   DebugLevel hlslDebugLevel = DebugLevel::NONE;
+  DebugParts hlslDebugParts = DebugParts::STRIP;
 
   shader_layout::ExternalStcodeMode cppStcodeMode = shader_layout::ExternalStcodeMode::NONE;
   StcodeDynlibConfig cppStcodeCompConfig = StcodeDynlibConfig::DEV;
@@ -115,7 +116,6 @@ struct CompilerConfig
   bool hlslSavePPAsComments : 1 = false;
   bool isDebugModeEnabled : 1 = false;
   bool constrainCompressedBindumpSize : 1 = true;
-  bool hlslEmbedSource : 1 = false;
   bool hlslSkipValidation : 1 = false;
   bool hlslNoDisassembly : 1 = false;
   bool hlslShowWarnings : 1 = false;

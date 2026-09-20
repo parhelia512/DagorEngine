@@ -47,11 +47,11 @@ CloudsChangeFlags CloudsFormLUT::render()
   // todo: implement Compute version
   SCOPE_RENDER_TARGET;
   d3d::set_render_target({}, DepthAccess::RW, {{clouds_types_lut.getTex2D(), 0, 0}});
-  d3d::clearview(CLEAR_DISCARD_TARGET, 0, 0, 0);
+  d3d::clearview(DISCARD_TARGET, 0, 0, 0);
   gen_clouds_types_lut.render();
   d3d::resource_barrier({clouds_types_lut.getTex2D(), RB_RO_SRV | RB_STAGE_COMPUTE | RB_STAGE_PIXEL, 0, 0});
   d3d::set_render_target({}, DepthAccess::RW, {{clouds_phase_lut.getTex2D(), 0, 0}});
-  d3d::clearview(CLEAR_DISCARD_TARGET, 0, 0, 0);
+  d3d::clearview(DISCARD_TARGET, 0, 0, 0);
   gen_clouds_phase_lut.render();
   d3d::resource_barrier({clouds_phase_lut.getTex2D(), RB_RO_SRV | RB_STAGE_COMPUTE | RB_STAGE_PIXEL, 0, 0});
   frameValid = true;

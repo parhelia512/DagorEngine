@@ -1,10 +1,13 @@
 // Copyright (C) Gaijin Games KFT.  All rights reserved.
 
-#include "../fast_isalnum.h"
 #include "asmShaders11.h"
+#include "../fast_isalnum.h"
+#include "../const3d.h"
+#include "../defer.h"
 
 #include <D3Dcompiler.h>
 
+#include <drv/shadersMetaData/dx11/compiled_shader_header.h>
 #include <osApiWrappers/dag_critSec.h>
 #include <osApiWrappers/dag_unicode.h>
 #include <util/dag_globDef.h>
@@ -12,6 +15,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <generic/dag_tab.h>
+#include <generic/dag_align.h>
 #include <util/dag_string.h>
 #include <debug/dag_debug.h>
 
@@ -36,7 +40,7 @@ eastl::tuple<eastl::vector<uint8_t>, eastl::vector<uint8_t>> get_blob_with_heade
 }
 
 CompileResult compileShaderDX11(const char *shaderName, const char *source, const char **args, const char *profile, const char *entry,
-  bool need_disasm, DebugLevel hlsl_debug_level, bool skip_validation, bool embed_source, unsigned flags, int max_constants_no)
+  bool need_disasm, DebugLevel hlsl_debug_level, bool skip_validation, DebugParts debug_parts, unsigned flags, int implicit_cbuf_size)
 {
   CompileResult result;
   ID3D10Blob *bytecode = nullptr;
@@ -60,7 +64,7 @@ CompileResult compileShaderDX11(const char *shaderName, const char *source, cons
     d3dCompileFlags |= D3DCOMPILE_DEBUG;
   else
     d3dCompileFlags |= flags; // not sure why flags is only applied in this case, but this is consistent with the original former
-  if (embed_source)
+  if (debug_parts == DebugParts::EMBED_SOURCE)
     d3dCompileFlags |= D3DCOMPILE_DEBUG;
 
   HRESULT hr = D3DCompile(source, //_In_   LPCSTR pSrcData,
@@ -93,9 +97,14 @@ CompileResult compileShaderDX11(const char *shaderName, const char *source, cons
   if (errors)
     errors->Release(); // should not be needed, however, for avoidance of mem leak if compiler returns warnings in errors
 
-  int maxRtv = -1;
+  DEFER([&] {
+    if (bytecode)
+      bytecode->Release();
+  });
 
-  if (profile[0] == 'c' || profile[0] == 'p')
+  int maxRtv = -1;
+  int implicitCbufRegCountFromReflection = 0;
+
   {
     ID3D11ShaderReflection *reflector = nullptr;
     hr = D3DReflect(bytecode->GetBufferPointer(), bytecode->GetBufferSize(), IID_PPV_ARGS(&reflector));
@@ -105,12 +114,29 @@ CompileResult compileShaderDX11(const char *shaderName, const char *source, cons
       reflector->GetThreadGroupSize(&result.computeShaderInfo.threadGroupSizeX, &result.computeShaderInfo.threadGroupSizeY,
         &result.computeShaderInfo.threadGroupSizeZ);
     }
-    else // pixel shader
-    {
-      D3D11_SHADER_DESC desc;
-      hr = reflector->GetDesc(&desc);
-      G_ASSERTF(SUCCEEDED(hr), "Unable to reflect the pixel shader desc");
 
+    D3D11_SHADER_DESC desc;
+    hr = reflector->GetDesc(&desc);
+    G_ASSERTF(SUCCEEDED(hr), "Unable to reflect the shader desc");
+    for (UINT bri = 0; bri < desc.BoundResources; ++bri)
+    {
+      D3D11_SHADER_INPUT_BIND_DESC bindDesc{};
+      hr = reflector->GetResourceBindingDesc(bri, &bindDesc);
+      G_ASSERTF(SUCCEEDED(hr), "Unable to reflect the binding desc");
+
+      if (bindDesc.Type == D3D_SIT_CBUFFER && bindDesc.BindPoint == 0)
+      {
+        D3D11_SHADER_BUFFER_DESC cbufDesc;
+        ID3D11ShaderReflectionConstantBuffer *cbuf = reflector->GetConstantBufferByName(bindDesc.Name);
+        G_ASSERTF(cbuf, "Unable to reflect the constbuffer");
+        hr = cbuf->GetDesc(&cbufDesc);
+        G_ASSERTF(SUCCEEDED(hr), "Unable to reflect the constbuffer desc");
+        implicitCbufRegCountFromReflection = dag::divide_align_up(cbufDesc.Size, REGISTER_BYTE_SIZE);
+        break;
+      }
+    }
+    if (profile[0] == 'p')
+    {
       for (uint32_t i = 0; i < desc.OutputParameters; ++i)
       {
         D3D11_SIGNATURE_PARAMETER_DESC out;
@@ -119,7 +145,16 @@ CompileResult compileShaderDX11(const char *shaderName, const char *source, cons
           maxRtv = max(maxRtv, int(out.SemanticIndex));
       }
     }
+
     reflector->Release();
+  }
+
+  if (implicit_cbuf_size < implicitCbufRegCountFromReflection)
+  {
+    result.errors.sprintf("b0 constbuffer size %d regs in reflection exceeds dshl-allocated size of %d regs. If you use "
+                          "hlsl-hardcoded register arrays, specify sentinel registers.",
+      implicitCbufRegCountFromReflection, implicit_cbuf_size);
+    return result;
   }
 
   if (need_disasm)
@@ -138,23 +173,24 @@ CompileResult compileShaderDX11(const char *shaderName, const char *source, cons
   uint32_t strip_reflect_flags = D3DCOMPILER_STRIP_REFLECTION_DATA;
 
   ID3DBlob *bytecodeStripped = NULL;
-  if (hlsl_debug_level == DebugLevel::NONE)
+  if (hlsl_debug_level == DebugLevel::NONE && debug_parts == DebugParts::STRIP)
     D3DStripShader(bytecodeMsg, bytecodeSz,
       strip_reflect_flags | D3DCOMPILER_STRIP_DEBUG_INFO | D3DCOMPILER_STRIP_TEST_BLOBS | D3DCOMPILER_STRIP_PRIVATE_DATA,
       &bytecodeStripped);
   if (bytecodeStripped)
   {
-    // debug("%s %s: %d -> %d", entry, profile, bytecodeSz, bytecodeStripped->GetBufferSize());
     bytecodeMsg = (const char *)bytecodeStripped->GetBufferPointer();
     bytecodeSz = bytecodeStripped->GetBufferSize();
   }
 
-  // size_t extsize32 = 1 + (bytecodeSz + sizeof(uint32_t)-1) / sizeof(uint32_t);
-  // uint32_t *data = new uint32_t [extsize32];
-  // memset(data, 0x00, extsize32 * sizeof(uint32_t)); //clean required bytes
-  // memcpy(data+1, bytecodeMsg, bytecodeSz);
-  //*data = bytecodeSz;
-  int header[2] = {max_constants_no, maxRtv};
+  DEFER([&] {
+    if (bytecodeStripped)
+      bytecodeStripped->Release();
+  });
+
+  // @TODO: here we store the old-style max-used-register, so as not to change format. Deprecate this altogether!
+  int header[2] = {max(implicit_cbuf_size - 1, 0), maxRtv};
+  G_STATIC_ASSERT(sizeof(uint32_t) + sizeof(header) == dx11::SIMPLE_METADATA_SIZE);
   if (strncmp(profile, "hs", 2) == 0)
   {
     ID3D10Blob *hs_disasm = nullptr;
@@ -191,15 +227,10 @@ CompileResult compileShaderDX11(const char *shaderName, const char *source, cons
     if (!topology)
       logwarn("HS: topology undefined, using D3D_PRIMITIVE_TOPOLOGY_3_CONTROL_POINT_PATCHLIST");
 
-    header[0] |= topology << 24;
+    header[0] |= topology << dx11::HS_TOPOLOGY_SHIFT;
   }
   eastl::tie(result.metadata, result.bytecode) =
     get_blob_with_header_aligned((void *)bytecodeMsg, (int)bytecodeSz, header, (int)sizeof(header));
-
-  if (bytecode)
-    bytecode->Release();
-  if (bytecodeStripped)
-    bytecodeStripped->Release();
 
   return result;
 }

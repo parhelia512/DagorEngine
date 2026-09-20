@@ -95,6 +95,7 @@ private:
   Point3 bsmBlendSunFrom = {0, 0, 0};
   bool bsmLiveValid = false, bsmPendingValid = false, bsmNeedFull = false, bsmBuildActive = false;
   int bsmCycleFrame = 0, bsmLiveIdx = 0, bsmFiltIdx = 0, bsmLog2AmortizeFrames = 4;
+  bool bsmEnabled = true;
   // textures, raw store, dispatch and texel snapping all derive from this;
   // must stay divisible by 8 (Bayer quads / rect split)
   int bsmResolution = 512;

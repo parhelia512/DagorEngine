@@ -2,6 +2,7 @@
 #pragma once
 
 #include <debug/dag_assert.h>
+#include <drv/shadersMetaData/metal/register_limits.h>
 
 namespace drv3d_metal
 {
@@ -90,9 +91,9 @@ static_assert(sizeof(EncodedBufferRemap) == 4, "this is important");
 enum BufferTypeCount
 {
   GEOM_BUFFER_COUNT = 2,
-  CONST_BUFFER_COUNT = 12,
-  STRUCT_BUFFER_COUNT = 32,
-  RW_BUFFER_COUNT = 10,
+  CONST_BUFFER_COUNT = metal::MAX_B_REGISTERS,
+  STRUCT_BUFFER_COUNT = metal::MAX_T_REGISTERS,
+  RW_BUFFER_COUNT = metal::MAX_U_REGISTERS,
   BINDLESS_TEXTURE_ID_BUFFER_COUNT = 5,
   BINDLESS_SAMPLER_ID_BUFFER_COUNT = 3,
   BINDLESS_BUFFER_ID_BUFFER_COUNT = 3,
@@ -113,11 +114,15 @@ enum BUFFERBINDPOINT
 };
 
 static constexpr int BIND_POINT = GEOM_BUFFER_COUNT;
-static constexpr int IMMEDIATE_BIND_SLOT = BIND_POINT + 2; // backend bind slot
-static constexpr int IMMEDIATE_BIND_POINT = 13;            // hlsl slot
+static constexpr int IMMEDIATE_BIND_SLOT = BIND_POINT + 2;                // backend bind slot
+static constexpr int IMMEDIATE_BIND_POINT = metal::IMMEDIATE_CB_REGISTER; // hlsl slot
 
-static constexpr int MAX_SHADER_TEXTURES = 32;
-static constexpr int MAX_SHADER_ACCELERATION_STRUCTURES = 32;
+static constexpr int MAX_SHADER_TEXTURES = metal::MAX_T_REGISTERS;
+
+// first MAX_SHADER_TEXTURES is ordinary textures
+// second MAX_SHADER_TEXTURES are uav textures
+static constexpr int MAX_STAGE_TEXTURES = MAX_SHADER_TEXTURES * 2;
+static constexpr int MAX_SHADER_ACCELERATION_STRUCTURES = metal::MAX_T_REGISTERS;
 
 #define BIND_POINT_STR "2"
 

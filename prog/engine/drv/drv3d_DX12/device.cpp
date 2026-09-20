@@ -53,6 +53,16 @@ NVAPI_D3D12_RAYTRACING_OPACITY_MICROMAP_FORMAT to_nvidia(::raytrace::OpacityMicr
 #endif
 
 const char *as_yesno(bool boolean) { return boolean ? "Yes" : "No"; }
+
+#if _TARGET_PC_WIN
+eastl::optional<TwoComponentVersion> parse_nvidia_version(const char *text)
+{
+  TwoComponentVersion version{};
+  if (2 != sscanf(text, " %u . %u", &version.major, &version.minor))
+    return eastl::nullopt;
+  return version;
+}
+#endif
 } // namespace
 
 namespace drv3d_dx12
@@ -953,6 +963,9 @@ Device::~Device() { shutdown(); }
 
 void Device::setupNullViews()
 {
+  // Every descriptor here belongs to the null resource table. A failure means the device is being
+  // removed, DescriptorHeap::allocate is fatal otherwise, so the results are discarded on purpose:
+  // an entry that stays null is only reachable while the device is already going down.
   if (isIll())
     return;
 
@@ -1154,22 +1167,25 @@ Image *Device::createEsramBackedImage(const ImageInfo &ii, Image *base_image, co
     return nullptr;
   }
 
-  ImageCreateResult result{};
-  if (base_image)
-  {
-    result = resources.aliasESRamTexture(device.get(), ii, base_image, name);
-  }
-  else
-  {
-    result = resources.createESRamTexture(device.get(), ii, name);
-  }
+  // No ESRAM left for it is not an error, the caller places the texture in normal memory instead.
+  auto imageOpt =
+    (base_image ? resources.aliasESRamTexture(device.get(), ii, base_image, name)
+                : resources.createESRamTexture(device.get(), ii, name))
+      .transform_error([name](auto error) {
+        D3D_ERROR("DX12: Unable to create ESRAM backed texture <%s>, %s", name, dxgi_error_code_to_string(error.errorCode));
+        return error;
+      })
+      .value_or({});
 
-  if (result.image)
-  {
-    context.setImageResourceState(result.state, result.image->getGlobalSubresourceIdRange());
-  }
-
-  return result.image;
+  return imageOpt
+    .transform([this](auto result) {
+      if (result.image)
+      {
+        context.setImageResourceState(result.state, result.image->getGlobalSubresourceIdRange());
+      }
+      return result.image;
+    })
+    .value_or(nullptr);
 }
 #endif
 
@@ -1316,6 +1332,8 @@ bool Device::init(const Direct3D12Enviroment &d3d_env, debug::GlobalState &debug
   config = cfg;
   psoSlowThresholdUsec = dxCfg.getInt("psoSlowThresholdMsec", 1000) * 1000;
 
+  driverVersion = get_driver_version_from_adapter(adapter.Get());
+
   pipelineManagerSetup.shadingModel = shader_model_from_dx(get_shader_model(device.get()).HighestShaderModel);
 
   ShadingModelClampInfo shadingModelClampInfo{};
@@ -1342,13 +1360,14 @@ bool Device::init(const Direct3D12Enviroment &d3d_env, debug::GlobalState &debug
 
   pipelineManagerSetup.shadingModel = clamp_shader_model(pipelineManagerSetup.shadingModel, shadingModelClampInfo);
 
+  allowRaytracePipelinePreload = true;
+  if (GpuVendor::NVIDIA == vendor && dxCfg.getBool("skipPreloadRaytracingPipelinesOnNvidia", false))
   {
-    const bool isNvidia = GpuVendor::NVIDIA == vendor;
-    const bool blkSkip = dxCfg.getBool("skipPreloadRaytracingPipelinesOnNvidia", false);
-    allowRaytracePipelinePreload = !(isNvidia && blkSkip);
-    if (!allowRaytracePipelinePreload)
-      logdbg("DX12: Raytracing pipeline preload disabled as NVIDIA driver crash workaround"
-             " (skipPreloadRaytracingPipelinesOnNvidia)");
+    const auto nvVersion = to_nvidia_version(driverVersion);
+    const auto fixedIn = parse_nvidia_version(dxCfg.getStr("skipPreloadRaytracingPipelinesOnNvidiaBelow", ""));
+    allowRaytracePipelinePreload = fixedIn && nvVersion >= *fixedIn;
+    logdbg("DX12: NVIDIA GeForce version %u.%02u, skipPreloadRaytracingPipelinesOnNvidia %s raytracing pipeline preload",
+      nvVersion.major, nvVersion.minor, allowRaytracePipelinePreload ? "keeps" : "disables");
   }
 
   {
@@ -1357,6 +1376,7 @@ bool Device::init(const Direct3D12Enviroment &d3d_env, debug::GlobalState &debug
       logdbg("DX12: Embedding raytrace shader libraries monolithically");
   }
 
+  allowPipelineSetCompilation = true;
   if (GpuVendor::NVIDIA == vendor)
   {
     auto driverDate = gpu::get_driver_date(adapter_info.info.VendorId, adapter_info.info.DeviceId);
@@ -1371,18 +1391,8 @@ bool Device::init(const Direct3D12Enviroment &d3d_env, debug::GlobalState &debug
     }
   }
 
-  const bool validationLayerAvailable = debug::DeviceState::setup(debug_state, device.get(), d3d_env);
+  debug::DeviceState::setup(debug_state, device.get(), d3d_env);
 
-  if (validationLayerAvailable)
-  {
-    // When validation is enabled we should name objects to aid debugging
-#if DX12_DOES_SET_DEBUG_NAMES
-    logdbg("DX12: Detected enabled validation layer, enabling object naming");
-    config.features.set(DeviceFeaturesConfig::NAME_OBJECTS);
-#else
-    logwarn("DX12: Detected enabled validation layer, but this build can not name objects!");
-#endif
-  }
   startDeviceErrorObserver(device.get());
 
   logdbg("DX12: Checking shader model...");
@@ -1434,8 +1444,6 @@ bool Device::init(const Direct3D12Enviroment &d3d_env, debug::GlobalState &debug
 
   logdbg("DX12: Hardware Accelerated GPU scheduling: %s", to_string(get_hw_scheduling_from_luid(adapter_info.info.AdapterLuid)));
 
-  driverVersion = get_driver_version_from_adapter(adapter.Get());
-
   // Format table need some adjustments depending on hardware layout and features
   FormatStore::configureFormatTable(device.get(), adapter_info.info.VendorId);
 
@@ -1485,10 +1493,16 @@ bool Device::init(const Direct3D12Enviroment &d3d_env, debug::GlobalState &debug
 #if DX12_ENABLE_CONST_BUFFER_DESCRIPTORS
   pipelineCacheSetup.rootSignaturesUsesCBVDescriptorRanges = rootSignaturesUsesCBVDescriptorRanges();
 #endif
+#if _TARGET_PC_WIN
+  pipelineCacheSetup.buildInCacheFileName = dxCfg.getStr("buildInCacheFileName", BUILD_IN_CACHE_FILE_NAME);
+  pipelineCacheSetup.blitByteCodeHash = get_build_in_blit_shaders_hash();
+  pipelineCacheSetup.clearByteCodeHash = get_build_in_clear_shaders_hash();
+  pipelineCacheSetup.recordBuildInCache = dxCfg.getBool("recordBuildInCache", true);
+#endif
 
   pipelineCache.init(pipelineCacheSetup);
 
-  pipelineManagerSetup.device = device.get();
+  pipelineManagerSetup.device = this;
   pipelineManagerSetup.serializeRootSignature = d3d_env.D3D12SerializeRootSignature;
   pipelineManagerSetup.rootSignatureVersion = rootSignatureVersion.HighestVersion;
   pipelineManagerSetup.pipelineCache = &pipelineCache;
@@ -1666,6 +1680,11 @@ void Device::shutdown()
 
   context.shutdownWorkerThread();
 
+  // Streamline must die while the device, the queues and NvAPI are still alive: sl.common holds
+  // references to all three and releases them from slShutdown. Mirrors initStreamline, which runs
+  // before queues.init. No worker thread may touch streamlineAdapter past this point.
+  context.shutdownStreamline();
+
   if (dummyUavBuffer)
     dummyUavBuffer->destroy();
   dummyUavBuffer = nullptr;
@@ -1691,6 +1710,11 @@ void Device::shutdown()
   auto dxBlock = dgs_get_settings()->getBlockByNameEx("dx12");
   pipelineCacheSetup.generateBlks = dxBlock->getBool("generateCacheBlks", pipeMan.needToUpdateCache);
   pipelineCacheSetup.alwaysGenerateBlks = dxBlock->getBool("alwaysGenerateCacheBlks", pipeMan.needToUpdateCache);
+#if _TARGET_PC_WIN
+  pipelineCacheSetup.buildInCacheFileName = dxBlock->getStr("buildInCacheFileName", BUILD_IN_CACHE_FILE_NAME);
+  pipelineCacheSetup.blitByteCodeHash = get_build_in_blit_shaders_hash();
+  pipelineCacheSetup.clearByteCodeHash = get_build_in_clear_shaders_hash();
+#endif
 
   pipelineCache.shutdown(pipelineCacheSetup);
 #endif
@@ -1715,8 +1739,6 @@ void Device::shutdown()
 #if _TARGET_PC_WIN
   adapter.Reset();
 #endif
-
-  context.shutdownStreamline();
 }
 
 void Device::initializeBindlessManager(bool enable_types_validation)
@@ -2019,10 +2041,11 @@ Image *Device::createImage(const ImageInfo &ii, Image *base_image, const char *n
     return nullptr;
   }
 
+  // Both paths report their own failure, an empty result is what createImage promises its callers.
   ImageCreateResult result;
   if (base_image)
   {
-    result = resources.aliasTexture(getDXGIAdapter(), device.get(), ii, base_image, name);
+    result = resources.aliasTexture(getDXGIAdapter(), device.get(), ii, base_image, name).value_or({});
   }
   else
   {
@@ -2038,13 +2061,16 @@ Image *Device::createImage(const ImageInfo &ii, Image *base_image, const char *n
 #if _TARGET_PC_WIN
 Image *Device::createVirtualBackbuffer(Image *base, const char *name)
 {
-  auto cloneResult = resources.cloneRenderTarget(getDXGIAdapter(), *this, base);
-  if (!cloneResult.has_value())
+  auto rt = resources.cloneRenderTarget(getDXGIAdapter(), *this, base)
+              .transform_error([name](auto error) {
+                D3D_ERROR("DX12: Unable to create virtual backbuffer <%s>, %s", name, dxgi_error_code_to_string(error.errorCode));
+                return error;
+              })
+              .value_or(nullptr);
+  if (!rt)
   {
-    D3D_ERROR("DX12: Unable to create virtual backbuffer <%s>, %s", name, dxgi_error_code_to_string(cloneResult.error().errorCode));
     return nullptr;
   }
-  auto rt = cloneResult.value();
   rt->setDebugName(name);
   nameResource(rt->getHandle(), name);
   context.back.sharedContextState.resourceStates.setTextureState(context.back.sharedContextState.initialResourceStateSet,
@@ -2099,6 +2125,8 @@ BufferState Device::createBuffer(uint32_t size, uint32_t structure_size, uint32_
     return {};
   }
 
+  // allocateBuffer has already reported the failure through checkForOOM, and callers test the
+  // returned buffer, so the error is discarded here.
   return resources
     .allocateBuffer(getDXGIAdapter(), *this, size, structure_size, discard_count, memory_class, flags, cflags, name,
       config.features.test(DeviceFeaturesConfig::DISABLE_BUFFER_SUBALLOCATION))
@@ -2113,7 +2141,8 @@ BufferState Device::createDedicatedBuffer(uint32_t size, uint32_t structure_size
     return {};
   }
 
-  // Always disable buffer sub-allocation
+  // Always disable buffer sub-allocation. As in createBuffer, allocateBuffer reported the failure
+  // already and the caller tests the returned buffer.
   return resources
     .allocateBuffer(getDXGIAdapter(), *this, size, structure_size, discard_count, memory_class, flags, cflags, name, true)
     .value_or({});
@@ -2344,14 +2373,14 @@ namespace
 // The public raytrace interface reports a failure as a null structure and has no room for a reason,
 // so this is where the reason is turned into a log entry.
 RaytraceAccelerationStructure *report_error_as_null_structure(const char *what,
-  const resource_manager::RaytraceAccelerationStructurePoolProvider::AccelerationStructureResult &result)
+  resource_manager::RaytraceAccelerationStructurePoolProvider::AccelerationStructureResult result)
 {
-  if (result.has_value())
-  {
-    return result.value();
-  }
-  D3D_ERROR("DX12: %s failed, %s", what, dxgi_error_code_to_string(result.error().errorCode));
-  return nullptr;
+  return eastl::move(result)
+    .transform_error([what](auto error) {
+      D3D_ERROR("DX12: %s failed, %s", what, dxgi_error_code_to_string(error.errorCode));
+      return error;
+    })
+    .value_or(nullptr);
 }
 } // namespace
 
@@ -2738,9 +2767,11 @@ LUID Device::preRecovery()
   frontendQueryManager.preRecovery();
   pipeMan.preRecovery();
   pipelineCache.preRecovery();
+  // Same ordering contract as in shutdown(): preRecover calls slShutdown, so it has to run while the
+  // queues and the device are still alive.
+  context.preRecoverStreamline();
   queues.shutdown();
   stopDeviceErrorObserver(eastl::move(errorObserverShutdownToken));
-  context.preRecoverStreamline();
   device.reset();
   adapter.Reset();
   debug::DeviceState::preRecovery();
@@ -2877,7 +2908,7 @@ bool Device::recover(const Direct3D12Enviroment &d3d_env, DXGIFactory *factory, 
 
   pipelineCache.recover(device.get(), cacheModes);
 
-  pipeMan.recover(device.get(), pipelineCache);
+  pipeMan.recover(device.get());
 
   dag::Vector<D3D12_CPU_DESCRIPTOR_HANDLE> unboundedTable;
   bindlessManager.visitSamplers([this, &unboundedTable](auto desc) { unboundedTable.push_back(getSampler(desc)); });
@@ -2938,10 +2969,52 @@ void Device::updateTextureBindlessReferencesNoLock(BaseTex *tex, Image *old_imag
   bindlessManager.updateTextureReferencesNoLock(context, tex, old_image, 0, eastl::numeric_limits<uint32_t>::max());
 }
 
+d3d::SamplerHandle Device::createSampler(SamplerState state)
+{
+  return resources.createSampler(device.get(), state)
+    .transform_error([](auto error) {
+      D3D_ERROR("DX12: Unable to create sampler, %s", dxgi_error_code_to_string(error.errorCode));
+      return error;
+    })
+    .value_or(d3d::INVALID_SAMPLER_HANDLE);
+}
+
+D3D12_CPU_DESCRIPTOR_HANDLE Device::getSampler(SamplerState state)
+{
+  return resources.getSampler(device.get(), state)
+    .transform_error([](auto error) {
+      // Nothing above this can act on it, but the sampler is no longer remembered as a null
+      // descriptor, so a later request for the same state can still succeed.
+      D3D_ERROR("DX12: Unable to get sampler descriptor, %s", dxgi_error_code_to_string(error.errorCode));
+      return error;
+    })
+    .value_or({});
+}
+
+ResourceHeap *Device::newUserHeap(ResourceHeapGroup *group, size_t size, ResourceHeapCreateFlags flags, ResourceTagType tag)
+{
+  auto result = resources.newUserHeap(getDXGIAdapter(), *this, group, size, flags, tag);
+  if (result.has_value())
+  {
+    return result.value();
+  }
+  if (E_UNEXPECTED == result.error().errorCode)
+  {
+    // The allocation failed on a device that is ill and about to be torn down, so this is not an out
+    // of memory. d3d has no way to say that, and a nullptr would send the caller down its out of
+    // memory path, so hand out the handle for a heap that does not exist. The paths that act on a
+    // heap know it and say no.
+    return resource_manager::make_ill_device_user_heap_handle();
+  }
+  D3D_ERROR("DX12: Unable to create resource heap of %zu bytes, %s", size, dxgi_error_code_to_string(result.error().errorCode));
+  return nullptr;
+}
+
 BufferState Device::placeBufferInHeap(::ResourceHeap *heap, const ResourceDescription &desc, size_t offset,
   const ResourceAllocationProperties &alloc_info, const char *name)
 {
-  auto buffer = resources.placeBufferInHeap(getDXGIAdapter(), device.get(), heap, desc, offset, alloc_info, name);
+  // The reason was reported where it was found, d3d only knows an empty buffer here.
+  auto buffer = resources.placeBufferInHeap(getDXGIAdapter(), device.get(), heap, desc, offset, alloc_info, name).value_or({});
   if (buffer)
     nameResource(buffer.buffer, name);
   return buffer;
@@ -2950,7 +3023,8 @@ BufferState Device::placeBufferInHeap(::ResourceHeap *heap, const ResourceDescri
 Image *Device::placeTextureInHeap(::ResourceHeap *heap, const ResourceDescription &desc, size_t offset,
   const ResourceAllocationProperties &alloc_info, const char *name)
 {
-  auto result = resources.placeTextureInHeap(getDXGIAdapter(), device.get(), heap, desc, offset, alloc_info, name);
+  // The reason was reported where it was found, d3d only knows a null texture here.
+  auto result = resources.placeTextureInHeap(getDXGIAdapter(), device.get(), heap, desc, offset, alloc_info, name).value_or({});
   if (result.image)
   {
     context.setImageResourceState(result.state, result.image->getGlobalSubresourceIdRange());
@@ -3062,8 +3136,6 @@ Device::Config drv3d_dx12::get_device_config(const DataBlock *cfg)
   result.features.set(DeviceFeaturesConfig::DISABLE_BUFFER_SUBALLOCATION, cfg->getBool("disableBufferSuballocation", false));
 
   result.features.set(DeviceFeaturesConfig::IGNORE_PREDICATION, cfg->getBool("ignorePredication", false));
-
-  result.features.set(DeviceFeaturesConfig::VALIDATE_IMPLICIT_CB_SIZE, cfg->getBool("validateImplicitCbSize", true));
 
 #if DX12_DEBUG_RESOURCE_ALLOCATOR_ENABLED
   result.memorySetup.debugAllocationGroup = cfg->getInt("debugMemoryAllocationGroup", 0);
@@ -3461,14 +3533,13 @@ RayTracePipeline *Device::expandPipeline(RayTracePipeline *base, const ::raytrac
 ::raytrace::AccelerationStructurePool Device::createAccelerationStructurePool(
   const ::raytrace::AccelerationStructurePoolCreateInfo &info)
 {
-  auto result = resources.createAccelerationStructurePool(*this, info);
-  if (!result.has_value())
-  {
-    D3D_ERROR("DX12: createAccelerationStructurePool of %u bytes failed, %s", info.sizeInBytes,
-      dxgi_error_code_to_string(result.error().errorCode));
-    return ::raytrace::InvalidAccelerationStructurePool;
-  }
-  return result.value();
+  return resources.createAccelerationStructurePool(*this, info)
+    .transform_error([&info](auto error) {
+      D3D_ERROR("DX12: createAccelerationStructurePool of %u bytes failed, %s", info.sizeInBytes,
+        dxgi_error_code_to_string(error.errorCode));
+      return error;
+    })
+    .value_or(::raytrace::InvalidAccelerationStructurePool);
 }
 
 #endif

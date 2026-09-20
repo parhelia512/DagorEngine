@@ -174,6 +174,7 @@ static void apply_ime_to_video_mode()
   dgs_apply_config_blk(overrideBlk, true, false);
 }
 
+ECS_REGISTER_EVENT(EventOnSettingsLoaded)
 
 static void update_settings_from_reload_changes(DataBlock &config_blk)
 {
@@ -224,6 +225,9 @@ static void load_settings_and_apply_config(const char *stg_fn, const SettingsHas
   // [Re]load settings
   dgs_load_settings_blk_ex(DataBlock::emptyBlock, stg_fn, console_config_blk_from_bin_folder(), /*force_apply_all*/ false,
     /*store_cfg_copy*/ false, /*resolve_tex_streaming*/ true);
+
+  if (g_entity_mgr)
+    g_entity_mgr->broadcastEventImmediate(EventOnSettingsLoaded{});
 
   // Should call these functions after loading of stg_fn
   dgs_filter_saved_config(*settings_override_blk);
@@ -548,7 +552,7 @@ struct SaveConfigBlkJob final : public cpujobs::IJob
     cfg = *settings_override_blk;
     gen = interlocked_acquire_load(settings_changed_generation);
   }
-  const char *getJobName(bool &) const override { return "SaveConfigBlkJob"; }
+  const char *getJobName(bool &) const override { return DAPROFILER_STRING("SaveConfigBlkJob"); }
   void doJob() override
   {
     for (;;) // eternal loop with explicit break
@@ -985,6 +989,11 @@ void dgs_apply_pc_preset_params(DataBlock &config_blk, const char *preset_name)
   if (!presetsBlk)
   {
     logerr("Not found '%s' block in settings.blk. Cannot apply '%s' pc preset.", presetsBlockName, preset_name);
+    return;
+  }
+  if (!strcmp(preset_name, "custom"))
+  {
+    debug("Skip pc preset apply due to '%s' preset", preset_name);
     return;
   }
   int presetsCount = 0;

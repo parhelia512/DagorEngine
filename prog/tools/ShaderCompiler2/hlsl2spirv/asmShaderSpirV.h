@@ -15,7 +15,7 @@ struct SpirVCompileInputs
   const char *entry = nullptr;
   const char *shaderName = nullptr;
   uint64_t shaderVariantHash = 0;
-  int maxConstantsNo = 0;
+  int implicitCbufRegCount = 0;
   bool needDisasm = false;
   bool hlsl2021 = false;
   bool enableFp16 = false;
@@ -32,5 +32,3 @@ struct SpirVCompileInputs
 };
 
 CompileResult compileShaderSpirV(const SpirVCompileInputs &inputs);
-
-eastl::string disassembleShaderSpirV(dag::ConstSpan<uint8_t> bytecode, dag::ConstSpan<uint8_t> metadata);

@@ -27,6 +27,7 @@ AddIncludes =
   $(Root)/prog/gameLibs/publicInclude
   $(Root)/$(Location)
   $(Root)/prog/3rdPartyLibs/imgui
+  $(Root)/prog/3rdPartyLibs/rapidjson/include
 ;
 
 Sources =
@@ -103,11 +104,16 @@ AllSrcFolder_CPP =
 if $(Config) in dbg dev {
   Sources +=
     debug/resourceValidation.cpp
-    debug/globalStatesValidation.cpp
     debug/textureVisualization.cpp
 
     debug/backendDebug.cpp
     debug/gpuRangeCapture.cpp
+
+    debug/jsonDump.cpp
+    debug/jsonDumpCommon.cpp
+    debug/jsonDumpRegistry.cpp
+    debug/jsonDumpIntermediate.cpp
+    debug/jsonDumpStateDeltas.cpp
 
     debug/visualizationManager.cpp
     debug/visualization/structuresCommon.cpp
@@ -130,6 +136,13 @@ if $(Config) in dbg dev {
     debug/stub/backendDebugStub.cpp
     debug/stub/gpuRangeCaptureStub.cpp
   ;
+}
+
+# Per-node validation is too slow for consoles, which build dev without checked containers
+if $(Config) in dbg dev && $(CheckedContainers) = yes {
+  Sources += debug/globalStatesValidation.cpp ;
+} else {
+  Sources += debug/stub/globalStatesValidationStub.cpp ;
 }
 
 AutoscanBuildLists $(AllSrcFolder_CPP) : *.cpp       : Sources ;

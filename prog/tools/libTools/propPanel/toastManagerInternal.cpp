@@ -2,9 +2,6 @@
 
 #include "toastManagerInternal.h"
 
-#include <EditorCore/ec_interface.h>
-#include <EditorCore/ec_wndPublic.h>
-
 #include <propPanel/imguiHelper.h>
 #include <propPanel/colors.h>
 
@@ -291,14 +288,10 @@ void ToastManager::updateImguiDebugPanel()
 
   dag::Vector<eastl::string_view> positioning = {"Pixel pos", "Mouse pos", "Center pos"};
   ImGuiDagor::ComboWithFilter(positioning[debugPosType].begin(), positioning, debugPosType, debugInput);
-  IWndManager *manager = EDITORCORE->getWndManager();
-  G_ASSERT(manager);
-  unsigned clientWidth = 0;
-  unsigned clientHeight = 0;
-  manager->getWindowClientSize(manager->getMainWindow(), clientWidth, clientHeight);
+  const ImVec2 displaySize = ImGui::GetIO().DisplaySize;
   ImGui::BeginDisabled(debugPosType != 0 || isDelaying);
-  ImGui::SliderInt("Pos X", &debugPos.x, 0, clientWidth);
-  ImGui::SliderInt("Pos Y", &debugPos.y, 0, clientHeight);
+  ImGui::SliderInt("Pos X", &debugPos.x, 0, (int)displaySize.x);
+  ImGui::SliderInt("Pos Y", &debugPos.y, 0, (int)displaySize.y);
   ImGui::EndDisabled();
 
   PropPanel::ImguiHelper::checkboxWithDragSelection("Center on position", &debugCenterOnPos);

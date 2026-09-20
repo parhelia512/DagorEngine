@@ -14,12 +14,12 @@
 namespace dafg
 {
 
-// One descriptor slot per in-flight frame (frame f uses baseBindlessSlot + f).
+// One descriptor slot per in-flight frame (frame f uses base slot + f).
 static constexpr uint32_t FRAME_WINDOW = SCHEDULE_FRAME_WINDOW;
 
 // Allocates FRAME_WINDOW slots per resource and turns each resource's provisional
 // in-range index into its final base slot.
-static void allocate_slot_range(D3DResourceType type, intermediate::Graph &graph,
+static void allocate_slot_range(D3DResourceType type, IdIndexedMapping<intermediate::ResourceIndex, uint32_t> &base_slots,
   const dag::Vector<intermediate::ResourceIndex, framemem_allocator> &resources, uint32_t &range_base, uint32_t &range_count,
   dag::Vector<D3dResource *> &slot_cache)
 {
@@ -28,21 +28,20 @@ static void allocate_slot_range(D3DResourceType type, intermediate::Graph &graph
   range_count = resources.size() * FRAME_WINDOW;
   range_base = d3d::allocate_bindless_resource_range(type, range_count);
   for (auto resIdx : resources)
-    graph.resources[resIdx].baseBindlessSlot = range_base + graph.resources[resIdx].baseBindlessSlot * FRAME_WINDOW;
+    base_slots[resIdx] = range_base + base_slots[resIdx] * FRAME_WINDOW;
   slot_cache.assign(range_count, nullptr);
 }
 
-void BindlessSlotManager::rebuild(intermediate::Graph &graph)
+void BindlessSlotManager::rebuild(const intermediate::Graph &graph)
 {
   freeRanges();
 
-  for (auto resIdx : graph.resources.keys())
-    graph.resources[resIdx].baseBindlessSlot = INVALID_SLOT;
+  baseSlots.assign(graph.resources.totalKeys(), INVALID_SLOT);
 
   if (!d3d::get_driver_desc().caps.hasBindless)
     return;
 
-  // Collect distinct bindless texture/buffer resources; baseBindlessSlot doubles as
+  // Collect distinct bindless texture/buffer resources; the base slot doubles as
   // dedup marker and provisional in-range index. Samplers are driver-deduped.
   dag::Vector<intermediate::ResourceIndex, framemem_allocator> texResources;
   dag::Vector<intermediate::ResourceIndex, framemem_allocator> bufResources;
@@ -54,7 +53,7 @@ void BindlessSlotManager::rebuild(intermediate::Graph &graph)
       const auto resIdx = *binding.resource;
 
       // Deduplicate: a resource used by several nodes shares one slot range.
-      if (graph.resources[resIdx].baseBindlessSlot != INVALID_SLOT)
+      if (baseSlots[resIdx] != INVALID_SLOT)
         continue;
 
       const auto resType = graph.resources[resIdx].getResType();
@@ -62,12 +61,12 @@ void BindlessSlotManager::rebuild(intermediate::Graph &graph)
         continue;
 
       auto &bucket = resType == ResourceType::Texture ? texResources : bufResources;
-      graph.resources[resIdx].baseBindlessSlot = bucket.size();
+      baseSlots[resIdx] = bucket.size();
       bucket.push_back(resIdx);
     }
 
-  allocate_slot_range(D3DResourceType::TEX, graph, texResources, texRangeBase, texRangeCount, texSlotResources);
-  allocate_slot_range(D3DResourceType::SBUF, graph, bufResources, bufRangeBase, bufRangeCount, bufSlotResources);
+  allocate_slot_range(D3DResourceType::TEX, baseSlots, texResources, texRangeBase, texRangeCount, texSlotResources);
+  allocate_slot_range(D3DResourceType::SBUF, baseSlots, bufResources, bufRangeBase, bufRangeCount, bufSlotResources);
 }
 
 void BindlessSlotManager::invalidateSlotCache()

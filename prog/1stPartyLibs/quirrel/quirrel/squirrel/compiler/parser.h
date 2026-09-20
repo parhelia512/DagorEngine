@@ -87,6 +87,7 @@ public:
     Statement*  parseStatement(bool closeframe = true);
     Expr*       parseCommaExpr(SQExpressionContext expression_context);
     Expr*       Expression(SQExpressionContext expression_context);
+    Expr*       parseSpreadOrExpression(SQExpressionContext expression_context);
 
     template<typename T> Expr *BIN_EXP(T f, enum TreeOp top, Expr *lhs);
 

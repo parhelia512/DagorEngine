@@ -5,10 +5,20 @@
 
 // See https://gaijinentertainment.github.io/DagorEngine/dagor-tools/shader-compiler/contributing_to_compiler.html#versioning
 
-#if _CROSS_TARGET_SPIRV
+#if _CROSS_TARGET_METAL
+#include "ver_obj_metal.h"
+#elif _CROSS_TARGET_SPIRV
 #include "ver_obj_spirv.h"
+#elif _CROSS_TARGET_C1
+
+#elif _CROSS_TARGET_C2
+
 #elif _CROSS_TARGET_DX12
 #include "ver_obj_dxc.h"
+#elif _CROSS_TARGET_DX11 || _CROSS_TARGET_EMPTY
+#include "ver_obj_pcdx.h"
+#else
+#error No shader cache version stamp for this cross target. Add a ver_obj_<target>.h and pin its limits.
 #endif
 
 enum
@@ -20,7 +30,7 @@ enum
 };
 
 // Increase this number if changes in the compiler invalidate .obj for all APIs,
-static const int SHADER_CACHE_COMMON_VER = 154;
+static const int SHADER_CACHE_COMMON_VER = 182;
 
 static int make_shader_cache_ver(int ver)
 {
@@ -35,7 +45,7 @@ static int make_shader_cache_ver(int ver)
 
 static const int SHADER_CACHE_VER = make_shader_cache_ver(
 #if _CROSS_TARGET_METAL
-#include "ver_obj_metal.h"
+  VER_OBJ_METAL_VAL
 #elif _CROSS_TARGET_SPIRV
   VER_OBJ_SPIRV_VAL
 #elif _CROSS_TARGET_C1
@@ -44,7 +54,9 @@ static const int SHADER_CACHE_VER = make_shader_cache_ver(
 
 #elif _CROSS_TARGET_DX12
   VER_OBJ_DXC_VAL
+#elif _CROSS_TARGET_DX11 || _CROSS_TARGET_EMPTY
+  VER_OBJ_PCDX_VAL
 #else
-#include "ver_obj_pcdx.h"
+#error No shader cache version stamp for this cross target. Add a ver_obj_<target>.h and pin its limits.
 #endif
 );

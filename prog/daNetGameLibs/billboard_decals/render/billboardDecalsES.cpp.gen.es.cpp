@@ -26,7 +26,7 @@ static ecs::EntitySystemDesc bullet_holes_after_device_reset_es_es_desc
   empty_span(),
   empty_span(),
   empty_span(),
-  ecs::EventSetBuilder<AfterDeviceReset>::build(),
+  ecs::EventSetBuilder<EventAfterDeviceReset>::build(),
   0
 ,"render");
 static constexpr ecs::ComponentDesc bullet_holes_before_render_es_comps[] =
@@ -113,7 +113,7 @@ static ecs::EntitySystemDesc bullet_holes_on_level_loaded_es_es_desc
   make_span(bullet_holes_on_level_loaded_es_comps+1, 5)/*ro*/,
   empty_span(),
   empty_span(),
-  ecs::EventSetBuilder<OnLevelLoaded>::build(),
+  ecs::EventSetBuilder<EventRenderSceneLoaded>::build(),
   0
 ,"render");
 static constexpr ecs::ComponentDesc get_billboard_manager_ecs_query_comps[] =

@@ -37,6 +37,7 @@ public:
   {
     IrNodesChanged irNodesChanged;
     IrResourcesChanged irResourcesChanged;
+    IrResourcesChanged irResourceRequestsChanged;
   };
 
   // Returns an intermediate representation of the graph that
@@ -45,7 +46,8 @@ public:
   // resources (due to subpasses and renaming modify), and culls out
   // unused or broken nodes/resources
   Changes build(intermediate::Graph &graph, multiplexing::Extents extents, multiplexing::Extents prev_extents,
-    const intermediate::Mapping &mapping, const ResourcesChanged &resources_changed, const NodesChanged &nodes_changed);
+    const intermediate::Mapping &mapping, const ResourcesChanged &resources_changed, const ResourcesChanged &resource_requests_changed,
+    const NodesChanged &nodes_changed);
 
   void resetIncrementalState()
   {
@@ -88,7 +90,8 @@ private:
     D3DResourceType d3d_type) const;
 
   void addResourcesToGraph(intermediate::Graph &graph, intermediate::Mapping &mapping, const intermediate::Mapping &old_mapping,
-    const ResourcesChanged &resources_changed, IrResourcesChanged &ir_resources_changed, multiplexing::Extents extents) const;
+    const ResourcesChanged &resources_changed, const ResourcesChanged &resource_requests_changed,
+    IrResourcesChanged &ir_resources_changed, multiplexing::Extents extents) const;
   void addNodesToGraph(intermediate::Graph &graph, intermediate::Mapping &mapping, multiplexing::Extents extents,
     multiplexing::Extents prev_extents, const intermediate::Mapping &old_mapping, const NodesChanged &nodes_changed,
     IrNodesChanged &ir_nodes_changed) const;
@@ -108,8 +111,9 @@ private:
   // Returns a displacement (old index -> new index) partial mapping
   using DisplacementFmem = IdIndexedMapping<intermediate::NodeIndex, intermediate::NodeIndex, framemem_allocator>;
   using EdgesToBreakFmem = dag::Vector<eastl::pair<intermediate::NodeIndex, intermediate::NodeIndex>, framemem_allocator>;
+  DisplacementFmem rawNodePreviousPositions(const intermediate::Mapping &old_raw_mapping) const;
   eastl::pair<DisplacementFmem, EdgesToBreakFmem> pruneGraph(const intermediate::Graph &graph, const intermediate::Mapping &mapping,
-    eastl::span<const intermediate::NodeIndex> sinksNodes) const;
+    const DisplacementFmem &prev_positions, eastl::span<const intermediate::NodeIndex> sinksNodes) const;
   intermediate::RequiredNodeState calcNodeState(NodeNameId node_id, intermediate::MultiplexingIndex multi_index,
     intermediate::MultiplexingIndex history_multi_index, const intermediate::Mapping &mapping) const;
 

@@ -37,7 +37,6 @@ struct Settings
   char texName[64];
   bool useTrail;
   bool useObstacle;
-  bool useTexArray;
   bool enableGenMuls;
   float underwaterFoamWidth;
   float underwaterFoamAlphaMult;

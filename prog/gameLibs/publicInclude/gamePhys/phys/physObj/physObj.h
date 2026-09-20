@@ -58,6 +58,7 @@ struct PhysObjState
 
   void applyAlternativeHistoryState(const PhysObjState & /*state*/) {}
   void applyPartialState(const CommonPhysPartialState &state);
+  void applyResyncedState(const PhysObjState & /*state*/);
   void applyDesyncedState(const PhysObjState & /*state*/);
 
   bool operator==(const PhysObjState &a) const

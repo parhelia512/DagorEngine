@@ -555,10 +555,13 @@ int WaterNVPhysics::intersectRayWithOcean(double time, Point3 &result, float &T,
     }
     // getting t to travel along the ray
     t = t_multiplier * (v_extract_y(position) - v_extract_z(displacements));
+    if (outT >= T && t > 0.f) // at the segment end and still above the surface: no hit inside it
+      return 0;
 
-    // traveling along the ray
-    position = v_madd(v_splats(t), v_dir, position);
-    outT += t;
+    // traveling along the ray, never past the segment end: an overshoot may have crossed the surface before it
+    const float nextT = min(outT + t, T);
+    position = v_madd(v_splats(nextT - outT), v_dir, position);
+    outT = nextT;
 
     if (t < t_threshold || verticalTrace)
     {

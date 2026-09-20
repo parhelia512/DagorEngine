@@ -8,8 +8,10 @@
 #include <EASTL/array.h>
 #include <EASTL/vector_map.h>
 #include <EASTL/fixed_vector.h>
+#include <generic/dag_relocatableFixedVector.h>
 #include <3d/dag_resPtr.h>
 #include <3d/dag_eventQueryHolder.h>
+#include <rendInst/riexHandle.h>
 #include <util/dag_baseDef.h>
 #include <daECS/core/entityId.h>
 #include <shaders/dag_DynamicShaderHelper.h>
@@ -62,6 +64,18 @@ private:
   UniqueBufWithShaderVar geometryMeshesBuffer;
   int geometryMeshesBufferSize = 0;
 
+#if DAGOR_DBGLEVEL > 0
+  // Dev-only deterministic placement: sort gathered triangles by a stable
+  // vertex key before the prefix sum. Ping-ponged bitonic sort between the
+  // gather buffer and this scratch buffer (same size), so there is no in-place
+  // write hazard. The gather buffer is allocated pow2-sized when this is on.
+  eastl::unique_ptr<ComputeShaderElement> sortTriangles;
+  eastl::unique_ptr<ComputeShaderElement> fillSortSentinels;
+  UniqueBuf sortTrianglesBuf;
+  int sortTrianglesBufSize = 0;
+  bool deterministicPlacement = false;
+#endif
+
   DynamicShaderHelper debugGatheredTrianglesRenderer;
 
   struct BufferRec
@@ -91,6 +105,7 @@ private:
     float density, riex_handles &surface_riex_handles, bool need_geometry_gather = true);
   bool gatherGeometryInBox(const TMatrix &transform, float min_triangle_size, float triangle_length_ratio_cutoff,
     const Point4 &up_vector_threshold, float density, riex_handles &surface_riex_handles);
+  void sortGatheredTriangles();
   int calculateObjectCount(ecs::EntityId eid, float density, const TMatrix &transform, bool on_geometry, float min_triangle_size,
     float triangle_length_ratio_cutoff, const Point4 &up_vector_threshold, int object_max_count, int &on_rendinst_geometry_count,
     int &on_terrain_geometry_count, riex_handles &surface_riex_handles);

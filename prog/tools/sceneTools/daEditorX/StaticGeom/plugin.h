@@ -101,7 +101,6 @@ public:
 
   // IDagorEdCustomCollider
   bool traceRay(const Point3 &p, const Point3 &dir, real &maxt, Point3 *norm) override;
-  bool shadowRayHitTest(const Point3 &p, const Point3 &dir, real maxt) override;
   const char *getColliderName() const override { return getMenuCommandName(); }
   bool isColliderVisible() const override { return getVisible(); }
 

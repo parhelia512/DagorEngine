@@ -1,0 +1,143 @@
+include "heightmap_common.dshl"
+
+// toroidal grid of per cell max heights around the viewer, the acceleration
+// structure for heightfield ray marching: a cell whose max stays below the
+// ray segment is skipped whole, the heightfield itself is sampled only inside
+// candidate cells. Cells are absolute (cell = floor(world_xz/cell_size)) and
+// the buffer is addressed on wrapped coords, so content survives scrolling.
+// HeightmapMaxGrid (heightmapTrace/heightmapMaxGrid.h) maintains it
+buffer heightmap_max_grid;
+int4 heightmap_max_grid_lt;      // lt cell coords, cells (0 = off), cells-1 wrap mask
+float4 heightmap_max_grid_cell;  // cell size, 1/cell size
+int4 heightmap_max_grid_update;  // update rect: lt cell coords, size
+// measured slope bound for the up cull, fed by HeightmapHandler::setVars
+// (calc_hmap_max_neighbor_delta at load); the default changes nothing
+float hmap_max_gradient = 1e9;
+
+// the instantiation site must define, before this macro (plus the
+// HEIGHTMAP_MAX_GRID_HAS_HEIGHT define; shader_global.dshl in scope for
+// BRANCH/LOOP/select):
+//   float heightmap_max_grid_get_height(float3 world_pos) - the heightfield
+//     the march refines against; the grid only accelerates, that decides hits
+//   float heightmap_max_grid_get_texel_size() - its sample spacing in meters,
+//     the march aims at half texel steps, capped at 4 per cell span (a
+//     feature narrower than a quarter cell can slip between samples)
+//   float heightmap_max_grid_get_up_cull() - normalized dir.y at or above
+//     which no hit is possible: g/sqrt(1+g*g) for a slope bound g along any
+//     direction (a per axis bound like the heightmap handler's times sqrt2)
+// dir must be normalized; the origin must lie inside the grid window
+macro USE_HEIGHTMAP_MAX_GRID(code)
+  if (tex_hmap_low != NULL)
+  {
+    (code) {
+      heightmap_max_grid@buf = heightmap_max_grid hlsl { ByteAddressBuffer heightmap_max_grid@buf; };
+      heightmap_max_grid_lt@i4 = heightmap_max_grid_lt;
+      heightmap_max_grid_cell@f4 = heightmap_max_grid_cell;
+    }
+    hlsl(code) {
+      #if defined(HEIGHTMAP_MAX_GRID_HAS_HEIGHT) && !defined(HAS_HEIGHTMAP_MAX_GRID_TRACE)
+      #define HAS_HEIGHTMAP_MAX_GRID_TRACE 1
+      float heightmap_max_grid_cell_max(int2 cell)
+      {
+        int2 rel = cell - heightmap_max_grid_lt.xy;
+        if (any(uint2(rel) >= uint(heightmap_max_grid_lt.z)))
+          return -1e9; // outside the window: no terrain, the caller decides
+        uint2 w = uint2(cell) & uint(heightmap_max_grid_lt.w);
+        return asfloat(loadBuffer(heightmap_max_grid, (w.y*uint(heightmap_max_grid_lt.z) + w.x)*4));
+      }
+      // 2d dda over the max cells. below_hits_at_once treats the heightfield
+      // as solid ground: a ray starting below it hits its exit through the
+      // surface with a back face (max_t when it never exits), so buried
+      // origins stay occluded and the exit distances let relocation move
+      // them up through the surface; without it the surface is one sided
+      // and the ray passes through from below
+      bool heightmap_max_grid_trace(float3 world_pos, float3 dir, float max_t, bool below_hits_at_once, out float hit_t, out bool hit_back_face)
+      {
+        hit_t = max_t;
+        hit_back_face = false;
+        BRANCH
+        if (heightmap_max_grid_lt.z == 0 || max_t <= 0)
+          return false;
+        // no point sampling the heightfield finer than half its own texel
+        float minDt = 0.5*heightmap_max_grid_get_texel_size();
+        float cellSize = heightmap_max_grid_cell.x;
+        int2 cell = int2(floor(world_pos.xz*heightmap_max_grid_cell.y));
+        // buried only inside the grid domain: outside the window there is no
+        // terrain, and off the map a mirror sampler would invent some. The
+        // hit is the exit through the surface: its distance ranks the escape
+        // directions for relocation, a zero would tie them all
+        bool fromBelow = below_hits_at_once && world_pos.y <= heightmap_max_grid_cell_max(cell) &&
+                         world_pos.y < heightmap_max_grid_get_height(world_pos);
+        // climbs steeper than any terrain: cannot hit; a buried ray still
+        // marches to find its exit
+        BRANCH
+        if (!fromBelow && dir.y >= heightmap_max_grid_get_up_cull())
+          return false;
+        // a near zero direction axis keeps its sign: flipping it would place
+        // the next cell boundary behind the origin
+        float2 safeDir = select(abs(dir.xz) > 1e-7, dir.xz, select(dir.xz >= 0, 1e-7, -1e-7));
+        int2 stepI = select(dir.xz >= 0, int2(1, 1), int2(-1, -1));
+        float2 tNext = ((cell + select(dir.xz >= 0, int2(1, 1), int2(0, 0)))*cellSize - world_pos.xz)/safeDir;
+        float2 tStep = cellSize/abs(safeDir);
+        float tCur = 0;
+        // enough crossings to cover max_t, and a ray from inside the window
+        // crosses no more cells than it spans (an origin outside the window
+        // is not a supported input); the bound only guards fp edge cases
+        uint maxIter = min(2u*uint(heightmap_max_grid_lt.z) + 2u, uint(ceil((abs(dir.x) + abs(dir.z))*max_t*heightmap_max_grid_cell.y)) + 2u);
+        float yEnter = world_pos.y;
+        LOOP
+        for (uint i = 0; i < maxIter; ++i)
+        {
+          float tExit = min(min(tNext.x, tNext.y), max_t);
+          float yExit = world_pos.y + dir.y*tExit;
+          float cellMax = heightmap_max_grid_cell_max(cell);
+          BRANCH
+          if (min(yEnter, yExit) <= cellMax)
+          {
+            // no hit is possible above the cell max: refine only the sub-span
+            // at or below it. Zero dir.y makes tCross inf, never selected
+            float tCross = (cellMax - world_pos.y)/dir.y;
+            float tA = dir.y < 0 ? max(tCur, tCross) : tCur;
+            float tB = dir.y > 0 ? min(tExit, tCross) : tExit;
+            // resampled: after a skipped cell only a sign bound is known here.
+            // A slab entry is at or above the surface by construction, the fp
+            // sign of the resample must not turn a flat top touch into a miss
+            float d = world_pos.y + dir.y*tA - heightmap_max_grid_get_height(world_pos + dir*tA);
+            d = tA > tCur ? max(d, 1e-6) : d;
+            float len = tB - tA;
+            uint steps = uint(clamp(ceil(len/max(minDt, 1e-6)), 1.0, 4.0));
+            float dt = len/steps;
+            LOOP
+            for (uint s = 1u; s <= steps; ++s)
+            {
+              float t = tA + s*dt;
+              float dNext = world_pos.y + dir.y*t - heightmap_max_grid_get_height(world_pos + dir*t);
+              if (fromBelow ? (d < 0 && dNext >= 0) : (d > 0 && dNext <= 0))
+              {
+                // crossed the surface between the two samples
+                hit_t = t - dt + dt*saturate(d/(d - dNext));
+                hit_back_face = fromBelow;
+                return true;
+              }
+              d = dNext;
+            }
+          }
+          if (tExit >= max_t)
+          {
+            hit_back_face = fromBelow; // never exits: occluded the whole way
+            return fromBelow;
+          }
+          // both axes advance on an exact corner tie
+          bool2 adv = bool2(tNext.x <= tNext.y, tNext.y <= tNext.x);
+          tCur = tExit;
+          yEnter = yExit;
+          cell += select(adv, stepI, int2(0, 0));
+          tNext += select(adv, tStep, float2(0, 0));
+        }
+        hit_back_face = fromBelow;
+        return fromBelow;
+      }
+      #endif
+    }
+  }
+endmacro

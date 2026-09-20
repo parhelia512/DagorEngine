@@ -1,6 +1,6 @@
 ---
 name: daFG Node Scheduling Rules
-description: How daFG determines execution order -- dependency edges from resource lifecycles, explicit ordering, multiplexing fan-out, pruning from sinks, and Kahn's algorithm tie-breaking. Enough to predict the exact order of any node set.
+description: How daFG determines execution order -- dependency edges from resource lifecycles, explicit ordering, multiplexing fan-out, pruning from sinks, and Kahn's algorithm tie-breaking. Enough to predict the exact order of any node set, given the order of the previous compilation.
 type: reference
 commit_reference: 542abf2623ae 2026-04-28
 ---
@@ -148,7 +148,7 @@ When multiple nodes have reverse-in-degree 0 (no remaining dependents), the comp
 | 2 | `pass_coloring[n] == lastColor` | Nodes matching the last scheduled pass color are preferred (keeps pass contiguous) |
 | 3 | `passInDegree[pass_coloring[n]]` | Passes with lower remaining cross-edge reverse-in-degree are scheduled first (= execute later). A pass at 0 means all its dependents are already scheduled, so its nodes can be placed contiguously |
 | 4 | `node.priority` | Higher `priority_t` value = scheduled first = executes later. `PRIO_AS_LATE_AS_POSSIBLE` = INT32_MAX, `PRIO_AS_EARLY_AS_POSSIBLE` = INT32_MIN |
-| 5 | Node index | Stability tiebreaker (higher index scheduled first) |
+| 5 | Previous position, then node index | Stability tiebreaker. A node keeps its place relative to the other nodes of the previous compilation; a node that was not in it is scheduled first (= executes last). Among such nodes the lower index is scheduled first. A fresh compilation has no previous positions, so it orders by index alone |
 
 ## Step 5: Worked Example
 

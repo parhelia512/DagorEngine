@@ -215,3 +215,21 @@ void on_entity_scene_data_changed_es_event_handler(const ecs::EventOnEntityScene
     outliner->onEntitySceneDataChanged(eastl::get<0>(event));
   }
 }
+
+void on_scene_order_changed_es_event_handler(const ecs::EventOnSceneOrderChanged &event)
+{
+  ECSObjectEditor &editor = get_ecs_object_editor();
+  if (ECSSceneOutlinerPanel *outliner = editor.getSceneOutlinerPanel())
+  {
+    outliner->onSceneOrderChanged(eastl::get<0>(event));
+  }
+}
+
+void on_scene_parent_changed_es_event_handler(const ecs::EventOnSceneParentChanged &event)
+{
+  ECSObjectEditor &editor = get_ecs_object_editor();
+  if (ECSSceneOutlinerPanel *outliner = editor.getSceneOutlinerPanel())
+  {
+    outliner->onSceneParentChanged(eastl::get<0>(event));
+  }
+}

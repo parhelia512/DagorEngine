@@ -32,7 +32,8 @@ BufferGlobalId BufferHeap::BufferHeapState::adoptBufferHeap(Heap &&heap, bool ca
   return result;
 }
 
-size_t BufferHeap::BufferHeapState::freeBufferHeap(BufferHeap *manager, uint32_t index, const char *name, bool is_heaps_lock_required)
+size_t BufferHeap::BufferHeapState::freeBufferHeap(BufferHeap *manager, uint32_t index, eastl::string_view name,
+  bool is_heaps_lock_required)
 {
   auto &heap = bufferHeaps[index];
   suballocator.onHeapDestroyed(heap);
@@ -45,7 +46,8 @@ size_t BufferHeap::BufferHeapState::freeBufferHeap(BufferHeap *manager, uint32_t
   return result;
 }
 
-size_t BufferHeap::BufferHeapState::freeBufferHeap(BufferHeap *manager, uint32_t index, ValueRange<uint64_t> range, const char *name)
+size_t BufferHeap::BufferHeapState::freeBufferHeap(BufferHeap *manager, uint32_t index, ValueRange<uint64_t> range,
+  eastl::string_view name)
 {
   if (!bufferHeaps[index].free(range))
   {
@@ -60,7 +62,8 @@ BufferHeap::BufferHeapAllocationResult BufferHeap::BufferHeapState::createBuffer
 {
   BufferGlobalId result;
   Heap newHeap;
-  auto errorCode = newHeap.create(device, desc, allocation, initial_state, allocatedProperties.isCPUVisible(manager->getFeatureSet()));
+  auto errorCode =
+    newHeap.create(device, desc, allocation, initial_state, allocatedProperties.isCPUVisible(manager->getFeatureSet()), {});
   if (DX12_CHECK_FAIL(errorCode))
   {
     return unexpected_memory_allocation_error(errorCode);
@@ -77,7 +80,7 @@ BufferHeap::BufferHeapAllocationResult BufferHeap::BufferHeapState::createBuffer
 
 BufferHeap::BufferHeapAllocationResult BufferHeap::BufferHeapState::createBufferHeap(BufferHeap *manager, DXGIAdapter *adapter,
   ID3D12Device *device, uint64_t allocation_size, ResourceHeapProperties properties, D3D12_RESOURCE_FLAGS flags,
-  D3D12_RESOURCE_STATES initial_state, const char *name, bool can_suballocate, AllocationFlags allocation_flags)
+  D3D12_RESOURCE_STATES initial_state, eastl::string_view name, bool can_suballocate, AllocationFlags allocation_flags)
 {
   auto [desc, allocInfo] = calculate_buffer_desc_allocation_info(device, allocation_size, flags);
 
@@ -99,12 +102,12 @@ BufferHeap::BufferHeapAllocationResult BufferHeap::BufferHeapState::createBuffer
 
   auto &buffer = createResult.value();
 
-  char strBuf[64];
-  if (!name)
+  char strBuf[32];
+  if (name.empty())
   {
-    sprintf_s(strBuf, "Buffer#%u", buffer.index());
-    name = strBuf;
+    name = make_buffer_heap_name(strBuf, buffer.index());
   }
+
   manager->recordBufferHeapAllocated(allocation_size, allocatedProperties.isOnDevice(manager->getFeatureSet()), name);
   manager->updateMemoryRangeUse(allocation, buffer);
 
@@ -148,7 +151,7 @@ bool BufferHeap::BufferHeapState::isValidBuffer(const BufferState &buf)
 }
 
 size_t BufferHeap::BufferHeapState::freeBuffer(BufferHeap *manager, const BufferState &buf, BufferHeap::FreeReason free_reason,
-  const char *name)
+  eastl::string_view name)
 {
   G_UNUSED(free_reason);
   size_t memoryFreedSize = 0;

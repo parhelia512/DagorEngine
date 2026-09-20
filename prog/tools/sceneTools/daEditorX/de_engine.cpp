@@ -83,6 +83,7 @@ namespace environment
 {
 void load_ui_state(const DataBlock &per_app_settings);
 void clear();
+void before_render_objects();
 } // namespace environment
 
 extern void terminate_interface_de3();
@@ -805,11 +806,17 @@ bool DagorEdAppWindow::selectWorkspace(const char *app_blk_path)
   wsp->save();
 
   wsp->initWorkspaceBlk(::make_full_path(sgg::get_exe_path_full(), "../.local/workspace.blk"));
-  const DataBlock *wspBlk = wsp->findWspBlk(app_blk_path);
 
-  const char *wspName = wspBlk ? wspBlk->getStr("name", NULL) : NULL;
+  String errorMessage;
+  const eastl::optional<String> wspName = wsp->getWspNameByAppBlkPathIfOnlyOneMatches(app_blk_path, errorMessage);
+  if (!wspName.has_value())
+  {
+    logerr("%s", errorMessage);
+    wsp->freeWorkspaceBlk();
+    return false;
+  }
 
-  if (wspName ? wsp->load(wspName) : wsp->loadIndirect(app_blk_path))
+  if (wspName->empty() ? wsp->loadIndirect(app_blk_path) : wsp->load(*wspName))
   {
     DAEDITOR3.conNote("using %%appDir=%s", dd_get_named_mount_path("appDir"));
     setup_named_mount_points(*DataBlock("%appDir/application.blk").getBlockByNameEx("mountPoints"), getSdkDir());
@@ -1228,7 +1235,6 @@ void DagorEdAppWindow::switchToPlugin(int plgId)
     ged.curEH = next->getEventHandler();
 
     // help
-    String helpName(128, "%s help", next->getMenuCommandName());
 
     //::appWnd.setMenuItem(CM_PLUGIN_HELP, helpName);
     //::appWnd.enableMenuItem(CM_PLUGIN_HELP, (bool)next->getHelpUrl());
@@ -1429,14 +1435,6 @@ void DagorEdAppWindow::unregisterCustomCollider(IDagorEdCustomCollider *coll) co
 
 
 //==============================================================================
-void DagorEdAppWindow::enableCustomShadow(const char *name) const { ::enable_custom_shadow(name); }
-
-
-//==============================================================================
-void DagorEdAppWindow::disableCustomShadow(const char *name) const { ::disable_custom_shadow(name); }
-
-
-//==============================================================================
 void DagorEdAppWindow::enableCustomCollider(const char *name) const { ::enable_custom_collider(name); }
 
 
@@ -1451,34 +1449,11 @@ void DagorEdAppWindow::setEnabledColliders(const Tab<String> &names) const { ::s
 void DagorEdAppWindow::getEnabledColliders(Tab<String> &names) const { ::get_enabled_colliders(names); }
 
 //==============================================================================
-bool DagorEdAppWindow::isCustomShadowEnabled(const IDagorEdCustomCollider *collider) const
-{
-  return ::is_custom_shadow_enabled(collider);
-}
-
-
-//==============================================================================
 int DagorEdAppWindow::getCustomCollidersCount() const { return ::get_custom_colliders_count(); }
 
 
 //==============================================================================
 IDagorEdCustomCollider *DagorEdAppWindow::getCustomCollider(int idx) const { return ::get_custom_collider(idx); }
-
-
-//==============================================================================
-bool DagorEdAppWindow::fillCustomCollidersList(PropPanel::ContainerPropertyControl &panel, const char *grp_caption, int grp_pid,
-  int collider_pid, bool shadow, bool open_grp = false) const
-{
-  return ::fill_custom_colliders_list(panel, grp_caption, grp_pid, collider_pid, shadow, open_grp);
-}
-
-
-//==============================================================================
-bool DagorEdAppWindow::onPPColliderCheck(int pid, const PropPanel::ContainerPropertyControl &panel, int collider_pid,
-  bool shadow) const
-{
-  return ::on_pp_collider_check(pid, panel, collider_pid, shadow);
-}
 
 
 //==============================================================================
@@ -1898,6 +1873,8 @@ void DagorEdAppWindow::beforeRenderObjects()
           break;
         }
   }
+
+  environment::before_render_objects();
 
   if (vpw) //== services currently doesn't require pre-frame-render update
     services_before_render();

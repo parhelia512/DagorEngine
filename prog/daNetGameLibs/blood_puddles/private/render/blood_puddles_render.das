@@ -12,7 +12,7 @@ require PhysMat
 require DagorRandom
 
 
-[es(tag=render, on_event=OnLevelLoaded, track=(render_settings__bare_minimum, render_settings__fullDeferred))]
+[es(tag=render, on_event=EventRenderSceneLoaded, track=(render_settings__bare_minimum, render_settings__fullDeferred))]
 def blood_puddles_on_level_loaded_es(evt : Event;
                                      render_settings__bare_minimum : bool;
                                      render_settings__fullDeferred : bool)
@@ -27,7 +27,7 @@ def blood_puddles_on_level_loaded_es(evt : Event;
     init_blood_puddles_mgr()
 
 
-[es(tag=render, on_event=UnloadLevel)]
+[es(tag=render, on_event=EventRenderSceneUnload)]
 def blood_puddles_unload_level_es(evt : Event)
   close_blood_puddles_mgr()
 

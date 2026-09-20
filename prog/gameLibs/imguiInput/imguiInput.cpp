@@ -29,6 +29,7 @@ static void on_imgui_state_change(ImGuiState old_state, ImGuiState new_state)
   {
     imgui_input_handler = eastl::make_unique<DearImGuiInputHandler>();
     imgui_input_handler->hybridInput = hybrid_input_mode;
+    imgui_input_handler->drawMouseCursor = saved_draw_cursor;
     d3d::get_screen_size(saved_mouse_pos.x, saved_mouse_pos.y);
     saved_mouse_pos /= 2;
   }
@@ -122,14 +123,9 @@ void imgui_use_hybrid_input_mode(bool value)
 
 void imgui_draw_mouse_cursor(bool draw_mouse_cursor)
 {
+  saved_draw_cursor = draw_mouse_cursor;
   if (imgui_input_handler)
-  {
     imgui_input_handler->drawMouseCursor = draw_mouse_cursor;
-  }
-  else
-  {
-    logerr("imgui_input_handler == null, call imgui initialization");
-  }
 }
 static bool imgui_console_handler(const char *argv[], int argc)
 {

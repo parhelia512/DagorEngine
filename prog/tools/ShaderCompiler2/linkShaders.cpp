@@ -39,6 +39,7 @@
 #if _CROSS_TARGET_SPIRV
 #include <drv/shadersMetaData/spirv/compiled_meta_data.h>
 #endif
+#include <drv/shadersMetaData/dx11/compiled_shader_header.h>
 
 static bool compare_data(const auto &lhs, const auto &rhs)
 {
@@ -274,8 +275,11 @@ int add_vprog(const ShaderStageData &vs, const ShaderStageData &hs, const Shader
       G_ASSERT(gs.type() == _MAKE4C('D11g'));
     G_ASSERT(vs.type() == _MAKE4C('DX9v'));
 
+    // cache type tag dword + dx11::SimpleHeader + dx11::CombinedHeader;
+    // transcode_metadata strips the tag before the blob reaches the bindump
     comp_meta = new SmallTab<unsigned, TmpmemAlloc>;
     clear_and_resize(*comp_meta, 9);
+    G_STATIC_ASSERT(9 * sizeof(uint32_t) == sizeof(uint32_t) + dx11::COMBINED_METADATA_SIZE);
 
     comp_prog = new SmallTab<unsigned, TmpmemAlloc>;
     clear_and_resize(*comp_prog, vs_len + hs_len + ds_len + gs_len);
@@ -289,9 +293,9 @@ int add_vprog(const ShaderStageData &vs, const ShaderStageData &hs, const Shader
     comp_unp[1] = (vs_len + hs_len + ds_len + gs_len) * sizeof(uint32_t);
     comp_unp[2] = vs_meta[2];
     comp_unp[3] = vs_meta[3];
-    comp_unp[4] = _MAKE4C('DX11');
+    comp_unp[4] = dx11::COMBINED_SHADERS_IDENT;
     comp_unp[5] = vs_len;
-    comp_unp[6] = hs_len | (!hs.empty() ? hs_meta[2] & 0xFF000000 : 0);
+    comp_unp[6] = hs_len | (!hs.empty() ? hs_meta[2] & ~dx11::COMBINED_LEN_MASK : 0);
     comp_unp[7] = ds_len;
     comp_unp[8] = gs_len;
     memcpy(data, vs.bytecode.data(), data_size(vs.bytecode));
@@ -392,7 +396,7 @@ VertexProgramAndPixelShaderIdents add_phase_one_progs(ShaderStageData vs, Shader
   }
 
   dx12::dxil::CompilationOptions compileOptions;
-  compileOptions.optimize = shc::config().hlslOptimizationLevel ? true : false;
+  compileOptions.optimizeLevel = (uint32_t)eastl::min(shc::config().hlslOptimizationLevel, dx12::dxil::MAX_OPTIMIZE_LEVEL);
   compileOptions.skipValidation = shc::config().hlslSkipValidation;
   compileOptions.debugInfo = is_hlsl_debug();
   compileOptions.scarlettW32 = useScarlettWave32;
@@ -631,7 +635,7 @@ struct RecompileVPRogJob : RecompileJobBase
     {
       writeCache = true;
       auto recompiledVProg = dx12::dxil::recompileVertexProgram(uncompiled.metadata, shc::config().targetPlatform,
-        shc::config().dx12PdbCacheDir, ilHashWstring, shc::config().hlslDebugLevel, shc::config().hlslEmbedSource);
+        shc::config().dx12PdbCacheDir, ilHashWstring, shc::config().hlslDebugLevel, shc::config().hlslDebugParts);
       if (!recompiledVProg)
       {
         sh_debug(SHLOG_FATAL, "Recompilation of vprog failed");
@@ -686,7 +690,7 @@ struct RecompilePShJob : RecompileJobBase
     {
       writeCache = true;
       auto recompiledFSh = dx12::dxil::recompilePixelShader(uncompiled.metadata, shc::config().targetPlatform,
-        shc::config().dx12PdbCacheDir, ilHashWstring, shc::config().hlslDebugLevel, shc::config().hlslEmbedSource);
+        shc::config().dx12PdbCacheDir, ilHashWstring, shc::config().hlslDebugLevel, shc::config().hlslDebugParts);
       if (!recompiledFSh)
       {
         sh_debug(SHLOG_FATAL, "Recompilation of fsh failed");

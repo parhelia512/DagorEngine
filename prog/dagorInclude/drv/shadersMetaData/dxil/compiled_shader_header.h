@@ -25,47 +25,47 @@ using HashValue = ShaderHashValue;
 
 // DX12 Baseline limit
 // 14 is the max until Tier 3 HW
-constexpr uint32_t MAX_B_REGISTERS = 14;
-constexpr uint32_t MAX_T_REGISTERS = 32;
-constexpr uint32_t MAX_S_REGISTERS = MAX_T_REGISTERS;
-constexpr uint32_t MAX_U_REGISTERS = 13;
-constexpr uint32_t ROOT_CONSTANT_BUFFER_REGISTER_INDEX = 8;
-constexpr uint32_t ROOT_CONSTANT_BUFFER_REGISTER_SPACE_OFFSET = 1;
-constexpr uint32_t SPECIAL_CONSTANTS_REGISTER_INDEX = 7;
-constexpr uint32_t DRAW_ID_REGISTER_SPACE = 1;
-constexpr uint32_t MAX_UNBOUNDED_REGISTER_SPACES = 8;
+inline constexpr uint32_t MAX_B_REGISTERS = 14;
+inline constexpr uint32_t MAX_T_REGISTERS = 32;
+inline constexpr uint32_t MAX_S_REGISTERS = MAX_T_REGISTERS;
+inline constexpr uint32_t MAX_U_REGISTERS = 13;
+inline constexpr uint32_t ROOT_CONSTANT_BUFFER_REGISTER_INDEX = 8;
+inline constexpr uint32_t ROOT_CONSTANT_BUFFER_REGISTER_SPACE_OFFSET = 1;
+inline constexpr uint32_t SPECIAL_CONSTANTS_REGISTER_INDEX = 7;
+inline constexpr uint32_t DRAW_ID_REGISTER_SPACE = 1;
+inline constexpr uint32_t MAX_UNBOUNDED_REGISTER_SPACES = 8;
 
-constexpr uint32_t REGULAR_RESOURCES_SPACE_INDEX = 0;
+inline constexpr uint32_t REGULAR_RESOURCES_SPACE_INDEX = 0;
 
-constexpr uint32_t BINDLESS_REGISTER_INDEX = 0;
+inline constexpr uint32_t BINDLESS_REGISTER_INDEX = 0;
 
-constexpr uint32_t BINDLESS_SAMPLERS_SPACE_COUNT = 2;
-constexpr uint32_t BINDLESS_SAMPLERS_SPACE_OFFSET = 1;
+inline constexpr uint32_t BINDLESS_SAMPLERS_SPACE_COUNT = 2;
+inline constexpr uint32_t BINDLESS_SAMPLERS_SPACE_OFFSET = 1;
 
-constexpr uint32_t BINDLESS_RESOURCES_SPACE_COUNT = 30;
-constexpr uint32_t BINDLESS_RESOURCES_SPACE_OFFSET = 1;
+inline constexpr uint32_t BINDLESS_RESOURCES_SPACE_COUNT = 30;
+inline constexpr uint32_t BINDLESS_RESOURCES_SPACE_OFFSET = 1;
 
-constexpr uint32_t BINDLESS_SAMPLERS_SPACE_BITS_SHIFT = 0;
+inline constexpr uint32_t BINDLESS_SAMPLERS_SPACE_BITS_SHIFT = 0;
 
-constexpr uint32_t BINDLESS_RESOURCES_SPACE_BITS_SHIFT = BINDLESS_SAMPLERS_SPACE_BITS_SHIFT + BINDLESS_SAMPLERS_SPACE_COUNT;
+inline constexpr uint32_t BINDLESS_RESOURCES_SPACE_BITS_SHIFT = BINDLESS_SAMPLERS_SPACE_BITS_SHIFT + BINDLESS_SAMPLERS_SPACE_COUNT;
 
-constexpr uint32_t BINDLESS_SAMPLERS_SPACE_BITS_MASK = ((1u << BINDLESS_SAMPLERS_SPACE_COUNT) - 1)
-                                                       << BINDLESS_SAMPLERS_SPACE_BITS_SHIFT;
+inline constexpr uint32_t BINDLESS_SAMPLERS_SPACE_BITS_MASK = ((1u << BINDLESS_SAMPLERS_SPACE_COUNT) - 1)
+                                                              << BINDLESS_SAMPLERS_SPACE_BITS_SHIFT;
 
-constexpr uint32_t BINDLESS_RESOURCES_SPACE_BITS_MASK = ((1u << BINDLESS_RESOURCES_SPACE_COUNT) - 1)
-                                                        << BINDLESS_RESOURCES_SPACE_BITS_SHIFT;
+inline constexpr uint32_t BINDLESS_RESOURCES_SPACE_BITS_MASK = ((1u << BINDLESS_RESOURCES_SPACE_COUNT) - 1)
+                                                               << BINDLESS_RESOURCES_SPACE_BITS_SHIFT;
 
 /// This is a hard limit, total shader record size with shder header can not exceed this value.
-constexpr uint32_t MAX_SHADER_BINDING_TABLE_STRIDE = 4096;
+inline constexpr uint32_t MAX_SHADER_BINDING_TABLE_STRIDE = 4096;
 /// This is the header size for a shader, this counts against MAX_SHADER_BINDING_TABLE_STRIDE limit.
-constexpr uint32_t SHADER_BINDING_TABLE_SHADER_HEADER_SIZE = 32;
+inline constexpr uint32_t SHADER_BINDING_TABLE_SHADER_HEADER_SIZE = 32;
 /// This is the upper limit of constant data in a shader record, this also includes resource references.
-constexpr uint32_t MAX_SHADER_RECORD_CONSTANT_SIZE_IN_BYTES =
+inline constexpr uint32_t MAX_SHADER_RECORD_CONSTANT_SIZE_IN_BYTES =
   MAX_SHADER_BINDING_TABLE_STRIDE - SHADER_BINDING_TABLE_SHADER_HEADER_SIZE;
 /// Smallest unit of a constant in a shader record.
-constexpr uint32_t MAX_SHADER_RECORD_CONSTANT_DWORD_COUNT = MAX_SHADER_RECORD_CONSTANT_SIZE_IN_BYTES / 4;
+inline constexpr uint32_t MAX_SHADER_RECORD_CONSTANT_DWORD_COUNT = MAX_SHADER_RECORD_CONSTANT_SIZE_IN_BYTES / 4;
 /// Absolute total limit of resources that can be referenced in a shader record, when space needed for constants 0.
-constexpr uint32_t MAX_SHADER_RECORD_RESOURCE_COUNT = MAX_SHADER_RECORD_CONSTANT_SIZE_IN_BYTES / sizeof(uint64_t);
+inline constexpr uint32_t MAX_SHADER_RECORD_RESOURCE_COUNT = MAX_SHADER_RECORD_CONSTANT_SIZE_IN_BYTES / sizeof(uint64_t);
 
 inline constexpr uint32_t MAX_SEMANTIC_NAME_SIZE = 32;
 
@@ -112,14 +112,14 @@ namespace extension
 {
 namespace nvidia
 {
-const uint32_t register_space_index = 99;
-const uint32_t register_index = 0;
+inline constexpr uint32_t register_space_index = 99;
+inline constexpr uint32_t register_index = 0;
 } // namespace nvidia
 namespace amd
 {
 // default used by AMD, could be overridden, but why bother...
-const uint32_t register_space_index = 0x7FFF0ADE;
-const uint32_t register_index = 0;
+inline constexpr uint32_t register_space_index = 0x7FFF0ADE;
+inline constexpr uint32_t register_index = 0;
 } // namespace amd
 } // namespace extension
 
@@ -238,7 +238,7 @@ inline bool is_compatible(const ShaderDeviceRequirement &base, const ShaderDevic
 
 struct ShaderHeader
 {
-  uint32_t maxConstantCount;
+  uint32_t implicitCbufRegCount;
   uint32_t bonesConstantsUsed;
   ShaderResourceUsageTable resourceUsageTable;
 
@@ -297,7 +297,7 @@ struct SemanticInfo
   uint32_t index;
 };
 
-const SemanticInfo semantic_remap[25] = //
+inline constexpr SemanticInfo semantic_remap[25] = //
   {{"POSITION", 0}, {"BLENDWEIGHT", 0}, {"BLENDINDICES", 0}, {"NORMAL", 0}, {"PSIZE", 0}, {"COLOR", 0}, {"COLOR", 1},
     {"TEXCOORD", 0}, // 7
     {"TEXCOORD", 1}, {"TEXCOORD", 2}, {"TEXCOORD", 3}, {"TEXCOORD", 4}, {"TEXCOORD", 5}, {"TEXCOORD", 6}, {"TEXCOORD", 7},
@@ -326,51 +326,6 @@ inline uint32_t getIndexFromSementicAndSemanticIndex(const char *name, uint32_t 
 
 ShaderHeaderCompileResult compileHeaderFromReflectionData(ShaderStage stage, const eastl::vector<uint8_t> &reflection,
   uint32_t max_const_count, dag::ConstSpan<dxil::StreamOutputComponentInfo> stream_output_components, void *dxc_lib);
-
-// identifies simple shader blob with one shader
-const uint32_t SHADER_IDENT = _MAKE4C('SX12');
-const uint32_t SHADER_UNCOMPRESSED_IDENT = _MAKE4C('sx12');
-// identifies a combine shader blob with a set of shader (all with different stages!)
-const uint32_t COMBINED_SHADER_IDENT = _MAKE4C('SC12');
-const uint32_t COMBINED_SHADER_UNCOMPRESSED_IDENT = _MAKE4C('sc12');
-
-struct CombinedChunk
-{
-  uint32_t offset;
-  uint32_t size;
-};
-
-enum class ChunkType : uint32_t
-{
-  // Section with one ShaderHeader
-  SHADER_HEADER,
-  // Array of bytes containing DXIL binary
-  DXIL,
-  // Array of bytes containing DXBC binary
-  DXBC,
-  // name of the shader for debugging
-  // (primarily for compute, as there the system does not generate the name)
-  SHADER_NAME,
-  // Used internally for XBOX compilation to pass original source
-  // from phase one to phase two
-  SHADER_SOURCE,
-};
-
-struct ChunkHeader
-{
-  HashValue hash;
-  ChunkType type;
-  uint32_t offset;
-  uint32_t size;
-};
-
-struct FileHeader
-{
-  uint32_t ident;
-  uint32_t chunkCount;
-  uint32_t chunkDataSize;
-  uint32_t compressedSize;
-};
 
 // New format of shaders
 

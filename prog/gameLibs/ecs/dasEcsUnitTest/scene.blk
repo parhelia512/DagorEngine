@@ -21,6 +21,9 @@ entity {
   _template:t="testTrackable"
 }
 entity {
+  _template:t="trackedInheritedChild"
+}
+entity {
   _template:t="testTrackable2"
 }
 

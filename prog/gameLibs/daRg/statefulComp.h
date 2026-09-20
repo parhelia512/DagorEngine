@@ -18,8 +18,9 @@ class StatefulCompType
 {
 public:
   Sqrat::Object ctorFunc;
-  Sqrat::Object keyFunc;          // null = unkeyed
-  dag::Vector<int> keyArgIndices; // ctor args the key function reads, bound by name at declaration
+  Sqrat::Object keyFunc;             // null = unkeyed
+  dag::Vector<int> keyArgIndices;    // ctor args the key function reads, bound by name at declaration
+  dag::Vector<bool> argDiagSilenced; // a 'mount'-prefixed ctor param opts its arg out of the dead-write diagnostic
   int numArgs = 0;
 
   void abandonScriptRefs();
@@ -37,14 +38,51 @@ public:
   Sqrat::Object typeRef; // keeps the type instance alive
   StatefulCompType *type = nullptr;
   dag::Vector<Sqrat::Object> args;
-  Sqrat::Object keyValue; // primitive or null
+  Sqrat::Object keyValue;
 
   void abandonScriptRefs();
 };
 
 
-// Mounted state: argument slots plus an owner scope holding everything the
-// ctor created. Lives exactly as long as its element.
+// The explicit owner the ctor receives as its first argument. FRP nodes and
+// subscriptions created through it die with the instance; anything created
+// without it keeps its normal script-handle lifetime. Owned by its script
+// object, which may outlive the instance: dispose() nulls the graph and every
+// later scope call throws.
+class StatefulScope
+{
+public:
+  struct SubEntry
+  {
+    sqfrp::NodeId node;
+    Sqrat::Object func;
+  };
+
+  sqfrp::ObservablesGraph *graph = nullptr;
+  dag::Vector<sqfrp::NodeId> ownedNodes;
+  dag::Vector<SubEntry> subs;
+  dag::Vector<Sqrat::Object> detachHandlers;
+  bool runningDetachHandlers = false;
+
+  void abandonScriptRefs();
+
+  // Called at detach: stop reacting at once, the values live until dispose.
+  void unsubscribe();
+  // Removes the subs, then destroys the owned nodes; a script handle that
+  // outlives the scope goes stale and its own destruction becomes a no-op.
+  void dispose();
+
+  static SQInteger sqWatched(HSQUIRRELVM vm);
+  static SQInteger sqComputed(HSQUIRRELVM vm);
+  static SQInteger sqWatchedImmediate(HSQUIRRELVM vm);
+  static SQInteger sqComputedImmediate(HSQUIRRELVM vm);
+  static SQInteger sqSubscribe(HSQUIRRELVM vm);
+  static SQInteger sqOnDetach(HSQUIRRELVM vm);
+};
+
+
+// Mounted state: argument slots plus the scope holding everything the ctor
+// created through it. Lives exactly as long as its element.
 class StatefulInstance
 {
 public:
@@ -60,13 +98,14 @@ public:
   StatefulCompType *type = nullptr;
   Sqrat::Object keyValue;
   dag::Vector<ArgSlot> argSlots;
-  sqfrp::OwnerScope ownerScope;
+  Sqrat::Object scopeRef; // the script object that owns the StatefulScope
+  StatefulScope *scope = nullptr;
   sqfrp::ObservablesGraph *graph = nullptr;
 
   ~StatefulInstance() { dispose(); }
   // Called at detach: stop reacting at once, the values live until dispose.
   void unsubscribe();
-  // Releases the owner scope before the obsevables: ctor-created nodes read them.
+  // Releases the scope before the argument cells: ctor-created nodes read them.
   void dispose();
 };
 

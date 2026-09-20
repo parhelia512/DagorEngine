@@ -118,7 +118,7 @@ class CheckerVisitor : public Visitor
 
   void checkIdUsed(const Id *id, const Node *p, ValueRef *v);
 
-  void reportIfCannotBeNull(const Expr *checkee, const Expr *n, const char *loc);
+  bool reportIfCannotBeNull(const Expr *checkee, const Expr *n, const char *loc);
   void reportModifyIfContainer(const Expr *e, const Expr *mod);
   void checkForgotSubst(const LiteralExpr *l);
   void checkContainerModification(const UnExpr *expr);
@@ -156,6 +156,7 @@ class CheckerVisitor : public Visitor
   void checkDuplicateTernaryCondition(const TerExpr *expr);
   void checkExtendToAppend(const CallExpr *callExpr);
   void checkMergeEmptyTable(const CallExpr *callExpr);
+  void checkRedundantSpreadGuard(const Expr *spread, bool intoTable);
   void checkEmptyArrayResize(const CallExpr *callExpr);
   void checkAlreadyRequired(const CallExpr *callExpr);
   void resolveRequire(const CallExpr *call, const char *moduleName);
@@ -185,8 +186,6 @@ class CheckerVisitor : public Visitor
   void checkGlobalAccess(const GetFieldExpr *expr);
   void checkAccessFromStatic(const GetFieldExpr *expr);
   void checkExternalField(const GetFieldExpr *expr);
-
-  bool hasDynamicContent(const SQObject &container);
 
   bool findIfWithTheSameCondition(const Expr * condition, const IfStatement * elseNode, const Expr *&duplicated) {
     if (_equalChecker.check(condition, elseNode->condition())) {
@@ -377,7 +376,14 @@ class CheckerVisitor : public Visitor
 
   LiteralExpr trueValue, falseValue, nullValue;
 
+  struct LoopCannotBeNullCheck {
+    const Expr *reportee;
+    const char *loc;
+  };
+  enum LoopConditionCheckPass { LCCP_NONE, LCCP_INITIAL, LCCP_FINAL };
   bool isEffectsGatheringPass;
+  LoopConditionCheckPass loopConditionCheckPass;
+  std::vector<LoopCannotBeNullCheck> *loopCannotBeNullChecks;
 
   void putIntoGlobalNamesMap(std::unordered_map<std::string, std::vector<IdLocation>> &map, enum DiagnosticsId diag, const char *name, const Node *d);
   void storeGlobalDeclaration(const char *name, const Node *d);
@@ -396,7 +402,9 @@ public:
     , trueValue(SourceSpan::invalid(), true)
     , falseValue(SourceSpan::invalid(), false)
     , nullValue(SourceSpan::invalid())
-    , isEffectsGatheringPass(false) {}
+    , isEffectsGatheringPass(false)
+    , loopConditionCheckPass(LCCP_NONE)
+    , loopCannotBeNullChecks(nullptr) {}
 
   ~CheckerVisitor();
 
@@ -430,6 +438,7 @@ public:
 
   void visitFunctionExpr(FunctionExpr *func);
 
+  void visitArrayExpr(ArrayExpr *arr);
   void visitTableExpr(TableExpr *table);
   void visitClassExpr(ClassExpr *klass);
 

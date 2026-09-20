@@ -19,7 +19,6 @@
 #include <libTools/util/makeBindump.h>
 #include <util/dag_string.h>
 
-static SpinLockReadWriteLock sharedDataRWSL;
 struct AssetExportCache::SharedData
 {
   struct Hash
@@ -35,6 +34,7 @@ struct AssetExportCache::SharedData
   Tab<int> rebuildTypes;
   FastNameMap rebuildAssets;
   void *jobMem;
+  SpinLockReadWriteLock rwSL; // guards fnames+rec
 
   SharedData() : rec(midmem), rebuildTypes(midmem)
   {
@@ -44,13 +44,13 @@ struct AssetExportCache::SharedData
 
   void reset()
   {
-    sharedDataRWSL.lockWrite();
+    rwSL.lockWrite();
     fnames.reset();
     rec.clear();
     changed.store(false);
     totalHashCalc.store(0);
     totalHashReused.store(0);
-    sharedDataRWSL.unlockWrite();
+    rwSL.unlockWrite();
   }
   bool load(const char *fname);
   bool save(const char *fname);
@@ -741,7 +741,7 @@ bool AssetExportCache::SharedData::load(const char *cache_fname)
   if (crd.readInt() != 1)
     return false;
 
-  sharedDataRWSL.lockWrite();
+  rwSL.lockWrite();
   // read file data hashes
   rec.resize(crd.readInt());
   String nm;
@@ -751,7 +751,7 @@ bool AssetExportCache::SharedData::load(const char *cache_fname)
     G_VERIFY(i == fnames.addNameId(nm));
   }
   crd.readTabData(rec);
-  sharedDataRWSL.unlockWrite();
+  rwSL.unlockWrite();
 
   if (crd.readInt() != _MAKE4C('.end'))
     return false;
@@ -768,7 +768,7 @@ bool AssetExportCache::SharedData::save(const char *cache_fname)
   FullFileSaveCB cwr(cache_fname);
   if (!cwr.fileHandle)
     return false;
-  sharedDataRWSL.lockRead();
+  rwSL.lockRead();
   cwr.writeInt(_MAKE4C('sdC'));
   cwr.writeInt(1);
 
@@ -777,7 +777,7 @@ bool AssetExportCache::SharedData::save(const char *cache_fname)
   iterate_names(fnames, [&](int, const char *name) { cwr.writeString(name); });
   iterate_names(fnames, [&](int id, const char *) { cwr.write(rec.data() + id, elem_size(rec)); });
   cwr.writeInt(_MAKE4C('.end'));
-  sharedDataRWSL.unlockRead();
+  rwSL.unlockRead();
   changed.store(false);
   return true;
 }
@@ -785,21 +785,21 @@ void AssetExportCache::SharedData::getFileHash(const char *fn, unsigned time, un
 {
   TwoStepRelPath::storage_t tmp_stor;
   const char *rel_fn = AssetExportCache::mkRelPath(fn, tmp_stor);
-  sharedDataRWSL.lockRead();
+  rwSL.lockRead();
   int id = fnames.getNameId(rel_fn);
   if (id >= 0 && time == rec[id].timeStamp && sz == rec[id].size)
   {
     // debug("reused old hash");
     memcpy(out_hash, rec[id].hash, HASH_SZ);
-    sharedDataRWSL.unlockRead();
+    rwSL.unlockRead();
     totalHashReused.fetch_add(sz);
     return;
   }
-  sharedDataRWSL.unlockRead();
+  rwSL.unlockRead();
 
   AssetExportCache::getFileHash(fn, out_hash);
   // debug("calc hash: %s", fn);
-  sharedDataRWSL.lockWrite();
+  rwSL.lockWrite();
   id = fnames.addNameId(rel_fn);
   if (id >= rec.size())
   {
@@ -809,7 +809,7 @@ void AssetExportCache::SharedData::getFileHash(const char *fn, unsigned time, un
   memcpy(rec[id].hash, out_hash, HASH_SZ);
   rec[id].timeStamp = time;
   rec[id].size = sz;
-  sharedDataRWSL.unlockWrite();
+  rwSL.unlockWrite();
 
   changed.store(true);
   totalHashCalc.fetch_add(sz);

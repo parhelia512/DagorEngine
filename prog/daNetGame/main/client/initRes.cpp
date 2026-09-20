@@ -21,6 +21,7 @@
 #include "render/fx/fx.h"
 #include "render/renderEvent.h"
 #include "render/rendererFeatures.h"
+#include "render/renderSettings.h"
 #include "main/version.h"
 
 static bool dng_fx_inited = false;
@@ -89,6 +90,9 @@ void init_res_factories()
   bool ri_uvd_streaming = ::dgs_get_settings()->getBlockByNameEx("unitedVdata.rendInst")->getBool("useStreaming", true);
   debug("unitedVdata.rendInst: useStreaming=%d", ri_uvd_streaming);
   ::register_rendinst_gameres_factory(ri_uvd_streaming);
+
+  apply_united_vdata_allocation_limits(false);
+
   ::register_effect_gameres_factory();
   ::register_png_tex_load_factory();
   ::register_avif_tex_load_factory();

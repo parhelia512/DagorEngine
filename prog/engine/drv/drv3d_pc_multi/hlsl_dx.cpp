@@ -14,9 +14,9 @@
 #if USE_MULTI_D3D_DX11
 namespace drv3d_dx11
 {
-VPROG create_vertex_shader_unpacked(const ShaderSource &source, const void *shader_bin, uint32_t size, uint32_t vs_consts_count,
+VPROG create_vertex_shader_unpacked(const ShaderSourceExt &source, const void *shader_bin, uint32_t size, uint32_t vs_consts_count,
   bool do_fatal);
-FSHADER create_pixel_shader_unpacked(const ShaderSource &source, const void *shader_bin, uint32_t size, uint32_t ps_consts_count,
+FSHADER create_pixel_shader_unpacked(const ShaderSourceExt &source, const void *shader_bin, uint32_t size, uint32_t ps_consts_count,
   int32_t ps_max_rtv, bool do_fatal);
 } // namespace drv3d_dx11
 
@@ -370,7 +370,7 @@ static bool fill_shader_header_from_reflection(dxil::ShaderHeader &header, dxil:
 
   header.inputPrimitive = static_cast<uint16_t>(desc.InputPrimitive);
 
-  // Extract $Globals CBV size -> maxConstantCount
+  // Extract $Globals CBV size -> implicitCbufRegCount
   for (UINT cbi = 0; cbi < desc.ConstantBuffers; ++cbi)
   {
     auto *cbInfo = reflector->GetConstantBufferByIndex(cbi);
@@ -380,7 +380,7 @@ static bool fill_shader_header_from_reflection(dxil::ShaderHeader &header, dxil:
     cbInfo->GetDesc(&cbDesc);
     if (strcmp(cbDesc.Name, "$Globals") == 0)
     {
-      header.maxConstantCount = (cbDesc.Size + 15) / 16;
+      header.implicitCbufRegCount = (cbDesc.Size + 15) / 16;
       break;
     }
   }

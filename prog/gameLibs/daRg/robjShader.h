@@ -6,6 +6,7 @@
 #include <math/dag_color.h>
 #include <drv/3d/dag_consts.h>
 #include <util/dag_simpleString.h>
+#include <EASTL/string.h>
 
 
 namespace darg
@@ -14,7 +15,7 @@ namespace darg
 class RobjShaderParams : public RendObjParams
 {
 public:
-  SimpleString shaderName;
+  eastl::string shaderName;
   SimpleString shaderSource;
 
   Ptr<ShaderMaterial> material;
@@ -29,6 +30,9 @@ public:
   bool load(const Element *elem) override;
   bool getAnimFloat(AnimProp prop, float **ptr) override;
   ~RobjShaderParams();
+
+private:
+  void resolveShader();
 };
 
 

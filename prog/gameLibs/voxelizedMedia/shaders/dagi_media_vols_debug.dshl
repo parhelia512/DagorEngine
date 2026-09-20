@@ -1,0 +1,247 @@
+include "shader_global.dshl"
+include "postfx_inc.dshl"
+include "viewVecVS.dshl"
+include "dagi_media_volumes_inject.dshl"
+
+// debug trace of the media volume SOURCE (the closest baked instances + their bricks), not
+// the voxelized media scene. mode 1 = exact per voxel DDA of the bricks, cubic normals,
+// exact per segment optical depth. mode 2 = fixed step raymarch with the injection sampler
+// math per instance, constant optical depth per hit, gradient normals.
+// the tracer takes a flat list of the closest instances (DaGIMediaVolumes::debugPrepare)
+// and slab tests each against the ray: no grid, wave coherent
+int dagi_media_vols_debug_mode = 1;
+interval dagi_media_vols_debug_mode: exact_dda < 2, raymarch;
+float dagi_media_vols_debug_step = 1;
+buffer dagi_media_vols_debug_insts;
+int dagi_media_vols_debug_count;
+
+// the debug lighting of a hit: the same static shadowed sun + ambient + back light the
+// injection uses, which the DAGI_MEDIA_VOLUMES ambient hook already instantiated here
+define_macro_if_not_defined PROJECT_DAGI_MEDIA_VOLS_DEBUG_LIGHT(code)
+  hlsl(code) {
+    float3 project_media_vols_debug_light(float3 albedo, float3 normal, float3 world_pos, float translucency, float voxel_size)
+    {
+      return dagi_media_vols_ambient(world_pos, normal, albedo, albedo*(0.75*translucency), voxel_size);
+    }
+  }
+endmacro
+
+shader dagi_media_vols_debug
+{
+  supports global_frame;
+  supports none;
+  cull_mode = none;
+  z_write = false; // games bind the debug pass depth read only
+  z_test = false;
+  USE_AND_INIT_VIEW_VEC_VS()
+  POSTFX_VS_VIEWVEC(1, viewvec)
+  (ps) {
+    debug_world_view_pos@f3 = world_view_pos;
+    dagi_media_vols_debug_step@f1 = dagi_media_vols_debug_step;
+    dagi_media_vols_debug_count@i1 = dagi_media_vols_debug_count;
+    dagi_media_vols_debug_insts@buf = dagi_media_vols_debug_insts hlsl { ByteAddressBuffer dagi_media_vols_debug_insts@buf; };
+  }
+  INIT_ZNZFAR()
+  DAGI_MEDIA_VOLUMES(ps)
+  PROJECT_DAGI_MEDIA_VOLS_DEBUG_LIGHT(ps)
+  INIT_HDR(ps)
+  USE_HDR(ps)
+  blend_src = 1;
+  blend_dst = sa;
+
+  hlsl(ps) {
+    #include <base_wooray3d.hlsl>
+    struct VolInst
+    {
+      float3 pos, invScale;
+      float3 c0, c1, c2; // world directions of the volume local axes
+      uint type;
+    };
+    VolInst decode_vol_inst(uint i)
+    {
+      VolInst v;
+      uint packedQuat;
+      dagi_media_vol_load_inst(dagi_media_vols_debug_insts, i, v.pos, v.invScale, v.type, packedQuat);
+      dagi_media_vol_quat_axes(packedQuat, v.c0, v.c1, v.c2);
+      return v;
+    }
+
+    // ray span of the instance box, t in world meters, or (-1,-1)
+    float2 vol_inst_span(VolInst v, float3 wpos, float3 wdir, float maxT)
+    {
+      float3 boxLt = structuredBufferAt(dagi_media_vol_types, v.type*2).xyz;
+      float3 invSize = structuredBufferAt(dagi_media_vol_types, v.type*2 + 1).xyz;
+      float3 rel = wpos - v.pos;
+      float3 b0 = (float3(dot(v.c0, rel), dot(v.c1, rel), dot(v.c2, rel))*v.invScale - boxLt)*invSize;
+      float3 bd = float3(dot(v.c0, wdir), dot(v.c1, wdir), dot(v.c2, wdir))*v.invScale*invSize;
+      float2 t = rayBoxIntersect(float3(0, 0, 0), float3(1, 1, 1), b0, bd);
+      t = float2(max(t.x, 0), min(t.y, maxT));
+      return t.x < t.y ? t : float2(-1, -1);
+    }
+
+    #define DEBUG_VOLS_MAX_HITS 16 // nearest kept; transmittance saturates long before more matter
+
+    ##if dagi_media_vols_debug_mode == raymarch
+    // one instance's contribution at a world point: the injection sampler math verbatim
+    void vol_inst_sample(VolInst v, float3 worldPos, float voxelSize, inout float sigmaSum, inout float maxSingle,
+      inout float3 albedoSum)
+    {
+      // the exact path the refill injects with, so a mode 2 mismatch means the brick, not this
+      float3 lpos, hl;
+      dagi_media_vol_local_voxel(v.c0, v.c1, v.c2, v.invScale, worldPos - v.pos, voxelSize, lpos, hl);
+      DagiMediaVolSample smp;
+      if (!dagi_media_vol_sample_instance(v.type, lpos, hl, v.invScale, smp))
+        return;
+      maxSingle = max(maxSingle, dagi_media_vol_max_sigma(smp.invVoxWorld));
+      sigmaSum += smp.sigma;
+      albedoSum += smp.sigma*dagi_media_vol_albedo_of(v.type);
+    }
+    ##else
+    // composite one instance: exact DDA over its 16^3 brick, t in world meters
+    void trace_vol_inst_brick(VolInst v, float3 wpos, float3 wdir, float t0, float t1, inout float4 result)
+    {
+      float3 boxLt = structuredBufferAt(dagi_media_vol_types, v.type*2).xyz;
+      float3 invSize = structuredBufferAt(dagi_media_vol_types, v.type*2 + 1).xyz;
+      float3 rel = wpos - v.pos;
+      // brick space: the volume box maps to [0,1)^3, t stays in world meters
+      float3 b0 = (float3(dot(v.c0, rel), dot(v.c1, rel), dot(v.c2, rel))*v.invScale - boxLt)*invSize;
+      float3 bd = float3(dot(v.c0, wdir), dot(v.c1, wdir), dot(v.c2, wdir))*v.invScale*invSize;
+      float3 albedo = dagi_media_vol_albedo_of(v.type);
+      // the same per meter log2 extinction convention the injection uses
+      float invVoxWorld = dagi_media_vol_inv_vox_world(invSize, v.invScale);
+      int3 cellBase = int3(dagi_media_vol_atlas_cell(v.type, dagi_media_vol_atlas_grid))*DAGI_MEDIA_VOL_BRICK;
+      const float leaf = 1./DAGI_MEDIA_VOL_BRICK;
+      // the entry point sits on the box surface within float error: the clamp keeps the walk inside
+      WooRay3d ray = initWoo(clamp(b0 + bd*t0, 0, 1 - 1e-5), bd, leaf);
+      float t = t0, tRel = 0;
+      LOOP
+      for (uint n = 0; n < 3*DAGI_MEDIA_VOL_BRICK; ++n)
+      {
+        float tNext = min(t0 + min3(ray.tMax.x, ray.tMax.y, ray.tMax.z), t1);
+        float a = texture3DAt(dagi_media_vol_atlas, cellBase + ray.pt).x*dagi_media_vols_opacity_scale(0);
+        if (a > 0)
+        {
+          float tau = dagi_media_vol_sigma(a, invVoxWorld, tNext - t); // exact segment optical depth
+          float segTr = exp2(-tau);
+          // cubic: the brick space face the ray enters this voxel through
+          float3 normal = ray_box_intersect_normal(b0, bd, ray.pt*leaf, (ray.pt + 1)*leaf);
+          float3 worldN = normalize(v.c0*normal.x + v.c1*normal.y + v.c2*normal.z);
+          result.rgb += result.a*project_media_vols_debug_light(albedo, worldN, wpos + wdir*t, max(1 - a, 1./64.),
+            rcp(invVoxWorld))*(1 - segTr);
+          result.a *= segTr;
+          if (result.a < 1e-3)
+            return;
+        }
+        if (tNext >= t1)
+          return;
+        nextCell(ray, tRel);
+        t = t0 + tRel;
+        if (any(uint3(ray.pt) >= uint(DAGI_MEDIA_VOL_BRICK)))
+          return;
+      }
+    }
+    ##endif
+
+    float4 trace_vols(float3 wpos, float3 wdir, float maxT)
+    {
+      float4 result = float4(0, 0, 0, 1);
+      // slab test every instance of the flat list, keep the nearest hits entry ordered
+      uint insts[DEBUG_VOLS_MAX_HITS];
+      float ts0[DEBUG_VOLS_MAX_HITS + 1], ts1[DEBUG_VOLS_MAX_HITS + 1];
+      uint cnt = 0;
+      uint count = min(uint(dagi_media_vols_debug_count), 4096u);
+      LOOP
+      for (uint i = 0; i < count; ++i)
+      {
+        float2 span = vol_inst_span(decode_vol_inst(i), wpos, wdir, maxT);
+        // hlsl && evaluates both operands: every index must hold with the guard false too
+        if (span.x < 0 || (cnt == DEBUG_VOLS_MAX_HITS && span.x >= ts0[DEBUG_VOLS_MAX_HITS - 1]))
+          continue;
+        uint at = min(cnt, DEBUG_VOLS_MAX_HITS - 1); // a full list drops its farthest entry
+        cnt = min(cnt + 1, uint(DEBUG_VOLS_MAX_HITS));
+        LOOP // fxc must not unroll: its bound analysis rejects the array read in the condition
+        for (; at > 0 && ts0[max(at, 1u) - 1] > span.x; --at)
+          { insts[at] = insts[at - 1]; ts0[at] = ts0[at - 1]; ts1[at] = ts1[at - 1]; }
+        insts[at] = i; ts0[at] = span.x; ts1[at] = span.y;
+      }
+      if (!cnt)
+        return result;
+      ##if dagi_media_vols_debug_mode == raymarch
+      float step = max(dagi_media_vols_debug_step, 0.05);
+      // the injection caps a media voxel at 12/voxelSize: without the same cap here a dense
+      // brick reads higher than what was injected, and mode 2 reports its own difference
+      float maxStepSigma = 12.f/step;
+      float tEnd = 0;
+      for (uint k = 0; k < cnt; ++k)
+        tEnd = max(tEnd, ts1[k]);
+      LOOP
+      for (float tCur = ts0[0] + 0.5*step; tCur < tEnd; tCur += step)
+      {
+        float sigmaSum = 0, maxSingle = 0, bestSigma = 0;
+        float3 albedoSum = 0;
+        uint kBest = 0;
+        bool anyActive = false;
+        for (uint k = 0; k < cnt && ts0[k] <= tCur; ++k) // the list is entry ordered
+          if (tCur < ts1[k])
+          {
+            anyActive = true;
+            float before = sigmaSum;
+            vol_inst_sample(decode_vol_inst(insts[k]), wpos + wdir*tCur, step, sigmaSum, maxSingle, albedoSum);
+            if (sigmaSum - before > bestSigma)
+              { bestSigma = sigmaSum - before; kBest = k; }
+          }
+        if (!anyActive)
+        {
+          // between volumes: jump to the next entry instead of stepping through the gap
+          float tNext = tEnd;
+          for (uint k = 0; k < cnt; ++k)
+            if (ts0[k] > tCur)
+              { tNext = ts0[k]; break; }
+          tCur = max(tCur, tNext - step);
+          continue;
+        }
+        if (sigmaSum <= 0)
+          continue;
+        float sigma = min(min(sigmaSum, maxSingle), maxStepSigma);
+        float3 albedo = albedoSum*rcp(sigmaSum);
+        float h = 0.5*step; // gradient of the dominant instance, forward differences
+        VolInst vb = decode_vol_inst(insts[kBest]);
+        float3 grad = 0;
+        UNROLL
+        for (uint a = 0; a < 3; ++a)
+        {
+          float3 p = wpos + wdir*tCur;
+          p[a] += h;
+          float sg = 0, ms = 0;
+          float3 dummy = 0;
+          vol_inst_sample(vb, p, step, sg, ms, dummy);
+          grad[a] = sg - bestSigma;
+        }
+        float3 normal = dot(grad, grad) > 1e-12 ? -normalize(grad) : -wdir;
+        float stepTr = exp2(-sigma*step); // constant optical depth per hit
+        result.rgb += result.a*project_media_vols_debug_light(albedo, normal, wpos + wdir*tCur, stepTr, step)*(1 - stepTr);
+        result.a *= stepTr;
+        if (result.a < 1e-3)
+          return result;
+      }
+      ##else
+      for (uint k = 0; k < cnt; ++k)
+      {
+        trace_vol_inst_brick(decode_vol_inst(insts[k]), wpos, wdir, ts0[k], ts1[k], result);
+        if (result.a < 1e-3)
+          break;
+      }
+      ##endif
+      return result;
+    }
+
+    float4 debug_vols_ps(VsOutput IN HW_USE_SCREEN_POS) : SV_Target
+    {
+      float3 viewDir = normalize(IN.viewvec);
+      float4 r = trace_vols(debug_world_view_pos, viewDir, zn_zfar.y);
+      r.rgb = pack_hdr(r.rgb);
+      return r;
+    }
+  }
+  compile("target_ps", "debug_vols_ps");
+}

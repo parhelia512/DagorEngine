@@ -71,7 +71,8 @@ struct NetControlClient final : public net::INetworkObserver
     using namespace net;
     auto msg = msgraw->cast<ServerInfo>();
     G_ASSERT(msg);
-    auto serverFlags = net_context->srvFlags = (ServerFlags)msg->get<0>();
+    auto serverFlags = (ServerFlags)msg->get<0>();
+    net_context->setSrvFlags(serverFlags);
     if ((serverFlags & ServerFlags::Encryption) != ServerFlags::None)
       msgraw->connection->setEncryptionKey(net_context->encryptionKey, EncryptionKeyBits::Encryption | EncryptionKeyBits::Decryption);
     uint32_t ver = msg->get<3>();

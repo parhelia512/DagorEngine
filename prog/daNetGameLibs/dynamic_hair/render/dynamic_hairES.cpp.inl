@@ -18,7 +18,7 @@
 #include <render/world/dynModelRenderPass.h>
 #include <render/dynmodelRenderer.h>
 #include <render/dynmodelRenderer/animCharRenderAdditionalData.h>
-#include <render/world/cameraParams.h>
+#include <render/cameraParams.h>
 #include <render/world/frameGraphHelpers.h>
 #include <render/world/wrDispatcher.h>
 #include <shaders/dag_shaderBlock.h>

@@ -24,7 +24,6 @@ void clear_ri_instances();
 void clear_ri_apex_instances();
 void invalidate_ri_instance(const rendinst::RendInstDesc &desc);
 void enable_disable_ri_instance(const rendinst::RendInstDesc &desc, bool flag);
-bool is_ri_instance_enabled(const CollisionInstances *instance, const rendinst::RendInstDesc &desc);
 void move_ri_instance(const rendinst::RendInstDesc &desc, const Point3 &vel, const Point3 &omega);
 bool check_ri_collision_filtered(const rendinst::RendInstDesc &desc, const TMatrix &initial_tm, const TMatrix &new_tm, int filter);
 float get_ri_instances_time();

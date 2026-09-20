@@ -12,8 +12,11 @@ struct RiTableItem
 {
   const RiData *data;
   bool isSelected;
+  bool isUpdating;
 
-  RiTableItem(const RiData &data_ref, bool is_selected = false) : data(&data_ref), isSelected(is_selected) {}
+  RiTableItem(const RiData &data_ref, bool is_selected = false, bool is_updating = false) :
+    data(&data_ref), isSelected(is_selected), isUpdating(is_updating)
+  {}
 };
 
 class LpRiTableColumn : public LpProfilerTableColumn
@@ -201,6 +204,7 @@ private:
   LpIncludeExcludeFilter nameFilter;
 
   bool rangeFiltersInitialized = false;
+  unsigned lastFiltersGeneration = 0;
   LpRangeFilter<int> countRangeFilter;
   LpRangeFilter<int> physTrisRangeFilter;
   LpRangeFilter<int> traceTrisRangeFilter;
@@ -219,7 +223,9 @@ private:
     uint8_t type; // 0=dips 1=tris 2=dist 3=screen 4=heavy
   };
   eastl::vector<LodPopupCtx> lodPopupContexts;
-  void initRangeFilters();
+  // Runs on the first draw and after every recollect: moves the bounds onto the new data while
+  // keeping any range the user set.
+  void refreshRangeFilters();
   // Filtering helpers
   bool passesFilters(const RiData &data_ref) const;      // wrapper combining base + dynamic
   bool baseFiltersPass(const RiData &data_ref) const;    // name, counts, BB/sphere size, phys/trace

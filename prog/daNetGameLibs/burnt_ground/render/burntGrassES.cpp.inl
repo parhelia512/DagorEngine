@@ -35,7 +35,7 @@ static void burnt_grass_renderer_on_appear_es(
 }
 
 ECS_TAG(render)
-ECS_ON_EVENT(on_appear, OnLevelLoaded)
+ECS_ON_EVENT(on_appear, EventRenderSceneLoaded)
 static void burnt_grass_renderer_set_up_biomes_es(
   const ecs::Event &, BurntGrassRenderer &burnt_grass_renderer, const ecs::StringList &burnt_grass_renderer__biomeNames)
 {

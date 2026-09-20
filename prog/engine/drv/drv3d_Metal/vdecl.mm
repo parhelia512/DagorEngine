@@ -61,8 +61,9 @@ namespace drv3d_metal
           case VSDT_USHORT4N: fmt = MTLVertexFormatUShort4Normalized; sz = 8; break;
           case VSDT_SHORT4:   fmt = MTLVertexFormatShort4;   sz = 8; break;
 
-          case VSDT_UDEC3:  /*t = D3DDECLTYPE_UDEC3;*/  sz = 4; break;
-          case VSDT_DEC3N:  /*t = D3DDECLTYPE_DEC3N;*/  sz = 4; break;
+          // Metal has no unnormalized 10:10:10 vertex format
+          case VSDT_UDEC3:  D3D_CONTRACT_ERROR("[METAL] VSDT_UDEC3 vertex format is not supported"); sz = 4; break;
+          case VSDT_DEC3N:  fmt = MTLVertexFormatInt1010102Normalized; sz = 4; break;
 
           case VSDT_E3DCOLOR: fmt = MTLVertexFormatUChar4Normalized; sz = 4; break;
           case VSDT_UBYTE4:   fmt = MTLVertexFormatUChar4;   sz = 4; break;

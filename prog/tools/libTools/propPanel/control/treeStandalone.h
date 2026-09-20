@@ -53,6 +53,8 @@ public:
     uncheckedIcon = unchecked;
   }
 
+  bool isContextMenuOpen() const { return contextMenu != nullptr; }
+
   TLeafHandle createTreeLeaf(TLeafHandle parent, const char caption[], IconId icon, void *user_data = nullptr)
   {
     TreeNode *parentNode = leafHandleAsNode(parent);
@@ -955,6 +957,8 @@ public:
 
       if (!message.empty())
         drawMessage();
+
+      ImguiHelper::hookWindowScrollbarsForTestRuntime();
     }
     ImGui::EndChild();
     if (borderColor)

@@ -1,5 +1,7 @@
 // Copyright (C) Gaijin Games KFT.  All rights reserved.
 
+#include <ctype.h>
+
 #include "physical_device_set.h"
 
 using namespace drv3d_vulkan;
@@ -63,15 +65,15 @@ static const DeviceInfo deviceInfos[] = {
   {"geforce gt 1030", GpuVendor::NVIDIA, 0.907, "pascal"},
   {"nvidia titan x (pascal)", GpuVendor::NVIDIA, 10.974, "pascal"},
   {"nvidia titan xp", GpuVendor::NVIDIA, 12.150, "pascal"},
-  {"tesla p100 pcie 16gb", GpuVendor::NVIDIA, 9.300, "pascal"},
+  {"tesla p100-pcie-16gb", GpuVendor::NVIDIA, 9.300, "pascal"},
   {"tesla p40", GpuVendor::NVIDIA, 11.758, "pascal"},
   {"quadro gp100", GpuVendor::NVIDIA, 10.300, "pascal"},
   {"quadro p6000", GpuVendor::NVIDIA, 12.629, "pascal"},
   {"quadro p5000", GpuVendor::NVIDIA, 8.873, "pascal"},
   // ── Volta (Vulkan 1.3) ───────────────────────────────────────────────────
   {"nvidia titan v", GpuVendor::NVIDIA, 13.800, "volta"},
-  {"tesla v100 sxm2 32gb", GpuVendor::NVIDIA, 15.700, "volta"},
-  {"tesla v100 pcie 32gb", GpuVendor::NVIDIA, 14.000, "volta"},
+  {"tesla v100-sxm2-32gb", GpuVendor::NVIDIA, 15.700, "volta"},
+  {"tesla v100-pcie-32gb", GpuVendor::NVIDIA, 14.000, "volta"},
   {"quadro gv100", GpuVendor::NVIDIA, 16.664, "volta"},
 
   // ── Turing (Vulkan 1.3) ──────────────────────────────────────────────────
@@ -105,8 +107,8 @@ static const DeviceInfo deviceInfos[] = {
   {"geforce rtx 3060 ti", GpuVendor::NVIDIA, 16.200, "ampere"},
   {"geforce rtx 3060", GpuVendor::NVIDIA, 12.742, "ampere"},
   {"geforce rtx 3050", GpuVendor::NVIDIA, 9.109, "ampere"},
-  {"nvidia a100 sxm4 80gb", GpuVendor::NVIDIA, 77.600, "ampere"},
-  {"nvidia a100 pcie 80gb", GpuVendor::NVIDIA, 77.600, "ampere"},
+  {"nvidia a100-sxm4-80gb", GpuVendor::NVIDIA, 19.500, "ampere"},
+  {"nvidia a100-pcie-80gb", GpuVendor::NVIDIA, 19.500, "ampere"},
   {"nvidia a40", GpuVendor::NVIDIA, 37.418, "ampere"},
   {"nvidia a30", GpuVendor::NVIDIA, 10.320, "ampere"},
   {"nvidia a10", GpuVendor::NVIDIA, 31.240, "ampere"},
@@ -183,8 +185,8 @@ static const DeviceInfo deviceInfos[] = {
   {"radeon rx 590", GpuVendor::AMD, 7.119, "gcn 4.0"},
 
   // ── GCN 5th Gen (Vega) — Vulkan 1.2 ─────────────────────────────────────
-  {"radeon rx vea 64", GpuVendor::AMD, 13.700, "gcn 5.0"},
-  {"radeon rx vea 56", GpuVendor::AMD, 10.500, "gcn 5.0"},
+  {"radeon rx vega 64", GpuVendor::AMD, 13.700, "gcn 5.0"},
+  {"radeon rx vega 56", GpuVendor::AMD, 10.500, "gcn 5.0"},
   {"radeon vii", GpuVendor::AMD, 13.800, "gcn 5.0"},
   {"radeon instinct mi50", GpuVendor::AMD, 13.400, "gcn 5.0"},
   {"radeon instinct mi60", GpuVendor::AMD, 14.700, "gcn 5.0"},
@@ -252,6 +254,127 @@ static const DeviceInfo deviceInfos[] = {
   // ── Battlemage (Vulkan 1.4) ──────────────────────────────────────────────
   {"intel arc b580", GpuVendor::INTEL, 14.570, "battlemage"},
   {"intel arc b570", GpuVendor::INTEL, 11.340, "battlemage"},
+
+  // ==========================================================================
+  //  Mobile GPUs
+  //
+  //  Peak FP32 is an estimate: mobile vendors publish neither ALU counts nor
+  //  the sustained clock, and the clock is thermally capped in any case.
+  // ==========================================================================
+
+  // -- Qualcomm Adreno ------------------------------------------------------
+
+  // -- a5xx (Vulkan 1.0) ---------------------------------------------------
+  {"adreno 505", GpuVendor::QUALCOMM, 0.050, "a5xx"},
+  {"adreno 506", GpuVendor::QUALCOMM, 0.130, "a5xx"},
+  {"adreno 509", GpuVendor::QUALCOMM, 0.140, "a5xx"},
+  {"adreno 512", GpuVendor::QUALCOMM, 0.230, "a5xx"},
+  {"adreno 530", GpuVendor::QUALCOMM, 0.512, "a5xx"},
+  {"adreno 540", GpuVendor::QUALCOMM, 0.567, "a5xx"},
+
+  // -- a6xx (Vulkan 1.1) ---------------------------------------------------
+  {"adreno 610", GpuVendor::QUALCOMM, 0.180, "a6xx"},
+  {"adreno 612", GpuVendor::QUALCOMM, 0.310, "a6xx"},
+  {"adreno 615", GpuVendor::QUALCOMM, 0.330, "a6xx"},
+  {"adreno 616", GpuVendor::QUALCOMM, 0.372, "a6xx"},
+  {"adreno 618", GpuVendor::QUALCOMM, 0.430, "a6xx"},
+  {"adreno 619", GpuVendor::QUALCOMM, 0.480, "a6xx"},
+  {"adreno 620", GpuVendor::QUALCOMM, 0.610, "a6xx"},
+  {"adreno 630", GpuVendor::QUALCOMM, 0.727, "a6xx"},
+  {"adreno 640", GpuVendor::QUALCOMM, 0.954, "a6xx"},
+  {"adreno 642l", GpuVendor::QUALCOMM, 0.900, "a6xx"},
+  {"adreno 643", GpuVendor::QUALCOMM, 1.000, "a6xx"},
+  {"adreno 650", GpuVendor::QUALCOMM, 1.229, "a6xx"},
+  {"adreno 660", GpuVendor::QUALCOMM, 1.720, "a6xx"},
+
+  // -- a7xx (Vulkan 1.3) ---------------------------------------------------
+  {"adreno 710", GpuVendor::QUALCOMM, 0.900, "a7xx"},
+  {"adreno 720", GpuVendor::QUALCOMM, 1.500, "a7xx"},
+  {"adreno 730", GpuVendor::QUALCOMM, 2.147, "a7xx"},
+  {"adreno 732", GpuVendor::QUALCOMM, 1.900, "a7xx"},
+  {"adreno 735", GpuVendor::QUALCOMM, 2.000, "a7xx"},
+  {"adreno 740", GpuVendor::QUALCOMM, 2.800, "a7xx"},
+  {"adreno 750", GpuVendor::QUALCOMM, 3.700, "a7xx"},
+  {"adreno x1-45", GpuVendor::QUALCOMM, 1.700, "a7xx"},
+  {"adreno x1-85", GpuVendor::QUALCOMM, 4.600, "a7xx"},
+
+  // -- a8xx (Vulkan 1.3) ---------------------------------------------------
+  {"adreno 830", GpuVendor::QUALCOMM, 4.600, "a8xx"},
+
+  // -- Arm Mali ------------------------------------------------------------
+
+  // -- Midgard (Vulkan 1.0) ------------------------------------------------
+  {"mali-t720", GpuVendor::ARM, 0.030, "midgard"},
+  {"mali-t760", GpuVendor::ARM, 0.110, "midgard"},
+  {"mali-t820", GpuVendor::ARM, 0.030, "midgard"},
+  {"mali-t830", GpuVendor::ARM, 0.045, "midgard"},
+  {"mali-t860", GpuVendor::ARM, 0.100, "midgard"},
+  {"mali-t880", GpuVendor::ARM, 0.260, "midgard"},
+
+  // -- Bifrost (Vulkan 1.1) ------------------------------------------------
+  {"mali-g31", GpuVendor::ARM, 0.030, "bifrost"},
+  {"mali-g51", GpuVendor::ARM, 0.060, "bifrost"},
+  {"mali-g52", GpuVendor::ARM, 0.110, "bifrost"},
+  {"mali-g71", GpuVendor::ARM, 0.270, "bifrost"},
+  {"mali-g72", GpuVendor::ARM, 0.370, "bifrost"},
+  {"mali-g76", GpuVendor::ARM, 0.460, "bifrost"},
+
+  // -- Valhall (Vulkan 1.3) ------------------------------------------------
+  {"mali-g57", GpuVendor::ARM, 0.200, "valhall"},
+  {"mali-g68", GpuVendor::ARM, 0.400, "valhall"},
+  {"mali-g77", GpuVendor::ARM, 0.700, "valhall"},
+  {"mali-g78", GpuVendor::ARM, 1.300, "valhall"},
+  {"mali-g310", GpuVendor::ARM, 0.050, "valhall"},
+  {"mali-g510", GpuVendor::ARM, 0.250, "valhall"},
+  {"mali-g610", GpuVendor::ARM, 0.800, "valhall"},
+  {"mali-g615", GpuVendor::ARM, 0.900, "valhall"},
+  {"mali-g710", GpuVendor::ARM, 1.200, "valhall"},
+  {"mali-g715", GpuVendor::ARM, 1.700, "valhall"},
+  {"immortalis-g715", GpuVendor::ARM, 1.700, "valhall"},
+
+  // -- Arm 5th Gen (Vulkan 1.3) --------------------------------------------
+  {"mali-g620", GpuVendor::ARM, 0.700, "arm 5th gen"},
+  {"mali-g720", GpuVendor::ARM, 2.000, "arm 5th gen"},
+  {"mali-g725", GpuVendor::ARM, 2.200, "arm 5th gen"},
+  {"immortalis-g720", GpuVendor::ARM, 2.400, "arm 5th gen"},
+  {"immortalis-g925", GpuVendor::ARM, 3.000, "arm 5th gen"},
+
+  // -- Imagination PowerVR -------------------------------------------------
+
+  // -- Rogue (Vulkan 1.0) --------------------------------------------------
+  {"ge8100", GpuVendor::IMGTEC, 0.020, "rogue"},
+  {"ge8300", GpuVendor::IMGTEC, 0.060, "rogue"},
+  {"ge8320", GpuVendor::IMGTEC, 0.100, "rogue"},
+  {"ge8322", GpuVendor::IMGTEC, 0.100, "rogue"},
+  {"gm9446", GpuVendor::IMGTEC, 0.350, "rogue"},
+
+  // -- A-Series (Vulkan 1.2) -----------------------------------------------
+  {"axe-1-16m", GpuVendor::IMGTEC, 0.070, "a-series"},
+  {"axm-8-256", GpuVendor::IMGTEC, 0.400, "a-series"},
+  {"axt-16-512", GpuVendor::IMGTEC, 0.800, "a-series"},
+
+  // -- B-Series (Vulkan 1.3) -----------------------------------------------
+  {"bxe-4-32", GpuVendor::IMGTEC, 0.100, "b-series"},
+  {"bxm-8-256", GpuVendor::IMGTEC, 0.500, "b-series"},
+  {"bxt-32-1024", GpuVendor::IMGTEC, 1.600, "b-series"},
+
+  // -- D-Series (Vulkan 1.3) -----------------------------------------------
+  {"dxt-48-1536", GpuVendor::IMGTEC, 2.400, "d-series"},
+
+  // -- Samsung Xclipse (AMD RDNA in Exynos) --------------------------------
+  {"xclipse 530", GpuVendor::SAMSUNG, 0.600, "rdna 2"},
+  {"xclipse 540", GpuVendor::SAMSUNG, 0.700, "rdna 2"},
+  {"xclipse 920", GpuVendor::SAMSUNG, 1.300, "rdna 2"},
+  {"xclipse 940", GpuVendor::SAMSUNG, 2.900, "rdna 3"},
+  {"xclipse 950", GpuVendor::SAMSUNG, 3.600, "rdna 3"},
+
+  // -- Huawei Maleoon ------------------------------------------------------
+  {"maleoon 910", GpuVendor::HUAWEI, 0.900, "maleoon"},
+  {"maleoon 920", GpuVendor::HUAWEI, 1.200, "maleoon"},
+
+  // -- NVIDIA Tegra (Android, Switch) --------------------------------------
+  {"tegra x1", GpuVendor::NVIDIA, 0.512, "maxwell"},
+  {"tegra x2", GpuVendor::NVIDIA, 0.750, "pascal"},
 };
 
 } // namespace
@@ -261,6 +384,12 @@ void PhysicalDeviceSet::guessAdditionalInformation()
   String lowcaseDeviceName;
   lowcaseDeviceName.setStr(properties.deviceName);
   lowcaseDeviceName.toLower();
+  // drivers put trademark marks inside the model, "Adreno (TM) 730" and
+  // "Intel(R) Arc(TM) A770 Graphics"
+  lowcaseDeviceName.replaceAll("(tm)", "");
+  lowcaseDeviceName.replaceAll("(r)", "");
+  lowcaseDeviceName.replaceAll("  ", " ");
+
   const DeviceInfo *info = nullptr;
   uint32_t matchLength = 0;
   for (const DeviceInfo &i : deviceInfos)
@@ -268,14 +397,20 @@ void PhysicalDeviceSet::guessAdditionalInformation()
     if (i.vendor != vendor)
       continue;
 
-    if (strstr(lowcaseDeviceName, i.name))
+    const char *at = strstr(lowcaseDeviceName, i.name);
+    if (!at)
+      continue;
+
+    uint32_t len = strlen(i.name);
+    // an entry must not match a model that only extends its digits, like
+    // "mali-g72" against "Mali-G720"; report unknown instead of wrong tflops
+    if (isdigit((unsigned char)at[len]))
+      continue;
+
+    if (len > matchLength)
     {
-      uint32_t len = strlen(i.name);
-      if (len > matchLength)
-      {
-        info = &i;
-        matchLength = len;
-      }
+      info = &i;
+      matchLength = len;
     }
   }
 

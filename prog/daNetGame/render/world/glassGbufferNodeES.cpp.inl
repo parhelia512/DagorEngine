@@ -201,6 +201,7 @@ ECS_REQUIRE(bool render_settings__enableRTTR,
   ecs::string render_settings__antialiasing_mode,
   bool render_settings__rayReconstruction,
   bool render_settings__bare_minimum)
+ECS_ON_EVENT(OnRenderSettingsReady)
 ECS_AFTER(bvh_render_settings_changed_es)
 static void glass_rttr_recreate_es(const ecs::Event &, ecs::EntityManager &manager)
 {

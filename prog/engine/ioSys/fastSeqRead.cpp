@@ -52,6 +52,8 @@ void FastSeqReader::assignFile(void *handle, unsigned base_ofs, int size, const 
   G_ASSERT(max_back_seek >= 0);
   reset();
 
+  requestedBytes = 0u;
+  requestCount = 0u;
   file.handle = handle;
   file.baseOfs = base_ofs == 0xFFFFFFFFu ? 0u : base_ofs; // 0xFFFFFFFFu was stored in entry.data() for ofs=0 to differ from nullptr
   file.size = size;
@@ -247,7 +249,9 @@ void FastSeqReader::placeRequests()
   }
 
   unsigned unusedMask = (~(doneMask | pendMask)) & BUF_ALL_MASK;
-  if (unusedMask && readAheadPos < file.size)
+  int eff_file_end =
+    ((ranges.size() ? min(ranges.back().end, file.size) : file.size) + file.chunkSize - 1) / file.chunkSize * file.chunkSize;
+  if (unusedMask && readAheadPos < eff_file_end)
     for (int i = 0, bit = 1; i < BUF_CNT; i++, bit <<= 1)
       if (unusedMask & bit)
       {
@@ -273,27 +277,29 @@ void FastSeqReader::placeRequests()
               pos = (r->end + (BLOCK_SIZE)-1) / (BLOCK_SIZE) * (BLOCK_SIZE);
               if (pos < readAheadPos)
                 buf[i].ea = readAheadPos = pos;
+              if (readAheadPos > eff_file_end)
+                buf[i].ea = readAheadPos = eff_file_end;
               r = NULL;
               break;
             }
 
           if (r != NULL)
           {
-            if (readAheadPos >= file.size)
-              break;
-            else if (readAheadPos < ranges.back().end)
+            if (readAheadPos < eff_file_end)
               goto again;
             else
             {
               // out_debug_str_fmt("cease it: %d < %d (%d..%d) %d\n", readAheadPos, file.size, ranges[0].start, ranges.back().end,
               // ranges.size());
-              readAheadPos = file.size;
+              readAheadPos = eff_file_end;
               break;
             }
           }
         }
 
         G_ASSERT(buf[i].ea - buf[i].sa);
+        requestedBytes += buf[i].ea - buf[i].sa;
+        requestCount++;
         G_VERIFY(dfa_read_async(file.handle, buf[i].handle, buf[i].sa + file.baseOfs, buf[i].data, buf[i].ea - buf[i].sa));
         // out_debug_str_fmt("place req %d: %d-%d\n", i, buf[i].sa, buf[i].ea);
         if (cBuf == buf + i)

@@ -73,6 +73,10 @@ if $(Config) in rel irel {
   CPPopt += -DSQ_STACK_DUMP_SECRET_PREFIX=no_dump_ ;
 }
 
+if ! ( $(Platform) in windows linux macOS ) {
+  CPPopt += -DSQ_SYSTEM_STUBS=1 ;
+}
+
 Copt   = $(CPPopt) ;
 
 include $(Root)/prog/_jBuild/build.jam ;

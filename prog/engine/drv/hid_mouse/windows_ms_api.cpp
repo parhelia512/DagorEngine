@@ -46,7 +46,7 @@ void *mouse_api_create_mouse_cursor(int cursorWidth, int cursorHeight, uint32_t 
 
   HCURSOR resultCursor = nullptr;
 
-  uint8_t maskBits[64 * 64 / 8];
+  uint8_t maskBits[128 * 128 / 8];
   memset(maskBits, 0xFF, sizeof(maskBits));
   HBITMAP hMask = CreateBitmap(cursorWidth, cursorHeight, 1, 1, maskBits);
   if (hMask)

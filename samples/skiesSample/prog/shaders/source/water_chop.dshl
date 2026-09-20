@@ -292,12 +292,16 @@ shader water_chop
 
   //=================================================================================================
   (vs) {
-    tex_w_array@smpArray = tex_w_array;
+    tex_w_array@texArray = tex_w_array;
 
     spectrum_domain_scale@f4 = spectrum_domain_scale;
     spectrum_domain_max_wave_height@f4 = spectrum_domain_max_wave_height;
     simulation_tile_size@f1 = simulation_tile_size;
     choppiness@f1 = choppiness;
+  }
+  INIT_GLOBAL_LINEAR_WRAP_SAMPLER(vs)
+  hlsl(vs) {
+    #define tex_w_array_samplerstate global_linear_wrap_sampler
   }
   CHOP_WATER_UV_DISTORT()
 
@@ -315,8 +319,7 @@ shader water_chop
       bool useHeightmap;
       float3 pos_world = float3(getWorldPosXZ(posXZ, distFade, useHeightmap USED_INSTANCE_ID), water_level_max_wave_height.x);
 
-      pos_world_undisplaced = pos_world;
-      getWaterDisplacement(pos_world, nvsf_tex_coord_cascade01, nvsf_tex_coord_cascade23, nvsf_tex_coord_cascade45) + float3(0, 0, get_wake_height(pos_world.xzy)) * distFade;
+      pos_world_undisplaced = pos_world.xzy;
 
       // calculate uv's
       float2 uv_global = pos_world.xy;

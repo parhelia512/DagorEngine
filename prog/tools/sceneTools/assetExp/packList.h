@@ -17,7 +17,8 @@
 #include <util/dag_string.h>
 #include <util/dag_strUtil.h>
 #include <libTools/util/strUtil.h>
-#include <stddef.h> // offsetof
+#include "daBuild.h" // cmp_data_eq()
+#include <stddef.h>  // offsetof
 #include <supp/dag_zstdObfuscate.h>
 
 class PackListMgr
@@ -83,6 +84,11 @@ public:
       for (int i = 0; i < b->paramCount(); i++)
         if (b->getParamType(i) == DataBlock::TYPE_STRING && b->getParamNameId(i) == nid)
           registerGoodPack(b->getStr(i), false, NULL);
+
+    b = blk.getBlockByName("hash_md5");
+    if (b)
+      for (Rec &r : list)
+        r.md5 = b->getStr(r.fn, NULL);
   }
   void sort() { ::sort(list, &filename_cmp); }
   void save(const char *fn, const PackOptions &opt, const char *base_grpHdr_md5 = nullptr)
@@ -139,8 +145,14 @@ public:
     DagorAssetMgr amgr;
     for (int i = 0; i < list.size(); i++)
       if (list[i].marked)
+      {
         if (gdc.load(list[i].cacheFn, amgr) && gdc.getTargetFileHash(hash))
           b->addStr(list[i].fn, data_to_str_hex(stor, hash, sizeof(hash)));
+        // only for a pack this run never registered: a hash carried over for one it did rebuild could name the previous content,
+        // and resDiff compares hashes instead of reading the packs
+        else if (list[i].cacheFn.empty() && !list[i].md5.empty())
+          b->addStr(list[i].fn, list[i].md5);
+      }
     if (opt.perFileOptRes)
       blk.setBool("perFileOptRes", opt.perFileOptRes);
     if (opt.perFileOptTex)
@@ -163,7 +175,6 @@ public:
     FastIntList grpNids;
     String tmpStr;
     mkbindump::BinDumpSaveCB cwr(8 << 20, targetCode, write_be);
-    dd_erase(fname);
 
     mkbindump::PatchTabRef pt_names, pt_data;
     pt_names.reserveTab(cwr);
@@ -253,23 +264,12 @@ public:
     });
     if (failed)
     {
+      dd_erase(fname);
       log.addMessage(log.ERROR, "failed to build %s", fname);
       return false;
     }
     pt_names.finishTab(cwr);
     pt_data.finishTab(cwr);
-
-    // finally, write file on disk
-    FullFileSaveCB fcwr(fname);
-    if (!fcwr.fileHandle)
-    {
-      log.addMessage(log.ERROR, "failed to write %s", fname);
-      return false;
-    }
-
-    fcwr.writeInt(_MAKE4C('VRFs'));
-    fcwr.writeInt(targetCode);
-    fcwr.writeInt(mkbindump::le2be32_cond(cwr.getSize(), write_be));
 
     MemoryLoadCB crd(cwr.getMem(), false);
     DynamicMemGeneralSaveCB mcwr(tmpmem, cwr.getSize() + 4096);
@@ -277,9 +277,25 @@ public:
     int packed_sz = zstd_compress_data(mcwr, crd, cwr.getSize(), 16 << 10, 11);
     OBFUSCATE_ZSTD_DATA(mcwr.data(), packed_sz);
 
-    unsigned hw32 = packed_sz | 0x40000000;
-    fcwr.writeInt(mkbindump::le2be32_cond(hw32, write_be));
-    fcwr.write(mcwr.data(), packed_sz);
+    // assembled here rather than written straight out: the list is rebuilt for every package on every run,
+    // and rewriting one whose bytes did not change only churns its timestamp for whatever copies the build output
+    DynamicMemGeneralSaveCB out(tmpmem, packed_sz + 16);
+    out.writeInt(_MAKE4C('VRFs'));
+    out.writeInt(targetCode);
+    out.writeInt(mkbindump::le2be32_cond(cwr.getSize(), write_be));
+    out.writeInt(mkbindump::le2be32_cond(packed_sz | 0x40000000, write_be));
+    out.write(mcwr.data(), packed_sz);
+
+    if (cmp_data_eq(out.data(), out.size(), fname))
+      return true;
+
+    FullFileSaveCB fcwr(fname);
+    if (!fcwr.fileHandle)
+    {
+      log.addMessage(log.ERROR, "failed to write %s", fname);
+      return false;
+    }
+    fcwr.write(out.data(), out.size());
     return true;
   }
 
@@ -297,6 +313,7 @@ public:
   struct Rec
   {
     SimpleString fn, cacheFn;
+    SimpleString md5; // as read from the list being updated; cacheFn is empty for a pack this run did not touch
     bool grp, marked;
   };
   Tab<Rec> list;

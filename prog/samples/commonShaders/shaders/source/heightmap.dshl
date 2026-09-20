@@ -7,8 +7,8 @@ texture tex_hmap_low;
 
 int heightmap_scale_offset = 70;
 hlsl(vs) {
-  float4 heightmap_scale_offset[72]: register(c70);
-  float4 lastreg:register(c142);
+  float4 heightmap_scale_offset[440]: register(c70);
+  float4 lastreg:register(c510);
 }
 
 texture heightmap;

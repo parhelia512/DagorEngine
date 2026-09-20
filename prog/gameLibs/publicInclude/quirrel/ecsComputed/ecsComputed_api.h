@@ -29,9 +29,22 @@
 // components that something registers already; write ecs.TYPE_* for the rest.
 // Only types with a script value can be mirrored: a boxed engine type (an
 // animchar, a phys actor) logs an error and always reads as the default.
+//
+// A tag entry (["name", ecs.TYPE_TAG]) mirrors presence as a bool: true when
+// the entity has the tag, the entry default when not. With no default the tag
+// also selects, like a comps_rq entry, and reads true in every match.
+// "eid" is an ordinary component here, as it is in a query: mirror it alone to
+// follow which entity matches (defVal when none does; ecs.INVALID_ENTITY_ID is
+// falsy), or beside values to get the eid in the same table. It never selects,
+// and comps must name at least one component: a mirror with only optional
+// components and an empty comps_rq is refused, it would follow the whole world.
+// The filter reads values, so a tag in comps_filter is refused too, and the
+// filter expression is type-checked when the mirror is created, in every build.
+//
 // All components are tracked, the filter ones included, so declare them
 // _tracked in the template. Without that the value only refreshes when an
-// entity is created, recreated or destroyed.
+// entity is created, recreated or destroyed. Tags are the exception: presence
+// changes with the archetype and always arrives, nothing to declare.
 //
 // Mirrors can be created only during the es-loading phase, like ecs queries and
 // entity systems.
@@ -49,6 +62,9 @@
 // let woundedNames = mkEcsComputedEidMap({comps=["name"], comps_rq=["player"],
 //                                         comps_filter=[["hitpoints__hp", ecs.TYPE_FLOAT]],
 //                                         filter="lt(hitpoints__hp, 30.0)"})
+// let forcedMinimalHud = mkEcsComputed({comps=[["forceMinimalHud", ecs.TYPE_TAG]], defVal=false})
+// let heroEid = mkEcsComputed({comps=["eid"], comps_rq=["watchedByPlr"], defVal=ecs.INVALID_ENTITY_ID})
+// let alivePlayers = mkEcsComputedEidMap({comps=["eid"], comps_rq=["player"], comps_no=["deadEntity"]})
 
 class SqModules;
 typedef struct SQVM *HSQUIRRELVM;

@@ -1,38 +1,30 @@
-from "%scripts/ui/ui_library.nut" import *
+import "console" as console
+import "control" as control
+import "DataBlock" as DataBlock
 import "dainput2" as dainput
+from "eventbus" import eventbus_send_foreign
+from "settings" import set_setting_by_blk_path_and_save
+from "%scripts/ui/ui_library.nut" import *
 from "%scripts/ui/widgets/style.nut" import *
 from "types" import Array
-
-let { eventbus_send_foreign } = require("eventbus")
-let {CONTROLS_SETUP_CHANGED_EVENT_ID} = require("%scripts/ui/settings/input_generation.nut")
-let {round_by_value} = require("%sqstd/math.nut")
-let {showMsgbox} = require("%scripts/ui/widgets/msgbox.nut")
-let textButton = require("%scripts/ui/widgets/simpleComponents.nut").menuBtn
-let console = require("console")
-let { buildElems, buildDigitalBindingText, isValidDevice, eventTypeLabels,
-      textListFromAction, getSticksText } = require("%scripts/ui/settings/formatInputBinding.nut")
-let {platformId} = require("%dngscripts/platform.nut")
-let {format_ctrl_name} = dainput
-//let {get_action_handle} = dainput
-let { BTN_pressed, BTN_pressed_long, BTN_pressed2, BTN_pressed3,
-          BTN_released, BTN_released_long, BTN_released_short } = dainput
-let control = require("control")
-let DataBlock = require("DataBlock")
-let {isGamepad, forcedControlsType, ControlsTypes} = require("%scripts/ui/settings/active_input.nut")
-let {set_setting_by_blk_path_and_save} = require("settings")
-
-let {
-  importantGroups, generation, nextGeneration, availablePresets, haveChanges, Preset,
-  getActionsList, getActionTags, mkSubTagsFind
-} = require("%scripts/ui/settings/input_state.nut")
-//let { makeVertScroll } = require("%scripts/ui/widgets/components/scrollbar.nut")
-let { mkCombo } = require("%scripts/ui/widgets/simpleComponents.nut")
+from "%scripts/ui/settings/input_generation.nut" import CONTROLS_SETUP_CHANGED_EVENT_ID
+from "%sqstd/math.nut" import round_by_value
+from "%scripts/ui/widgets/msgbox.nut" import showMsgbox
+from "%scripts/ui/widgets/simpleComponents.nut" import menuBtn as textButton
+from "%scripts/ui/settings/formatInputBinding.nut" import buildElems, buildDigitalBindingText, isValidDevice, eventTypeLabels, textListFromAction, getSticksText
+from "%dngscripts/platform.nut" import platformId
+from "dainput2" import format_ctrl_name//, get_action_handle
+from "%scripts/ui/widgets/slider.nut" import sliderWithText
+from "%scripts/ui/settings/active_input.nut" import isGamepad, forcedControlsType, ControlsTypes
+from "%scripts/ui/widgets/simpleComponents.nut" import mkCombo
+//from "%scripts/ui/widgets/components/scrollbar.nut" import makeVertScroll
+from "dainput2" import BTN_pressed, BTN_pressed_long, BTN_pressed2, BTN_pressed3, BTN_released, BTN_released_long, BTN_released_short
+from "%scripts/ui/settings/input_state.nut" import importantGroups, generation, nextGeneration, availablePresets, haveChanges, Preset, getActionsList, getActionTags, mkSubTagsFind
 let checkbox = @(params) mkCombo(params.__update({values=[true, false]}))
-let {sliderWithText} = require("%scripts/ui/widgets/slider.nut")
 
 let makeVertScroll = @(children) {size = flex() children }
-let h2_txt = {fontSize = hdpx(40)}
-let body_txt = {fontSize = hdpx(20)}
+const h2_txt = {fontSize = hdpx(40)}
+const body_txt = {fontSize = hdpx(20)}
 let dtext = @(text, params = null) {text, rendObj = ROBJ_TEXT}.__update(params ?? {})
 
 let MenuRowBgHover = mul_color(BtnBgHover, 0.3)
@@ -85,7 +77,7 @@ function doesDeviceMatchColumn(dev_id, col) {
   return false
 }
 
-let btnEventTypesMap = {
+const btnEventTypesMap = {
   [BTN_pressed] = "pressed",
   [BTN_pressed_long] = "pressed_long",
   [BTN_pressed2] = "pressed2",
@@ -121,7 +113,7 @@ let blkPropRemap = {
   minXBtn = "xMinBtn", maxXBtn = "xMaxBtn", minYBtn = "yMinBtn", maxYBtn = "yMaxBtn"
 }
 
-let pageAnim =  [
+const pageAnim =  [
   { prop=AnimProp.opacity, from=0, to=1, duration=0.2, play=true, easing=InOutCubic}
   { prop=AnimProp.opacity, from=1, to=0, duration=0.2, playFadeOut=true, easing=InOutCubic}
 ]
@@ -164,6 +156,7 @@ function set_single_button_analogue_binding(ah, col, actionProp, blk) {
 
     if (binding.devId != dainput.DEV_none && binding.maxVal == 0) // restore maxVal when needed
       binding.maxVal = 1
+    dainput.action_binding_changed(ah, col)
   }
 }
 
@@ -189,6 +182,8 @@ function loadPreviousBindingParametersTo(blk, ah, col) {
     blk.setBool("stickyToggle", prevBinding.stickyToggle)
 }
 
+let conflictKey = @(c) $"{c.action}:{c.column}"
+
 function checkRecordingFinished() {
   if (dainput.is_recording_complete()) {
     let cellData = actionRecording.get()
@@ -204,15 +199,20 @@ function checkRecordingFinished() {
       if (doesDeviceMatchColumn(devId, col)) {
         gui_scene.clearTimer(callee())
 
-        local checkConflictsBlk
-        if (cellData.singleBtn) {
+        local checkConflictsBlk = blk
+        local baseBlk = null
+        if (cellData.singleBtn || cellData.tag == "modifiers") {
+          baseBlk = DataBlock()
+          dainput.get_action_binding(ah, col, baseBlk)
           checkConflictsBlk = DataBlock()
           dainput.get_action_binding(ah, col, checkConflictsBlk)
-          let btnBlk = checkConflictsBlk.addBlock(blkPropRemap?[cellData.actionProp] ?? cellData.actionProp)
-          btnBlk.setParamsFrom(blk)
-        }
-        else {
-          checkConflictsBlk = blk
+          if (cellData.singleBtn)
+            checkConflictsBlk.addBlock(blkPropRemap?[cellData.actionProp] ?? cellData.actionProp).setParamsFrom(blk)
+          else {
+            // constraint: a bare button blk loads as an axis binding claiming axis 0 of its device
+            checkConflictsBlk.removeBlock("mod")
+            checkConflictsBlk.addNewBlock("mod").setParamsFrom(blk)
+          }
         }
 
         function applyBinding() {
@@ -227,20 +227,29 @@ function checkRecordingFinished() {
             btn.devId = devId
             btn.btnId = blk.getInt("btn", 0)
             binding.mod = [btn]
+            dainput.action_binding_changed(ah, cellData.column)
           }
           else {
             loadOriginalBindingParametersTo(blk, ah, col)
             loadPreviousBindingParametersTo(blk, ah, col)
             dainput.set_action_binding(ah, col, blk)
             let binding = dainput.get_digital_action_binding(ah, col)
-            if (binding?.eventType)
+            if (binding?.eventType) {
               binding.eventType = getAllowedBindingsTypes(ah)[0]
+              dainput.action_binding_changed(ah, col)
+            }
           }
           nextGeneration()
           haveChanges.set(true)
         }
 
-        let conflicts = dainput.check_bindings_conflicts(ah, checkConflictsBlk)
+        local conflicts = dainput.check_bindings_conflicts(ah, checkConflictsBlk)
+        if (conflicts != null && baseBlk != null) {
+          let known = (dainput.check_bindings_conflicts(ah, baseBlk) ?? []).map(conflictKey)
+          conflicts = conflicts.filter(@(c) known.indexof(conflictKey(c)) == null)
+          if (!conflicts.len())
+            conflicts = null
+        }
         if (conflicts == null) {
           applyBinding()
         } else {
@@ -313,7 +322,7 @@ function recordingWindow() {
     flow = FLOW_VERTICAL
     gap = fsh(8)
     children = [
-      {size=const [0, flex(3)]}
+      const {size = [0, flex(3)]}
       dtext(locActionName(name), {color = Color(100,100,100)}.__update(h2_txt))
       mediumText(text, {
         function onAttach() {
@@ -375,6 +384,7 @@ function clearBinding(cellData){
     let binding = dainput.get_analog_stick_action_binding(cellData.ah, cellData.column)
                   ?? dainput.get_analog_axis_action_binding(cellData.ah, cellData.column)
     binding.mod = []
+    dainput.action_binding_changed(cellData.ah, cellData.column)
   } else {
     let blk = DataBlock()
     loadOriginalBindingParametersTo(blk, cellData.ah, cellData.column)
@@ -736,8 +746,7 @@ function bindingCell(ah, column, action_prop, list, tag, selection, name=null, x
           configuredAxis.set(cellData)
       }
 
-      onClick = isGamepad.get() ? null : isActionDisabledToCustomize(ah) ? showDisabledMsgBox : @() selection.set(cellData)
-      onHover = isGamepad.get() ? @(on) selection.set(on ? cellData : null) : null
+      onClick = isActionDisabledToCustomize(ah) ? showDisabledMsgBox : @() selection.set(cellData)
 
       function onDetach() {
         if (isCellSelected(cellData, selection))
@@ -814,10 +823,11 @@ function bindingsPage(_section_name=null) {
     })
 
     return {
+      watch = generation
       size = flex()
       padding = const [fsh(1), 0]
       flow = FLOW_VERTICAL
-      key = {}
+      key = "bindings"
       animations = pageAnim
       children = [header, bindingsArea]
     }
@@ -874,16 +884,17 @@ function invertCheckbox(action_names, column, axis) {
   if (!(action_names instanceof Array))
     action_names = [action_names]
 
-  let bindings = action_names.map(function(aname) {
+  let rows = action_names.map(function(aname) {
     let ah = dainput.get_action_handle(aname, 0xFFFF)
-    return dainput.get_analog_stick_action_binding(ah, column)
-        ?? dainput.get_analog_axis_action_binding(ah, column)
-  }).filter(@(b) b!=null)
+    let binding = dainput.get_analog_stick_action_binding(ah, column)
+                  ?? dainput.get_analog_axis_action_binding(ah, column)
+    return binding == null ? null : { ah, binding }
+  }).filter(@(r) r!=null)
 
-  if (!bindings.len())
+  if (!rows.len())
     return null
 
-  let curInverses = bindings.map(@(b) b[invertFields[axis]])
+  let curInverses = rows.map(@(r) r.binding[invertFields[axis]])
 
   let valAnd = curInverses.reduce(@(a,b) a && b, true)
   let valOr = curInverses.reduce(@(a,b) a || b, false)
@@ -892,8 +903,10 @@ function invertCheckbox(action_names, column, axis) {
 
   function setValue(new_val) {
     val.set(new_val)
-    foreach (b in bindings)
-      b[invertFields[axis]] = new_val
+    foreach (r in rows) {
+      r.binding[invertFields[axis]] = new_val
+      dainput.action_binding_changed(r.ah, column)
+    }
     haveChanges.set(true)
   }
 
@@ -906,16 +919,17 @@ function axisSetupSlider(action_names, column, prop, params) {
   if (!(action_names instanceof Array))
     action_names = [action_names]
 
-  let bindings = action_names.map(function(aname) {
+  let rows = action_names.map(function(aname) {
     let ah = dainput.get_action_handle(aname, 0xFFFF)
-    return dainput.get_analog_stick_action_binding(ah, column)
-        ?? dainput.get_analog_axis_action_binding(ah, column)
-  }).filter(@(binding) binding!=null)
+    let binding = dainput.get_analog_stick_action_binding(ah, column)
+                  ?? dainput.get_analog_axis_action_binding(ah, column)
+    return binding == null ? null : { ah, binding }
+  }).filter(@(r) r!=null)
 
-  if (!bindings.len())
+  if (!rows.len())
     return null
 
-  let curSens = bindings.map(@(b) b[prop]).filter(@(prp) prp!=null)
+  let curSens = rows.map(@(r) r.binding[prop]).filter(@(prp) prp!=null)
   if (!curSens.len())
     return null
   let val = Watched(curSens[0]) // take the first one, because they will all be equal
@@ -923,8 +937,10 @@ function axisSetupSlider(action_names, column, prop, params) {
     var = val,
     function setValue(new_val) {
       val.set(new_val)
-      foreach (b in bindings)
-        b[prop] = new_val
+      foreach (r in rows) {
+        r.binding[prop] = new_val
+        dainput.action_binding_changed(r.ah, column)
+      }
       haveChanges.set(true)
     }
   })
@@ -1154,7 +1170,7 @@ function axisSetupWindow() {
   ]
 
   return {
-    watch = actionRecording
+    watch = [actionRecording, generation]
     size = flex()
     behavior = Behaviors.Button
     stopMouse = true
@@ -1166,7 +1182,7 @@ function axisSetupWindow() {
     color = Color(190,190,190,255)
 
     function onClick() {
-      configuredAxis(null)
+      configuredAxis.set(null)
     }
 
     children = {
@@ -1229,6 +1245,7 @@ function buttonSetupWindow() {
   let needShowModType = Watched(binding.modCnt > 0)
   modifierType.subscribe(function(new_val) {
     binding.unordCombo = new_val
+    dainput.action_binding_changed(cellData.ah, cellData.column)
     haveChanges.set(true)
   })
 
@@ -1238,6 +1255,7 @@ function buttonSetupWindow() {
   }
   eventTypeValue.subscribe(function(new_val) {
     binding.eventType = new_val
+    dainput.action_binding_changed(cellData.ah, cellData.column)
     haveChanges.set(true)
   })
 
@@ -1252,6 +1270,7 @@ function buttonSetupWindow() {
   let stickyToggle = Watched(binding.stickyToggle)
   stickyToggle.subscribe(function(new_val) {
     binding.stickyToggle = new_val
+    dainput.action_binding_changed(cellData.ah, cellData.column)
     haveChanges.set(true)
   })
 
@@ -1331,7 +1350,7 @@ function buttonSetupWindow() {
     color = Color(190,190,190,255)
 
     function onClick() {
-      configuredAxis(null)
+      configuredButton.set(null)
     }
 
     children = {
@@ -1381,8 +1400,8 @@ function controlsMenuUi() {
     ]
 
     children = [
-      {
-        size = const [sw(100), sh(100)]
+      const {
+        size = [sw(100), sh(100)]
         stopHotkeys = true
         stopMouse = true
         rendObj = ROBJ_WORLD_BLUR
@@ -1394,7 +1413,7 @@ function controlsMenuUi() {
       actionRecording.get()!=null ? recordingWindow : null
     ]
 
-    transform = {
+    transform = const {
       pivot = [0.5, 0.25]
     }
     animations = pageAnim

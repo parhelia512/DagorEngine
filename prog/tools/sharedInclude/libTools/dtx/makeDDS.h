@@ -70,6 +70,10 @@ inline bool create_dds_header(void *data, int size, int w, int h, int bpp, int m
         if (astc)
           dsc.ddpfPixelFormat.dwRGBBitCount = 8;
         break;
+      case TEXFMT_ASTC4:
+        dfmt = MAKEFOURCC('A', 'S', 'T', '4');
+        dsc.ddpfPixelFormat.dwRGBBitCount = 8;
+        break;
       case TEXFMT_A8R8G8B8: dfmt = D3DFMT_A8R8G8B8; break;
       case TEXFMT_L16: dfmt = D3DFMT_L16; break;
       case TEXFMT_A8: dfmt = D3DFMT_A8; break;

@@ -49,8 +49,6 @@ void Xess::suppressFrameGeneration(bool) {}
 
 void Xess::doScheduleGeneratedFrames(const XessFgParamsVulkan &, const XessFgParamsVulkanResourceStates &) {}
 
-int Xess::getPresentedFrameCount() { return 1; }
-
 uint64_t Xess::getMemoryUsage() const { return 0; }
 
 const eastl::vector<eastl::string> &Xess::getRequiredDeviceExtensions() const { return requiredDeviceExtensions; }

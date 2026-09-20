@@ -58,6 +58,7 @@ static int ptgi_bindless_slotVarId = -1;
 static int ptgi_boostVarId = -1;
 static int ptgi_boost_rangeVarId = -1;
 static int ptgi_use_rrVarId = -1;
+static int rt_half_rateVarId = -1;
 static int ptgi_validation_textureVarId = -1;
 static int downsampled_close_depth_texVarId = -1;
 
@@ -125,6 +126,7 @@ void initialize(bool half_res)
   ptgi_boostVarId = get_shader_variable_id("ptgi_boost");
   ptgi_boost_rangeVarId = get_shader_variable_id("ptgi_boost_range");
   ptgi_use_rrVarId = get_shader_variable_id("ptgi_use_rr");
+  rt_half_rateVarId = get_shader_variable_id("rt_half_rate", true);
   ptgi_validation_textureVarId = get_shader_variable_id("ptgi_validation_texture");
 
   // The game recreates the persistent textures around initialize.
@@ -166,7 +168,7 @@ void turn_off()
 inline int divide_up(int x, int y) { return (x + y - 1) / y; }
 
 void render(bvh::ContextId context_id, const TMatrix4 &proj_tm, Texture *depth, bool in_cockpit, const denoiser::TexMap &textures,
-  Quality quality, bool checkerboard)
+  Quality quality, bool checkerboard, bool half_rate)
 {
   TIME_D3D_PROFILE(ptgi::render);
 
@@ -245,6 +247,9 @@ void render(bvh::ContextId context_id, const TMatrix4 &proj_tm, Texture *depth, 
   ShaderGlobal::set_int(ptgi_checkerboardVarId, checkerboard ? 1 : 0);
   ShaderGlobal::set_int(ptgi_use_rrVarId, ::denoiser::is_ptgi_ray_reconstruction_enabled() ? 1 : 0);
 
+  const bool halfRate = half_rate && ::denoiser::is_ptgi_ray_reconstruction_enabled();
+  ShaderGlobal::set_int(rt_half_rateVarId, halfRate ? 1 : 0);
+
   ShaderGlobal::set_float4(ptgi_hit_dist_paramsVarId, hitDistParams);
 
   if (boost_range > 0)
@@ -264,10 +269,8 @@ void render(bvh::ContextId context_id, const TMatrix4 &proj_tm, Texture *depth, 
   }
 
   {
-    d3d::set_cs_constbuffer_register_count(150);
     TIME_D3D_PROFILE(ptgi::render_noisy)
-    trace->dispatchThreads(divide_up(resolution.x, checkerboard ? 2 : 1), resolution.y, 1);
-    d3d::set_cs_constbuffer_register_count(0);
+    trace->dispatchThreads(divide_up(resolution.x, (checkerboard || halfRate) ? 2 : 1), resolution.y, 1);
   }
 
   bvh::unbind_resources();

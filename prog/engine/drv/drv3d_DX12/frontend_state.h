@@ -51,11 +51,11 @@ struct FrontendState
   {
     Sbuffer *bRegisterBuffers[dxil::MAX_B_REGISTERS] = {};
 
-    TRegisterStates tRegisterResources;
+    TRegisterStates tRegisterResources{};
 
     d3d::SamplerHandle sRegisterSamplers[dxil::MAX_S_REGISTERS] = {};
 
-    URegisterStates uRegisterResources;
+    URegisterStates uRegisterResources{};
 
     ShaderStageResourceUsageMask dirtyMasks{~0ul};
 
@@ -79,7 +79,6 @@ struct FrontendState
       DEPTH_BOUNDS_RANGE,
 #if !_TARGET_XBOXONE
       VARIABLE_RATE_SHADING,
-      VARIABLE_RATE_SHADING_TEXTURE,
 #endif
 
       BLEND_CONSTANT,
@@ -121,6 +120,12 @@ struct FrontendState
       STREAM_OUTPUT_BUFFER_1,
       STREAM_OUTPUT_BUFFER_2,
       STREAM_OUTPUT_BUFFER_3,
+
+#if !_TARGET_XBOXONE
+      VARIABLE_RATE_SHADING_TEXTURE,
+#endif
+
+      BOUND_RESOURCE_REPLACED,
 
       COUNT,
       INVALID = COUNT
@@ -179,7 +184,6 @@ struct FrontendState
   float clearDepth = 0.f;
   uint8_t clearStencil = 0;
   uint8_t currentMrtClearTarget = 0;
-  uint8_t nextMrtClearTarget = 0;
 
   Driver3dRenderTarget renderTargets = default_render_target_state();
   Driver3dRenderTarget activeRenderTargets = default_render_target_state();
@@ -216,8 +220,13 @@ struct FrontendState
   ToggleState::Type toggleBits = ToggleState::Type(toggle_init_mask);
 
   ProgramID computeProgram = ProgramID::Null();
-  // current sizes of the register space sections (eg what needs uploading)
-  uint32_t registerSpaceSizes[STAGE_MAX] = {MIN_COMPUTE_CONST_REGISTERS, PIXEL_SHADER_REGISTERS, VERTEX_SHADER_MIN_REGISTERS};
+  static constexpr uint32_t DEFAULT_CONST_REGISTER_COUNT[STAGE_MAX] = {
+    MIN_COMPUTE_CONST_REGISTERS, PIXEL_SHADER_REGISTERS, VERTEX_SHADER_MIN_REGISTERS};
+  static constexpr uint32_t MAX_CONST_REGISTER_COUNT[STAGE_MAX] = {
+    MAX_COMPUTE_CONST_REGISTERS, PIXEL_SHADER_REGISTERS, VERTEX_SHADER_MAX_REGISTERS};
+  uint32_t programImplicitCbufRegCount[STAGE_MAX] = {
+    UNKNOWN_CONST_REGISTER_COUNT_REQUIREMENT, UNKNOWN_CONST_REGISTER_COUNT_REQUIREMENT, UNKNOWN_CONST_REGISTER_COUNT_REQUIREMENT};
+  uint32_t uploadedConstRegisterCount[STAGE_MAX] = {};
   // one big chunk to provide memory for register backing
   ConstRegisterType totalRegisterSpace[MAX_COMPUTE_CONST_REGISTERS + VERTEX_SHADER_MAX_REGISTERS + PIXEL_SHADER_REGISTERS] = {};
 
@@ -253,6 +262,7 @@ struct FrontendState
     OSSpinlockScopedLock resourceBindingLock{resourceBindingGuard};
     dirtyState = ~DirtyState::Type(0);
     resourceDirtyState = ~ResourceDirtyState::Type{0};
+    eastl::fill(eastl::begin(uploadedConstRegisterCount), eastl::end(uploadedConstRegisterCount), 0u);
     for (auto &stage : stageResources)
       stage.allDirty();
   }
@@ -452,50 +462,12 @@ struct FrontendState
         tex->dirtyBoundSrvsNoLock();
       }
     }
+    if (renderTargets.isDepthUsed())
+    {
+      cast_to_texture_base(renderTargets.getDepth().tex)->dirtyBoundSrvsNoLock();
+    }
   }
 
-  void setColorTarget(uint32_t index, BaseTex *texture, uint32_t mip_level, uint32_t face_index)
-  {
-    OSSpinlockScopedLock resourceBindingLock{resourceBindingGuard};
-    resourceDirtyState.set(ResourceDirtyState::FRAMEBUFFER, true);
-    if (renderTargets.isColorUsed(index))
-    {
-      auto ot = cast_to_texture_base(renderTargets.getColor(index).tex);
-      if (ot)
-      {
-        ot->setRtvBinding(index, false);
-      }
-    }
-    if (texture)
-    {
-      texture->setRtvBinding(index, true);
-      texture->dirtyBoundSrvsNoLock();
-      texture->dirtyBoundUavsNoLock();
-    }
-    if (toggleBits.test(ToggleState::MRT_CLEAR))
-    {
-      renderTargets.setColor(nextMrtClearTarget, texture, mip_level, face_index);
-      currentMrtClearTarget = nextMrtClearTarget++;
-    }
-    else
-    {
-      renderTargets.setColor(index, texture, mip_level, face_index);
-    }
-  }
-  void removeColorTarget(uint32_t index)
-  {
-    OSSpinlockScopedLock resourceBindingLock{resourceBindingGuard};
-    resourceDirtyState.set(ResourceDirtyState::FRAMEBUFFER, true);
-    if (renderTargets.isColorUsed(index))
-    {
-      auto ot = cast_to_texture_base(renderTargets.getColor(index).tex);
-      if (ot)
-      {
-        ot->setRtvBinding(index, false);
-      }
-    }
-    renderTargets.removeColor(index);
-  }
   void resetColorTargetsToBackBuffer()
   {
     OSSpinlockScopedLock resourceBindingLock{resourceBindingGuard};
@@ -520,6 +492,7 @@ struct FrontendState
       ot->setDsvBinding(false);
     }
     texture->setDsvBinding(true);
+    texture->dirtyBoundSrvsNoLock();
     renderTargets.setDepth(texture, face_index, read_only);
   }
   void removeDepthStencilTarget()
@@ -554,6 +527,38 @@ struct FrontendState
 
     markDirty(DirtyState::INPUT_LAYOUT, program_info.input != externalInputLayout);
     externalInputLayout = program_info.input;
+
+    setProgramImplicitCbufRegCount(STAGE_VS, program_info.vsImplicitCbufRegCount);
+    setProgramImplicitCbufRegCount(STAGE_PS, program_info.psImplicitCbufRegCount);
+  }
+
+  void setProgramImplicitCbufRegCount(uint32_t stage, uint32_t count)
+  {
+    programImplicitCbufRegCount[stage] = count;
+    markConstRegistersDirtyIfUploadGrows(stage);
+  }
+
+  void markConstRegistersDirtyIfUploadGrows(uint32_t stage)
+  {
+    auto ds = static_cast<DirtyState::Bits>(DirtyState::COMPUTE_CONST_REGISTERS + stage);
+    markDirty(ds, getConstRegisterUploadCount(stage) > uploadedConstRegisterCount[stage]);
+  }
+
+  uint32_t getConstRegisterUploadCount(uint32_t stage) const
+  {
+    const uint32_t count = programImplicitCbufRegCount[stage];
+    if (count == UNKNOWN_CONST_REGISTER_COUNT_REQUIREMENT)
+      return DEFAULT_CONST_REGISTER_COUNT[stage];
+    return min(count, MAX_CONST_REGISTER_COUNT[stage]);
+  }
+
+  void pushConstRegisters(DeviceContext &ctx, uint32_t stage)
+  {
+    const uint32_t count = getConstRegisterUploadCount(stage);
+    const bool uploaded = count > 0 && ctx.pushConstRegisterData(stage, getRegisterSection(stage).first(count));
+    uploadedConstRegisterCount[stage] = uploaded ? count : 0;
+    if (count > 0 && !uploaded)
+      markDirty(static_cast<DirtyState::Bits>(DirtyState::COMPUTE_CONST_REGISTERS + stage), true);
   }
 
   void setInputLayout(InputLayoutID layout)
@@ -812,6 +817,7 @@ struct FrontendState
     OSSpinlockScopedLock resourceBindingLock{resourceBindingGuard};
     dirtyState = ~DirtyState::Type(0);
     resourceDirtyState = ~ResourceDirtyState::Type{0};
+    eastl::fill(eastl::begin(uploadedConstRegisterCount), eastl::end(uploadedConstRegisterCount), 0u);
     toggleBits.set(ToggleState::FORCE_SET_BACKBUFFER);
     updateRenderTargetBindingStates(renderTargets, false);
     activeRenderTargets = default_render_target_state();
@@ -820,36 +826,18 @@ struct FrontendState
       res.allDirty();
   }
 
-  void setComputeProgram(ProgramID p)
+  void setComputeProgram(ComputeProgramUsageInfo program_info)
   {
-    markDirty(DirtyState::COMPUTE_PROGRAM, computeProgram != p);
-    computeProgram = p;
+    markDirty(DirtyState::COMPUTE_PROGRAM, computeProgram != program_info.programId);
+    computeProgram = program_info.programId;
+    setProgramImplicitCbufRegCount(STAGE_CS, program_info.implicitCbufRegCount);
   }
 
-  uint32_t setComputeConstRegisterCount(uint32_t cnt)
-  {
-    if (cnt)
-      cnt = clamp<uint32_t>(get_bigger_pow2(cnt), MIN_COMPUTE_CONST_REGISTERS, MAX_COMPUTE_CONST_REGISTERS);
-    else
-      cnt = MIN_COMPUTE_CONST_REGISTERS; // TODO update things to allow 0 (eg shader can tell how many it needs)
-    markDirty(DirtyState::COMPUTE_CONST_REGISTERS, registerSpaceSizes[STAGE_CS] < cnt);
-    registerSpaceSizes[STAGE_CS] = cnt;
-    return cnt;
-  }
-  uint32_t setVertexConstRegisterCount(uint32_t cnt)
-  {
-    if (cnt)
-      cnt = clamp<uint32_t>(get_bigger_pow2(cnt), VERTEX_SHADER_MIN_REGISTERS, VERTEX_SHADER_MAX_REGISTERS);
-    else
-      cnt = VERTEX_SHADER_MIN_REGISTERS; // TODO update things to allow 0 (eg shader can tell how many it needs)
-    markDirty(DirtyState::VERTEX_CONST_REGISTERS, registerSpaceSizes[STAGE_VS] < cnt);
-    registerSpaceSizes[STAGE_VS] = cnt;
-    return cnt;
-  }
   void setConstRegisters(int stage, uint32_t offset, eastl::span<const ConstRegisterType> blob)
   {
+    G_STATIC_ASSERT(DirtyState::COMPUTE_CONST_REGISTERS + int(STAGE_MAX) == DirtyState::COUNT);
+    D3D_CONTRACT_ASSERTF_RETURN(stage >= 0 && stage < STAGE_MAX, , "DX12: const registers of stage %d are not supported", stage);
     auto ds = static_cast<DirtyState::Bits>(DirtyState::COMPUTE_CONST_REGISTERS + stage);
-    G_ASSERT(ds < DirtyState::INVALID);
     markDirty(ds, registerMemoryUpdate(stage, offset, blob));
   }
 
@@ -1032,212 +1020,228 @@ struct FrontendState
       Stat3D::updateProgram();
     }
 
-    OSSpinlockScopedLock resourceBindingLock(resourceBindingGuard);
-    if (!flushRenderTargets(ctx))
-      return false;
-
-    if (dirtyState.test(DirtyState::VIEWPORT))
-      ctx.updateViewports(make_span_const(viewports, viewportCount));
-
-    if (dirtyState.test(DirtyState::DEPTH_BOUNDS_RANGE))
-      ctx.setDepthBoundsRange(depthBoundsFrom, depthBoundsTo);
-
-    if (dirtyState.test(DirtyState::GRAPHICS_STENCIL_REFERENCE))
-      ctx.setStencilRef(graphicsDynamicState.stencilRef);
-
-    if (dirtyState.test(DirtyState::BLEND_CONSTANT))
-      ctx.setBlendConstant(blendConstant);
-
-    if (dirtyState.test(DirtyState::POLYGON_LINE_ENABLED))
-      ctx.setPolygonLine(toggleBits.test(ToggleState::POLYGON_LINE));
-
-    if (dirtyState.test(DirtyState::GRAPHICS_STATIC_STATE))
-      ctx.setStaticRenderState(graphicsStaticState);
-
-    if (dirtyState.test(DirtyState::GRAPHICS_SCISSOR_TEST_ENABLE))
-      ctx.setScissorEnable(graphicsDynamicState.enableScissor);
-
-    if (graphicsDynamicState.enableScissor)
+    bool pushVertexConstRegisters = false;
+    bool pushPixelConstRegisters = false;
     {
-      if (dirtyState.test(DirtyState::SCISSOR_RECT))
-        ctx.setScissorRects(make_span_const(scissorRects, scissorCount));
-    }
-    else
-    {
-      unchangedMask.set(DirtyState::SCISSOR_RECT);
-    }
-
-    for (auto [slot, soBuffer] : enumerate(streamOutputSlots, 0))
-    {
-      if (!resourceDirtyState.test(slot + ResourceDirtyState::STREAM_OUTPUT_BUFFER_0))
-        continue;
-
-      BufferResourceReferenceAndAddressRange target = {};
-      BufferResourceReferenceAndAddress counter = {};
-      if (soBuffer.buffer)
-      {
-        auto gbiTarget = static_cast<GenericBufferInterface *>(soBuffer.buffer);
-        target = {get_any_buffer_ref(gbiTarget), soBuffer.byteOffset};
-        auto gbiCounter = static_cast<GenericBufferInterface *>(soBuffer.counterBuffer);
-        counter = {get_any_buffer_ref(gbiCounter), soBuffer.byteOffsetCounter};
-      }
-      ctx.setStreamOutputBuffer(slot, target, counter);
-    }
-
-    // DRAW_OR_DRAW_INDEXED is basically like DRAW_INDEXED. But it does not require an index buffer.
-    if (resourceDirtyState.test(ResourceDirtyState::INDEX_BUFFER) &&
-        ((GraphicsMode::DRAW_INDEXED == mode) || (mode == GraphicsMode::DRAW_OR_DRAW_INDEXED && indexBuffer != nullptr)))
-    {
-      D3D_CONTRACT_ASSERTF(indexBuffer != nullptr, "flush with index buffer, but index buffer was null!");
-      G_ANALYSIS_ASSUME(indexBuffer != nullptr);
-      // can not be null, render commands would be invalid
-      auto gbuf = (GenericBufferInterface *)indexBuffer;
-      if (!gbuf)
-      {
+      OSSpinlockScopedLock resourceBindingLock(resourceBindingGuard);
+      if (!flushRenderTargets(ctx))
         return false;
-      }
-      gbuf->updateDeviceBuffer([](auto &buf) { buf.resourceId.markUsedAsIndexBuffer(); });
-      ctx.setIndexBuffer(get_any_buffer_ref(gbuf), get_index_format(gbuf));
-    }
-    else
-    {
-      // make sure that possible change to index buffer is not lost
-      unchangedResourceMask.set(ResourceDirtyState::INDEX_BUFFER);
-    }
 
-    flushResources(
-      ctx, STAGE_VS, //
-      [](auto &buf) { buf.resourceId.markUsedAsNonPixelShaderResource(); },
-      [DX12_CAPTURE_DEF_EQ](BaseTex *tex, ImageViewState view) { return isConstDepthStencilTarget(tex, view); });
+      if (dirtyState.test(DirtyState::VIEWPORT))
+        ctx.updateViewports(make_span_const(viewports, viewportCount));
 
-    flushResources(
-      ctx, STAGE_PS, //
-      [](auto &buf) { buf.resourceId.markUsedAsPixelShaderResource(); },
-      [DX12_CAPTURE_DEF_EQ](BaseTex *tex, ImageViewState view) { return isConstDepthStencilTarget(tex, view); });
+      if (dirtyState.test(DirtyState::DEPTH_BOUNDS_RANGE))
+        ctx.setDepthBoundsRange(depthBoundsFrom, depthBoundsTo);
 
-    if (dirtyState.test(DirtyState::VERTEX_CONST_REGISTERS))
-    {
-      if (!stageResources[STAGE_VS].bRegisterBuffers[0])
+      if (dirtyState.test(DirtyState::GRAPHICS_STENCIL_REFERENCE))
+        ctx.setStencilRef(graphicsDynamicState.stencilRef);
+
+      if (dirtyState.test(DirtyState::BLEND_CONSTANT))
+        ctx.setBlendConstant(blendConstant);
+
+      if (dirtyState.test(DirtyState::POLYGON_LINE_ENABLED))
+        ctx.setPolygonLine(toggleBits.test(ToggleState::POLYGON_LINE));
+
+      if (dirtyState.test(DirtyState::GRAPHICS_STATIC_STATE))
+        ctx.setStaticRenderState(graphicsStaticState);
+
+      if (dirtyState.test(DirtyState::GRAPHICS_SCISSOR_TEST_ENABLE))
+        ctx.setScissorEnable(graphicsDynamicState.enableScissor);
+
+      if (graphicsDynamicState.enableScissor)
       {
-        ctx.pushConstRegisterData(STAGE_VS, getRegisterSection(STAGE_VS).first(registerSpaceSizes[STAGE_VS]));
+        if (dirtyState.test(DirtyState::SCISSOR_RECT))
+          ctx.setScissorRects(make_span_const(scissorRects, scissorCount));
       }
       else
       {
-        unchangedMask.set(DirtyState::VERTEX_CONST_REGISTERS);
+        unchangedMask.set(DirtyState::SCISSOR_RECT);
       }
-    }
-    if (dirtyState.test(DirtyState::PIXEL_CONST_REGISTERS))
-    {
-      if (!stageResources[STAGE_PS].bRegisterBuffers[0])
+
+      for (auto [slot, soBuffer] : enumerate(streamOutputSlots, 0))
       {
-        ctx.pushConstRegisterData(STAGE_PS, getRegisterSection(STAGE_PS).first(registerSpaceSizes[STAGE_PS]));
+        if (!resourceDirtyState.test(slot + ResourceDirtyState::STREAM_OUTPUT_BUFFER_0))
+          continue;
+
+        BufferResourceReferenceAndAddressRange target = {};
+        BufferResourceReferenceAndAddress counter = {};
+        if (soBuffer.buffer)
+        {
+          auto gbiTarget = static_cast<GenericBufferInterface *>(soBuffer.buffer);
+          target = {get_any_buffer_ref(gbiTarget), soBuffer.byteOffset};
+          auto gbiCounter = static_cast<GenericBufferInterface *>(soBuffer.counterBuffer);
+          counter = {get_any_buffer_ref(gbiCounter), soBuffer.byteOffsetCounter};
+        }
+        ctx.setStreamOutputBuffer(slot, target, counter);
+      }
+
+      // DRAW_OR_DRAW_INDEXED is basically like DRAW_INDEXED. But it does not require an index buffer.
+      if (resourceDirtyState.test(ResourceDirtyState::INDEX_BUFFER) &&
+          ((GraphicsMode::DRAW_INDEXED == mode) || (mode == GraphicsMode::DRAW_OR_DRAW_INDEXED && indexBuffer != nullptr)))
+      {
+        D3D_CONTRACT_ASSERTF(indexBuffer != nullptr, "flush with index buffer, but index buffer was null!");
+        G_ANALYSIS_ASSUME(indexBuffer != nullptr);
+        // can not be null, render commands would be invalid
+        auto gbuf = (GenericBufferInterface *)indexBuffer;
+        if (!gbuf)
+        {
+          return false;
+        }
+        gbuf->updateDeviceBuffer([](auto &buf) { buf.resourceId.markUsedAsIndexBuffer(); });
+        ctx.setIndexBuffer(get_any_buffer_ref(gbuf), get_index_format(gbuf));
       }
       else
       {
-        // happens a lot, not sure why
-        unchangedMask.set(DirtyState::PIXEL_CONST_REGISTERS);
+        // make sure that possible change to index buffer is not lost
+        unchangedResourceMask.set(ResourceDirtyState::INDEX_BUFFER);
       }
-    }
 
-    if ((GraphicsMode::DRAW == mode) || (GraphicsMode::DRAW_INDEXED == mode) || (mode == GraphicsMode::DRAW_OR_DRAW_INDEXED))
-    {
-      if (dirtyState.test(DirtyState::INPUT_LAYOUT))
+      flushResources(
+        ctx, STAGE_VS, //
+        [](auto &buf) { buf.resourceId.markUsedAsNonPixelShaderResource(); },
+        [DX12_CAPTURE_DEF_EQ](BaseTex *tex, ImageViewState view) { return isConstDepthStencilTarget(tex, view); });
+
+      flushResources(
+        ctx, STAGE_PS, //
+        [](auto &buf) { buf.resourceId.markUsedAsPixelShaderResource(); },
+        [DX12_CAPTURE_DEF_EQ](BaseTex *tex, ImageViewState view) { return isConstDepthStencilTarget(tex, view); });
+
+      if (dirtyState.test(DirtyState::VERTEX_CONST_REGISTERS))
       {
-        ctx.bindVertexDecl(externalInputLayout);
+        pushVertexConstRegisters = nullptr == stageResources[STAGE_VS].bRegisterBuffers[0];
+        if (!pushVertexConstRegisters)
+        {
+          unchangedMask.set(DirtyState::VERTEX_CONST_REGISTERS);
+        }
+      }
+      if (dirtyState.test(DirtyState::PIXEL_CONST_REGISTERS))
+      {
+        pushPixelConstRegisters = nullptr == stageResources[STAGE_PS].bRegisterBuffers[0];
+        if (!pushPixelConstRegisters)
+        {
+          // happens a lot, not sure why
+          unchangedMask.set(DirtyState::PIXEL_CONST_REGISTERS);
+        }
       }
 
       constexpr uint32_t vertexBufferMask = 1u << ResourceDirtyState::VERTEX_BUFFER_0 | 1u << ResourceDirtyState::VERTEX_BUFFER_1 |
                                             1u << ResourceDirtyState::VERTEX_BUFFER_2 | 1u << ResourceDirtyState::VERTEX_BUFFER_3;
 
-      const uint32_t vertexBufferBits = (resourceDirtyState.to_uint32() & vertexBufferMask) >> ResourceDirtyState::VERTEX_BUFFER_0;
-
-      for (auto i : LsbVisitor{vertexBufferBits})
+      if ((GraphicsMode::DRAW == mode) || (GraphicsMode::DRAW_INDEXED == mode) || (mode == GraphicsMode::DRAW_OR_DRAW_INDEXED))
       {
-        if (auto gbuf = (GenericBufferInterface *)vertexBuffers[i])
+        if (dirtyState.test(DirtyState::INPUT_LAYOUT))
         {
-          gbuf->updateDeviceBuffer([](auto &buf) { buf.resourceId.markUsedAsConstOrVertexBuffer(); });
-          ctx.bindVertexBuffer(i, {get_any_buffer_ref(gbuf), vertexBufferOffsets[i]}, vertexStries[i]);
+          ctx.bindVertexDecl(externalInputLayout);
+        }
+
+        const uint32_t vertexBufferBits = (resourceDirtyState.to_uint32() & vertexBufferMask) >> ResourceDirtyState::VERTEX_BUFFER_0;
+
+        for (auto i : LsbVisitor{vertexBufferBits})
+        {
+          if (auto gbuf = (GenericBufferInterface *)vertexBuffers[i])
+          {
+            gbuf->updateDeviceBuffer([](auto &buf) { buf.resourceId.markUsedAsConstOrVertexBuffer(); });
+            ctx.bindVertexBuffer(i, {get_any_buffer_ref(gbuf), vertexBufferOffsets[i]}, vertexStries[i]);
+          }
+          else
+          {
+            ctx.bindVertexBuffer(i, {}, 0);
+          }
         }
       }
-    }
+      else
+      {
+        unchangedMask.set(DirtyState::INPUT_LAYOUT);
+        unchangedResourceMask |= ResourceDirtyState::Type{vertexBufferMask};
+      }
 
 #if !_TARGET_XBOXONE
-    if (auto shadingTier = device.getVariableShadingRateTier())
-    {
-      if (dirtyState.test(DirtyState::VARIABLE_RATE_SHADING))
+      if (auto shadingTier = device.getVariableShadingRateTier())
       {
-        ctx.setVariableRateShading(constantShadingRate, vertexShadingRateCombiner, pixelShadingRateCombiner);
-        // a few warnings about wrong configurations
-        if (shadingRateTexture)
+        if (dirtyState.test(DirtyState::VARIABLE_RATE_SHADING))
         {
-          if (DAGOR_UNLIKELY(D3D12_SHADING_RATE_COMBINER_PASSTHROUGH == pixelShadingRateCombiner))
+          ctx.setVariableRateShading(constantShadingRate, vertexShadingRateCombiner, pixelShadingRateCombiner);
+          // a few warnings about wrong configurations
+          if (shadingRateTexture)
           {
-            // sort of valid usage, but when no rate texture is needed it should be set to null
-            // yet if we work in render pass approach where VRS texture is part of render pass setup,
-            // it can't be changed inside of render pass
-            // while we may want to disable it for some draws inside render pass
-            // so it makes such configuration justified
-            ;
-            // logwarn("DX12: VRS: Pixel Shading Rate Combiner is set to PASSTHROUGH, but a sampling "
-            //         "rate texture is set, with this combiner the texture is not used");
+            if (DAGOR_UNLIKELY(D3D12_SHADING_RATE_COMBINER_PASSTHROUGH == pixelShadingRateCombiner))
+            {
+              // sort of valid usage, but when no rate texture is needed it should be set to null
+              // yet if we work in render pass approach where VRS texture is part of render pass setup,
+              // it can't be changed inside of render pass
+              // while we may want to disable it for some draws inside render pass
+              // so it makes such configuration justified
+              ;
+              // logwarn("DX12: VRS: Pixel Shading Rate Combiner is set to PASSTHROUGH, but a sampling "
+              //         "rate texture is set, with this combiner the texture is not used");
+            }
+          }
+          else if (shadingTier == 1)
+          {
+            // on T1 combiners have no effect
+            if (DAGOR_UNLIKELY(D3D12_SHADING_RATE_COMBINER_PASSTHROUGH != pixelShadingRateCombiner))
+            {
+              logwarn("DX12: VRS: Device is VRS Tier 1 and Pixel Shading Rate Combiner is not "
+                      "PASSTHROUGH, which is invalid and will be ignored");
+            }
+            if (DAGOR_UNLIKELY(D3D12_SHADING_RATE_COMBINER_PASSTHROUGH != vertexShadingRateCombiner))
+            {
+              logwarn("DX12: VRS: Device is VRS Tier 1 and Vertex Shading Rate Combiner is not "
+                      "PASSTHROUGH, which is invalid and will be ignored");
+            }
+          }
+          else
+          {
+            if (DAGOR_UNLIKELY(D3D12_SHADING_RATE_COMBINER_OVERRIDE == pixelShadingRateCombiner))
+            {
+              // this is turning VRS off in a wired way
+              logwarn("DX12: VRS: Pixel Shading Rate Combiner is set to OVERRIDE, but no sampling rate "
+                      "texture is set, it will override to 1x1");
+            }
+            if (DAGOR_UNLIKELY(D3D12_SHADING_RATE_COMBINER_MIN == pixelShadingRateCombiner))
+            {
+              // this is turning VRS off in a wired way
+              logwarn("DX12: VRS: Pixel Shading Rate Combiner is set to MIN, but no sampling rate "
+                      "texture is set, this will min to 1x1");
+            }
+            if (DAGOR_UNLIKELY(D3D12_SHADING_RATE_COMBINER_MAX == pixelShadingRateCombiner))
+            {
+              logwarn("DX12: VRS: Pixel Shading Rate Combiner is set to MAX, but no sampling rate "
+                      "texture is set, consider using PASSTHROUGH instead");
+            }
+            if (DAGOR_UNLIKELY(D3D12_SHADING_RATE_COMBINER_SUM == pixelShadingRateCombiner))
+            {
+              logwarn("DX12: VRS: Pixel Shading Rate Combiner is set to SUM, but no sampling rate "
+                      "texture is set, this is effectively adding one to the sampling rate of the "
+                      "previous stage");
+            }
           }
         }
-        else if (shadingTier == 1)
+        if (resourceDirtyState.test(ResourceDirtyState::VARIABLE_RATE_SHADING_TEXTURE) && shadingTier > 1)
         {
-          // on T1 combiners have no effect
-          if (DAGOR_UNLIKELY(D3D12_SHADING_RATE_COMBINER_PASSTHROUGH != pixelShadingRateCombiner))
-          {
-            logwarn("DX12: VRS: Device is VRS Tier 1 and Pixel Shading Rate Combiner is not "
-                    "PASSTHROUGH, which is invalid and will be ignored");
-          }
-          if (DAGOR_UNLIKELY(D3D12_SHADING_RATE_COMBINER_PASSTHROUGH != vertexShadingRateCombiner))
-          {
-            logwarn("DX12: VRS: Device is VRS Tier 1 and Vertex Shading Rate Combiner is not "
-                    "PASSTHROUGH, which is invalid and will be ignored");
-          }
-        }
-        else
-        {
-          if (DAGOR_UNLIKELY(D3D12_SHADING_RATE_COMBINER_OVERRIDE == pixelShadingRateCombiner))
-          {
-            // this is turning VRS off in a wired way
-            logwarn("DX12: VRS: Pixel Shading Rate Combiner is set to OVERRIDE, but no sampling rate "
-                    "texture is set, it will override to 1x1");
-          }
-          if (DAGOR_UNLIKELY(D3D12_SHADING_RATE_COMBINER_MIN == pixelShadingRateCombiner))
-          {
-            // this is turning VRS off in a wired way
-            logwarn("DX12: VRS: Pixel Shading Rate Combiner is set to MIN, but no sampling rate "
-                    "texture is set, this will min to 1x1");
-          }
-          if (DAGOR_UNLIKELY(D3D12_SHADING_RATE_COMBINER_MAX == pixelShadingRateCombiner))
-          {
-            logwarn("DX12: VRS: Pixel Shading Rate Combiner is set to MAX, but no sampling rate "
-                    "texture is set, consider using PASSTHROUGH instead");
-          }
-          if (DAGOR_UNLIKELY(D3D12_SHADING_RATE_COMBINER_SUM == pixelShadingRateCombiner))
-          {
-            logwarn("DX12: VRS: Pixel Shading Rate Combiner is set to SUM, but no sampling rate "
-                    "texture is set, this is effectively adding one to the sampling rate of the "
-                    "previous stage");
-          }
+          ctx.setVariableRateShadingTexture(shadingRateTexture ? cast_to_texture_base(shadingRateTexture)->getDeviceImage() : nullptr);
         }
       }
-      if (dirtyState.test(DirtyState::VARIABLE_RATE_SHADING_TEXTURE) && shadingTier > 1)
-      {
-        ctx.setVariableRateShadingTexture(shadingRateTexture ? cast_to_texture_base(shadingRateTexture)->getDeviceImage() : nullptr);
-      }
-    }
 #endif
 
-    dirtyState &= unchangedMask;
-    resourceDirtyState &= unchangedResourceMask;
-    return true;
+      dirtyState &= unchangedMask;
+      resourceDirtyState &= unchangedResourceMask;
+      resourceDirtyState.reset(ResourceDirtyState::BOUND_RESOURCE_REPLACED);
+    }
+
+    if (pushVertexConstRegisters)
+      pushConstRegisters(ctx, STAGE_VS);
+
+    if (pushPixelConstRegisters)
+      pushConstRegisters(ctx, STAGE_PS);
+
+    OSSpinlockScopedLock resourceBindingLock(resourceBindingGuard);
+    return !resourceDirtyState.test(ResourceDirtyState::BOUND_RESOURCE_REPLACED);
   }
-  void flushCompute(DeviceContext &ctx)
+  bool flushCompute(DeviceContext &ctx)
   {
     if (computeProgram == ProgramID::Null())
-      return;
+      return false;
     DirtyState::Type computeMask;
     computeMask.set(DirtyState::COMPUTE_PROGRAM);
     if (dirtyState.test(DirtyState::COMPUTE_PROGRAM))
@@ -1245,25 +1249,31 @@ struct FrontendState
       ctx.setComputePipeline(computeProgram);
     }
 
-    OSSpinlockScopedLock resourceBindingLock(resourceBindingGuard);
-    // check returns always false, compute shader can not conflict with framebuffer
-    // also no check needed for const depth stencil target, pass has to end
-    flushResources(
-      ctx, STAGE_CS,                                                        //
-      [](auto &buf) { buf.resourceId.markUsedAsNonPixelShaderResource(); }, //
-      [](BaseTex *, ImageViewState) { return false; });
-
-
-    if (dirtyState.test(DirtyState::COMPUTE_CONST_REGISTERS))
+    bool pushComputeConstRegisters = false;
     {
-      if (!stageResources[STAGE_CS].bRegisterBuffers[0])
-      {
-        ctx.pushConstRegisterData(STAGE_CS, getRegisterSection(STAGE_CS).first(registerSpaceSizes[STAGE_CS]));
+      OSSpinlockScopedLock resourceBindingLock(resourceBindingGuard);
+      // check returns always false, compute shader can not conflict with framebuffer
+      // also no check needed for const depth stencil target, pass has to end
+      flushResources(
+        ctx, STAGE_CS,                                                        //
+        [](auto &buf) { buf.resourceId.markUsedAsNonPixelShaderResource(); }, //
+        [](BaseTex *, ImageViewState) { return false; });
+
+      if (dirtyState.test(DirtyState::COMPUTE_CONST_REGISTERS))
+        pushComputeConstRegisters = nullptr == stageResources[STAGE_CS].bRegisterBuffers[0];
+
+      if (pushComputeConstRegisters)
         computeMask.set(DirtyState::COMPUTE_CONST_REGISTERS);
-      }
+
+      dirtyState &= ~computeMask;
+      resourceDirtyState.reset(ResourceDirtyState::BOUND_RESOURCE_REPLACED);
     }
 
-    dirtyState &= ~computeMask;
+    if (pushComputeConstRegisters)
+      pushConstRegisters(ctx, STAGE_CS);
+
+    OSSpinlockScopedLock resourceBindingLock(resourceBindingGuard);
+    return !resourceDirtyState.test(ResourceDirtyState::BOUND_RESOURCE_REPLACED);
   }
 
 #if D3D_HAS_RAY_TRACING
@@ -1316,7 +1326,7 @@ struct FrontendState
     // need to take the lock to guard toggleBits (TODO may move out of bitset)
     OSSpinlockScopedLock resourceBindingLock{resourceBindingGuard};
     toggleBits.set(ToggleState::MRT_CLEAR);
-    currentMrtClearTarget = nextMrtClearTarget = start;
+    currentMrtClearTarget = start;
   }
 
   void endMrtClear(DeviceContext &ctx)
@@ -1362,9 +1372,12 @@ struct FrontendState
       }
       if (mask & CLEAR_TARGET)
       {
+        D3D_CONTRACT_ASSERTF_RETURN(currentMrtClearTarget < Driver3dRenderTarget::MAX_SIMRT, ,
+          "DX12: MRT clear sequence has more color clears than render target slots");
         clearColors[currentMrtClearTarget] = color;
         toggleBits.set(ToggleState::CLEAR_COLOR);
       }
+      ++currentMrtClearTarget;
     }
     else
     {
@@ -1397,19 +1410,20 @@ struct FrontendState
 
   void markBufferStagesDirtyNoLock(GenericBufferInterface *buffer, bool check_vb, bool check_const, bool check_srv, bool check_uav)
   {
+    bool wasBound = false;
     if (buffer->usableAsStreamOutputBuffer())
     {
       for (auto [i, soBuffer] : enumerate(streamOutputSlots, ResourceDirtyState::STREAM_OUTPUT_BUFFER_0))
       {
         if (soBuffer.buffer == buffer || soBuffer.counterBuffer == buffer)
         {
-          markResourceDirty(ResourceDirtyState::Bits(i), true);
+          wasBound = markResourceDirty(ResourceDirtyState::Bits(i), true);
         }
       }
     }
     if (indexBuffer == buffer)
     {
-      markResourceDirty(ResourceDirtyState::INDEX_BUFFER, true);
+      wasBound = markResourceDirty(ResourceDirtyState::INDEX_BUFFER, true);
     }
     if (check_vb)
     {
@@ -1417,7 +1431,7 @@ struct FrontendState
       {
         if (vBuffer == buffer)
         {
-          markResourceDirty(ResourceDirtyState::Bits(i), true);
+          wasBound = markResourceDirty(ResourceDirtyState::Bits(i), true);
         }
       }
     }
@@ -1430,6 +1444,7 @@ struct FrontendState
           if (bBuffer == buffer)
           {
             stage.markDirtyB(j, true);
+            wasBound = true;
           }
         }
       }
@@ -1440,6 +1455,7 @@ struct FrontendState
           if (tBuffer == buffer)
           {
             stage.markDirtyT(j, true);
+            wasBound = true;
           }
         }
       }
@@ -1450,10 +1466,12 @@ struct FrontendState
           if (uBuffer == buffer)
           {
             stage.markDirtyU(j, true);
+            wasBound = true;
           }
         }
       }
     }
+    markResourceDirty(ResourceDirtyState::BOUND_RESOURCE_REPLACED, wasBound);
   }
 
   void notifyDelete(GenericBufferInterface *buffer)
@@ -1464,22 +1482,22 @@ struct FrontendState
       markResourceDirty(ResourceDirtyState::INDEX_BUFFER, true);
       indexBuffer = nullptr;
     }
-    for (auto [i, soBuffer] : enumerate(streamOutputSlots, ResourceDirtyState::STREAM_OUTPUT_BUFFER_0))
+    for (auto [slot, soBuffer] : enumerate(streamOutputSlots))
     {
       if (soBuffer.buffer == buffer || soBuffer.counterBuffer == buffer)
       {
-        markResourceDirty(ResourceDirtyState::Bits(i), true);
-        streamOutputSlots[i] = {};
+        markResourceDirty(ResourceDirtyState::Bits(ResourceDirtyState::STREAM_OUTPUT_BUFFER_0 + slot), true);
+        soBuffer = {};
       }
     }
-    for (auto [i, vBuffer] : enumerate(vertexBuffers, ResourceDirtyState::VERTEX_BUFFER_0))
+    for (auto [stream, vBuffer] : enumerate(vertexBuffers))
     {
       if (vBuffer == buffer)
       {
-        markResourceDirty(ResourceDirtyState::Bits(i), true);
-        vertexBuffers[i] = nullptr;
-        vertexBufferOffsets[i] = 0;
-        vertexStries[i] = 0;
+        markResourceDirty(ResourceDirtyState::Bits(ResourceDirtyState::VERTEX_BUFFER_0 + stream), true);
+        vBuffer = nullptr;
+        vertexBufferOffsets[stream] = 0;
+        vertexStries[stream] = 0;
       }
     }
     for (auto [i, stage] : enumerate(stageResources))
@@ -1555,7 +1573,8 @@ struct FrontendState
   }
   void setVariableShadingRateTexture(BaseTexture *rate_texture)
   {
-    markDirty(DirtyState::VARIABLE_RATE_SHADING_TEXTURE, shadingRateTexture != rate_texture);
+    OSSpinlockScopedLock resourceBindingLock(resourceBindingGuard);
+    markResourceDirty(ResourceDirtyState::VARIABLE_RATE_SHADING_TEXTURE, shadingRateTexture != rate_texture);
     shadingRateTexture = rate_texture;
   }
 #endif
@@ -1610,27 +1629,36 @@ struct FrontendState
 
   void dirtyRenderTargetNoLock([[maybe_unused]] BaseTex *texture, const Bitset<Driver3dRenderTarget::MAX_SIMRT> &slots, bool dsv)
   {
-    if (slots.any() || dsv)
-      resourceDirtyState.set(ResourceDirtyState::FRAMEBUFFER, true);
+    if (!slots.any() && !dsv)
+      return;
+    resourceDirtyState.set(ResourceDirtyState::FRAMEBUFFER, true);
     toggleBits.set(ToggleState::FORCE_SET_BACKBUFFER);
   }
 
   void markTextureStagesDirtyNoLock(BaseTex *texture, const eastl::bitset<dxil::MAX_T_REGISTERS> *srvs,
     const eastl::bitset<dxil::MAX_U_REGISTERS> *uavs, eastl::bitset<Driver3dRenderTarget::MAX_SIMRT> rtvs, bool dsv)
   {
+    bool wasBound = rtvs.any() || dsv;
     for (auto [i, srv] : enumerate(eastl::span{srvs, STAGE_MAX_EXT}))
     {
       if (srv.any())
+      {
         dirtySRVandSamplerNoLock(texture, i, srv);
+        wasBound = true;
+      }
     }
 
     for (auto [i, uav] : enumerate(eastl::span{uavs, STAGE_MAX_EXT}))
     {
       if (uav.any())
+      {
         dirtyUAVNoLock(texture, i, uav);
+        wasBound = true;
+      }
     }
 
     dirtyRenderTargetNoLock(texture, rtvs, dsv);
+    markResourceDirty(ResourceDirtyState::BOUND_RESOURCE_REPLACED, wasBound);
   }
 
   void notifyDelete(BaseTex *texture, const Bitset<dxil::MAX_T_REGISTERS> *srvs, const Bitset<dxil::MAX_U_REGISTERS> *uavs)
@@ -1689,6 +1717,14 @@ struct FrontendState
         resourceDirtyState.set(ResourceDirtyState::FRAMEBUFFER, true);
       }
     }
+
+#if !_TARGET_XBOXONE
+    if (shadingRateTexture == texture)
+    {
+      shadingRateTexture = nullptr;
+      resourceDirtyState.set(ResourceDirtyState::VARIABLE_RATE_SHADING_TEXTURE, true);
+    }
+#endif
   }
 };
 

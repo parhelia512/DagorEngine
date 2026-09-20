@@ -812,6 +812,60 @@ bool SQVM::FOREACH_OP(SQObjectPtr &o1,SQObjectPtr &o2,SQObjectPtr
 }
 #undef _CHECK_FREEZE
 
+bool SQVM::SPREAD_OP(SQObjectPtr &dest,SQObjectPtr &src,SQInteger elementsAfterSpread)
+{
+    if (sq_type(src) == OT_NULL)
+        return true;
+
+    if (sq_type(dest) == OT_ARRAY) {
+        if (sq_type(src) != OT_ARRAY) {
+            Raise_Error("only an array can be spread into an array, got %s", GetTypeName(src));
+            return false;
+        }
+        SQArray *destArray = _array(dest);
+        SQArray *sourceArray = _array(src);
+        const bool propagateImmutable = (src._flags & SQOBJ_FLAG_IMMUTABLE) != 0;
+        destArray->ReserveAtLeast(destArray->Size() + sourceArray->Size() + elementsAfterSpread);
+        for (SQInteger i = 0, n = sourceArray->Size(); i < n; ++i) {
+            const SQObjectPtr &raw = sourceArray->_values[i];
+            if (!propagateImmutable && sq_type(raw) != OT_WEAKREF) {
+                destArray->Append(raw);
+                continue;
+            }
+            SQObjectPtr element;
+            element = _realval(raw);
+            if (propagateImmutable)
+                element._flags |= SQOBJ_FLAG_IMMUTABLE;
+            destArray->Append(element);
+        }
+        return true;
+    }
+
+    assert(sq_type(dest) == OT_TABLE);
+
+    if (!(sq_type(src) & (_RT_TABLE | _RT_CLASS | _RT_INSTANCE))) {
+        Raise_Error("only a table, a class or an instance can be spread into a table, got %s", GetTypeName(src));
+        return false;
+    }
+
+    const bool sourceKeepsValuesMutable = (src._flags & SQOBJ_FLAG_IMMUTABLE) == 0;
+    if (sq_type(src) == OT_TABLE && sourceKeepsValuesMutable && _table(dest)->CountUsed() == 0) {
+        dest = _table(src)->CopyNodesResolvingWeakRefs();
+        return true;
+    }
+
+    SQObjectPtr key, val, iterator;
+    for (;;) {
+        int step = 0;
+        if (!FOREACH_OP(src, key, val, iterator, FOREACH_NO_MORE_ELEMENTS, step))
+            return false;
+        if (step == FOREACH_NO_MORE_ELEMENTS)
+            return true;
+        if (!NewSlot(dest, key, val, false))
+            return false;
+    }
+}
+
 #define COND_LITERAL (arg3!=0?ci->_literals[arg1]:STK(arg1))
 
 #define SYNC_IP() do { if (ci) ci->_ip = _ip; } while(0)
@@ -1684,6 +1738,9 @@ exception_restore:
                 }
                 _array(STK(arg0))->Append(val); continue;
                 }
+            case _OP_SPREAD:
+                _GUARD(SPREAD_OP(STK(arg0), STK(arg1), arg2));
+                continue;
             case _OP_COMPARITH:
             case _OP_COMPARITH_K: {
                 SQInteger selfidx = (((SQUnsignedInteger)arg1&0xFFFF0000)>>16);
@@ -1786,7 +1843,7 @@ exception_restore:
                 }
                 continue;
             case _OP_RESUME:
-                if(sq_type(STK(arg1)) != OT_GENERATOR){ Raise_Error("trying to resume a '%s', only genenerator can be resumed", GetTypeName(STK(arg1))); SQ_THROW();}
+                if(sq_type(STK(arg1)) != OT_GENERATOR){ Raise_Error("trying to resume a '%s', only generator can be resumed", GetTypeName(STK(arg1))); SQ_THROW();}
                 SYNC_IP();
                 _GUARD(_generator(STK(arg1))->Resume(this, TARGET));
                 traps += ci->_etraps;
@@ -1868,20 +1925,13 @@ exception_restore:
             case _OP_CLOSE:
                 if(_openouters) CloseOuters(&(STK(arg1)));
                 continue;
-            case _OP_PATCH_DOCOBJ: {
+            case _OP_SET_CLASS_DOCSTRING: {
                 SQObjectPtr &o = TARGET;
-                SQObjectPtr findKey;
-                SQObjectPtr foundValue;
-                findKey._unVal.raw = arg1;
-                findKey._type = OT_USERPOINTER;
-                SQTable * tbl = _table(_sharedstate->doc_objects);
-                if (tbl->Get(findKey, foundValue)) {
-                    SQObjectPtr replaceWithKey;
-                    replaceWithKey._unVal.pUserPointer = o._unVal.pUserPointer;
-                    replaceWithKey._type = OT_USERPOINTER;
-                    tbl->NewSlot(replaceWithKey, foundValue);
-                    tbl->Remove(findKey);
+                if (sq_type(o) != OT_CLASS) {
+                    Raise_Error("class docstring target is not a class");
+                    SQ_THROW();
                 }
+                _class(o)->_docstring_id = SQDocStringId(arg1);
                 continue;
                 }
             case _OP_LOAD_STATIC_MEMO:

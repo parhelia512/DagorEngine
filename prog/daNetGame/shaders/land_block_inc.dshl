@@ -176,7 +176,6 @@ endmacro
 block(scene) land_mesh_with_clipmap
 {
   supports global_frame;
-  supports global_const_block;
   DECODE_WORLD_POS()
   BASE_LAND_MESH_BLOCK()
   INIT_CLIPMAP_NORMAL()

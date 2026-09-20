@@ -118,7 +118,7 @@ void d3d::resource_barrier(const ResourceBarrierDesc &desc, GpuPipeline /*gpu_pi
         D3D_ERROR("vulkan: no buffer in user barrier specified");
         return;
       }
-      auto gbuf = (GenericBufferInterface *)buf;
+      auto gbuf = static_cast<GenericBufferInterface *>(buf);
       G_ASSERT(gbuf->getBufferRef().buffer);
       Globals::ctx.dispatchCmdNoLock<CmdBufferBarrier>({gbuf->getBufferRef(), state}); //-V522
     });
@@ -159,7 +159,7 @@ bool queue_enhanced_buffer_barrier(const d3d::BufferBarrier &barrier, Sbuffer *b
     D3D_ERROR("vulkan: enhanced_buffer_barrier with null buffer");
     return false;
   }
-  BufferRef bRef = ((GenericBufferInterface *)buffer)->getBufferRef();
+  BufferRef bRef = static_cast<GenericBufferInterface *>(buffer)->getBufferRef();
   if (!bRef.buffer)
     return false;
   if (bRef.buffer->isSyncTracked())

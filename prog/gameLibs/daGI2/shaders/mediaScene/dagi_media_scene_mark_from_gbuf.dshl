@@ -8,6 +8,10 @@ include "dagi_lit_scene_helper.dshl"
 include "project_is_dynamic_point.dshl"
 
 int4 dagi_media_scene_update_count;
+// the refresh reacts only to a radiance this far (a factor) from the stored one: the screen
+// lit color is the seen side of a two sided canopy, lit by probes this media already
+// attenuated - reacting to small differences converges the canopy dark from below
+float dagi_media_scene_gbuf_deadband = 4;
 
 define_macro_if_not_defined PROJECT_LIGHT_POINT_SCREEN_VOXEL_MEDIA_SCENE(code)
   PROJECT_LIGHT_POINT_SCREEN_VOXEL(code)
@@ -24,6 +28,7 @@ macro MEDIA_SCENE_MARK_FROM_GBUF(code)
   (code) {
     globtm_psf@f44 = {globtm_psf_0, globtm_psf_1, globtm_psf_2, globtm_psf_3};
     world_view_pos@f3 = world_view_pos;
+    dagi_media_scene_gbuf_deadband@f1 = dagi_media_scene_gbuf_deadband;
   }
 
   if (hardware.dx11)
@@ -37,6 +42,40 @@ macro MEDIA_SCENE_MARK_FROM_GBUF(code)
     #include <pcg_hash.hlsl>
 
     //non-atomic RMW: two groups may pick the same voxel in one frame, accepted (stochastic, temporally averaged)
+    // density ownership is the project's choice. a project that owns it elsewhere (baked
+    // media volumes injected on refill) defines DAGI_MEDIA_DENSITY_FROM_REFILL: this pass then
+    // only refreshes the radiance of voxels that already have density, and never writes or
+    // erodes it. a 16x16 sample set can miss sparse leaves entirely, which is what hollows out
+    // the estimate below: occluded voxels never update and forests leak skylight
+    #ifndef DAGI_MEDIA_DENSITY_FROM_REFILL
+      #define DAGI_MEDIA_DENSITY_FROM_REFILL 0
+    #endif
+
+    #if DAGI_MEDIA_DENSITY_FROM_REFILL
+    void dagi_media_scene_update_gbuf_radiance(uint cascade, int3 absCoord, float3 radiance, float w)
+    {
+      uint3 targetCoord = dagi_media_scene_wrapped_coord_from_abs_coord(absCoord);
+      uint3 atlasCoord = targetCoord + uint3(0,0,1 + cascade*dagi_media_scene_get_clip_size_with_border());
+
+      //fixme: support dx11 (no typed uav)
+      float4 old = texture3DAt(dagi_media_scene, atlasCoord);
+      if (old.w <= 0)
+        return;
+      //in-scatter is stored premultiplied by density: clamp the product, the atlas is fp16
+      float3 newRgb = min(radiance*old.w, 65503.);
+      //deadband: the injected lighting stays authoritative unless the screen disagrees by
+      //the factor (see dagi_media_scene_gbuf_deadband above)
+      float lOld = dot(old.rgb, 1), lNew = dot(newRgb, 1);
+      if (max(lOld, lNew) < dagi_media_scene_gbuf_deadband*min(lOld, lNew))
+        return;
+      float4 media = float4(lerp(old.rgb, newRgb, w), old.w);
+      texture3DAt(dagi_media_scene, atlasCoord) = media;
+      if (targetCoord.z == 0 || targetCoord.z == dagi_media_scene_get_clip_size().y - 1)//write border
+      {
+        texture3DAt(dagi_media_scene, uint3(targetCoord.xy, targetCoord.z ? 0 : dagi_media_scene_get_clip_size().y+1)+uint3(0,0,cascade*dagi_media_scene_get_clip_size_with_border())) = media;
+      }
+    }
+    #else
     void dagi_media_scene_update_color(uint cascade, int3 absCoord, float4 media, float w)
     {
       uint3 targetCoord = dagi_media_scene_wrapped_coord_from_abs_coord(absCoord);
@@ -53,6 +92,7 @@ macro MEDIA_SCENE_MARK_FROM_GBUF(code)
         texture3DAt(dagi_media_scene, uint3(targetCoord.xy, targetCoord.z ? 0 : dagi_media_scene_get_clip_size().y+1)+uint3(0,0,cascade*dagi_media_scene_get_clip_size_with_border())) = media;
       }
     }
+    #endif
 
     #define PIXELS_TO_AVERAGE_SQRT 16
     #define PIXELS_TO_AVERAGE (PIXELS_TO_AVERAGE_SQRT*PIXELS_TO_AVERAGE_SQRT)
@@ -152,6 +192,14 @@ macro MEDIA_SCENE_MARK_FROM_GBUF(code)
       }
       GroupMemoryBarrierWithGroupSync();
 
+      #if DAGI_MEDIA_DENSITY_FROM_REFILL
+      //mean lit color of the hit foliage only: the stored rgb is premultiplied by the baked
+      //density (old.w), so a screen coverage factor here would count sparsity twice and
+      //repeated refreshes would fade in-scatter to black on sparse crowns
+      float3 averagedRadiance = ((shared_avg_radiance/float(RADIANCE_BITS_MASK))/totalCount)*radianceMul + min_radiance;
+      if (tid == 0)
+        dagi_media_scene_update_gbuf_radiance(cascade, baseVoxelCoord, averagedRadiance, 0.03);
+      #else
       float visibleNonTransmittance = float(totalCount) / (PIXELS_TO_AVERAGE - totalOccluded);
       float3 averagedRadiance = visibleNonTransmittance*(((shared_avg_radiance/float(RADIANCE_BITS_MASK))/totalCount)*radianceMul + min_radiance);
       float mediaDensity = log2(max(1-visibleNonTransmittance, 1e-6)) / -baseVoxelSize;
@@ -160,6 +208,7 @@ macro MEDIA_SCENE_MARK_FROM_GBUF(code)
       media = clamp(media, 0, 65503.f);
       if (tid == 0)
         dagi_media_scene_update_color(cascade, baseVoxelCoord, media, 0.03);
+      #endif
     }
   }
 endmacro

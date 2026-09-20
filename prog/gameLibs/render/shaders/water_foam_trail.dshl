@@ -6,6 +6,7 @@ texture foam_tex;
 texture ship_bow_foam;
 texture water_foam_obstacle;
 texture perlin_noise3d;
+texture tex_noise_white_64x64;
 
 float current_water_time = 0;
 
@@ -35,9 +36,7 @@ shader water_foam_trail
 
   (ps) { water_foam_trail_mask@smp2d = water_foam_trail_mask; }
 
-  INIT_WATER_FOAM_TRAIL()
   USE_MODULATED_FOAM()
-  USE_WATER_FOAM_TRAIL()
 
   INIT_HDR(ps)
   USE_HDR(ps)
@@ -55,7 +54,12 @@ shader water_foam_trail
     params@f4 = (water_foam_trail_params.x, water_foam_trail_params.y, water_foam_trail_params.z, water_foam_trail_gen);
     water_level@f1 = water_level;
   }
-  (ps) { params@f4 = (water_foam_trail_params.x, water_foam_trail_params.y, water_foam_trail_params.z, water_foam_trail_gen); }
+  (ps)
+  {
+    params@f4 = (water_foam_trail_params.x, water_foam_trail_params.y, water_foam_trail_params.z, water_foam_trail_gen);
+    scroll_time@f1 = (scroll_time);
+    tex_noise_white_64x64@smp2d = tex_noise_white_64x64;
+  }
 
   hlsl {
 
@@ -122,7 +126,7 @@ shader water_foam_trail
       output.wire.y = step;
       #endif
 
-      output.locTc_fadeoutTimeRcp = float3(pos.xy, alpha_fadeout_time_rcp);
+      output.locTc_fadeoutTimeRcp = float3(0.07*pos.xy, alpha_fadeout_time_rcp);
 
       return output;
     }
@@ -175,7 +179,13 @@ shader water_foam_trail
 #endif
 
 ##if compatibility_mode == compatibility_mode_off
-      float foamLowFreq = tex2D(foam_tex, input.locTc_fadeoutTimeRcp.xy * 0.1).r;
+      float foamLowFreq = tex2D(foam_tex, input.locTc_fadeoutTimeRcp.xy).r;
+      // trick to hide tiling and add animation to foam
+      // to be removed after foam trail rework
+      float foam_noise_f = tex2D(tex_noise_white_64x64, input.locTc_fadeoutTimeRcp.xy*0.11).r;
+      foamLowFreq = 0.3*foamLowFreq +
+                    1.4*abs(frac(2*foamLowFreq + 1.5*foam_noise_f + 0.3*scroll_time + input.locTc_fadeoutTimeRcp.x) - 0.5);
+
       res = get_modulated_foam(res * 1.5, foamLowFreq);
 ##endif
 

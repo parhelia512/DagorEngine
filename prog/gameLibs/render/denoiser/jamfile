@@ -11,7 +11,8 @@ local code_used = $(BVHSupport) ;
 code_used ?= no ;
 
 if $(code_used) = yes {
-  if ( $(Platform) = windows && $(PlatformSpec) != clang ) || ($(Platform) != macOS && ($(PlatformArch) in arm64 arm64e x86)) {
+  # MathLib trips C4587 in ml::float4x4, which /WX makes fatal
+  if $(Platform) = windows && $(PlatformSpec) != clang {
     Echo warning: cannot build $(Target) for
       Platform=$(Platform) PlatformArch=$(PlatformArch) PlatformSpec=$(PlatformSpec), using stub ;
     code_used = no ;
@@ -28,6 +29,9 @@ AddIncludes =
 # depend on BVHSupport as it is part of BVH stack
 if $(code_used) = yes {
   Sources = denoiser.cpp ;
+
+  # sse2neon's advisory #warning is fatal under /WX
+  CPPopt += -DSSE2NEON_SUPPRESS_WARNINGS ;
 
   # to avoid multiple binaries for linux clients, always compile this lib with SSE4
   if $(Platform) = linux && $(SSEVersion) < 4 { CPPopt += -msse4 ; }

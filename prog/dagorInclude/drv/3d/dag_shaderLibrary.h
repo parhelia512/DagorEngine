@@ -5,8 +5,9 @@
 #pragma once
 
 #include <drv/3d/dag_shaderLibraryObject.h>
+#include <drv/3d/dag_multi_interface.h>
 
-namespace d3d
+namespace d3d _MULTI_INTERFACE
 {
 /// Creates a new shader library.
 /// The creation of a shader library may be a time consuming process (several hundred milliseconds) as device drivers compile the
@@ -18,7 +19,7 @@ ShaderLibrary create_shader_library(const ShaderLibraryCreateInfo &slci);
 /// Destroys a shader library.
 /// A shader library can be destroyed when other object reference shaders of the shader library.
 void destroy_shader_library(ShaderLibrary library);
-} // namespace d3d
+} // namespace d3d _MULTI_INTERFACE
 
 #if _TARGET_D3D_MULTI
 #include <drv/3d/dag_interface_table.h>

@@ -1,0 +1,20 @@
+include "shader_global.dshl"
+include "loading_splash_common.dshl"
+
+shader loading_splash_star_nest,
+  loading_splash_star_nest_1,
+  loading_splash_star_nest_2,
+  loading_splash_star_nest_3,
+  loading_splash_star_nest_4
+{
+  LOADING_SPLASH_STATE()
+  LOADING_SPLASH_PS_OUTPUT(loading_splash_star_nest_1, loading_splash_star_nest_2, loading_splash_star_nest_3, loading_splash_star_nest_4)
+
+  hlsl(ps) {
+    // ddx/ddy are live here: per-scene shaders have no divergent runtime
+    // dispatch, so the scene's authored gradient edge softening works
+    #include "star_nest.glsl"
+  }
+
+  LOADING_SPLASH_PS_MAIN(loading_splash_star_nest, loading_splash_star_nest_1, loading_splash_star_nest_2, loading_splash_star_nest_3, loading_splash_star_nest_4)
+}

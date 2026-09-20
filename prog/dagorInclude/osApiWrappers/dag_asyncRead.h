@@ -9,7 +9,7 @@
 
 //
 // additional routines for async reading of files
-// all routines call Win32 directly, so there is no prebuffering or caching
+// requests go to the OS as they are, there is no prebuffering or caching
 //
 
 #ifdef __cplusplus
@@ -35,8 +35,11 @@ extern "C"
   KRNLIMP void dfa_free_asyncdata(int data_handle);
 
   // places request to read asynchronously data from real file; returns false on failure
+  // the backend may read at once instead, then dfa_check_complete only reports the result
+  // the thread that places a request is the one that has to poll it
   KRNLIMP bool dfa_read_async(void *handle, int asyncdata_handle, int offset, void *buf, int len);
-  // checks for async read completion
+  // checks for async read completion; a failed read gives a negative read_len,
+  // the error code in it is platform specific
   KRNLIMP bool dfa_check_complete(int asyncdata_handle, int *read_len);
   // wait for request's completion
 #if _TARGET_C1 | _TARGET_C2

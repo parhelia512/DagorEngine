@@ -229,7 +229,7 @@ static BOOL CALLBACK detect_hid_usage(const DIDEVICEOBJECTINSTANCE *pdidoi, VOID
   if (isCollection && pdidoi->wUsagePage == GENERIC_DESKTOP_PAGE)
   {
     bool isGamepad = pdidoi->wUsage == USAGE_GAMEPAD;
-    debug("[HID][DI8][ENUM] '%s' [%s] is %sgamepad", joy.getName(), joy.getDeviceID(), isGamepad ? "a " : "not a ");
+    debug("[HID][DI8][ENUM][%s] '%s' is %sgamepad", joy.getDeviceID(), joy.getName(), isGamepad ? "a " : "not a ");
     joy.markAsGamepad(isGamepad);
     return DIENUM_STOP;
   }
@@ -245,7 +245,7 @@ static BOOL CALLBACK add_joystick_inputs(const DIDEVICEOBJECTINSTANCE *pdidoi, V
 
   if (pdidoi->dwType & DIDFT_AXIS)
   {
-    debug(" * axis %s usagePage %04X usage %04X", pdidoi->tszName, pdidoi->wUsagePage, pdidoi->wUsage);
+    // debug(" * axis %s usagePage %04X usage %04X", pdidoi->tszName, pdidoi->wUsagePage, pdidoi->wUsage);
     // try out GUIDs first
     if (pdidoi->guidType == GUID_Slider)
     {
@@ -256,7 +256,7 @@ static BOOL CALLBACK add_joystick_inputs(const DIDEVICEOBJECTINSTANCE *pdidoi, V
       else
       {
         joy.addAxis(JOY_SLIDER0, 0, pdidoi->tszName);
-        DEBUG_CTX("[HID][DI8][ENUM] incorrect slider offset: %d != %d,%d", pdidoi->dwOfs, DIJOFS_SLIDER(0), DIJOFS_SLIDER(1));
+        debug("[HID][DI8][ENUM] incorrect slider offset: %d != %d,%d", pdidoi->dwOfs, DIJOFS_SLIDER(0), DIJOFS_SLIDER(1));
       }
     }
     else if (pdidoi->guidType == GUID_XAxis)
@@ -295,7 +295,7 @@ static BOOL CALLBACK add_joystick_inputs(const DIDEVICEOBJECTINSTANCE *pdidoi, V
         joy.addAxis(JOY_SLIDER1, DIJOFS_SLIDER(1), pdidoi->tszName);
       else
       {
-        DEBUG_CTX("[HID][DI8][ENUM][%s] unknown axis: type=%p:%p:%p:%p <%s>", joy.getDeviceID(), ((unsigned *)&pdidoi->guidType)[0],
+        debug("[HID][DI8][ENUM][%s] unknown axis: type=%p:%p:%p:%p <%s>", joy.getDeviceID(), ((unsigned *)&pdidoi->guidType)[0],
           ((unsigned *)&pdidoi->guidType)[1], ((unsigned *)&pdidoi->guidType)[2], ((unsigned *)&pdidoi->guidType)[3], pdidoi->tszName);
         return DIENUM_CONTINUE;
       }
@@ -314,13 +314,13 @@ static BOOL CALLBACK add_joystick_inputs(const DIDEVICEOBJECTINSTANCE *pdidoi, V
   }
   else if (pdidoi->dwType & DIDFT_BUTTON)
   {
-    debug(" * button %s usagePage %04X usage %04X", pdidoi->tszName, pdidoi->wUsagePage, pdidoi->wUsage);
+    // debug("[HID][DI8] button %s usagePage %04X usage %04X", pdidoi->tszName, pdidoi->wUsagePage, pdidoi->wUsage);
     joy.addButton(pdidoi->tszName);
   }
   else if (pdidoi->dwType & DIDFT_POV)
   {
-    debug("[HID][DI8][ENUM][%s] POV %s usagePage %04X usage %04X", joy.getDeviceID(), pdidoi->tszName, pdidoi->wUsagePage,
-      pdidoi->wUsage);
+    // debug("[HID][DI8][ENUM][%s] POV %s usagePage %04X usage %04X", joy.getDeviceID(), pdidoi->tszName, pdidoi->wUsagePage,
+    //   pdidoi->wUsage);
     joy.addPovHat(pdidoi->tszName);
   }
   else
@@ -329,7 +329,7 @@ static BOOL CALLBACK add_joystick_inputs(const DIDEVICEOBJECTINSTANCE *pdidoi, V
       pdidoi->wUsage);
   }
   // else
-  //   DEBUG_CTX("[HID][DI8][ENUM] unknown obj: %ph <%s> guid=%p:%p:%p:%p dwFlags=%ph",
+  //   debug("[HID][DI8][ENUM] unknown obj: %ph <%s> guid=%p:%p:%p:%p dwFlags=%ph",
   //     pdidoi->dwType, pdidoi->tszName, pdidoi->guidType, pdidoi->dwFlags);
 
   return DIENUM_CONTINUE;

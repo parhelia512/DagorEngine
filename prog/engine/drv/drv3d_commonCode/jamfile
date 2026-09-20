@@ -29,6 +29,7 @@ Sources =
   drv_returnAddrStore.cpp
   resUpdateBufferGeneric.cpp
   resourceActivationGeneric.cpp
+  texResizeGeneric.cpp
   destroyEvent.cpp
   gpuLatency.cpp
 ;
@@ -52,21 +53,8 @@ if $(Platform) in macOS iOS tvOS {
   ;
 }
 
-if $(Platform) in windows && $(PlatformArch) in x86 x86_64 {
-  local NvApiDir = $(_DEVTOOL)/nvapi-$(NvApiVer) ;
-  if ! [ GLOB $(NvApiDir) : * ] { exit FATAL\: \"$(NvApiDir)\" not found!  Please, update DEVTOOLS ; }
-
-  AddIncludes += $(NvApiDir) ;
-  CPPopt += -DHAS_NVAPI ;
-  Sources += nvLowLatency.cpp ;
-  switch $(PlatformArch) {
-    case arm64 :  AddLibs += $(NvApiDir)/aarch64/nvapia64.lib ;
-    case x86 :    AddLibs += $(NvApiDir)/x86/nvapi.lib ;
-    case x86_64 : AddLibs += $(NvApiDir)/amd64/nvapi64.lib ;
-  }
-} else {
-  Sources += nvLowLatencyStub.cpp ;
-}
+include $(Root)/$(Location)/nvapi.jam ;
+if -DHAS_NVAPI in $(CPPopt) { Sources += nvLowLatency.cpp ; } else { Sources += nvLowLatencyStub.cpp ; }
 
 if $(Platform) in windows &&
   $(PlatformArch) in x86_64 &&
@@ -77,11 +65,9 @@ if $(Platform) in windows &&
   Sources += amdLowLatencyStub.cpp ;
 }
 
-if $(Platform) in windows &&
-   $(PlatformArch) in x86 x86_64 arm64 &&
-   [ GLOB $(Root)/prog/3rdPartyLibs/streamline : * ] {
+if $(UseStreamline) = yes {
   AddIncludes +=
-    $(Root)/prog/3rdPartyLibs/streamline/include
+    $(StreamlineSdkPath)/include
     $(Root)/prog/3rdPartyLibs/vulkan/include
   ;
   CPPopt += -DHAS_STREAMLINE ;
@@ -130,6 +116,8 @@ AddIncludes +=
   $(Root)/prog/engine/sharedInclude
   $(Root)/prog/engine/drv/drv3d_commonCode
 ;
+
+UseProgLibs += engine/drv/shadersMetaData ;
 
 if $(Platform) in ps4 ps5 {
   AddIncludes += $(Root)/prog/engine/drv/drv3d_commonCode/sony ;

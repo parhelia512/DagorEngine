@@ -152,7 +152,8 @@ DAGOR_NOINLINE static eastl::pair<int, int> split_sccs(const CutFaceGraph &, Cut
 }
 
 template <bool OuterBoundary>
-DAGOR_NOINLINE static dag::Vector<int> find_boundary(const CutFaceGraph &graph, CutFaceSubGraph &sg, const PlaneBasis &, int scc_id)
+DAGOR_NOINLINE static dag::Vector<int, framemem_allocator> find_boundary(const CutFaceGraph &graph, CutFaceSubGraph &sg,
+  const PlaneBasis &, int scc_id)
 {
   const auto sccVerts = sg.sccVertices(scc_id);
   if (sccVerts.empty())
@@ -181,7 +182,7 @@ DAGOR_NOINLINE static dag::Vector<int> find_boundary(const CutFaceGraph &graph, 
   }
   G_ASSERT(startConn.vert >= 0);
 
-  dag::Vector<int> boundary;
+  dag::Vector<int, framemem_allocator> boundary;
   boundary.push_back(startConn.vert);
   CutFaceSubGraph::Connection cur = startConn;
 
@@ -191,6 +192,7 @@ DAGOR_NOINLINE static dag::Vector<int> find_boundary(const CutFaceGraph &graph, 
     if (cur.vert == startV)
       break;
 
+    constexpr float eps = 1e-4f;
     float reverseAngle = getEdgeAngle(cur, /*reverse*/ true);
     CutFaceSubGraph::Connection bestNext = {-1, -1};
     float bestDa = OuterBoundary ? FLT_MAX : FLT_MIN;
@@ -202,7 +204,7 @@ DAGOR_NOINLINE static dag::Vector<int> find_boundary(const CutFaceGraph &graph, 
         da += TWOPI;
       if constexpr (OuterBoundary)
       {
-        if (da < 1e-4f)
+        if (da < eps)
           da = TWOPI - da;
         if (da < bestDa)
         {
@@ -212,7 +214,7 @@ DAGOR_NOINLINE static dag::Vector<int> find_boundary(const CutFaceGraph &graph, 
       }
       else
       {
-        if (da > TWOPI - 1e-4f)
+        if (da > TWOPI - eps)
           da = TWOPI - da;
         if (da > bestDa)
         {
@@ -227,7 +229,7 @@ DAGOR_NOINLINE static dag::Vector<int> find_boundary(const CutFaceGraph &graph, 
     cur = bestNext;
   }
 
-  if (boundary.size() < 3 || cur.vert != startV)
+  if (cur.vert != startV)
     return {};
 
   return boundary;
@@ -274,6 +276,7 @@ DAGOR_NOINLINE dag::Vector<BoundaryLoop, framemem_allocator> boundary_loops_sear
     queues[1] = queues[0];
   }
   dag::Vector<BoundaryLoop, framemem_allocator> boundaries;
+  dag::Vector<int, framemem_allocator> lastSeen;
 
   while (!queues[0].sccsToProcess.empty() || !queues[1].sccsToProcess.empty())
   {
@@ -309,7 +312,7 @@ DAGOR_NOINLINE dag::Vector<BoundaryLoop, framemem_allocator> boundary_loops_sear
       if (DAGOR_UNLIKELY(sg.findEdge(v0, v1) < 0))
       {
         isComplete = false;
-        VERIFY_ALGORITHM(sg.removeEdge(v1, v0)); // there must be an opposite edge, that was traversed in an undirected graph
+        FRX_CHECK_FAILURE(!sg.removeEdge(v1, v0)); // there must be an opposite edge, that was traversed in an undirected graph
       }
     }
 
@@ -319,9 +322,59 @@ DAGOR_NOINLINE dag::Vector<BoundaryLoop, framemem_allocator> boundary_loops_sear
       for (int k = 0; k < int(boundary.size()); k++)
         sg.removeEdge(boundary[k], boundary[(k + 1) % int(boundary.size())]);
 
-      auto &b = boundaries.push_back();
-      b.verts = eastl::move(boundary);
-      b.area2 = area2;
+      lastSeen.resize_noinit(graph.verts.size());
+      mem_set_ff(lastSeen);
+      int i = 0, sz = int(boundary.size());
+      for (; i != sz; i++)
+      {
+        const int v = boundary[i];
+        if (DAGOR_LIKELY(lastSeen[v] == -1))
+          lastSeen[v] = i;
+        else
+          break;
+      }
+      if (DAGOR_LIKELY(i == sz)) // fast path - boundary has no duplicate vertices
+      {
+        if (area2 != 0.f && boundary.size() >= 3)
+        {
+          auto &b = boundaries.push_back();
+          b.verts = eastl::move(boundary);
+          b.area2 = area2;
+        }
+      }
+      else
+      {
+        const auto emitLoop = [&](const int *verts, int cnt) {
+          if (cnt < 3)
+            return;
+          float area2 = 0.f;
+          for (int i = 0, j = cnt - 1; i < cnt; j = i++)
+            area2 += graph.verts[verts[j]].x * graph.verts[verts[i]].y - graph.verts[verts[i]].x * graph.verts[verts[j]].y;
+          if (area2 == 0.f)
+            return;
+          auto &b = boundaries.push_back();
+          b.verts.assign(verts, verts + cnt);
+          b.area2 = area2;
+        };
+        int stkHead = i;
+        for (; i != sz; i++)
+        {
+          const int v = boundary[i];
+          const int p = lastSeen[v];
+          if (p != -1 &&
+              !FRX_CHECK_FAILURE(p >= stkHead || boundary[p] != v, "boundary split: stale lastSeen, non-nesting walk")) // -V652
+          {
+            emitLoop(boundary.data() + p, stkHead - p);
+            stkHead = p + 1;
+          }
+          else
+          {
+            lastSeen[v] = stkHead;
+            boundary[stkHead++] = v;
+          }
+        }
+        emitLoop(boundary.data(), stkHead);
+      }
     }
 
     const auto [sccsBegin, sccsEnd] = split_sccs(graph, sg, sccId);
@@ -400,7 +453,7 @@ DAGOR_NOINLINE dag::Vector<BoundaryLoop, framemem_allocator> boundary_loops_sear
       while (parentId != -1)
       {
         parentId = boundaries[parentId].parentId;
-        if (!VERIFY_ALGORITHM(iterGuard++ < int(boundaries.size())))
+        if (FRX_CHECK_FAILURE(iterGuard++ >= int(boundaries.size())))
           bound.parentId = -1;
       }
     }
@@ -462,10 +515,14 @@ DAGOR_NOINLINE dag::Vector<BoundaryLoop, framemem_allocator> boundary_loops_sear
 
   if (ctx.dbgDraw.drawCutEdgeGraph)
   {
+    bool someEdgesFailed = false;
     dag::Vector<E3DCOLOR, framemem_allocator> edgeCol;
     edgeCol.resize(graph.edges.size());
     for (int i = 0, ie = int(graph.edges.size()); i < ie; i++)
+    {
       edgeCol[i] = dbgInitialSubGraph.activeEdges.test(i, false) ? E3DCOLOR(255, 255, 0) : E3DCOLOR(255, 0, 0);
+      someEdgesFailed |= !dbgInitialSubGraph.activeEdges.test(i, false);
+    }
     for (const auto &bound : boundaries)
     {
       const auto boundCopy = bound;
@@ -485,9 +542,9 @@ DAGOR_NOINLINE dag::Vector<BoundaryLoop, framemem_allocator> boundary_loops_sear
     }
     for (int i = 0, ie = int(graph.edges.size()); i < ie; i++)
     {
-      ctx.dbgDraw.drawArrow(basis.unProject(graph.verts[graph.edges[i].v0]), basis.unProject(graph.verts[graph.edges[i].v1]),
-        edgeCol[i]);
+      dbg_draw_arrow(ctx, graph, basis, graph.edges[i].v0, graph.edges[i].v1, edgeCol[i]);
     }
+    FRX_CHECK_FAILURE(someEdgesFailed && boundaries.size() < 2);
   }
 
   return boundaries;

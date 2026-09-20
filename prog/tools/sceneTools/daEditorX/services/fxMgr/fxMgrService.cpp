@@ -302,6 +302,8 @@ public:
 
     bool forceLowres = particles_resolution_preview == 0;
     bool forceHighres = particles_resolution_preview == 2;
+    auto *drSrv = EDITORCORE->queryEditorInterface<IDynRenderService>();
+    bool thermalVision = drSrv && drSrv->isThermalVisionActive();
     dag::ConstSpan<FxEntity *> ent = fxPool.getEntities();
     auto renderFxCb = [&]() -> void {
       switch (stage)
@@ -329,7 +331,7 @@ public:
           break;
 
         case STG_RENDER_FX_LOWRES:
-          if (ctx)
+          if (ctx && !thermalVision)
           {
             if (!forceHighres)
               dafx::render(ctx, cull_id, "lowres", 0.f);
@@ -340,7 +342,9 @@ public:
 
           break;
         case STG_RENDER_FX:
-          if (ctx)
+          if (ctx && thermalVision)
+            dafx::render(ctx, cull_id, "thermal", 0.f);
+          else if (ctx)
           {
             if (!forceLowres)
               dafx::render(ctx, cull_id, "highres", 0.f);
@@ -350,9 +354,10 @@ public:
             dafx::render(ctx, cull_id, "underwater", 0.f);
           }
 
-          for (int i = 0; i < ent.size(); i++)
-            if (ent[i] && ent[i]->fx && ent[i]->isNonVirtual() && ent[i]->checkSubtypeAndLayerHiddenMasks(st_mask, lh_mask))
-              ent[i]->fx->render(FX_RENDER_TRANS, cameraTm);
+          if (!thermalVision)
+            for (int i = 0; i < ent.size(); i++)
+              if (ent[i] && ent[i]->fx && ent[i]->isNonVirtual() && ent[i]->checkSubtypeAndLayerHiddenMasks(st_mask, lh_mask))
+                ent[i]->fx->render(FX_RENDER_TRANS, cameraTm);
 
           break;
 

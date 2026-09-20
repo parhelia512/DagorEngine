@@ -33,7 +33,7 @@ uint2 calc_raymarch_offset(uint2 raymarch_id, uint frame_id)
 {
   uint checkerOffset = (raymarch_id.x^raymarch_id.y)&1;
   uint id = (frame_id + checkerOffset) & 3;
-  return (id == 2) || (id == uint2(1, 3));
+  return or(id == uint2(2, 2), id == uint2(1, 3));
   // same as below, but faster:
   // if (id == 0)
   //   return uint2(0,0);

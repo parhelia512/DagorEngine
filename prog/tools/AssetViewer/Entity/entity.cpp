@@ -359,7 +359,7 @@ public:
     PID_ANIM_STATE_LAST = PID_ANIM_STATE0 + 1024,
     PID_ANIM_PARAMS_GROUP,
     PID_ANIM_PARAM0,
-    PID_ANIM_PARAM_LAST = PID_ANIM_PARAM0 + 4096,
+    PID_ANIM_PARAM_LAST = PID_ANIM_PARAM0 + 8192,
     PID_ANIM_TRACE_GROUP,
     PID_ANIM_TRACE_CP_HT_F,
     PID_ANIM_TRACE_CP_HT_R,
@@ -371,6 +371,7 @@ public:
     PID_MASK_NODES_UPDATE_BTN,
     PID_MASK_NODES_UNCHECK_ALL,
     PID_MASK_NODES,
+    PID_MASK_NODES_LAST = PID_MASK_NODES + 64,
     PID_SHOW_POSITION_GIZMO,
     PID_POSITION_GIZMO,
     PID_GENERATE_PER_INSTANCE_SEED,
@@ -456,7 +457,7 @@ public:
 
   void updateAllMaskFilters(PropPanel::ContainerPropertyControl *panel)
   {
-    const int blockCount = nodeFilterMasksBlk.blockCount();
+    const int blockCount = min(PID_MASK_NODES_LAST - PID_MASK_NODES, (int)nodeFilterMasksBlk.blockCount());
     RegExp re;
     ILodController *iLodCtrl = entity->queryInterface<ILodController>();
     if (iLodCtrl)
@@ -675,6 +676,8 @@ public:
       if (DagorAsset *collisionAsset = assetMgr.findAsset(collisionAssetName.c_str(), collisionAtype))
       {
         InitCollisionResource(*collisionAsset, &collisionResource, collisionResourceNodeTree);
+        if (collisionResource)
+          colliderPhysMats.build(*collisionResource);
         DAEDITOR3.conNote("Found and inited collision '%s'", collisionAssetName.c_str());
       }
       else
@@ -796,6 +799,7 @@ public:
 
     clearAssetStats();
     ReleaseCollisionResource(&collisionResource, collisionResourceNodeTree);
+    colliderPhysMats.clear();
 
     if (currentAnimcharEid)
       g_entity_mgr->destroyEntity(currentAnimcharEid);
@@ -839,7 +843,7 @@ public:
 
     wndManager.addViewportAccelerator(CM_COMPOSITE_EDITOR_COPY_ASSET, EditorCommandIds::ENTITY_COPY_ASSET);
     wndManager.addViewportAccelerator(CM_COMPOSITE_EDITOR_PASTE_ASSET, EditorCommandIds::ENTITY_PASTE_ASSET);
-    wndManager.addViewportAccelerator(CM_COMPOSITE_EDITOR_DUPLICATE_ASSET, EditorCommandIds::ENTITY_DUPLICATE_ASSET);
+    wndManager.addViewportAccelerator(CM_COMPOSITE_EDITOR_DUPLICATE_ASSETS, EditorCommandIds::ENTITY_DUPLICATE_ASSET);
 
     wndManager.addViewportAccelerator(CM_COMPOSITE_EDITOR_MAKE_PARENT, EditorCommandIds::ENTITY_MAKE_PARENT);
     wndManager.addViewportAccelerator(CM_COMPOSITE_EDITOR_CLEAR_PARENT, EditorCommandIds::ENTITY_CLEAR_PARENT);
@@ -1164,6 +1168,9 @@ public:
         if (anim && st)
         {
           iterate_names(anim->getParamNames(), [&](int i, const char *paramName) {
+            if (i >= PID_ANIM_PARAM_LAST - PID_ANIM_PARAM0)
+              return;
+
             if (i < enumParamMask.size() && enumParamMask.get(i))
             {
               PropPanel::PropertyControlBase *c = getPluginPanel()->getById(PID_ANIM_PARAM0 + i);
@@ -1457,8 +1464,16 @@ public:
 
     if (showCollider && collisionResource)
       if (const ViewportWindow *vpw = static_cast<ViewportWindow *>(EDITORCORE->getRenderViewport()))
-        RenderCollisionResource(*collisionResource, collisionResourceNodeTree.get(), vpw->getViewTm(), vpw->getProjTm(),
-          showColliderBbox, showColliderPhysCollidable, showColliderTraceable);
+      {
+        CollisionRenderOptions opts;
+        opts.showBbox = showColliderBbox;
+        opts.showPhysCollidable = showColliderPhysCollidable;
+        opts.showTraceable = showColliderTraceable;
+        // The hue follows the clusters of the asset in view, so the Collision plugin can draw a material differently.
+        opts.colorByPhysMat = true; // no material panel here, so no filter
+        opts.physMats = &colliderPhysMats;
+        RenderCollisionResource(*collisionResource, collisionResourceNodeTree.get(), vpw->getViewTm(), vpw->getProjTm(), opts);
+      }
 
     if (CanopyEditorWindow *canopyEditor = get_app().getCanopyEditorWindow())
     {
@@ -1788,8 +1803,14 @@ public:
           PropPanel::ContainerPropertyControl &astGrp = *animPanel->createGroup(PID_ANIM_PARAMS_GROUP, "Anim params");
           enumParamMask.resize(anim->getParamCount());
           boolParamMask.resize(anim->getParamCount());
+          if (anim->getParamCount() > PID_ANIM_PARAM_LAST - PID_ANIM_PARAM0)
+            logerr("Param count %d exceeds max display param count %d. Please increase it in code to display all parameters.",
+              anim->getParamCount(), PID_ANIM_PARAM_LAST - PID_ANIM_PARAM0);
           iterate_names_in_lexical_order(anim->getParamNames(), [&](int i, const char *nm) {
             if (nm[0] == ':')
+              return;
+
+            if (i >= PID_ANIM_PARAM_LAST - PID_ANIM_PARAM0)
               return;
 
             const DataBlock *param_b = animCharVarSetts.getBlockByName(nm);
@@ -1944,7 +1965,11 @@ public:
       nodesFilterByMask.createButton(PID_MASK_NODES_UNCHECK_ALL, "Uncheck all");
 
       const int blockCount = nodeFilterMasksBlk.blockCount();
-      for (int i = 0; i < blockCount; ++i)
+      const int count = min(PID_MASK_NODES_LAST - PID_MASK_NODES, blockCount);
+      if (PID_MASK_NODES_LAST - PID_MASK_NODES < blockCount)
+        logerr("Node filter mask count %d exceeds max display node filter mask count %d. Please increase it in code to display all.",
+          blockCount, PID_MASK_NODES_LAST - PID_MASK_NODES);
+      for (int i = 0; i < count; ++i)
       {
         const DataBlock *maskBlk = nodeFilterMasksBlk.getBlock(i);
         const char *maskText = maskBlk->getStr("name", "");
@@ -2210,7 +2235,7 @@ public:
       showColliderPhysCollidable = panel->getBool(pcb_id);
     else if (pcb_id == PID_SHOW_COLLIDER_TRACEABLE)
       showColliderTraceable = panel->getBool(pcb_id);
-    else if (pcb_id >= PID_MASK_NODES)
+    else if (pcb_id >= PID_MASK_NODES && pcb_id < PID_MASK_NODES_LAST)
     {
       if (ILodController *iLodCtrl = entity->queryInterface<ILodController>())
       {
@@ -2336,7 +2361,7 @@ public:
     }
     else if (pcb_id == PID_MASK_NODES_UNCHECK_ALL)
     {
-      const int blockCount = nodeFilterMasksBlk.blockCount();
+      const int blockCount = min(PID_MASK_NODES_LAST - PID_MASK_NODES, (int)nodeFilterMasksBlk.blockCount());
       for (int i = 0; i < blockCount; ++i)
         panel->setBool(PID_MASK_NODES + i, false);
 
@@ -2883,6 +2908,7 @@ private:
   bool showColliderTraceable = false;
   CollisionResource *collisionResource = NULL;
   GeomNodeTreeUniquePtr collisionResourceNodeTree;
+  PhysMatLegend colliderPhysMats; // colors only, every material stays checked
   eastl::string assetName;
   ecs::EntityId currentAnimcharEid;
   bool showImguiAnimTree = false;

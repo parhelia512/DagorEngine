@@ -226,13 +226,8 @@ public:
     desc.Buffer.StructureByteStride = 0;
     desc.Buffer.Flags = D3D12_BUFFER_SRV_FLAG_NONE;
 
-    auto descriptors = createBufferSRVs(device, buffer.buffer, buffer.discardCount, desc);
-    if (!descriptors.has_value())
-    {
-      return dag::Unexpected{descriptors.error()};
-    }
-    buffer.srvs = eastl::move(descriptors.value());
-    return {};
+    return createBufferSRVs(device, buffer.buffer, buffer.discardCount, desc)
+      .transform([&buffer](BufferViewDescriptorsResult::value_type &&descriptors) { buffer.srvs = eastl::move(descriptors); });
   }
 
   BufferViewCreateResult createBufferStructureSRV(ID3D12Device *device, BufferState &buffer, uint32_t struct_size)
@@ -248,13 +243,8 @@ public:
     desc.Buffer.StructureByteStride = struct_size;
     desc.Buffer.Flags = D3D12_BUFFER_SRV_FLAG_NONE;
 
-    auto descriptors = createBufferSRVs(device, buffer.buffer, buffer.discardCount, desc);
-    if (!descriptors.has_value())
-    {
-      return dag::Unexpected{descriptors.error()};
-    }
-    buffer.srvs = eastl::move(descriptors.value());
-    return {};
+    return createBufferSRVs(device, buffer.buffer, buffer.discardCount, desc)
+      .transform([&buffer](BufferViewDescriptorsResult::value_type &&descriptors) { buffer.srvs = eastl::move(descriptors); });
   }
 
   BufferViewCreateResult createBufferRawSRV(ID3D12Device *device, BufferState &buffer)
@@ -274,13 +264,8 @@ public:
     desc.Buffer.StructureByteStride = 0;
     desc.Buffer.Flags = D3D12_BUFFER_SRV_FLAG_RAW;
 
-    auto descriptors = createBufferSRVs(device, buffer.buffer, buffer.discardCount, desc);
-    if (!descriptors.has_value())
-    {
-      return dag::Unexpected{descriptors.error()};
-    }
-    buffer.srvs = eastl::move(descriptors.value());
-    return {};
+    return createBufferSRVs(device, buffer.buffer, buffer.discardCount, desc)
+      .transform([&buffer](BufferViewDescriptorsResult::value_type &&descriptors) { buffer.srvs = eastl::move(descriptors); });
   }
 
   BufferViewCreateResult createBufferTextureUAV(ID3D12Device *device, BufferState &buffer, FormatStore format)
@@ -295,15 +280,11 @@ public:
     desc.Buffer.CounterOffsetInBytes = 0;
     desc.Buffer.Flags = D3D12_BUFFER_UAV_FLAG_NONE;
 
-    auto descriptors = createBufferUAVs(device, buffer.buffer, buffer.discardCount, desc);
-    if (!descriptors.has_value())
-    {
-      return dag::Unexpected{descriptors.error()};
-    }
-    buffer.uavs = eastl::move(descriptors.value());
-
-    buffer.uavForClear.reset();
-    return {};
+    return createBufferUAVs(device, buffer.buffer, buffer.discardCount, desc)
+      .transform([&buffer](BufferViewDescriptorsResult::value_type &&descriptors) {
+        buffer.uavs = eastl::move(descriptors);
+        buffer.uavForClear.reset();
+      });
   }
 
   BufferViewCreateResult createBufferStructureUAV(ID3D12Device *device, BufferState &buffer, uint32_t struct_size)
@@ -318,32 +299,29 @@ public:
     desc.Buffer.CounterOffsetInBytes = 0;
     desc.Buffer.Flags = D3D12_BUFFER_UAV_FLAG_NONE;
 
-    auto descriptors = createBufferUAVs(device, buffer.buffer, buffer.discardCount, desc);
-    if (!descriptors.has_value())
-    {
-      return dag::Unexpected{descriptors.error()};
-    }
+    return createBufferUAVs(device, buffer.buffer, buffer.discardCount, desc)
+      .and_then([&, this](BufferViewDescriptorsResult::value_type &&descriptors) -> BufferViewCreateResult {
+        // need extra views for clearing that are formatted, DX12 does not allow clearing of
+        // structured views
+        desc.Format = DXGI_FORMAT_R32_UINT;
+        desc.Buffer.FirstElement = 0; // -V1048
+        desc.Buffer.NumElements = buffer.size / sizeof(uint32_t);
+        desc.Buffer.StructureByteStride = 0;
+        desc.Buffer.CounterOffsetInBytes = 0;           // -V1048
+        desc.Buffer.Flags = D3D12_BUFFER_UAV_FLAG_NONE; // -V1048
 
-    // need extra views for clearing that are formatted, DX12 does not allow clearing of
-    // structured views
-    desc.Format = DXGI_FORMAT_R32_UINT;
-    desc.Buffer.FirstElement = 0; // -V1048
-    desc.Buffer.NumElements = buffer.size / sizeof(uint32_t);
-    desc.Buffer.StructureByteStride = 0;
-    desc.Buffer.CounterOffsetInBytes = 0;           // -V1048
-    desc.Buffer.Flags = D3D12_BUFFER_UAV_FLAG_NONE; // -V1048
-
-    auto clearDescriptors = createBufferUAVs(device, buffer.buffer, buffer.discardCount, desc);
-    if (!clearDescriptors.has_value())
-    {
-      // Without the clear views currentClearUAV falls back to the structured view and the clear
-      // commands reject it, so the buffer gets no UAV at all.
-      freeBufferSRVDescriptors({descriptors.value().get(), descriptors.value().get() + buffer.discardCount});
-      return dag::Unexpected{clearDescriptors.error()};
-    }
-    buffer.uavs = eastl::move(descriptors.value());
-    buffer.uavForClear = eastl::move(clearDescriptors.value());
-    return {};
+        return createBufferUAVs(device, buffer.buffer, buffer.discardCount, desc)
+          .transform([&](BufferViewDescriptorsResult::value_type &&clearDescriptors) {
+            buffer.uavs = eastl::move(descriptors);
+            buffer.uavForClear = eastl::move(clearDescriptors);
+          })
+          .transform_error([&, this](MemoryAllocationError error) {
+            // Without the clear views currentClearUAV falls back to the structured view and the
+            // clear commands reject it, so the buffer gets no UAV at all.
+            freeBufferSRVDescriptors({descriptors.get(), descriptors.get() + buffer.discardCount});
+            return error;
+          });
+      });
   }
 
   BufferViewCreateResult createBufferRawUAV(ID3D12Device *device, BufferState &buffer)
@@ -358,13 +336,8 @@ public:
     desc.Buffer.CounterOffsetInBytes = 0;
     desc.Buffer.Flags = D3D12_BUFFER_UAV_FLAG_RAW;
 
-    auto descriptors = createBufferUAVs(device, buffer.buffer, buffer.discardCount, desc);
-    if (!descriptors.has_value())
-    {
-      return dag::Unexpected{descriptors.error()};
-    }
-    buffer.uavs = eastl::move(descriptors.value());
-    return {};
+    return createBufferUAVs(device, buffer.buffer, buffer.discardCount, desc)
+      .transform([&buffer](BufferViewDescriptorsResult::value_type &&descriptors) { buffer.uavs = eastl::move(descriptors); });
   }
 };
 } // namespace drv3d_dx12::resource_manager

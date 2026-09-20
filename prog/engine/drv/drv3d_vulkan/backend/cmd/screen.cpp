@@ -3,6 +3,7 @@
 #include <3d/gpuLatency.h>
 #include <generic/dag_enumerate.h>
 #include "screen.h"
+#include "driver.h"
 #include "backend/context.h"
 #include "globals.h"
 #include "device_memory.h"
@@ -155,6 +156,14 @@ TSPEC void BEContext::execCmd(const CmdPresent &params)
       lowLatencyModule->setMarker(params.enginePresentFrameId, lowlatency::LatencyMarkerType::PRESENT_END);
   }
   frameReadySemaphoresForPresent.clear();
+
+  uint32_t presentedFrames = 1;
+#if USE_STREAMLINE_FOR_DLSS
+  if (Globals::VK::loader.streamlineAdapter)
+    if (auto *dlss = static_cast<DLSSFrameGeneration *>(Globals::VK::loader.streamlineAdapter->getDlssGFeature(0)))
+      presentedFrames = dlss->getActualFramesPresented();
+#endif
+  Backend::interop.lastPresentedFrameCount.store(presentedFrames, std::memory_order_relaxed);
 
   Globals::timelines.get<TimelineManager::GpuExecute>().advance();
   Backend::gpuJob.restart();

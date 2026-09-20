@@ -312,14 +312,14 @@ void renderEnvironment(bool ortho)
     else if (texture->getType() == D3DResourceType::VOLTEX)
     {
       float z = 1.0f - abs(512 - (get_time_msec() / 8) % 1024) / 512.0f;
-      float exposure = EDITORCORE->queryEditorInterface<IDynRenderService>()->getExposure();
+      float exposure = EDITORCORE->queryEditorInterface<IDynRenderService>()->getEffectiveExposure();
       EDITORCORE->queryEditorInterface<IRenderHelperService>()->renderEnviVolTexture(texture, smp, Color4(1, 1, 1, 1) * exposure,
         Color4(0, 0, 0, 1), scales, z);
     }
   }
   else if (texture->getType() == D3DResourceType::CUBETEX && !ortho)
   {
-    float exposure = EDITORCORE->queryEditorInterface<IDynRenderService>()->getExposure();
+    float exposure = EDITORCORE->queryEditorInterface<IDynRenderService>()->getEffectiveExposure();
     EDITORCORE->queryEditorInterface<IRenderHelperService>()->renderEnviCubeTexture(texture, Color4(1, 1, 1, 1) * exposure,
       Color4(0, 0, 0, 1));
   }
@@ -425,6 +425,13 @@ static void fillTextureWithColor(BaseTexture &tex, uint32_t color)
       lockedTexture.at(x, y) = color;
 }
 
+static TEXTUREID getWantedPaintDetailsTexId()
+{
+  if (useSinglePaintColor && singlePaintColorTexId != BAD_TEXTUREID)
+    return singlePaintColorTexId;
+  return combinedPaintTexId;
+}
+
 void updatePaintColorTexture()
 {
   static int paintDetailsVarId = get_shader_variable_id("paint_details_tex", true);
@@ -433,15 +440,10 @@ void updatePaintColorTexture()
   {
     createSinglePaintColorTex();
     if (singlePaintColorTex)
-    {
       fillTextureWithColor(*singlePaintColorTex, singlePaintColor);
-      ShaderGlobal::set_texture(paintDetailsVarId, singlePaintColorTexId);
-    }
   }
-  else
-  {
-    ShaderGlobal::set_texture(paintDetailsVarId, combinedPaintTexId);
-  }
+
+  ShaderGlobal::set_texture(paintDetailsVarId, getWantedPaintDetailsTexId());
 }
 
 //---------------------------------------------------------------------------
@@ -1478,6 +1480,26 @@ void environment::on_asset_changed(const DagorAsset &asset, AssetLightData &ald)
   ald.setPaintDetailsTexture();
 }
 
+void environment::before_render_objects()
+{
+  // WorldRenderer can rebind paint_details_tex to its own texture as soon as its source textures finish loading (for
+  // example after a device reset).
+  TEXTUREID wantedPaintTexId = getWantedPaintDetailsTexId();
+  if (get_app().dngBasedSceneRenderUsed() && wantedPaintTexId != BAD_TEXTUREID)
+  {
+    static int paintDetailsVarId = get_shader_variable_id("paint_details_tex", true);
+    if (ShaderGlobal::get_tex(paintDetailsVarId) != wantedPaintTexId)
+      ShaderGlobal::set_texture(paintDetailsVarId, wantedPaintTexId);
+  }
+}
+
+void environment::after_d3d_reset(bool full_reset)
+{
+  // combinedPaintTex is a runtime-stitched texture, so we have to rebuild it.
+  if (full_reset)
+    get_app().getAssetLightData().setPaintDetailsTexture();
+}
+
 void AssetLightData::setReflectionTexture()
 {
   if (!shaderVar.empty() && !textureName.empty())
@@ -1533,7 +1555,6 @@ void AssetLightData::setEnvironmentTexture(bool require_lighting_update)
 void AssetLightData::setPaintDetailsTexture()
 {
   static int paintDetailsVarId = get_shader_variable_id("paint_details_tex", true);
-  String localPaintTexPath;
   TEXTUREID localPaintColorsTexId, globalPaintColorsTexId;
   globalPaintColorsTexId = get_managed_texture_id(String(0, "%s*", globalPaintDetailsTexAsset));
   if (globalPaintColorsTexId == BAD_TEXTUREID)
@@ -1633,6 +1654,7 @@ void AssetLightData::loadDefaultSettings(DataBlock &app_blk)
 {
   const DataBlock &ltData = *app_blk.getBlockByNameEx("AssetLight");
   envTextureName = ltData.getStr("environment_texture_name", NULL);
+  envLevelBlkFn = ltData.getStr("environment_level_blk_fn", NULL);
 
   textureName = ltData.getStr("texture_name", NULL);
   shaderVar = ltData.getStr("shader_var", NULL);

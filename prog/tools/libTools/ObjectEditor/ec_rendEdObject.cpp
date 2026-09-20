@@ -67,7 +67,7 @@ void RenderableEditableObject::setFlags(int value, int mask, bool use_undo)
   if (newFlags != flagsBefore)
   {
     if (use_undo && objEditor)
-      objEditor->getUndoSystem()->put(new (midmem) UndoObjFlags(this));
+      objEditor->getUndoSystem()->put<UndoObjFlags>(this);
 
     objFlags = newFlags;
 
@@ -282,7 +282,7 @@ void RenderableEditableObject::scaleObject(const Point3 &delta, const Point3 &or
 void RenderableEditableObject::putMoveUndo()
 {
   if (objEditor)
-    objEditor->getUndoSystem()->put(new (midmem) UndoMove(this));
+    objEditor->getUndoSystem()->put<UndoMove>(this);
 }
 
 
@@ -290,8 +290,8 @@ void RenderableEditableObject::putRotateUndo()
 {
   if (objEditor)
   {
-    objEditor->getUndoSystem()->put(new (midmem) UndoMove(this));
-    objEditor->getUndoSystem()->put(new (midmem) UndoMatrix(this));
+    objEditor->getUndoSystem()->put<UndoMove>(this);
+    objEditor->getUndoSystem()->put<UndoMatrix>(this);
   }
 }
 
@@ -300,8 +300,8 @@ void RenderableEditableObject::putScaleUndo()
 {
   if (objEditor)
   {
-    objEditor->getUndoSystem()->put(new (midmem) UndoMove(this));
-    objEditor->getUndoSystem()->put(new (midmem) UndoMatrix(this));
+    objEditor->getUndoSystem()->put<UndoMove>(this);
+    objEditor->getUndoSystem()->put<UndoMatrix>(this);
   }
 }
 

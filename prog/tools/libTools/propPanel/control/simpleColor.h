@@ -67,6 +67,8 @@ public:
 
   void setDefaultValue(Variant var) override { defaultValue = var.convert<E3DCOLOR>(); }
 
+  const char *getImguiTypeName() const override { return "SimpleColor"; }
+
   void updateImgui() override
   {
     ScopedImguiBeginDisabled scopedDisabled(!controlEnabled);
@@ -103,6 +105,7 @@ public:
 
     const bool pressed = ImGui::ColorButton("##preview", ImVec4(asColor4.r, asColor4.g, asColor4.b, asColor4.a),
       ImGuiColorEditFlags_AlphaPreviewHalf | ImGuiColorEditFlags_NoPicker | ImGuiColorEditFlags_NoTooltip, ImVec2(previewWidth, 0.0f));
+    setImguiTestItemInfo();
 
     if (pressed)
     {

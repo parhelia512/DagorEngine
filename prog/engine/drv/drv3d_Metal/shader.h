@@ -24,7 +24,7 @@ enum
 class Shader
 {
 public:
-  static const int g_max_textures_in_shader = 32;
+  static const int g_max_textures_in_shader = MAX_STAGE_TEXTURES;
 
   struct VA
   {

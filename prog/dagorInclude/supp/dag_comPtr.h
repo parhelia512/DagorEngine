@@ -11,6 +11,13 @@
 #include <EASTL/type_traits.h>
 #include <util/dag_globDef.h>
 
+// IGraphicsUnknown below needs a complete type, so a forward declaration is not enough
+#if _TARGET_XBOXONE
+#include <d3d12_x.h>
+#elif _TARGET_SCARLETT
+#include <d3d12_xs.h>
+#endif
+
 // copy paste (with some small changes) from wrl/client.h
 // don't blame me for the stupid shit of this...
 template <typename T> // T should be the ComPtr<T> or a derived type of it, not just the interface

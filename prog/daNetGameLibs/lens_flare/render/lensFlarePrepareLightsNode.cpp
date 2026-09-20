@@ -4,8 +4,8 @@
 
 #include <render/lensFlare/render/lensFlareRenderer.h>
 #include <render/daFrameGraph/daFG.h>
-#include <render/world/cameraInCamera.h>
-#include <render/world/cameraParams.h>
+#include <render/cameraInCamera/cameraInCamera.h>
+#include <render/cameraParams.h>
 #include <render/world/cameraViewVisibilityManager.h>
 #include <render/world/sunParams.h>
 #include <render/world/frameGraphHelpers.h>

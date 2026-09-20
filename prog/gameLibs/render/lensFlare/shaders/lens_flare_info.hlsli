@@ -11,6 +11,11 @@ struct ManualLightFlareData
   uint flareConfigId;
   float exposurePowParam;
   float depthBias;
+
+  float maxComponentIntensity;
+  float pad0;
+  float pad1;
+  float pad2;
 };
 
 #define MANUAL_LIGHT_FLARE_DATA_FLAGS__IS_SUN (1<<0)

@@ -46,11 +46,11 @@ bool parse_hlsl_source_to_blocks(shc::ShaderContext &ctx, ShaderParser::ShaderBo
 
     ProxyBoolEvalCB(ShaderParser::ShaderBoolEvalCB &a_base, shc::ShaderContext &a_ctx) : base{a_base}, ctx{a_ctx} {}
 
-    int add_message(const char *message, bool file_name) override
+    int add_message(const char *message) override
     {
       if (!ctx.isDebugModeEnabled())
         return -1;
-      return ctx.messages().addMessage(message, file_name);
+      return ctx.messages().addMessage(message);
     }
     int is_debug_mode_enabled() override { return ctx.isDebugModeEnabled(); }
 
@@ -75,12 +75,7 @@ bool parse_hlsl_source_to_blocks(shc::ShaderContext &ctx, ShaderParser::ShaderBo
     auto &messages = ctx.messages();
     auto &stringTable = messages.strings;
     for (int i = 0; i < stringTable.nameCount(); i++)
-    {
-      if (messages.isFilenameMessage(i))
-        ctx.compiledShader().messages.emplace_back(stringTable.getName(i));
-      else
-        ctx.compiledShader().messages.emplace_back(string_f("%s: %s", ctx.name(), stringTable.getName(i)));
-    }
+      ctx.compiledShader().messages.emplace_back(stringTable.getName(i));
   }
   return true;
 }

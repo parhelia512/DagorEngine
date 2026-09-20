@@ -26,6 +26,8 @@
 
 #if _CROSS_TARGET_DX12
 #include <drv/shadersMetaData/dxil/compiled_shader_header.h>
+#elif _CROSS_TARGET_SPIRV
+#include <drv/shadersMetaData/spirv/compiled_meta_data.h>
 #elif _CROSS_TARGET_METAL
 #include "buffBindPoints.h"
 #endif
@@ -558,11 +560,10 @@ void GatherVarShaderEvalCB::eval(immediate_const_block &s)
     hlsl.aprintf(32, "uint get_immediate_dword_%d() {return immediate_dword_%d;}\n", i, i);
   ctx.reportImmediateCbSlotRequired();
 #elif _CROSS_TARGET_SPIRV
-  const uint32_t MAX_IMMEDIATE_CONST_WORDS = 4;
   hlsl.aprintf(128,
     "struct ImmDwords { [[vk::offset(%u)]] uint data[%d]; };\n"
     "[[vk::push_constant]] ImmDwords imm_dwords;\n",
-    (stage == HLSL_PS) ? MAX_IMMEDIATE_CONST_WORDS * sizeof(uint32_t) : 0, words);
+    (stage == HLSL_PS) ? spirv::MAX_IMMEDIATE_CONST_WORDS * sizeof(uint32_t) : 0, words);
   for (int i = 0; i < words; ++i)
     hlsl.aprintf(32, "uint get_immediate_dword_%d() {return imm_dwords.data[%d];}\n", i, i);
 #else

@@ -28,7 +28,7 @@ macro USE_DEFORM_HMAP(stage)
       ##endif
 
       float2 tc = worldPos.xz * deform_hmap_world_to_uv_scale_bias.xy + deform_hmap_world_to_uv_scale_bias.zw;
-      if (any(tc < 0 || tc > 1))
+      if (any(or(tc < 0, tc > 1)))
         return 0;
 
       half depthTexSample = (tex2Dlod(deform_hmap_tex, float4(tc, 0, 0)).r - 0.5f) * 2.0f;
@@ -44,7 +44,7 @@ macro USE_DEFORM_HMAP(stage)
       ##endif
 
       float2 tc = worldPos.xz * deform_hmap_world_to_uv_scale_bias.xy + deform_hmap_world_to_uv_scale_bias.zw;
-      if (any(tc < 0 || tc > 1))
+      if (any(or(tc < 0, tc > 1)))
         return origWorldNormal;
 
       float3 origSurfaceTangentForward = normalize(float3(0, -origWorldNormal.z, origWorldNormal.y)); // cross(float3(1, 0, 0), origWorldNormal)

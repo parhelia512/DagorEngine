@@ -1,0 +1,34 @@
+texture tsr_input_color;
+texture tsr_history_color;
+texture tsr_history_confidence;
+texture tsr_history_depth;
+texture tsr_reactive_mask;
+
+buffer tsr_kernel_weights;
+
+float4 tsr_jitter_offset;
+float4 tsr_input_resolution = (1, 1, 1, 1);
+float4 tsr_output_resolution = (1, 1, 1, 1);
+
+float4 tsr_uv_transform = (1, 1, 0, 0);
+
+float tsr_input_sampling_sigma = 0.47;
+float tsr_sharpening = 0.5;
+float tsr_resampling_loss_sigma = 1;
+float tsr_process_loss = 0.99;
+float4 tsr_input_resampling_filter_0;
+float4 tsr_input_resampling_filter_1;
+float4 tsr_input_resampling_filter_2;
+float tsr_reactive_mask_gamma = 0.125;
+
+float4x4 jitteredCamPosToUnjitteredHistoryClip;
+texture tsr_vrs_mask;
+
+int4 tsr_phase_configuration = (0,0,0,0); // Qx, Qy, Px, Py
+int tsr_use_precalculated_filter_weights = 0;
+interval tsr_use_precalculated_filter_weights : no < 1, yes;
+
+int tsr_should_restart;
+
+int tsr_history_reconstruction = 0;
+interval tsr_history_reconstruction : bilinear < 1, bicubic;

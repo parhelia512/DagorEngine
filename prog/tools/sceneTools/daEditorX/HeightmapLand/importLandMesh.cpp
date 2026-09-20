@@ -808,7 +808,7 @@ public:
     if (cell.patches_mesh)
       cb(*cell.patches_mesh);
   }
-  const char *getJobName(bool &) const override { return "OptimizeJob"; }
+  const char *getJobName(bool &) const override { return DAPROFILER_STRING("OptimizeJob"); }
   void doJob() override
   {
     bbox3f box;
@@ -1944,9 +1944,6 @@ void HmapLandPlugin::updateLandDetailTexture(unsigned i)
 {
   if (!landMeshManager || landMeshManager->getDetailMap().cells.size() <= i)
     return;
-  const int pageW = hmlService->getLandWeightCellTexSize(*landMeshManager);
-  if (pageW <= 0)
-    return;
 
   const int elemSize = landMeshManager->getDetailMap().texElemSize;
   const int x0 = (i % landMeshManager->getDetailMap().sizeX) * elemSize;
@@ -1957,8 +1954,7 @@ void HmapLandPlugin::updateLandDetailTexture(unsigned i)
   mem_set_ff(typeRemap);
   carray<uint8_t, LMAX_DET_TEX_NUM> &detTexIds = landMeshManager->getDetailMap().cells[i].detTexIds;
   memset(detTexIds.data(), 0xFF, LMAX_DET_TEX_NUM);
-  // the +1 texel the cell samples on each side belongs to it as well
-  getMostUsedDetTex(x0, y0, elemSize + 1, detTexIds.data(), typeRemap.data(), LMAX_DET_TEX_NUM);
+  getCellDetTex(x0, y0, elemSize, detTexIds.data(), typeRemap.data(), LMAX_DET_TEX_NUM);
   int numTex = 0;
   for (int ch = 0; ch < LMAX_DET_TEX_NUM; ch++)
     if (detTexIds[ch] != 0xFF)
@@ -1970,23 +1966,32 @@ void HmapLandPlugin::updateLandDetailTexture(unsigned i)
     if (detTexIds[ch] != 0xFF)
       detTexIds[ch] = lcRemap.size() ? lcRemap[detTexIds[ch]] : 0xFF;
 
+  // with no atlas the ids above still give the renderer the cell's first landclass (the load logs why); the weights have nowhere to go
+  const int pageW = hmlService->getLandWeightCellTexSize(*landMeshManager);
+  if (pageW <= 0)
+    return;
+
   // the painted map is global, so the 2px page border is simply read past the
   // cell (clamped at the map edge, as mirrored cells expect) instead of being
-  // stitched from the neighbours the way the level-data conversion has to
-  Tab<uint32_t> tex1(tmpmem), tex2(tmpmem);
-  tex1.resize(pageW * pageW);
-  tex2.resize(pageW * pageW);
+  // stitched from the neighbours the way the level-data conversion has to;
+  // the level export reads the same bytes, so the preview shows what ships
+  const int pageTexels = pageW * pageW;
+  Tab<uint8_t> planeBuf(tmpmem);
+  planeBuf.resize(LMAX_DET_TEX_NUM * pageTexels);
+  const uint8_t *planes[LMAX_DET_TEX_NUM];
+  for (int ch = 0; ch < LMAX_DET_TEX_NUM; ch++)
+    planes[ch] = &planeBuf[ch * pageTexels];
   const int mapW = detTexMap ? detTexMap->getMapSizeX() : 0, mapH = detTexMap ? detTexMap->getMapSizeY() : 0;
-  for (int py = 0; py < pageW; py++)
-    for (int px = 0; px < pageW; px++)
+  for (int py = 0, t = 0; py < pageW; py++)
+    for (int px = 0; px < pageW; px++, t++)
     {
-      unsigned u = 0, u2 = 0xFF000000;
-      readLandDetailTexturePixel(u, u2, clamp(x0 + px - LAND_WEIGHT_BORDER, 0, mapW - 1),
-        clamp(y0 + py - LAND_WEIGHT_BORDER, 0, mapH - 1), make_span(typeRemap));
-      tex1[py * pageW + px] = u;
-      tex2[py * pageW + px] = u2;
+      uint8_t wt[LMAX_DET_TEX_NUM];
+      readLandDetailWeights(clamp(x0 + px - LAND_WEIGHT_BORDER, 0, mapW - 1), clamp(y0 + py - LAND_WEIGHT_BORDER, 0, mapH - 1),
+        make_span(typeRemap), wt);
+      for (int ch = 0; ch < LMAX_DET_TEX_NUM; ch++)
+        planeBuf[ch * pageTexels + t] = wt[ch];
     }
-  hmlService->setLandWeights(*landMeshManager, i, tex1.data(), tex2.data(), numTex);
+  hmlService->setLandWeights(*landMeshManager, i, planes, numTex);
 }
 
 void HmapLandPlugin::resetTexCacheRect(const IBBox2 &box_)
@@ -2107,7 +2112,7 @@ bool HmapLandPlugin::addUsedTextures(ITextureNumerator &tn)
 extern bool hmap_export_tex(mkbindump::BinDumpSaveCB &cb, const char *tex_name, const char *fname, bool clamp, bool gamma1);
 
 extern bool aces_export_detail_maps(mkbindump::BinDumpSaveCB &cb, int det_map_w, int det_map_h, int tex_elem_size,
-  const Tab<SimpleString> &landclass_names, int base_ofs, bool optimize_size = false, bool tools_internal = false);
+  const Tab<SimpleString> &landclass_names, int base_ofs, bool tools_internal = false);
 
 
 int HmapLandPlugin::markUndergroundFaces(MeshData &mesh, Bitarray &facesAbove, TMatrix *wtm)
@@ -2406,7 +2411,7 @@ bool HmapLandPlugin::exportLandMesh(mkbindump::BinDumpSaveCB &cb, IWriterToLandm
       return false;
     }
   }
-  if (!aces_export_detail_maps(cb, dmw, dmh, dm_tex_elem_size, detailTexBlkName, headerOfs, true, tools_internal))
+  if (!aces_export_detail_maps(cb, dmw, dmh, dm_tex_elem_size, detailTexBlkName, headerOfs, tools_internal))
   {
     DAEDITOR3.conError("failed to export color/detail maps");
     return false;

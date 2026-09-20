@@ -12,11 +12,13 @@
 #include <shaders/dag_rendInstRes.h>
 #include <shaders/dag_linearSbufferAllocator.h>
 #include <math/dag_Point4.h>
+#include <math/integer/dag_IPoint3.h>
 #include <util/dag_threadPool.h>
 #include <rendInst/riexHandle.h>
 #include <EASTL/unique_ptr.h>
 #include <EASTL/shared_ptr.h>
 #include <EASTL/fixed_function.h>
+#include <EASTL/vector_set.h>
 #include <bvh/bvh_instanceMapper.h>
 
 class Sbuffer;
@@ -44,6 +46,7 @@ class GPUGrassBase;
 namespace bvh
 {
 struct Context;
+struct ReferencedTransformData;
 using ContextId = Context *;
 inline constexpr ContextId InvalidContextId = nullptr;
 extern bool use_batched_skinned_vertex_processor;
@@ -76,8 +79,8 @@ struct BVHSkinnedMemoryUsage
   int64_t current_bytes = 0;
 };
 using BVHIterateOneInstanceCallback = void (*)(const DynamicRenderableSceneInstance &inst, const DynamicRenderableSceneResource &res,
-  const uint8_t *path_filter, uint32_t path_filter_size, uint8_t render_mask, dag::ConstSpan<int> offsets,
-  BVHSetInstanceData set_instance_data, bool animate, BVHCamoData &camo_data, BVHSkinnedMemoryUsage &skin_mem, void *user_data);
+  dag::ConstSpan<int> offsets, BVHSetInstanceData set_instance_data, bool animate, BVHCamoData &camo_data,
+  BVHSkinnedMemoryUsage &skin_mem, void *user_data);
 using BVHIterateCallback = void (*)(BVHIterateOneInstanceCallback iter, const Point3 &view_position, void *user_data);
 } // namespace dynrend
 
@@ -156,6 +159,7 @@ struct UniqueAS
   {
     G_UNUSED(instance_count);
     G_UNUSED(flags);
+    G_UNUSED(name);
 
     UniqueAS as;
 #if D3D_HAS_RAY_TRACING
@@ -318,14 +322,19 @@ struct SkinData
     float noiseAmp;
     uint32_t clothNoiseCombinedTexBindless;
   } clothWind = {};
+  struct FaceMorph
+  {
+    uint32_t atlasTexBindless;
+    uint32_t uvOffset;
+    uint32_t uvSize;
+  } faceMorph = {};
 };
 
 struct MeshSkinningInfo
 {
   TMatrix4 invWorldTm;
   eastl::function<void()> setTransformsFn;
-  BVHBufferReference *skinningBuffer = nullptr;
-  UniqueBLAS *skinningBlas = nullptr;
+  ReferencedTransformData *transformedData = nullptr;
   SkinData data = {};
 };
 
@@ -333,8 +342,7 @@ struct MeshHeliRotorInfo
 {
   TMatrix4 invWorldTm;
   eastl::function<void(Point4 &, Point4 &)> getParamsFn;
-  BVHBufferReference *transformedBuffer = nullptr;
-  UniqueBLAS *transformedBlas = nullptr;
+  ReferencedTransformData *transformedData = nullptr;
 };
 
 struct DeformedInfo
@@ -342,15 +350,13 @@ struct DeformedInfo
   Point2 simParams;
   TMatrix4 invWorldTm;
   eastl::function<void(float &, Point2 &)> getParamsFn;
-  BVHBufferReference *transformedBuffer = nullptr;
-  UniqueBLAS *transformedBlas = nullptr;
+  ReferencedTransformData *transformedData = nullptr;
 };
 
 struct SplineGenInfo
 {
   eastl::function<Sbuffer *(uint32_t &)> getSplineDataFn;
-  BVHBufferReference *transformedBuffer = nullptr;
-  UniqueBLAS *transformedBlas = nullptr;
+  ReferencedTransformData *transformedData = nullptr;
 };
 
 struct TreeData
@@ -384,8 +390,7 @@ struct TreeData
 struct TreeInfo
 {
   TMatrix4 invWorldTm;
-  BVHBufferReference *transformedBuffer;
-  UniqueBLAS *transformedBlas;
+  ReferencedTransformData *transformedData;
   bool recycled;
   bool stationary;
   int animIndex;
@@ -396,8 +401,7 @@ struct TreeInfo
 struct LeavesInfo
 {
   TMatrix4 invWorldTm;
-  BVHBufferReference *transformedBuffer;
-  UniqueBLAS *transformedBlas;
+  ReferencedTransformData *transformedData;
   bool recycled;
   bool stationary;
 };
@@ -434,8 +438,8 @@ struct FlagData
 struct FlagInfo
 {
   TMatrix4 invWorldTm;
-  BVHBufferReference *transformedBuffer;
-  UniqueBLAS *transformedBlas;
+  ReferencedTransformData *transformedData;
+  bool recycled;
   FlagData data;
 };
 
@@ -469,9 +473,13 @@ struct MeshInfo
   TEXTUREID alphaTextureId = BAD_TEXTUREID;
   TEXTUREID normalTextureId = BAD_TEXTUREID;
   TEXTUREID extraTextureId = BAD_TEXTUREID;
+  TEXTUREID secondaryMaskTextureId = BAD_TEXTUREID;
   TEXTUREID ppPositionTextureId = BAD_TEXTUREID;
   TEXTUREID ppDirectionTextureId = BAD_TEXTUREID;
   TEXTUREID clothNoiseCombinedTexTextureId = BAD_TEXTUREID;
+  TEXTUREID faceMorphAtlasTextureId = BAD_TEXTUREID;
+  uint32_t faceMorphUvOffset = invalidOffset;
+  uint32_t faceMorphUvSize = 0;
   bool alphaTest = false;
   // ~Only needed for meshes with textures
 
@@ -497,6 +505,7 @@ struct MeshInfo
   bool isCamo = false;
   bool isMFD = false;
   bool isHeliRotor = false;
+  bool isGunBarrel = false;
   bool isEmissive = false;
 
   bool isRiLandclass = false;
@@ -525,6 +534,7 @@ struct MeshInfo
   bool isEye = false;
   bool forceNonMetal = false;
   bool hasColorMod = false;
+  bool isPaintedByMask = false;
   bool hasAnimcharDecals = false;
   bool isCamoNet = false;
 
@@ -577,6 +587,8 @@ inline constexpr uint32_t bvhGroupGrass = 1 << 3;
 inline constexpr uint32_t bvhGroupImpostor = 1 << 4;
 inline constexpr uint32_t bvhGroupNoShadow = 1 << 5;
 inline constexpr uint32_t bvhGroupGPUFoliage = 1 << 6;
+inline constexpr uint32_t bvhGroupGunBarrel = 1 << 6; // The same as gpu foliage by intent. Gpu foliage is DNG only, gun barrel is WT
+                                                      // only.
 inline constexpr uint32_t bvhGroupWater = 1 << 7;
 inline constexpr uint32_t bvhGroupCamoNet = 1 << 7; // The same as water by intent. Water is DNG only, CamoNet is WT only.
 
@@ -637,8 +649,6 @@ struct ChannelParser : public ShaderChannelsEnumCB
 
 bool has_enough_vram_for_rt();
 
-void set_enable(bool enable);
-
 bool is_available();
 
 enum class BvhAvailabilityCode
@@ -663,6 +673,9 @@ struct AdditionalSettings
   float riLodDistBias = 0.0f;
   bool prioritizeCompactions = false;
   bool discardDestrAssets = false;
+  bool unloadDynModels = false;      // unload dynmodels unused for dynModelRetentionSec, rebuild them on the next use
+  bool buildDynOnDemand = false;     // with unloadDynModels: skip the build of all dynmodels at init
+  float dynModelRetentionSec = 5.f;  // seconds an unused dynmodel stays in the BVH
   int singleLodFilterMaxFaces = 0;   // 0 means no filtering
   float singleLodFilterMaxRange = 0; // 0 means no filtering
   bool useFastTlasBuild = false;
@@ -670,8 +683,12 @@ struct AdditionalSettings
   bool enableOmm = false;
   int ommDataArrayBudget = 0;        // bytes per mesh OMM array, <= 0 means unlimited
   bool retainOmmBakeResults = false; // keep baked buffers alive for the OMM debug viewer
+  int ommCacheRetentionFrames = 900; // frames an unreferenced OMM cache entry survives; 0 evicts at once
+  int ommCacheIdleBudget = 64 << 20; // bytes the unreferenced OMM cache entries may hold together; 0 keeps none
   bool strictAssetChecks = false;    // report bad assets in place of a work-around for them
   bool enableHair = true;            // hair is both VRAM and GPU time intensive
+  // Cull fx particles projected smaller than this fraction of screen height, <= 0 keeps all
+  float fxMinScreenHeight = 10.f / 1080.f;
 };
 
 void init(elem_rules_fn elem_rules = nullptr, screenshot_fn screenshot = nullptr, AdditionalSettings settings = {});
@@ -758,6 +775,8 @@ void on_before_unload_scene(ContextId context_id);
 
 void on_before_settings_changed(ContextId context_id);
 
+void release_game_texture_holds(ContextId context_id);
+
 void on_unload_scene(ContextId context_id);
 
 void reload_grass(ContextId context_id, RandomGrass *grass);
@@ -787,6 +806,10 @@ void connect_dagdp(ContextId context_id, dagdp_connect_callback callback);
 
 void gpu_grass_make_meta(ContextId context_id, const GPUGrassBase &grass);
 void generate_gpu_grass_instances(ContextId context_id, bool has_grass);
+
+// Every frame, with all dynmodel resources the game feeds to the context. With unloadDynModels, the rest is unloaded.
+void tell_active_dynamic_resources(ContextId context_id,
+  const eastl::vector_set<const DynamicRenderableSceneLodsResource *> &resources);
 
 void gather_splinegen_instances(ContextId context_id, Sbuffer *vertex_buffer, eastl::vector<eastl::pair<uint32_t, MeshInfo>> &meshes,
   uint32_t instance_vertex_count, uint32_t &bvh_id);
@@ -823,9 +846,6 @@ using lru_collision_gather_fn = eastl::fixed_function<sizeof(void *) * 4,
 // settings; silently false for InvalidContextId
 bool connect_lru_collision(ContextId context_id, LRURendinstCollision *lru_coll, lru_collision_gather_fn gather,
   const LruCollisionSettings &settings);
-// full disconnect: the BLAS cache and the TLAS are freed, nothing reconnects
-// implicitly, and stats read zeros afterwards
-void remove_lru_collision(ContextId context_id);
 // changed collision set: drops all cached geometry; the connection stays and
 // the next build() refills the window synchronously
 void invalidate_lru_collision(ContextId context_id);
@@ -853,8 +873,33 @@ struct LruCollisionStats
 LruCollisionStats get_lru_collision_stats(ContextId context_id);
 
 
+// A camera centered, world snapped volume of voxel lives: ray hits reset their voxel to
+// activeValue, each build() decrements every live voxel by one, and instances whose voxels hold
+// no lives are dropped from the main TLAS, all but a per frame random fraction kept as revive
+// probes. Space outside the volume is not tracked and always active.
+struct VoxelActivitySettings
+{
+  float voxelSize = 16.f;               // meters per voxel edge; > 0
+  IPoint3 dims = IPoint3(128, 32, 128); // voxel count per axis; x rounded up to 4, all capped at 256
+  int activeValue = 32;                 // 1..255; the life a hit resets a voxel to
+  // 0..1; the fraction of instances kept in a dead voxel each frame, reshuffled per frame, so a
+  // kept instance can catch a ray and revive the voxel. 1 keeps everything (no culling).
+  float inactiveKeepFraction = 0.1f;
+};
+
+// Creates or reconfigures the volume; invalid settings are rejected with a logerr. Call on the
+// render thread outside the update_instances..build window: a reconfiguration writes state the
+// placement jobs read.
+void set_voxel_activity(ContextId context_id, const VoxelActivitySettings &settings);
+void remove_voxel_activity(ContextId context_id);
+
 using on_parallel_jobs_finished_callback = void (*)();
 void set_on_parallel_jobs_finished_cb(on_parallel_jobs_finished_callback callback);
 
 void render_rt_mem_overlay(ContextId context_id);
+
+void log_rt_memory_overhead(ContextId context_id);
+
+// Never blocks on BVH locks, skips the report when they cannot be taken within a timeout.
+void try_log_rt_memory_overhead(ContextId context_id);
 } // namespace bvh

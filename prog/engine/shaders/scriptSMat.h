@@ -78,6 +78,10 @@ public:
 
   ShaderMaterialProperties props;
 
+#if DAGOR_DBGLEVEL > 0
+  mutable volatile uint32_t selectedStaticVariantCode = uint32_t(-1);
+#endif
+
 public:
   static ScriptedShaderMaterial *create(const ShaderMaterialProperties &p, bool clone_mat = false);
 

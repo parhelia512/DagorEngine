@@ -6,12 +6,12 @@ from "async" import Future
 
 let p = Future()
 try { p.resolve(p); print("BUG: self-resolve no throw\n") }
-catch (e) { print("self-resolve: " + e + "\n") }
-print("p after self-resolve: " + p.getState() + "\n")   // pending
+catch (e) { println($"self-resolve: {e}") }
+println($"p after self-resolve: {p.getState()}")        // pending
 
 let q = Future()
 try { q.reject(q); print("BUG: self-reject no throw\n") }
-catch (e) { print("self-reject: " + e + "\n") }
-print("q after self-reject: " + q.getState() + "\n")     // pending
+catch (e) { println($"self-reject: {e}") }
+println($"q after self-reject: {q.getState()}")          // pending
 
 print("script done\n")

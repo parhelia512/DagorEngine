@@ -1,6 +1,7 @@
 // Copyright (C) Gaijin Games KFT.  All rights reserved.
 
 #include <daBVH/swCommon.h>
+#include <daBVH/dag_bvhBuild.h> // the SAH entry decode
 #include <daBVH/dag_quadBLASBuilder.h>
 #include <daBVH/swBLASLeafDefs.hlsli>
 #include <daBVH/swBVHDefine.hlsli>
@@ -162,10 +163,10 @@ void buildQuadPrims(Tab<QuadPrim> &prims, int &quadCount, int &singleCount, cons
     vec3f nA = v_cross3(e0A, e1A);
     vec3f e0B = v_sub(verts4[v3], verts4[v0]), e1B = v_sub(verts4[v2], verts4[v0]);
     vec3f nB = v_cross3(e0B, e1B);
-    vec3f lenA = v_length3(nA), lenB = v_length3(nB);
+    vec4f lenA = v_length3_x(nA), lenB = v_length3_x(nB);
     float coplanar = 1.f;
     if (v_extract_x(lenA) > 1e-10f && v_extract_x(lenB) > 1e-10f)
-      coplanar = fabsf(v_extract_x(v_div(v_dot3(nA, nB), v_mul(lenA, lenB))));
+      coplanar = fabsf(v_extract_x(v_div_x(v_dot3_x(nA, nB), v_mul(lenA, lenB))));
 
     float score = area * (2.f - coplanar);
     candidates.push_back({qp, et.t0, et.t1, score});
@@ -265,26 +266,24 @@ static uint32_t primGroup(const QuadPrim &p, const uint32_t *vert_group) { retur
 static void collectLeafPairs(const bbox3f *nodes, const QuadPrim *prims, const uint32_t *vert_group, float mf, int node,
   dag::Vector<DoubleQuadPrim> &out)
 {
-  int faceIndex = v_extract_wi(v_cast_vec4i(nodes[node].bmin));
-  if (faceIndex >= 0) // lone leaf (single-prim root)
+  int faceIndex = build_bvh::sahFaceIndex(nodes, node);
+  if (build_bvh::sahIsLeaf(nodes, node)) // lone leaf (single-prim root)
   {
     out.push_back(DoubleQuadPrim{prims[faceIndex], QuadPrim{}, false});
     return;
   }
-  int childrenCount = v_extract_wi(v_cast_vec4i(nodes[node].bmax));
+  int childrenCount = build_bvh::sahChildrenCount(nodes, node);
   // Per-visited-node scratch: a SAH node has few direct leaf kids, so keep them inline (8) and spill
   // to framemem only for the rare wide node, avoiding an O(nodes) churn of tiny heap allocations.
   eastl::fixed_vector<int, 8, true, framemem_allocator> leafKids;
   int startNode = node + 1;
   for (int i = 0; i < childrenCount; ++i)
   {
-    int childFace = v_extract_wi(v_cast_vec4i(nodes[startNode].bmin));
-    int sub = childFace >= 0 ? 1 : (-childFace + 1);
-    if (childFace >= 0)
+    if (build_bvh::sahIsLeaf(nodes, startNode))
       leafKids.push_back(startNode);
     else
       collectLeafPairs(nodes, prims, vert_group, mf, startNode, out);
-    startNode += sub;
+    startNode += (int)build_bvh::sahSpan(nodes, startNode);
   }
   int k = (int)leafKids.size();
   eastl::fixed_vector<char, 8, true, framemem_allocator> used(k, 0);
@@ -292,7 +291,7 @@ static void collectLeafPairs(const bbox3f *nodes, const QuadPrim *prims, const u
   {
     if (used[i])
       continue;
-    int pi = v_extract_wi(v_cast_vec4i(nodes[leafKids[i]].bmin));
+    int pi = build_bvh::sahFaceIndex(nodes, leafKids[i]);
     QEnc ei = encodeQuad(prims[pi]);
     float sai = build_bvh::calculateSurfaceArea(nodes[leafKids[i]]);
     uint32_t gi = primGroup(prims[pi], vert_group);
@@ -302,7 +301,7 @@ static void collectLeafPairs(const bbox3f *nodes, const QuadPrim *prims, const u
     {
       if (used[j])
         continue;
-      int pj = v_extract_wi(v_cast_vec4i(nodes[leafKids[j]].bmin));
+      int pj = build_bvh::sahFaceIndex(nodes, leafKids[j]);
       if (primGroup(prims[pj], vert_group) != gi)
         continue; // never pair across source groups (e.g. collision nodes)
       if (prims[pj].user != prims[pi].user)
@@ -325,7 +324,7 @@ static void collectLeafPairs(const bbox3f *nodes, const QuadPrim *prims, const u
     }
     if (best >= 0)
     {
-      int pj = v_extract_wi(v_cast_vec4i(nodes[leafKids[best]].bmin));
+      int pj = build_bvh::sahFaceIndex(nodes, leafKids[best]);
       out.push_back(DoubleQuadPrim{prims[pi], prims[pj], true});
       used[i] = used[best] = 1;
     }
@@ -340,7 +339,7 @@ static void collectLeafPairs(const bbox3f *nodes, const QuadPrim *prims, const u
 static void writeDoubleQuadLeaf(uint8_t *blasData, const bbox3f *nodes, const DoubleQuadPrim *dq, vec4f scale, vec4f ofs,
   int vertDataOfs, int node, int &dataOffset, int vertStride, bool useHalves)
 {
-  int idx = v_extract_wi(v_cast_vec4i(nodes[node].bmin));
+  int idx = build_bvh::sahFaceIndex(nodes, node);
   const DoubleQuadPrim &d = dq[idx];
   QEnc A = encodeQuad(d.a);
   // An encodable prim has every vertex within the signed 13-bit offset range of its apex (callers must
@@ -395,14 +394,12 @@ static int writeDoubleQuadBVH2Impl(uint8_t *blasData, const bbox3f *nodes, const
   int vertDataOfs, int node, int root, int &dataOffset, int vertStride, int depth, bool useHalves)
 {
   G_ASSERTF(depth <= BVH_MAX_BLAS_DEPTH, "writeDoubleQuadBVH2: depth %d exceeds limit %d", depth, BVH_MAX_BLAS_DEPTH);
-  int faceIndex = v_extract_wi(v_cast_vec4i(nodes[node].bmin));
-  int childrenCount = v_extract_wi(v_cast_vec4i(nodes[node].bmax));
-  if (faceIndex >= 0)
+  int childrenCount = build_bvh::sahChildrenCount(nodes, node);
+  if (build_bvh::sahIsLeaf(nodes, node))
   {
     writeDoubleQuadLeaf(blasData, nodes, dq, scale, ofs, vertDataOfs, node, dataOffset, vertStride, useHalves);
     return 1;
   }
-  int nodeSize = -faceIndex;
   int tempdataOffset = 0;
   if (node != root)
   {
@@ -418,7 +415,7 @@ static int writeDoubleQuadBVH2Impl(uint8_t *blasData, const bbox3f *nodes, const
     int offset = dataOffset - tempdataOffset;
     writeQuadBox(blasData, tempdataOffset - BVH_BLAS_NODE_SIZE, nodes[node].bmin, nodes[node].bmax, scale, ofs, offset, useHalves);
   }
-  return nodeSize + 1;
+  return (int)build_bvh::sahSpan(nodes, node);
 }
 } // anonymous namespace
 
@@ -428,6 +425,9 @@ void buildDoubleQuadPrims(dag::Vector<DoubleQuadPrim> &out, const QuadPrim *prim
   out.clear();
   if (prims_count <= 0)
     return;
+  // The SAH build below releases its workspaces out of order; framemem returns only its newest
+  // block, so without a region every call leaves them in the arena.
+  FRAMEMEM_REGION;
   out.reserve(prims_count);
   Tab<bbox3f> boxes(framemem_ptr());
   boxes.resize(prims_count);
@@ -469,8 +469,7 @@ bool writeDoubleQuadBLAS(dag::Vector<uint8_t> &out_data, bbox3f box, const bbox3
   vec4f scale = v_div(v_splats(65535.f), maxExt);
   vec4f ofs = v_sub(v_splats(32767.5f), v_mul(center, scale));
 
-  const int rootFaceIndex = v_extract_wi(v_cast_vec4i(nodes[root].bmin));
-  const int treeBytes = calcBLASTreeBytes(-rootFaceIndex + 1, dq_count);
+  const int treeBytes = calcBLASTreeBytes((int)build_bvh::sahSpan(nodes, root), dq_count);
   static constexpr uint32_t vertex_size = 12;
   const int totalBytes = treeBytes + verts_count * vertex_size;
   // Bail (no BLAS) if the [tree][float3 verts] span would push a leaf's apex base past the unsigned

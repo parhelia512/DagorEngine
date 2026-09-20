@@ -2,76 +2,63 @@
 
 #include "graph_edge_reconnect.h"
 
-#include "graph_validation.h" // validate_new_edge
+#include "graph_edge_render.h" // draw_dangling_link
+#include "graph_validation.h"  // validate_new_edge
 
 #include <imgui/imgui.h>
 
-#include <math.h>
 
-namespace
+int GraphEdgeReconnect::pickEdgeAtPin(const GraphData &gd, int node_id, int pin_index)
 {
-const GraphData::Node *find_node(const GraphData &gd, int node_id)
-{
-  for (const GraphData::Node &n : gd.nodes)
-  {
-    if (n.id == node_id)
-    {
-      return &n;
-    }
-  }
-  return nullptr;
-}
-} // namespace
-
-int GraphEdgeReconnect::begin(const GraphData &gd, int node_id, int pin_index)
-{
-  if (active || node_id < 0 || pin_index < 0)
+  if (node_id < 0 || pin_index < 0)
   {
     return -1;
   }
 
-  for (int i = static_cast<int>(gd.edges.size()) - 1; i >= 0; --i)
+  eastl::vector<PinEdge> pinEdges;
+  collect_pin_edges(gd, node_id, pin_index, pinEdges);
+  for (int i = static_cast<int>(pinEdges.size()) - 1; i >= 0; --i)
   {
-    const GraphData::Edge &e = gd.edges[i];
-    // "Modify edge" should grab the live connection. Resolving a reconnect records a delete plus a
-    // create, and the created edge is default-constructed, so a muted edge would silently come back
-    // unmuted -- leave it for the user to unmute or delete explicitly.
-    if (e.muted)
+    if (!pinEdges[i].muted)
     {
-      continue;
+      return pinEdges[i].edgeId;
     }
-    int oppNode = -1;
-    int oppPin = -1;
-    if (e.elemA == node_id && e.pinA == pin_index)
-    {
-      oppNode = e.elemB;
-      oppPin = e.pinB;
-    }
-    else if (e.elemB == node_id && e.pinB == pin_index)
-    {
-      oppNode = e.elemA;
-      oppPin = e.pinA;
-    }
-    else
-    {
-      continue;
-    }
+  }
+  return -1;
+}
 
-    // The far end becomes the anchor; its role orients the eventual reconnection.
-    const GraphData::Node *anchor = find_node(gd, oppNode);
-    if (!anchor || oppPin < 0 || oppPin >= static_cast<int>(anchor->pins.size()))
-    {
-      return -1;
-    }
-    active = true;
-    anchorNodeId = oppNode;
-    anchorPinIndex = oppPin;
-    anchorIsOutput = (anchor->pins[oppPin].role == PinRole::Out);
-    haveAnchorScreenPos = false;
-    return e.id;
+bool GraphEdgeReconnect::beginForEdge(const GraphData &gd, int edge_id, int detach_node, int detach_pin)
+{
+  if (active || detach_node < 0 || detach_pin < 0)
+  {
+    return false;
   }
 
-  return -1;
+  const GraphData::Edge *const edge = find_edge_by_id(gd, edge_id);
+  if (!edge || edge->muted)
+  {
+    return false;
+  }
+
+  int oppositeNode = -1;
+  int oppositePin = -1;
+  if (!edge_opposite_end(*edge, detach_node, detach_pin, oppositeNode, oppositePin))
+  {
+    return false;
+  }
+
+  // The opposite end becomes the anchor; its role orients the eventual reconnection.
+  const GraphData::Node *anchor = find_node_by_id(gd, oppositeNode);
+  if (!anchor || oppositePin < 0 || oppositePin >= static_cast<int>(anchor->pins.size()))
+  {
+    return false;
+  }
+  active = true;
+  anchorNodeId = oppositeNode;
+  anchorPinIndex = oppositePin;
+  anchorIsOutput = (anchor->pins[oppositePin].role == PinRole::Out);
+  haveAnchorScreenPos = false;
+  return true;
 }
 
 void GraphEdgeReconnect::drawPreview(ImDrawList *draw_list, const ImVec2 &cursor, uint32_t color, float thickness) const
@@ -81,14 +68,7 @@ void GraphEdgeReconnect::drawPreview(ImDrawList *draw_list, const ImVec2 &cursor
     return;
   }
 
-  const ImVec2 from(anchorScreenX, anchorScreenY);
-  // Horizontal tangents like an imgui-node-editor link: an output leaves to the right, an input
-  // to the left, so the curve reads naturally regardless of where the cursor is.
-  const float dirX = anchorIsOutput ? 1.0f : -1.0f;
-  const float strength = fabsf(cursor.x - from.x) * 0.5f + 25.0f;
-  const ImVec2 c1(from.x + dirX * strength, from.y);
-  const ImVec2 c2(cursor.x - dirX * strength, cursor.y);
-  draw_list->AddBezierCubic(from, c1, c2, cursor, color, thickness);
+  draw_dangling_link(draw_list, ImVec2(anchorScreenX, anchorScreenY), cursor, anchorIsOutput, color, thickness);
 }
 
 bool GraphEdgeReconnect::tryComplete(const GraphData &gd, int node_id, int pin_index, GraphData::Edge &out_edge) const
@@ -99,8 +79,8 @@ bool GraphEdgeReconnect::tryComplete(const GraphData &gd, int node_id, int pin_i
   }
 
   // validate_new_edge expects (output, input) order, so try the orientation implied by the anchor's
-  // role first, then the other way (covers Any/Ctrl anchor pins). validate_new_edge enforces the
-  // role / type / cycle / single-connect rules.
+  // role first, then the other way (covers Any/Ctrl anchor pins). It checks role / type / cycle as
+  // if a single-connect pin's existing edge were already gone; the document is what removes it.
   auto tryDir = [&](int out_node, int out_pin, int in_node, int in_pin) -> bool {
     if (!validate_new_edge(gd, out_node, out_pin, in_node, in_pin))
     {

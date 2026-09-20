@@ -59,7 +59,7 @@ char (&_countof__helper_(T (&array)[N]))[N];
   __va_copy(TO, (FROM))
 #else
 #define __SHOULD_FREE_VALIST_COPY__ 0
-#define DAG_VACOPY(TO, FROM)        va_list &TO = (FROM)
+#define DAG_VACOPY(TO, FROM)        va_list &TO = (FROM) //-V1003 TO is a declarator, it cannot be parenthesized
 #endif
 
 #if __SHOULD_FREE_VALIST_COPY__

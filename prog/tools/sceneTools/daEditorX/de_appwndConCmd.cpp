@@ -28,6 +28,7 @@
 #include <drv/3d/dag_info.h>
 #include <debug/dag_debug.h>
 #include <math/dag_mathUtils.h>
+#include <util/dag_delayedAction.h>
 #include <stdio.h>
 
 InitOnDemand<DebugTexOverlay> de3_show_tex_helper;
@@ -701,6 +702,10 @@ bool DagorEdAppWindow::runSetWorkspaceCmd(dag::ConstSpan<const char *> params)
     bool result = selectWorkspace(wspPath);
     mNeedSuppress = false;
     mMsgBoxResult = -1;
+
+    // the asset base scans on back threads, which post their console lines as delayed actions; a sync batch runs inside
+    // onInit() and never reaches the work cycle loop, so drain here or they stay queued until batch exit
+    perform_delayed_actions();
 
     if (result)
       return true;

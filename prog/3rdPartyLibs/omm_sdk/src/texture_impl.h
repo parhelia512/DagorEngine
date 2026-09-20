@@ -14,6 +14,8 @@ license agreement from NVIDIA CORPORATION is strictly prohibited.
 #include "omm_handle.h"
 
 #include "std_containers.h"
+#include <istream>
+#include <ostream>
 #include "log.h"
 
 #include "util/math.h"

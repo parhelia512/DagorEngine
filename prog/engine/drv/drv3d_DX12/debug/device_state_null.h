@@ -19,7 +19,7 @@ namespace null
 class DeviceState : public call_stack::Reporter, protected event_marker::Tracker
 {
 public:
-  constexpr bool setup(GlobalState &, D3DDevice *, const Direct3D12Enviroment &) { return true; }
+  constexpr void setup(GlobalState &, D3DDevice *, const Direct3D12Enviroment &) {}
   constexpr void teardown() {}
   constexpr void preRecovery() {}
   constexpr void recover(D3DDevice *, const Direct3D12Enviroment &) {}
@@ -30,6 +30,7 @@ public:
   constexpr void nameResource(ID3D12Resource *, eastl::wstring_view) {}
   constexpr void nameObject(ID3D12Object *, eastl::string_view) {}
   constexpr void nameObject(ID3D12Object *, eastl::wstring_view) {}
+  constexpr bool isObjectNamingActive() const { return false; }
   constexpr TraceCheckpoint getTraceCheckpoint() const { return TraceCheckpoint::make_invalid(); }
   constexpr TraceRunStatus getTraceRunStatusFor(const TraceCheckpoint &) const { return TraceRunStatus::NoTraceData; }
   constexpr TraceStatus getTraceStatusFor(const TraceCheckpoint &) const { return TraceStatus::NotLaunched; }

@@ -14,7 +14,7 @@
 #include "debug.h"
 #include <INamedSelectionSetManager.h>
 
-static void calc_mesh_info(Mesh &m, Point3 *vert, Tab<float> &faceS, bool selectedfaces)
+static void calc_mesh_info(Mesh &m, Tab<float> &faceS, bool selectedfaces)
 {
   float sumS = 0;
   faceS.SetCount(m.numFaces);
@@ -39,7 +39,7 @@ static void calc_mesh_info(Mesh &m, Point3 *vert, Tab<float> &faceS, bool select
     faceS[i] = sumS;
   }
 }
-static int find_selset_by_name(Interface *, TCHAR *selsname)
+static int find_selset_by_name(Interface *, const wchar_t *selsname)
 {
   INamedSelectionSetManager *ip = INamedSelectionSetManager::GetInstance();
   int selset;
@@ -121,8 +121,8 @@ static Point3 get_normal(DWORD s, RVertex &rv)
 }
 
 
-void put_meshes_on_mesh(Interface *ip, TCHAR *selsname, Tab<INode *> &snode, int objnum, int seed, bool set_to_norm, bool use_smgr,
-  bool rotatez, float slope, bool selfaces, float xydiap[2], float zdiap[2], bool xys, char zs)
+void put_meshes_on_mesh(Interface *ip, const wchar_t *selsname, Tab<INode *> &snode, int objnum, int seed, bool set_to_norm,
+  bool use_smgr, bool rotatez, float slope, bool selfaces, float xydiap[2], float zdiap[2], bool xys, char zs)
 {
   INamedSelectionSetManager *IPNSS = INamedSelectionSetManager::GetInstance();
   Tab<int> deleteIt;
@@ -206,7 +206,7 @@ void put_meshes_on_mesh(Interface *ip, TCHAR *selsname, Tab<INode *> &snode, int
   }
 
   Tab<float> faceS;
-  calc_mesh_info(surf, &surf.verts[0], faceS, selfaces);
+  calc_mesh_info(surf, faceS, selfaces);
 
   Random r;
   if (!seed)

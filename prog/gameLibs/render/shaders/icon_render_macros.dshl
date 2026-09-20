@@ -36,7 +36,6 @@ sampler linear_clamp_sampler
 };
 
 macro COMMON_RESOLVE()
-  supports global_const_block;
   STANDARD_BRDF_SHADING()
   INIT_GBUFFER_FOR_ICON_RENDER()
   USE_READ_GBUFFER()
@@ -49,7 +48,6 @@ macro COMMON_RESOLVE()
 endmacro
 
 macro COMMON_RESOLVE_MOBILE()
-  supports global_const_block;
   hlsl {
     #define SPECULAR_DISABLED 1
     #define MOBILE_GBUFFER_UNPACK_FORCE_METALNESS 0

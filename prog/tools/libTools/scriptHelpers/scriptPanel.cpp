@@ -179,7 +179,7 @@ public:
           TunedElement *redoElement = undoElement->cloneElem();
           int update_pid = pcb_id - 1;
           redoElement->getValues(update_pid, *panel);
-          obj_editor->getUndoSystem()->put(new TunedElementUndoRedo(*panel, pcb_id, undoElement, redoElement, this));
+          obj_editor->getUndoSystem()->put<TunedElementUndoRedo>(*panel, pcb_id, undoElement, redoElement, this);
           obj_editor->getUndoSystem()->accept("changeTunedElementParam");
         }
       }
@@ -204,7 +204,7 @@ public:
       pid = START_PID;
       TunedElement *removedElement = element->findById(pcb_id, pid);
       obj_editor->getUndoSystem()->begin();
-      obj_editor->getUndoSystem()->put(new TunedArrayUndoRedo(*panel, *this, pcb_id, *element, removedElement));
+      obj_editor->getUndoSystem()->put<TunedArrayUndoRedo>(*panel, *this, pcb_id, *element, removedElement);
       obj_editor->getUndoSystem()->accept("changeTunedArray");
     }
     if (selected_elem)

@@ -81,12 +81,7 @@ struct RenderElement
 {
   ShaderElement *curShader;
   GlobalVertexData *vData;
-  int curVar; // probably can be just int16_t
-  uint32_t prog;
-  ShaderStateBlockId state;
-  shaders::RenderStateId rstate;
-  shaders::TexStateIdx tstate;
-  shaders::ConstStateIdx cstate;
+  shaders::CombinedDynVariantState dvState;
   uint8_t reqTexLevel;
   RenderPriority priority;
   uint8_t lodNo;
@@ -95,12 +90,7 @@ struct RenderElement
   uint16_t bindposeBufferOffset; // maybe merge with something else, ~12 bits should be enough
 
   RenderElement(ShaderElement *curShader,
-    int curVar,
-    uint32_t prog,
-    ShaderStateBlockId state,
-    shaders::RenderStateId rstate,
-    shaders::TexStateIdx tstate,
-    shaders::ConstStateIdx cstate,
+    const shaders::CombinedDynVariantState &dv_state,
     GlobalVertexData *vData,
     uint8_t req_tex_level,
     RenderPriority priority,
@@ -111,12 +101,7 @@ struct RenderElement
     int bv,
     int bindposeBufferOffset) :
     curShader(curShader),
-    curVar(curVar),
-    prog(prog),
-    state(state),
-    rstate(rstate),
-    tstate(tstate),
-    cstate(cstate),
+    dvState(dv_state),
     vData(vData),
     reqTexLevel(req_tex_level),
     priority(priority),

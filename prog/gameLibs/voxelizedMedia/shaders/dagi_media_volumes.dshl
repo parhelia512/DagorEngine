@@ -1,0 +1,90 @@
+include "shader_global.dshl"
+include "dagi_media_volumes_inc.dshl"
+include "dagi_media_vol_bake_write.dshl" // the bake bits this cs reduces, only this pass needs them
+
+// popcount sub-occupancy into the type's brick + mips + one averaged albedo
+// (the bits come from the albedo voxelization pass, see dagi_media_vol_bake_write.dshl)
+shader dagi_media_vol_finalize_cs
+{
+  (cs) {
+    dagi_media_vol_bake@i4 = dagi_media_vol_bake;
+    dagi_media_vol_atlas_grid@i4 = dagi_media_vol_atlas_grid;
+    dagi_media_vol_bake_bits_srv@buf = dagi_media_vol_bake_bits hlsl { ByteAddressBuffer dagi_media_vol_bake_bits_srv@buf; };
+  }
+  hlsl(cs) {
+    #include "dagi_media_volumes.hlsli"
+    // registers set from C++ (dshl can not bind a specific mip; dx11 allows only u0..u7 so the
+    // whole layout is explicit), taken from the same constants the C++ binds with
+    RWByteAddressBuffer dagi_media_vol_albedo_uav : DAGI_MEDIA_VOL_UAV_REG(DAGI_MEDIA_VOL_ALBEDO_UAV_NO);
+    RWTexture3D<unorm float> dagi_media_vol_atlas_mip0 : DAGI_MEDIA_VOL_UAV_REG(DAGI_MEDIA_VOL_ATLAS_UAV_NO);
+    RWTexture3D<unorm float> dagi_media_vol_atlas_mip1 : DAGI_MEDIA_VOL_UAV_REG(4);
+    RWTexture3D<unorm float> dagi_media_vol_atlas_mip2 : DAGI_MEDIA_VOL_UAV_REG(5);
+    RWTexture3D<unorm float> dagi_media_vol_atlas_mip3 : DAGI_MEDIA_VOL_UAV_REG(6);
+    RWTexture3D<unorm float> dagi_media_vol_atlas_mip4 : DAGI_MEDIA_VOL_UAV_REG(7);
+    groupshared float op1[8*8*8];
+    groupshared float op2[4*4*4];
+    groupshared float op3[2*2*2];
+    [numthreads(8, 8, 8)]
+    void dagi_media_vol_finalize_cs(uint3 tid : SV_GroupThreadID)
+    {
+      uint type = dagi_media_vol_bake.z;
+      uint3 cell = dagi_media_vol_atlas_cell(type, dagi_media_vol_atlas_grid);
+      float sum = 0;
+      UNROLL
+      for (uint s = 0; s < 8; ++s)
+      {
+        uint3 v = tid*2 + uint3(s & 1, (s >> 1) & 1, s >> 2);
+        uint cnt = 0;
+        UNROLL
+        for (uint dz = 0; dz < 4; ++dz)
+          UNROLL
+          for (uint dy = 0; dy < 4; ++dy)
+          {
+            uint bit = ((v.z*4 + dz)*DAGI_MEDIA_VOL_RASTER + v.y*4 + dy)*DAGI_MEDIA_VOL_RASTER + v.x*4;
+            cnt += countbits((loadBuffer(dagi_media_vol_bake_bits_srv, (bit >> 5) << 2) >> (bit & 31)) & 0xFu);
+          }
+        float opacity = floor(cnt*(255./64.))*(1./255.);//round down: err lighter
+        texture3DAt(dagi_media_vol_atlas_mip0, cell*uint(DAGI_MEDIA_VOL_BRICK) + v) = opacity;
+        sum += opacity;
+      }
+      float m = sum*(1./8);
+      texture3DAt(dagi_media_vol_atlas_mip1, cell*8u + tid) = m;
+      op1[(tid.z*8 + tid.y)*8 + tid.x] = m;
+      GroupMemoryBarrierWithGroupSync();
+      if (all(tid < 4))
+      {
+        float s = 0;
+        UNROLL
+        for (uint i = 0; i < 8; ++i)
+          s += op1[((tid.z*2 + (i >> 2))*8 + tid.y*2 + ((i >> 1) & 1))*8 + tid.x*2 + (i & 1)];
+        s *= 1./8;
+        texture3DAt(dagi_media_vol_atlas_mip2, cell*4u + tid) = s;
+        op2[(tid.z*4 + tid.y)*4 + tid.x] = s;
+      }
+      GroupMemoryBarrierWithGroupSync();
+      if (all(tid < 2))
+      {
+        float s = 0;
+        UNROLL
+        for (uint i = 0; i < 8; ++i)
+          s += op2[((tid.z*2 + (i >> 2))*4 + tid.y*2 + ((i >> 1) & 1))*4 + tid.x*2 + (i & 1)];
+        s *= 1./8;
+        texture3DAt(dagi_media_vol_atlas_mip3, cell*2u + tid) = s;
+        op3[(tid.z*2 + tid.y)*2 + tid.x] = s;
+      }
+      GroupMemoryBarrierWithGroupSync();
+      if (all(tid == 0))
+      {
+        float s = (op3[0] + op3[1] + op3[2] + op3[3] + op3[4] + op3[5] + op3[6] + op3[7])*(1./8);
+        texture3DAt(dagi_media_vol_atlas_mip4, cell) = s;
+        uint3 alb = uint3(loadBuffer(dagi_media_vol_bake_bits_srv, DAGI_MEDIA_VOL_ALBEDO_OFS),
+                          loadBuffer(dagi_media_vol_bake_bits_srv, DAGI_MEDIA_VOL_ALBEDO_OFS + 4),
+                          loadBuffer(dagi_media_vol_bake_bits_srv, DAGI_MEDIA_VOL_ALBEDO_OFS + 8));
+        uint albCount = max(loadBuffer(dagi_media_vol_bake_bits_srv, DAGI_MEDIA_VOL_ALBEDO_OFS + 12), 1u);
+        uint3 a8 = min((alb + albCount/2)/albCount, 255u); // unorm8 rgb
+        storeBuffer(dagi_media_vol_albedo_uav, type*4, a8.r | (a8.g << 8) | (a8.b << 16));
+      }
+    }
+  }
+  compile("target_cs", "dagi_media_vol_finalize_cs");
+}

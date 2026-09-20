@@ -390,6 +390,15 @@ bool d3d::setvsrc_ex(int slot, Sbuffer *vb, int ofs, int stride)
 {
   D3D_CONTRACT_ASSERTF_RETURN(!vb || (vb->getFlags() & SBCF_BIND_VERTEX), false,
     "DX11: setvsrc_ex vb '%s' in slot %d does not have the SBCF_BIND_VERTEX flag", vb->getBufName(), slot);
+  if (vb)
+  {
+    const int bufSize = vb->getSize();
+    D3D_CONTRACT_ASSERTF_RETURN(ofs >= 0 && ofs < bufSize, false, "DX11: setvsrc_ex ofs (%d) not within buffer range (%d)", ofs,
+      bufSize);
+    D3D_CONTRACT_ASSERTF_RETURN(stride > 0, false, "DX11: setvsrc_ex stride must be greater than zero");
+    D3D_CONTRACT_ASSERTF_RETURN(stride <= bufSize, false, "DX11: setvsrc_ex stride (%d) must not exceed buffer size (%d)", stride,
+      bufSize);
+  }
   RenderState &rs = g_render_state;
   rs.nextVertexInput.vertexStream[slot].source = (GenericBuffer *)vb;
   rs.nextVertexInput.vertexStream[slot].offset = ofs;

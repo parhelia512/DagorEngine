@@ -21,17 +21,9 @@ class Point2
 {
 public:
   real x, y;
-  INLINE Point2() = default;
-  INLINE Point2(real ax, real ay)
-  {
-    x = ax;
-    y = ay;
-  }
-  INLINE explicit Point2(const real *p)
-  {
-    x = p[0];
-    y = p[1];
-  }
+  constexpr INLINE Point2() = default;
+  constexpr INLINE Point2(real ax, real ay) : x(ax), y(ay) {}
+  constexpr INLINE explicit Point2(const real *p) : x(p[0]), y(p[1]) {}
 
   static const Point2 ZERO;
   static const Point2 ONE;
@@ -52,8 +44,8 @@ public:
   INLINE Point2 operator-() const { return Point2(-x, -y); }
   INLINE Point2 operator+() const { return *this; }
 
-  INLINE Point2 operator+(const Point2 &a) const { return Point2(x + a.x, y + a.y); }
-  INLINE Point2 operator-(const Point2 &a) const { return Point2(x - a.x, y - a.y); }
+  constexpr INLINE Point2 operator+(const Point2 &a) const { return Point2(x + a.x, y + a.y); }
+  constexpr INLINE Point2 operator-(const Point2 &a) const { return Point2(x - a.x, y - a.y); }
   INLINE real operator*(const Point2 &a) const { return x * a.x + y * a.y; }
   INLINE Point2 operator*(real a) const { return Point2(x * a, y * a); }
   INLINE Point2 operator/(real a) const { return operator*(1.0f / a); }
@@ -123,6 +115,9 @@ public:
   }
 };
 
+inline constexpr Point2 Point2::ZERO(0, 0);
+inline constexpr Point2 Point2::ONE(1, 1);
+
 /// dot product
 INLINE float dot(const Point2 &a, const Point2 &b) { return a * b; }
 /// cross product
@@ -184,23 +179,15 @@ class DPoint2
 {
 public:
   double x, y;
-  INLINE DPoint2() = default;
-  INLINE DPoint2(double ax, double ay)
-  {
-    x = ax;
-    y = ay;
-  }
+  constexpr INLINE DPoint2() = default;
+  constexpr INLINE DPoint2(double ax, double ay) : x(ax), y(ay) {}
 
   INLINE void zero()
   {
     x = 0;
     y = 0;
   }
-  INLINE DPoint2(const double *p)
-  {
-    x = p[0];
-    y = p[1];
-  }
+  constexpr INLINE DPoint2(const double *p) : x(p[0]), y(p[1]) {}
   INLINE void set(double _x, double _y)
   {
     x = _x;

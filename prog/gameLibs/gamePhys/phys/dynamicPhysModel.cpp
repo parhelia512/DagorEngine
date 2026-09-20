@@ -186,5 +186,5 @@ void DynamicPhysModel::update(float dt)
   {
     active = contacts.size() > 0;
   }
-  clear_and_shrink(contacts);
+  contacts.clear();
 }

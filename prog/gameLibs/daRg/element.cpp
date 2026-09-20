@@ -213,12 +213,6 @@ void Element::onDetach(GuiScene *gui_scene)
   for (Behavior *bhv : behaviors)
     bhv->onDetach(this, Behavior::DETACH_FINAL);
 
-  if (xmb)
-  {
-    etree->freeXmbData(xmb);
-    xmb = nullptr;
-  }
-
   flags |= F_DETACHED;
 
   playSound(csk->detach);
@@ -346,10 +340,7 @@ void Element::setup(const Component &comp, GuiScene *gui_scene, SetupMode setup_
 
     Sqrat::Table xmbNode = scriptDesc.RawGetSlot(csk->xmbNode);
     if (xmbNode.IsNull() && xmb != nullptr)
-    {
-      etree->freeXmbData(xmb);
-      xmb = nullptr;
-    }
+      etree->releaseXmb(this);
     else if (!xmbNode.IsNull() && xmb == nullptr)
       xmb = etree->allocateXmbData();
     if (xmb != nullptr)

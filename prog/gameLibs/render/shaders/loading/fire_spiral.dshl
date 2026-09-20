@@ -1,0 +1,18 @@
+include "shader_global.dshl"
+include "loading_splash_common.dshl"
+
+shader loading_splash_fire_spiral,
+  loading_splash_fire_spiral_1,
+  loading_splash_fire_spiral_2,
+  loading_splash_fire_spiral_3,
+  loading_splash_fire_spiral_4
+{
+  LOADING_SPLASH_STATE()
+  LOADING_SPLASH_PS_OUTPUT(loading_splash_fire_spiral_1, loading_splash_fire_spiral_2, loading_splash_fire_spiral_3, loading_splash_fire_spiral_4)
+
+  hlsl(ps) {
+    #include <loading/fire_spiral.glsl>
+  }
+
+  LOADING_SPLASH_PS_MAIN(loading_splash_fire_spiral, loading_splash_fire_spiral_1, loading_splash_fire_spiral_2, loading_splash_fire_spiral_3, loading_splash_fire_spiral_4)
+}

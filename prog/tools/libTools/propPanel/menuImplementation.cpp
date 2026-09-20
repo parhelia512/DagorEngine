@@ -46,23 +46,30 @@ void Menu::MenuItem::setTitleAndShortcut(const char *title_with_shortcut)
   }
 }
 
-bool Menu::MenuItem::updateImguiButton(bool is_checked, bool is_bullet)
+bool Menu::MenuItem::updateImguiButton(bool is_checked, bool is_bullet, const MenuStyle &style)
 {
-  return ImguiHelper::menuItemExWithLeftSideCheckmark(getTitle(), nullptr, shortcut, is_checked, enabled, is_bullet);
+  return ImguiHelper::menuItemExWithLeftSideCheckmark(getTitle(), nullptr, shortcut, is_checked, enabled, is_bullet,
+    /*menu_item_selected =*/false, style, secondaryIsComment);
 }
 
-void Menu::MenuItem::updateImgui(MenuItem *&clicked_item)
+void Menu::MenuItem::updateImgui(MenuItem *&clicked_item, const MenuStyle &style)
 {
   for (MenuItem *item : children)
   {
+    // Identify a row by its item id, not its title: a menu may legitimately repeat a title (a node
+    // name in a sub-menu), and the helpers derive both the row's and its popup's ImGui id from it.
+    // Separators and labels share one id, which costs nothing: both pass 0 to ItemAdd, so nothing is
+    // addressable through it.
+    ImGui::PushID(static_cast<int>(item->id));
+
     if (item->itemType == MenuItemType::Button)
     {
-      if (item->updateImguiButton(/*is_checked = */ false, /*is_bullet = */ false))
+      if (item->updateImguiButton(/*is_checked = */ false, /*is_bullet = */ false, style))
         clicked_item = item;
     }
     else if (item->itemType == MenuItemType::CheckButton)
     {
-      if (item->updateImguiButton(/*is_checked = */ item->checked, /*is_bullet = */ false))
+      if (item->updateImguiButton(/*is_checked = */ item->checked, /*is_bullet = */ false, style))
       {
         item->checked = !item->checked;
         clicked_item = item;
@@ -70,7 +77,7 @@ void Menu::MenuItem::updateImgui(MenuItem *&clicked_item)
     }
     else if (item->itemType == MenuItemType::RadioButton)
     {
-      if (item->updateImguiButton(/*is_checked = */ item->checked, /*is_bullet = */ true))
+      if (item->updateImguiButton(/*is_checked = */ item->checked, /*is_bullet = */ true, style))
       {
         item->checked = !item->checked;
         clicked_item = item;
@@ -78,13 +85,28 @@ void Menu::MenuItem::updateImgui(MenuItem *&clicked_item)
     }
     else if (item->itemType == MenuItemType::Separator)
     {
-      ImGui::Separator();
+      // A rule must not inherit a row height ItemSpacing.y is carrying for the items.
+      if (style.separatorSpacingY > 0.0f)
+      {
+        ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(ImGui::GetStyle().ItemSpacing.x, style.separatorSpacingY));
+        ImGui::Separator();
+        ImGui::PopStyleVar();
+      }
+      else
+      {
+        ImGui::Separator();
+      }
+    }
+    else if (item->itemType == MenuItemType::Label)
+    {
+      // Not a MenuItem: a caption must not highlight, nor indent into the checkmark column.
+      ImGui::TextDisabled("%s", item->getTitle());
     }
     else if (item->itemType == MenuItemType::SubMenu)
     {
-      if (ImguiHelper::beginMenuExWithLeftSideCheckmark(item->getTitle(), nullptr, item->enabled))
+      if (ImguiHelper::beginMenuExWithLeftSideCheckmark(item->getTitle(), nullptr, item->shortcut, item->enabled, style))
       {
-        item->updateImgui(clicked_item);
+        item->updateImgui(clicked_item, style);
         ImGui::EndMenu();
       }
     }
@@ -92,6 +114,8 @@ void Menu::MenuItem::updateImgui(MenuItem *&clicked_item)
     {
       G_ASSERT(false);
     }
+
+    ImGui::PopID();
   }
 }
 
@@ -111,6 +135,15 @@ void Menu::addItem(unsigned menu_id, MenuItem &item)
   menu->children.push_back(&item);
 }
 
+void Menu::addItemWithComment(unsigned menu_id, unsigned item_id, const char *title, const char *comment)
+{
+  MenuItem *newItem = new MenuItem(item_id, MenuItemType::Button);
+  newItem->setTitle(title);
+  newItem->shortcut = comment;
+  newItem->secondaryIsComment = true;
+  addItem(menu_id, *newItem);
+}
+
 void Menu::addItem(unsigned menu_id, unsigned item_id, const char *title)
 {
   MenuItem *newItem = new MenuItem(item_id, MenuItemType::Button);
@@ -118,15 +151,26 @@ void Menu::addItem(unsigned menu_id, unsigned item_id, const char *title)
   addItem(menu_id, *newItem);
 }
 
-void Menu::addSeparator(unsigned menu_id, unsigned item_id)
+void Menu::addSeparator(unsigned menu_id)
 {
-  G_ASSERT_RETURN(item_id != ROOT_MENU_ITEM, );
-
   MenuItem *menu = getMenuItemById(menu_id);
   G_ASSERT_RETURN(menu, );
   G_ASSERT_RETURN(menu->itemType == MenuItemType::SubMenu, );
 
-  MenuItem *newItem = new MenuItem(item_id, MenuItemType::Separator);
+  // ROOT_MENU_ITEM: getMenuItemById refuses to look that up, so a row nothing can address cannot
+  // shadow the item that owns an id, and the "globally unique" asserts stay exact.
+  MenuItem *newItem = new MenuItem(ROOT_MENU_ITEM, MenuItemType::Separator);
+  menu->children.push_back(newItem);
+}
+
+void Menu::addLabel(unsigned menu_id, const char *title)
+{
+  MenuItem *menu = getMenuItemById(menu_id);
+  G_ASSERT_RETURN(menu, );
+  G_ASSERT_RETURN(menu->itemType == MenuItemType::SubMenu, );
+
+  MenuItem *newItem = new MenuItem(ROOT_MENU_ITEM, MenuItemType::Label);
+  newItem->setTitle(title);
   menu->children.push_back(newItem);
 }
 
@@ -140,7 +184,7 @@ void Menu::addSubMenu(unsigned menu_id, unsigned submenu_id, const char *title)
   G_ASSERT_RETURN(!getMenuItemById(submenu_id), ); // The submenu_id must be globally unique.
 
   MenuItem *newItem = new MenuItem(submenu_id, MenuItemType::SubMenu);
-  newItem->setTitle(title);
+  newItem->setTitleAndShortcut(title);
   menu->children.push_back(newItem);
 }
 
@@ -248,7 +292,7 @@ void Menu::updateImgui()
   if (ImGui::BeginMainMenuBar())
   {
     MenuItem *clickedItem = nullptr;
-    rootMenu.updateImgui(clickedItem);
+    rootMenu.updateImgui(clickedItem, menuStyle);
 
     if (clickedItem && eventHandler)
       message_queue.requestDelayedCallback(*this, (void *)((uintptr_t)clickedItem->id));

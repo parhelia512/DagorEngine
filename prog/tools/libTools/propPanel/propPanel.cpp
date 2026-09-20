@@ -3,6 +3,7 @@
 #include <propPanel/propPanel.h>
 #include <propPanel/imguiHelper.h>
 #include "imageHelper.h"
+#include "changeFinishTracker.h"
 #include "messageQueueInternal.h"
 #include "tooltipHelper.h"
 
@@ -21,7 +22,13 @@ void after_new_frame()
   tooltip_helper.afterNewFrame();
 }
 
-void before_end_frame() { tooltip_helper.beforeEndFrame(); }
+void before_end_frame()
+{
+  tooltip_helper.beforeEndFrame();
+
+  // Needs every panel already drawn to tell which controls are still being edited.
+  change_finish_tracker.beforeEndFrame();
+}
 
 IconId load_icon(const char *filename, int size) { return image_helper.loadIcon(filename, size); }
 

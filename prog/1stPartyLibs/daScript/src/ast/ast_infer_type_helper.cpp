@@ -1048,11 +1048,52 @@ namespace das {
                   expr->at, CompilationError::not_resolved_yet_expression_type);
         }
     }
+    // a void-typed return value coming from a call is only trustworthy once the callee settled:
+    // a generic instance still pending macro folds (e.g. a static_if-gated body) is void only
+    // transiently, and committing an auto result or lowering the return on it is irreversible
+    bool InferTypes::isVoidReturnValueSettled(Expression *subexpr) const {
+        if (!subexpr->rtti_isCallFunc()) {
+            return true;
+        }
+        auto callee = ((ExprCallFunc *)subexpr)->func;
+        if (!callee) {
+            // no function bound - the node was just rewritten (e.g. by a call transform)
+            // and may still carry the stale type of the expression it replaced
+            return false;
+        }
+        if (callee->builtIn || callee->isFullyInferred) {
+            return true;
+        }
+        if (callee->module && callee->module != program->thisModule.get()) {
+            return true;
+        }
+        // a return statement proves the void result came from the callee's own body
+        // (mutual void recursion lands here); an empty transient instance has none
+        return callee->hasReturn;
+    }
     bool InferTypes::inferReturnType(TypeDeclPtr &resType, ExprReturn *expr) {
         if (expr->subexpr && expr->subexpr->type && expr->subexpr->type->isVoid()) {
-            error("returning void value", "", "",
-                  expr->at, CompilationError::invalid_result);
-            return false;
+            // 'return void_expr' is legal when the result is void, or a bare auto which the
+            // generic machinery below resolves to void (structured autos like auto? reject
+            // there); visit(ExprReturn) then lowers it to { void_expr; return; }
+            if (resType->isVoid() || resType->baseType == Type::autoinfer) {
+                if (expr->moveSemantics) {
+                    error("can't return void value via move", "", "",
+                          expr->at, CompilationError::invalid_result);
+                    return false;
+                }
+                if (!isVoidReturnValueSettled(expr->subexpr)) {
+                    error("subexpression type is not fully resolved yet", "", "", expr->at, CompilationError::not_resolved_yet_expression_type);
+                    return false;
+                }
+                if (resType->isVoid()) {
+                    return false;
+                }
+            } else if (!resType->isAuto()) {
+                error("returning void value, expecting " + describeType(resType), "", "",
+                      expr->at, CompilationError::invalid_result);
+                return false;
+            }
         }
         if (resType->isAuto()) {
             if (expr->subexpr) {

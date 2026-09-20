@@ -3,6 +3,7 @@ include "gbuffer.dshl"
 include "static_shadow.dshl"
 include "vr_multiview.dshl"
 include "use_volfog.dshl"
+include "camera_in_camera.dshl"
 
 buffer cables_buf;
 buffer bvh_cables_vertices_buf;
@@ -18,6 +19,7 @@ int cables_render_pass = 1;
 interval cables_render_pass : cables_render_pass_shadow < 1, cables_render_pass_opaque < 2, cables_render_pass_trans < 3, cables_render_pass_bvh;
 
 macro CABLES_FOG_VS()
+  INIT_AND_USE_ON_TOP_CAMERA_IN_CAMERA(vs)
   INIT_ZNZFAR_STAGE(vs) // needed for USE_VOLUMETRIC_LIGHT
   INIT_BRUNETON_FOG(vs)
   INIT_VOLUMETRIC_LIGHT(vs)
@@ -40,7 +42,7 @@ endmacro
 shader wires
 {
   supports global_frame;
-  supports global_const_block;
+  GLOBAL_CONSTS(vs)
   cull_mode = none;
 
   if (cables_render_pass == cables_render_pass_bvh && !hardware.dx12 && !hardware.vulkan && !hardware.metal && !hardware.ps5)
@@ -89,7 +91,21 @@ shader wires
         RWStructuredBuffer<CableVertex> bvh_cables_vertices_buf@uav;
       }
       bvh_cables_indices_buf@uav : register(bvh_cables_indices_buf_reg_no) hlsl {
-        RWStructuredBuffer<uint> bvh_cables_indices_buf@uav;
+        RWByteAddressBuffer bvh_cables_indices_buf@uav;
+      }
+    }
+
+    hlsl(vs) {
+      #if TRIANGLES_PER_CABLE % 2
+        #error TRIANGLES_PER_CABLE must be even: 16-bit index packing pairs an even and an odd triangle
+      #endif
+
+      uint3 cable_triangle_indices(uint triangle_id, uint vertex_per_cable)
+      {
+        uint3 indices = uint3(triangle_id + 0, triangle_id + 1, triangle_id + 2) % vertex_per_cable;
+        if (triangle_id & 1)
+          indices = indices.yzx;
+        return indices;
       }
     }
   }
@@ -167,17 +183,24 @@ shader wires
 
         if (vertex_id < TRIANGLES_PER_CABLE)
         {
-          uint baseVertex = instance_id * vertexPerCable + vertex_id;
-
-          uint3 indices = uint3(baseVertex + 0, baseVertex + 1, baseVertex + 2) % vertexPerCable;
-          if (vertex_id & 1)
-            indices = indices.yzx;
+          uint3 indices = cable_triangle_indices(vertex_id, vertexPerCable);
 
           uint baseIndex = instance_id * indexPerCable + vertex_id * 3;
 
-          structuredBufferAt(bvh_cables_indices_buf, baseIndex + 0) = indices.x;
-          structuredBufferAt(bvh_cables_indices_buf, baseIndex + 1) = indices.y;
-          structuredBufferAt(bvh_cables_indices_buf, baseIndex + 2) = indices.z;
+          // Indices are 16 bit, so a triangle spans one and a half dwords and dwords
+          // must have a single writer. An even triangle starts dword aligned and stores
+          // its 3 indices plus the first index of the odd triangle after it, which
+          // stores only its last 2 indices. Cables hold an even triangle count, so a
+          // pair never crosses cables.
+          if (vertex_id & 1)
+          {
+            storeBuffer(bvh_cables_indices_buf, (baseIndex + 1) * 2, indices.y | (indices.z << 16));
+          }
+          else
+          {
+            uint nextIndex = cable_triangle_indices(vertex_id + 1, vertexPerCable).x;
+            storeBuffer2(bvh_cables_indices_buf, baseIndex * 2, uint2(indices.x | (indices.y << 16), indices.z | (nextIndex << 16)));
+          }
         }
       ##else
         float3 view;

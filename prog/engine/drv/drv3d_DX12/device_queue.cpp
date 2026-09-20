@@ -177,6 +177,8 @@ bool drv3d_dx12::wait_for_frame_progress_with_event_slow_path(DeviceQueueGroup &
   static desc_id_t wffpdesc =
     add_description(DA_PROFILE_FILE_NAMES ? __FILE__ : nullptr, __LINE__, IsWait, "DX12_waitForFrameProgress");
   ScopeLockProfiler<da_profiler::NoDesc> lp(wffpdesc);
+  DA_PROFILE_TAG(DX12_waitForFrameProgress, "progress %u, gpu at %u", static_cast<uint32_t>(progress),
+    static_cast<uint32_t>(qs.checkFrameProgress()));
 #endif
   if (!qs.waitForFrameProgress(progress, event))
   {

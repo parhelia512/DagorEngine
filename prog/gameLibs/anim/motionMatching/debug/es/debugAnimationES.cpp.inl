@@ -120,7 +120,7 @@ static void debug_motion_matching_skeleton_es(const ecs::UpdateStageInfoAct &, e
     [&](const MotionMatchingController &motion_matching__controller, const AnimV20::AnimcharBaseComponent &animchar) {
       if (!motion_matching__controller.hasActiveAnimation())
         return;
-      GeomNodeTree copiedTree = animchar.getNodeTree();
+      GeomNodeTree copiedTree(animchar.getNodeTree());
       mm_visualization__skeletonNodeFilter.clear();
       if (!mm_visualization_show_skeleton_original)
       {

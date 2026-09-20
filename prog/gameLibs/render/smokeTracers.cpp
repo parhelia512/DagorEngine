@@ -7,6 +7,7 @@
 #include <drv/3d/dag_buffers.h>
 #include <drv/3d/dag_driver.h>
 #include <drv/3d/dag_info.h>
+#include <drv/3d/dag_driverDesc.h>
 #include <shaders/dag_computeShaders.h>
 #include <render/smokeTracers.h>
 #include <gameRes/dag_stdGameRes.h>
@@ -24,8 +25,6 @@
 #define VAR(a) static ShaderVariableInfo a##VarId(#a, true);
 GLOBAL_VARS_LIST
 #undef VAR
-
-constexpr int VS_CB_SIZE = 4094;
 
 void SmokeTracerManager::updateAlive()
 {
@@ -226,18 +225,18 @@ void SmokeTracerManager::performGPUCommands()
     G_STATIC_ASSERT(sizeof(createCommands[0]) == TRACER_SMOKE_CREATE_COMMAND_SIZE * sizeof(float4));
     // it is rare we create more than 28 tracers each frame, so use common constant buffer
     const int command_size_in_consts = (elem_size(createCommands) + 15) / 16;
-    const int cbuffer_size = d3d::set_cs_constbuffer_register_count(VS_CB_SIZE);
-    // debug("cbuffer_size = %d req = %d", cbuffer_size, req_size);
-    for (int i = 0; i < createCommands.size(); i += (cbuffer_size - 4) / command_size_in_consts)
+    const int cbufSizeShortage = max<int>(CONST_BUF_MAX_SIZE - d3d::get_driver_desc().maxvpconsts, 0);
+    const int createBatchSizeMaxSizeRegs = TRACER_CMD_BUF_MAX_SIZE - cbufSizeShortage;
+    const int createBatchMaxCount = createBatchSizeMaxSizeRegs / TRACER_SMOKE_CREATE_COMMAND_SIZE;
+    for (int i = 0; i < createCommands.size(); i += createBatchMaxCount)
     {
-      int batch_size = min<int>(createCommands.size() - i, (cbuffer_size - 4) / command_size_in_consts);
+      int batch_size = min<int>(createCommands.size() - i, createBatchMaxCount);
       // debug("batch_size = %d", batch_size);
       v[0] = batch_size;
       d3d::set_cs_const(3, (float *)v, 1);
       d3d::set_cs_const(4, (float *)&createCommands[i], batch_size * command_size_in_consts);
       createCommands_cs->dispatch((batch_size + TRACER_COMMAND_WARP_SIZE - 1) / TRACER_COMMAND_WARP_SIZE, 1, 1);
     }
-    d3d::set_cs_constbuffer_register_count(0);
     if (updateCommands.size())
     {
       d3d::resource_barrier({tracerVertsBuffer.get(), RB_FLUSH_UAV | RB_SOURCE_STAGE_COMPUTE | RB_STAGE_COMPUTE});
@@ -264,18 +263,19 @@ void SmokeTracerManager::performGPUCommands()
     v[0] = updateCommands.size();
     const int command_size_in_consts = (elem_size(updateCommands) + 15) / 16;
     const int startFromReg = 4;
-    const int cbuffer_size = d3d::set_cs_constbuffer_register_count(VS_CB_SIZE);
-    // debug("cbuffer_size = %d req = %d", cbuffer_size, req_size);
 
-    for (int i = 0; i < updateCommands.size(); i += (cbuffer_size - startFromReg) / command_size_in_consts)
+    const int cbufSizeShortage = max<int>(CONST_BUF_MAX_SIZE - d3d::get_driver_desc().maxvpconsts, 0);
+    const int updateBatchSizeMaxSizeRegs = TRACER_CMD_BUF_MAX_SIZE - cbufSizeShortage;
+    const int updateBatchMaxCount = updateBatchSizeMaxSizeRegs / TRACER_SMOKE_UPDATE_COMMAND_SIZE;
+
+    for (int i = 0; i < updateCommands.size(); i += updateBatchMaxCount)
     {
-      int batch_size = min<int>(updateCommands.size() - i, (cbuffer_size - startFromReg) / command_size_in_consts);
+      int batch_size = min<int>(updateCommands.size() - i, updateBatchMaxCount);
       v[0] = batch_size;
       d3d::set_cs_const(startFromReg - 1, (float *)v, 1);
       d3d::set_cs_const(startFromReg, (float *)&updateCommands[i], batch_size * command_size_in_consts);
       updateCommands_cs->dispatch((batch_size + TRACER_COMMAND_WARP_SIZE - 1) / TRACER_COMMAND_WARP_SIZE, 1, 1);
     }
-    d3d::set_cs_constbuffer_register_count(0);
     updateCommands.clear();
     d3d::set_buffer(STAGE_CS, 0, 0);
     d3d::resource_barrier({tracerVertsBuffer.get(), RB_RO_SRV | RB_STAGE_VERTEX | RB_STAGE_COMPUTE});
@@ -333,19 +333,17 @@ void SmokeTracerManager::beforeRender(const Frustum &frustum, float exposure_tim
   G_ASSERT(usedTracers[0].static_size % 16 == 0);
   const int tracersPerCommand = 16 / elem_size(usedTracers[currentUsed]);
 
-  const int cbuffer_size = d3d::set_cs_constbuffer_register_count(VS_CB_SIZE);
-  for (int i = 0; i < usedTracers[currentUsed].size(); i += (cbuffer_size - startFromReg) * tracersPerCommand) // up to 4094 consts
-                                                                                                               // i.e. up to 4094*8
-                                                                                                               // tracers
+  const int maxConstCountForBatch = min<int>(4096, d3d::get_driver_desc().maxvpconsts);
+  const int maxBatchSize = (maxConstCountForBatch - startFromReg) * tracersPerCommand;
+  for (int i = 0; i < usedTracers[currentUsed].size(); i += maxBatchSize)
   {
-    int batch_size = min<int>(usedTracers[currentUsed].size() - i, (cbuffer_size - startFromReg) * tracersPerCommand);
+    int batch_size = min<int>(usedTracers[currentUsed].size() - i, maxBatchSize);
     v[0] = batch_size;
     d3d::set_cs_const(startFromReg - 1, (float *)v, 1);
     d3d::set_cs_const(startFromReg, (const float *)&usedTracers[currentUsed][i],
       (elem_size(usedTracers[currentUsed]) * batch_size + 15) / 16);
     cullTracers_cs->dispatch((batch_size + TRACER_CULL_WARP_SIZE - 1) / TRACER_CULL_WARP_SIZE, 1, 1);
   }
-  d3d::set_cs_constbuffer_register_count(0);
   d3d::set_buffer(STAGE_CS, 8, 0);
   d3d::set_buffer(STAGE_CS, 9, 0);
   d3d::set_buffer(STAGE_CS, 10, 0);

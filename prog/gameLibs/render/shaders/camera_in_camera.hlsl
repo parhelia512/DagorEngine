@@ -173,6 +173,7 @@ if (camera_in_camera_active != 0.0)                                       \
 }
 
 #define DISCARD_GROUP_IN_INVALID_VIEW_AREA(lds_var, uv, out_view_type)          \
+out_view_type = camera_in_camera_main_view();                                   \
 BRANCH                                                                          \
 if (camera_has_sub_view())                                                      \
 {                                                                               \

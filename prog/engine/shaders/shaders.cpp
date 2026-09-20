@@ -684,7 +684,7 @@ class JobManagersSyncPoint
 
     explicit FenceJob(SyncPointSharedState *state) : state{state} {}
 
-    const char *getJobName(bool &) const override { return "FenceJob"; }
+    const char *getJobName(bool &) const override { return DAPROFILER_STRING("FenceJob"); }
 
     void doJob() override
     {
@@ -1266,7 +1266,6 @@ public:
     close_vdecl();
 
     // reset public varIds
-    shaders_internal::close_global_constbuffers();
     shaders_internal::close_stateblocks();
     ShaderStateBlock::clear();
     auto &dumpOwner = shBinDumpOwner();

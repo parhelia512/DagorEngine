@@ -1,13 +1,13 @@
-set GDK_VER=250401
-set LLVM_VER=18.1.8
+set GDK_VER=260403
+set LLVM_VER=21.1.8
 
 call :NORMALIZEPATH "..\..\..\..\..\"
 set DAGOR_ROOT=%RETVAL%
 set DAGOR_PROG=%DAGOR_ROOT%\prog\
 
 set BUILD_PC_DXC=%DAGOR_ROOT%\tools\dagor_cdk\windows-x86_64\dxc-dx12\pc\dxc.exe /nologo /O3 /Qstrip_debug /Qstrip_reflect
-set BUILD_SCARLETT=%GDEVTOOL%\xbox.gdk.%GDK_VER%\%GDK_VER%\GXDK\bin\Scarlett\dxc.exe /nologo /O3 /Qstrip_debug
-set BUILD_XBOX_ONE=%GDEVTOOL%\xbox.gdk.%GDK_VER%\%GDK_VER%\GXDK\bin\XboxOne\dxc.exe /nologo /O3 /Qstrip_debug
+set BUILD_SCARLETT=%GDEVTOOL%\xbox.gdk.%GDK_VER%\%GDK_VER%\xbox\bin\gen9\dxc.exe /nologo /O3 /Qstrip_debug
+set BUILD_XBOX_ONE=%GDEVTOOL%\xbox.gdk.%GDK_VER%\%GDK_VER%\xbox\bin\gen8\dxc.exe /nologo /O3 /Qstrip_debug
 set FIX_IOG=%DAGOR_PROG%\fix_iog.exe %DAGOR_PROG%\fix_private_hdr.rls .
 
 del *.h

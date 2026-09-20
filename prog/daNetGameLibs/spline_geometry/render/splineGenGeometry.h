@@ -54,6 +54,8 @@ private:
   SplineGenInstance instance;
   eastl::vector<BatchId> batchIds;
   int inactiveFrames = 0;
+  float splineLength = 0;
+  float meterBetweenObjs = 0;
 };
 
 ECS_DECLARE_BOXED_TYPE(SplineGenGeometry);

@@ -5,10 +5,11 @@
 #pragma once
 
 #include <util/dag_inttypes.h>
+#include <drv/3d/dag_multi_interface.h>
 
 class Sbuffer;
 
-namespace d3d
+namespace d3d _MULTI_INTERFACE
 {
 /**
  * @brief Dispatches a mesh shader with the specified thread group dimensions.
@@ -52,7 +53,7 @@ void dispatch_mesh_indirect(Sbuffer *args, uint32_t dispatch_count, uint32_t str
  */
 void dispatch_mesh_indirect_count(Sbuffer *args, uint32_t args_stride_bytes, uint32_t args_byte_offset, Sbuffer *count,
   uint32_t count_byte_offset, uint32_t max_count);
-} // namespace d3d
+} // namespace d3d _MULTI_INTERFACE
 
 #if _TARGET_D3D_MULTI
 #include <drv/3d/dag_interface_table.h>

@@ -209,6 +209,8 @@ if $(KernelLinkage) != dynamic {
     engine/baseUtil
   ;
 }
+include $(Root)/prog/gameLibs/render/animatedSplashScreen/_lib.jam ;
+include $(Root)/prog/gameLibs/render/cameraInCamera/_lib.jam ;
 UseProgLibs +=
   engine/startup
   engine/coreUtil
@@ -458,7 +460,8 @@ if $(Platform) in windows linux {
     gameLibs/webui/websocket
   ;
 
-  Sources += render/autoGraphics/autoGraphics.cpp ;
+  # dedicated server renders nothing, and sampling the hardware for a graphics preset makes no sense
+  if $(Dedicated) != yes { Sources += render/autoGraphics/autoGraphics.cpp ; } else { Sources += render/stub/autoGraphicsStub.cpp ; }
 } else {
   UseProgLibs +=
     gameLibs/webui/websocket/stub
@@ -561,6 +564,7 @@ if $(HaveRenderer) = yes {
     gameLibs/render/voxelizationTarget
     gameLibs/GIWindows
     gameLibs/daGI2
+    gameLibs/voxelizedMedia
     gameLibs/ecs/render
     gameLibs/ecs/render/weather_effects
     gameLibs/ecs/camera
@@ -612,9 +616,14 @@ if $(HaveRenderer) = yes {
   UseProgLibs +=
     gameLibs/daSkies2
     gameLibs/daSkies2/debug
+    gameLibs/iblCube
   ;
 
   gamePulls += daSkies2_clouds_field_debug_pull ;
+
+  iblCube_ecs_pull_ref = extern const size_t ecs_pull_iblCube \; size_t iblCube_ecs_pull_ref \= \(size_t\)\(\&ecs_pull_iblCube\) \; ;
+  Sources += iblCube_ecs_pull_ref.jamvar ;
+  gamePulls += iblCube_ecs_pull_ref ;
 } else {
   # Stub ECS pull for daSkies
   stub_daSkies2_ecs_pull = extern const size_t ecs_pull_cloudsRainMap \= \(size_t\)\(\&ecs_pull_cloudsRainMap\) \; ;
@@ -747,7 +756,7 @@ if $(Dedicated) = yes {
 
     if $(Platform) = iOS {
       UseProgLibs +=
-        gameLibs/quirrel/ios/facebook
+        gameLibs/quirrel/facebook
         gameLibs/ios/account
         gameLibs/quirrel/ios/account
         gameLibs/ios/billing
@@ -771,9 +780,9 @@ if $(Dedicated) = yes {
       ;
 
       if $(UseFacebook) = yes {
-        UseProgLibs += gameLibs/ios/facebook ;
+        UseProgLibs += gameLibs/facebook ;
       } else {
-        UseProgLibs += gameLibs/ios/facebook/stub ;
+        UseProgLibs += gameLibs/facebook/stub ;
       }
 
       Sources +=
@@ -804,7 +813,7 @@ if $(Dedicated) = yes {
       gameLibs/android/network
       gameLibs/android/apkinstall
       gameLibs/android/account/googleplay
-      gameLibs/android/account/facebook
+      gameLibs/facebook
       gameLibs/android/account/firebaseguest
       gameLibs/android/webview
       gameLibs/android/pushnotifications
@@ -813,7 +822,7 @@ if $(Dedicated) = yes {
       gameLibs/quirrel/android/platform
       gameLibs/quirrel/android/billing
       gameLibs/quirrel/android/account/googleplay
-      gameLibs/quirrel/android/account/facebook
+      gameLibs/quirrel/facebook
       gameLibs/quirrel/android/account/firebaseguest
       gameLibs/quirrel/android/localnotifications
       gameLibs/quirrel/appsFlyer

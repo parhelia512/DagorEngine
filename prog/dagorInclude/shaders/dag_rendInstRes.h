@@ -445,7 +445,7 @@ protected:
   RenderableInstanceLodsResource(const RenderableInstanceLodsResource &);
   ~RenderableInstanceLodsResource() { clearData(); }
 
-  void patchAndLoadData(int res_sz, IGenLoad &crd, int flags, const char *name);
+  void patchAndLoadData(int res_sz, IGenLoad &crd, int srl_flags, const char *name);
 
   ImpostorRtData *impRtdPtr() const
   {

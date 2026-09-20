@@ -8,6 +8,7 @@ include "indoor_light_probes.dshl"
 include "water_3d_overrides.dshl"
 include "psh_derivate.dshl"
 include "water_3d_color.dshl"
+include "camera_in_camera.dshl"
 
 assume use_water_fresnel_reflections = yes;
 assume chop_water_enabled = no;
@@ -32,6 +33,7 @@ macro INIT_WATER_3D_DEFERRED_COLOR_DNG()
 endmacro
 
 macro USE_WATER_3D_DEFERRED_COLOR_DNG()
+  INIT_AND_USE_ON_TOP_CAMERA_IN_CAMERA(ps)
   USE_BRUNETON_FOG()
 
   INIT_SKY_UP_DIFFUSE(ps)
@@ -497,6 +499,7 @@ endmacro
 macro USE_SELECT_WATER_3D_DEFERRED_COLOR()
 if (water_tech == wt)
 {
+  INIT_AND_USE_ON_TOP_CAMERA_IN_CAMERA(ps)
   USE_WATER_3D_DEFERRED_COLOR()
   hlsl(ps)
   {
@@ -508,7 +511,7 @@ if (water_tech == wt)
 
       ChopWaterData chopData;
 
-      const WaterBaseContext ctx = computeWaterBaseContext(input, vface, shoreData, chopData, 1.5, float2(0,0), 0);
+      const WaterBaseContext ctx = computeWaterBaseContext(input, vface, shoreData, chopData, 1.5, 1, float2(0,0), 0);
       const ViewData vd = ctx.vd;
       const FoamData foamData = ctx.foamData;
       const DeepnessData deepnessData = ctx.deepnessData;

@@ -26,11 +26,13 @@
 
 using namespace drv3d_metal;
 
-VPROG d3d::create_vertex_shader(const ShaderSource &data)
+static const char *sv_name_to_cstr(eastl::string_view sv) { return sv.empty() ? nullptr : sv.data(); }
+
+VPROG d3d::create_vertex_shader(const ShaderSourceExt &data)
 {
   Tab<uint8_t> tmpmem(framemem_ptr());
   const uint32_t *native_code = data.uncompress(tmpmem);
-  return render.createVertexShader((const uint8_t*)native_code, data.metadata.data());
+  return render.createVertexShader((const uint8_t*)native_code, data.metadata.data(), sv_name_to_cstr(data.getDebugName()));
 }
 
 void d3d::delete_vertex_shader(VPROG vs)
@@ -38,11 +40,11 @@ void d3d::delete_vertex_shader(VPROG vs)
   render.deleteVertexShader(vs);
 }
 
-FSHADER d3d::create_pixel_shader(const ShaderSource &data)
+FSHADER d3d::create_pixel_shader(const ShaderSourceExt &data)
 {
   Tab<uint8_t> tmpmem(framemem_ptr());
   const uint32_t *native_code = data.uncompress(tmpmem);
-  return render.createPixelShader((const uint8_t*)native_code, data.metadata.data());
+  return render.createPixelShader((const uint8_t*)native_code, data.metadata.data(), sv_name_to_cstr(data.getDebugName()));
 }
 
 void d3d::delete_pixel_shader(FSHADER ps)
@@ -58,11 +60,11 @@ PROGRAM d3d::create_program(VPROG vp, FSHADER ps, VDECL vdecl,
 }
 
 //if strides & streams are unset, will get them from VDECL
-PROGRAM d3d::create_program_cs(const ShaderSource &data, CSPreloaded)
+PROGRAM d3d::create_program_cs(const ShaderSourceExt &data, CSPreloaded)
 {
   Tab<uint8_t> tmpmem(framemem_ptr());
   const uint32_t *cs_native = data.uncompress(tmpmem);
-  return render.createComputeProgram((const uint8_t*)cs_native, data.metadata.data());
+  return render.createComputeProgram((const uint8_t*)cs_native, data.metadata.data(), sv_name_to_cstr(data.getDebugName()));
 }
 
 //sets both pixel and vertex shader and vertex declaration
@@ -78,22 +80,12 @@ void d3d::delete_program(PROGRAM prog)
   render.deleteProgram(prog);
 }
 
-int d3d::set_vs_constbuffer_register_count(int required_count)
-{
-  return required_count > 0 ? min(Render::MAX_CBUFFER_SIZE / 16, required_count) : DEF_VS_CONSTS;
-}
-
 bool d3d::set_const(unsigned stage, unsigned reg_base, const void *data, unsigned num_regs)
 {
   D3D_CONTRACT_ASSERT_RETURN(stage < STAGE_MAX, false);
   render.setConst(stage, reg_base, (const float*)data, num_regs);
 
   return true;
-}
-
-int d3d::set_cs_constbuffer_register_count(int required_count)
-{
-  return required_count > 0 ? min(Render::MAX_CBUFFER_SIZE / 16, required_count) : DEF_CS_CONSTS;
 }
 
 bool d3d::dispatch(uint32_t thread_group_x, uint32_t thread_group_y, uint32_t thread_group_z, GpuPipeline gpu_pipeline)

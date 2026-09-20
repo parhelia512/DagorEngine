@@ -3787,18 +3787,24 @@ void AnimPostBlendTwoBonesIK::process(AnimGraphStateHolder &st, real wt, GeomNod
       flex_direction = v_neg(flex_direction);
     }
 
+    solve_2bones_ik(start_wtm, middle_wtm, end_wtm, target_wtm, nodes[i].len0, nodes[i].len1, flex_direction, rec[i].maxReachScale);
+
     if (rec[i].rotateFlexDirectionParamId >= 0)
     {
       vec3f axis = v_sub(end_wtm.col3, start_wtm.col3);
       if (v_extract_x(v_length3_sq_x(axis)) > 1e-5f)
       {
-        axis = v_norm3(axis);
-        vec4f angle = v_splats(st.getParam(rec[i].rotateFlexDirectionParamId) * DEG_TO_RAD);
-        flex_direction = v_quat_mul_vec3(v_quat_from_unit_vec_ang(axis, angle), flex_direction);
+        mat33f rotTm;
+        v_mat33_make_rot_cw(rotTm, v_norm3(v_sub(end_wtm.col3, start_wtm.col3)),
+          v_splats(st.getParam(rec[i].rotateFlexDirectionParamId) * DEG_TO_RAD));
+        mat33f startWtm3, middleWtm3;
+        v_mat33_mul33r(startWtm3, rotTm, start_wtm);
+        start_wtm.set33(startWtm3);
+        v_mat33_mul33r(middleWtm3, rotTm, middle_wtm);
+        middle_wtm.set33(middleWtm3);
+        middle_wtm.col3 = v_add(start_wtm.col3, v_mat33_mul_vec3(rotTm, v_sub(middle_wtm.col3, start_wtm.col3)));
       }
     }
-
-    solve_2bones_ik(start_wtm, middle_wtm, end_wtm, target_wtm, nodes[i].len0, nodes[i].len1, flex_direction, rec[i].maxReachScale);
 
     if (rec[i].forceReachTarget)
     {

@@ -11,6 +11,7 @@
 #include <dag/dag_vectorSet.h>
 #include <dag/dag_vectorMap.h>
 #include <generic/dag_relocatableFixedVector.h>
+#include <util/dag_compilerDefs.h>
 #include "internal/archetypes.h"
 #include "component.h"
 
@@ -24,7 +25,7 @@ class ComponentsMap;
 typedef dag::VectorMap<component_t, ChildComponent> BaseComponentsMap;
 
 // it is still extremely slow on (de)allocation. We'd better try some other container (Object from ecs20, for example)
-class ComponentsMap : protected BaseComponentsMap
+class DAGOR_WARN_IF_UNUSED ComponentsMap : protected BaseComponentsMap
 {
   friend class EntityManager;
 
@@ -80,7 +81,7 @@ struct InitializerNode
 
 typedef dag::RelocatableFixedVector<InitializerNode, 8> BaseComponentsInitializer;
 
-class ComponentsInitializer : protected BaseComponentsInitializer
+class DAGOR_WARN_IF_UNUSED ComponentsInitializer : protected BaseComponentsInitializer
 {
 public:
   typedef BaseComponentsInitializer base_type;

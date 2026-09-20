@@ -5,7 +5,7 @@
 #pragma once
 
 #include <util/dag_threadPool.h>
-#include <EASTL/fixed_function.h>
+#include <generic/dag_functionRef.h>
 
 #include <supp/dag_define_KRNLIMP.h>
 namespace threadpool
@@ -17,11 +17,12 @@ namespace threadpool
     cb(i, min(end-i, quant), thread_id);
 
   parallel_for(uint32_t begin, uint32_t end, uint32_t quant,
-               eastl::fixed_function<sizeof(void*)*2, void(uint32_t tbegin, uint32_t tend, uint32_t thread_id)> cb,
+               dag::FunctionRef<void(uint32_t tbegin, uint32_t tend, uint32_t thread_id)> cb,
                uint32_t add_jobs_count = 0, JobPriority prio = PRIO_HIGH, bool wake = true);
 
   cb:
-    call back function.
+    call back function. Not owned: the call is synchronous, so a plain lambda
+    of any size can be passed.
     must be reentrant, as it will be callled from different threads.
     * tbegin: in [begin, end) range
     * tend: in (tbegin, end) range
@@ -35,7 +36,7 @@ namespace threadpool
   wake: wakeup all threads. Better specify true, unless you know what are you doing
 */
 KRNLIMP void parallel_for(uint32_t begin, uint32_t end, uint32_t quant,
-  eastl::fixed_function<sizeof(void *) * 2, void(uint32_t tbegin, uint32_t tend, uint32_t thread_id)> cb, uint32_t add_jobs_count = 0,
+  dag::FunctionRef<void(uint32_t tbegin, uint32_t tend, uint32_t thread_id)> cb, uint32_t add_jobs_count = 0,
   JobPriority prio = PRIO_HIGH, bool wake = true, uint32_t dapDescId = 0); // wide load expects high priority
 }; // namespace threadpool
 

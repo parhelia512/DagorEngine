@@ -10,7 +10,11 @@
 #include <IOKit/network/IONetworkInterface.h>
 #include <IOKit/network/IOEthernetController.h>
 #include <Foundation/NSProcessInfo.h>
+#include <IOKit/IOBSD.h>
+#include <IOKit/storage/IOStorageDeviceCharacteristics.h>
 #include <sys/sysctl.h>
+#include <sys/mount.h>
+#include <paths.h>
 
 bool macosx_get_desktop_res(int &wd, int &ht)
 {
@@ -109,4 +113,44 @@ const char* macosx_get_location()
   }
 
   return location;
+}
+
+// 1 = rotational, 0 = solid state, -1 = not known
+int macosx_get_disk_rotational(const char *path)
+{
+  struct statfs statf;
+  if (statfs(path, &statf) != 0)
+    return -1;
+  const char *bsdName = statf.f_mntfromname;
+  if (strncmp(bsdName, _PATH_DEV, strlen(_PATH_DEV)) == 0)
+    bsdName += strlen(_PATH_DEV);
+
+  constexpr mach_port_t defaultMasterPort = 0;
+  CFMutableDictionaryRef matching = IOBSDNameMatching(defaultMasterPort, 0, bsdName);
+  if (!matching)
+    return -1;
+  io_service_t media = IOServiceGetMatchingService(defaultMasterPort, matching); // consumes matching
+  if (!media)
+    return -1;
+
+  // the medium type sits on the block storage device, several parents above an APFS volume
+  int rotational = -1;
+  if (CFTypeRef characteristics = IORegistryEntrySearchCFProperty(media, kIOServicePlane,
+        CFSTR(kIOPropertyDeviceCharacteristicsKey), kCFAllocatorDefault, kIORegistryIterateRecursively | kIORegistryIterateParents))
+  {
+    if (CFGetTypeID(characteristics) == CFDictionaryGetTypeID())
+    {
+      CFTypeRef medium = CFDictionaryGetValue((CFDictionaryRef)characteristics, CFSTR(kIOPropertyMediumTypeKey));
+      if (medium && CFGetTypeID(medium) == CFStringGetTypeID())
+      {
+        if (CFEqual(medium, CFSTR(kIOPropertyMediumTypeSolidStateKey)))
+          rotational = 0;
+        else if (CFEqual(medium, CFSTR(kIOPropertyMediumTypeRotationalKey)))
+          rotational = 1;
+      }
+    }
+    CFRelease(characteristics);
+  }
+  IOObjectRelease(media);
+  return rotational;
 }

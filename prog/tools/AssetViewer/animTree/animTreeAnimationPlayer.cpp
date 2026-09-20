@@ -110,7 +110,7 @@ void AnimTreeAnimationPlayer::resetDynModel()
   if (ctrl)
     ctrl->setSkeletonForRender(nullptr);
   destroy_it(entity);
-  geomTree = GeomNodeTree();
+  geomTree.clear();
   ctrl = nullptr;
   origGeomTree = nullptr;
   animNodes.clear();
@@ -145,7 +145,7 @@ void AnimTreeAnimationPlayer::reloadDynModel(const DagorAsset &asset)
   origGeomTree = ctrl->getSkeleton();
   if (!origGeomTree)
     return;
-  geomTree = *origGeomTree;
+  geomTree.replaceContentFrom(*origGeomTree);
   ctrl->setSkeletonForRender(&geomTree);
 }
 

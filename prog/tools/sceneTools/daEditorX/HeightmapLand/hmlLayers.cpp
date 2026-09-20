@@ -7,6 +7,8 @@
 #include "hmlCm.h"
 #include <math/dag_adjpow2.h>
 
+G_STATIC_ASSERT(EditLayerProps::MAX_LAYERS <= IObjEntity::LAYER_INDEX_LANDCLASS);
+
 FastNameMapEx EditLayerProps::layerNames;
 Tab<EditLayerProps> EditLayerProps::layerProps;
 int EditLayerProps::activeLayerIdx[EditLayerProps::TYPENUM];

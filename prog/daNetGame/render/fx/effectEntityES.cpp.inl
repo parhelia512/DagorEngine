@@ -357,7 +357,7 @@ static inline void biome_query_init_es(
 }
 
 ECS_TAG(render)
-ECS_ON_EVENT(on_appear, OnLevelLoaded)
+ECS_ON_EVENT(on_appear, EventRenderSceneLoaded)
 static inline void biome_query_calculate_replacement_id_es(
   const ecs::Event &, const ecs::StringList &biome_query__biomeReplaceNameList, ecs::IntList &biome_query__biomeReplaceIdList)
 {

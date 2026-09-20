@@ -160,27 +160,15 @@ void SplineGenGeometryManager::updateBuffers()
   currentBufferIndex = (currentBufferIndex + 1) % 2;
 }
 
-void SplineGenGeometryManager::updateInstancingData(
+void SplineGenGeometryManager::writeSplineData(
   InstanceId id, SplineGenInstance &instance, const eastl::vector<SplineGenSpline, framemem_allocator> &spline_vec)
 {
   G_ASSERT(id < getAllocatedInstanceCount());
+  G_ASSERT(spline_vec.size() == stripes + 1);
+  G_ASSERT_RETURN(splineCpuData.size() >= (stripes + 1) * (size_t)getAllocatedInstanceCount(), );
 
-  if (!splineBufferDirty)
-  {
-    auto lockedStagingBuffer = lock_sbuffer<SplineGenSpline>(splineStagingBuffer.getBuf(), 0,
-      (stripes + 1) * getAllocatedInstanceCount(), VBLOCK_WRITEONLY | VBLOCK_DISCARD);
-    if (lockedStagingBuffer)
-      lockedStagingBuffer.updateDataRange(id * (stripes + 1), spline_vec.data(), stripes + 1);
-    else
-      logerr("spline_gen: failed to lock staging buffer for instance %u", (unsigned)id);
-  }
-  else
-  {
-    splineStagingBuffer.getBuf()->updateData(id * splineEntrySize, splineEntrySize, spline_vec.data(),
-      VBLOCK_WRITEONLY | VBLOCK_NOOVERWRITE);
-  }
-  splineBufferDirtyMask.set(id);
-  splineBufferDirty = true;
+  memcpy(splineCpuData.data() + (size_t)id * (stripes + 1), spline_vec.data(), splineEntrySize);
+  splineBufferDirtyMask[id] = 1;
 
   if (invalidatePrevBuffer)
     instance.flags &= ~PREV_SB_VALID;
@@ -546,9 +534,8 @@ void SplineGenGeometryManager::allocateBuffers()
   }
 
   // add 1 bit in the end of array to simplify range loop
-  splineBufferDirtyMask.resize(getAllocatedInstanceCount() + 1);
-  splineBufferDirtyMask.reset();
-  splineBufferDirty = false;
+  splineBufferDirtyMask.assign(getAllocatedInstanceCount() + 1, 0);
+  splineCpuData.resize((size_t)(stripes + 1) * getAllocatedInstanceCount());
 
   buffName = String(0, "%s_splineGen_indirectionBuffer", templateName.c_str());
   indirectionBuffer = dag::create_sbuffer(sizeof(InstanceId), getAllocatedInstanceCount(),
@@ -594,30 +581,56 @@ void SplineGenGeometryManager::uploadObjBatchIdBuffer()
 
 void SplineGenGeometryManager::uploadSplineBuffer()
 {
-  if (!splineBufferDirty)
-    return;
-
   if (splineStagingBuffer.getBuf() == nullptr || splineBuffer[currentBufferIndex].getBuf() == nullptr)
     return;
 
-  uint32_t offset = 0, size_bytes = 0;
-  for (int i = 0, count = splineBufferDirtyMask.size(); i < count; ++i)
-    if (splineBufferDirtyMask[i])
-    {
-      if (size_bytes == 0)
-        offset = i * splineEntrySize;
+  bool anyDirty = false;
+  for (uint8_t dirty : splineBufferDirtyMask)
+    anyDirty |= dirty != 0;
+  if (!anyDirty)
+    return;
 
-      size_bytes += splineEntrySize;
-    }
-    // last bit is always 0, so no leftover processing is needed
-    else if (size_bytes > 0)
-    {
-      splineStagingBuffer->copyTo(splineBuffer[currentBufferIndex].getBuf(), offset, offset, size_bytes);
-      size_bytes = 0;
-    }
+  const auto forEachDirtyRun = [this](auto cb) {
+    uint32_t first = 0, count = 0;
+    for (int i = 0, n = (int)splineBufferDirtyMask.size(); i < n; ++i)
+      if (splineBufferDirtyMask[i])
+      {
+        if (count == 0)
+          first = i;
+        count++;
+      }
+      // last bit is always 0, so no leftover processing is needed
+      else if (count > 0)
+      {
+        cb(first, count);
+        count = 0;
+      }
+  };
 
-  splineBufferDirtyMask.reset();
-  splineBufferDirty = false;
+  // Uploading splineGenSpline to staging
+  {
+    auto stagingData = lock_sbuffer<SplineGenSpline>(splineStagingBuffer.getBuf(), 0, (stripes + 1) * getAllocatedInstanceCount(),
+      VBLOCK_WRITEONLY | VBLOCK_DISCARD);
+    if (!stagingData)
+    {
+      logerr("spline_gen [%s]: failed to lock spline staging buffer", templateName.c_str());
+      invalidatePrevBuffer = true;
+      reactivateAllInstances();
+      return;
+    }
+    forEachDirtyRun([&](uint32_t first, uint32_t count) {
+      stagingData.updateDataRange((size_t)first * (stripes + 1), splineCpuData.data() + (size_t)first * (stripes + 1),
+        (size_t)count * (stripes + 1));
+    });
+  }
+
+  // Uploading staging to GPU buffer
+  forEachDirtyRun([this](uint32_t first, uint32_t count) {
+    splineStagingBuffer->copyTo(splineBuffer[currentBufferIndex].getBuf(), first * splineEntrySize, first * splineEntrySize,
+      count * splineEntrySize);
+  });
+
+  memset(splineBufferDirtyMask.data(), 0, splineBufferDirtyMask.size());
 }
 
 void SplineGenGeometryManager::setInstancingShaderVarsForRendering(int cascade)

@@ -50,6 +50,8 @@ public:
       "::imgui_window_set_visible");
     das::addExtern<DAS_BIND_FUN(imgui_window_is_visible)>(*this, lib, "imgui_window_is_visible", das::SideEffects::accessExternal,
       "::imgui_window_is_visible");
+    das::addExtern<DAS_BIND_FUN(imgui_window_request_focus)>(*this, lib, "imgui_window_request_focus",
+      das::SideEffects::modifyExternal, "::imgui_window_request_focus");
     das::addExtern<DAS_BIND_FUN(imgui_get_state)>(*this, lib, "imgui_get_state", das::SideEffects::accessExternal,
       "::imgui_get_state");
     das::addExtern<DAS_BIND_FUN(imgui_save_blk)>(*this, lib, "imgui_save_blk", das::SideEffects::accessExternal, "::imgui_save_blk");

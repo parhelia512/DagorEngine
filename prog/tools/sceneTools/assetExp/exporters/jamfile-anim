@@ -17,18 +17,19 @@ AddIncludes =
   $(Root)/prog/tools/sharedInclude
 ;
 
-UseProgLibs =
+UseProgLibs +=
   engine/startup
   engine/math
   engine/perfMon
 
   tools/libTools/assetMgr
   tools/libTools/pageAsg
-  tools/libTools/util
 
   engine/lib3d
   engine/shaders
   engine/sceneRay
+  engine/gameRes
+  engine/scene
   engine/drv/drv3d_null
   tools/libTools/shaderResBuilder
   tools/libTools/dagFileRW

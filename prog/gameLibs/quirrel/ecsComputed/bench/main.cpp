@@ -37,7 +37,7 @@ extern const uint8_t DASEVENT_NATIVE_ROUTING = 0xFE;
 uint8_t get_dasevent_routing(ecs::event_type_t) { return DASEVENT_NO_ROUTING; }
 } // namespace bind_dascript
 
-Tab<const char *> ecs_get_global_tags_context()
+Tab<const char *> ecs_get_global_tags_context(ecs::EntityManager &)
 {
   Tab<const char *> tags(framemem_ptr());
   tags.push_back("server");
@@ -103,6 +103,9 @@ int DagorWinMain(bool /*debugmode*/)
   const bool filterSelects = strcmp(filterMode, "native") == 0 || strcmp(filterMode, "script") == 0;
   // rows flagged without their values changing, see readme.txt
   const bool sameWrites = arg_int("samewrites", 0) != 0;
+  // adds tag-column and mirrored-eid mirrors, verified at the end; kept off
+  // the default path so their entity systems do not skew the measured modes
+  const bool tagEid = arg_int("tageid", 0) != 0;
   if (filterChurn && !filterSelects && strcmp(filterMode, "churn") != 0 && strcmp(filterMode, "pass") != 0)
   {
     printf("FATAL: -filter: must be one of off, churn, pass, native, script\n");
@@ -129,6 +132,11 @@ int DagorWinMain(bool /*debugmode*/)
   if (derivedCount > 0 && strcmp(mode, "none") == 0)
   {
     printf("FATAL: -derived: needs a mirroring mode, -mode:none has no row to derive from\n");
+    return 1;
+  }
+  if (tagEid && strcmp(mode, "pull") != 0)
+  {
+    printf("FATAL: -tageid: needs -mode:pull, the sweep accounting below assumes it\n");
     return 1;
   }
 
@@ -164,6 +172,7 @@ int DagorWinMain(bool /*debugmode*/)
   benchTbl.SetValue("filterMode", filterMode);
   benchTbl.SetValue("derivedCount", derivedCount);
   benchTbl.SetValue("sameWrites", sameWrites);
+  benchTbl.SetValue("tagEid", tagEid);
   benchTbl.SquirrelFunc("log", bench_log, 2, ".s");
   moduleMgr->addNativeModule("bench", benchTbl);
 
@@ -380,7 +389,8 @@ int DagorWinMain(bool /*debugmode*/)
     // dropping the script handles must let the sweep unregister their systems
     Sqrat::Function(benchExports, "dropMirrors").Execute();
     const int swept = ecscomputed::sweep();
-    const int expectedSwept = mapShape ? 1 : 2; // the state mirror, plus loadout on the single shape
+    // the state mirror, plus loadout on the single shape, plus the four -tageid mirrors
+    const int expectedSwept = (mapShape ? 1 : 2) + (tagEid ? 4 : 0);
     ok = ok && swept == expectedSwept;
     printf("[BENCH] swept %d dead mirror systems (want %d) -> %s\n", swept, expectedSwept, swept == expectedSwept ? "OK" : "MISMATCH");
     // further churn must not reach the removed systems

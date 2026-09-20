@@ -49,11 +49,8 @@ public:
   virtual bool __stdcall makeTexDDSxHeader(DagorAsset &, ddsx::Header & /*dest_hdr*/, unsigned & /*dest_lev_desc*/) { return false; }
 
   //! computes (using cache shared data) and returns hash of source data (to be used for pack naming)
-  virtual bool getAssetSourceHash(SimpleString & /*dest_hash*/, DagorAsset &, void * /*cache_shared_data_ptr*/, unsigned /*tc*/)
-  {
-    return false;
-  }
+  virtual bool getAssetSourceHash(SimpleString & /*dest_hash*/, DagorAsset &, unsigned /*tc*/) { return false; }
 
   //! tries to update asset desc (or returns false when full asset rebuild required)
-  virtual bool updateBuildResultsBlk(DagorAsset &, void * /*cache_shared_data_ptr*/, unsigned /*tc*/) { return false; }
+  virtual bool updateBuildResultsBlk(DagorAsset &, unsigned /*tc*/) { return false; }
 };

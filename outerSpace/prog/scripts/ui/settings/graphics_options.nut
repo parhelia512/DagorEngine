@@ -1,14 +1,13 @@
+from "settings" import get_setting_by_blk_path, set_setting_by_blk_path, set_setting_by_blk_path_and_save, save_changed_settings
+from "videomode" import apply_video_settings
 from "%scripts/ui/ui_library.nut" import *
 from "types" import String
+from "%scripts/ui/widgets/msgbox.nut" import showWarning
+from "%sqstd/globalState.nut" import hardPersistWatched
+from "%scripts/ui/widgets/simpleComponents.nut" import mkCombo
+from "%scripts/ui/settings/options_lib.nut" import mkSettingsOption
 
-let { showWarning } = require("%scripts/ui/widgets/msgbox.nut")
-let { hardPersistWatched } = require("%sqstd/globalState.nut")
-let { get_setting_by_blk_path, set_setting_by_blk_path, set_setting_by_blk_path_and_save, save_changed_settings } = require("settings")
-let { apply_video_settings } = require("videomode")
-let { mkCombo } = require("%scripts/ui/widgets/simpleComponents.nut")
-let { mkSettingsOption } = require("%scripts/ui/settings/options_lib.nut")
-
-let presets = ["bareMinimum", "minimum", "low", "medium", "high", "ultra"]
+const presets = ["bareMinimum", "minimum", "low", "medium", "high", "ultra"]
 
 let mapOptionsByPresetTable = {
   ["graphics/texquality"]                     = ["low",         "low",     "medium", "high",    "high",     "high"],
@@ -36,7 +35,8 @@ let mapOptionsByPresetTable = {
   ["graphics/rendinstTesselation"]            = [false,         false,     false,    false,     false,      false], // disabled everywhere by default, way too expensive
   ["graphics/sharpening"]                     = [0.0,           0.0,       0.0,      0.0,       0.0,        0.0],
 }
-let optionsRequireRestart = {
+
+const optionsRequireRestart = {
   ["graphics/texquality"] = true
 }
 

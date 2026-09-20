@@ -601,6 +601,8 @@ struct DeviceDriverCapabilitiesBase
   bool hasShaderFloat16Support : 1;
   /**
    * \capbrief supports UAV access in every shader stage, without this cap UAV is only available in pixel and compute shaders.
+   * \note On DX11 all graphics stages share one UAV slot namespace, so set_rwbuffer for STAGE_VS and for STAGE_PS with
+   * the same slot address the same binding and the last one wins.
    * \someNYI
    * \platformtable{"hasUAVOnEveryStage",c,a,c,a,c,c,c,r,c,r,r}
    */
@@ -2218,6 +2220,9 @@ struct DeviceDriverIssuesBase
    * \note
    * - \constissue{DeviceDriverIssuesNoIssues::hasBrokenUAVOnlyPasses}
    * - \runtimeissue{DeviceDriverIssuesAndroid, \android}
+   * - \runtimeissue{DeviceDriverIssuesIOS, \ios}
+   * - \runtimeissue{DeviceDriverIssuesMacOSX, \mac}
+   * - \runtimeissue{DeviceDriverIssuesWindows, \win32}
    */
   bool hasBrokenUAVOnlyPasses : 1;
   /**
@@ -2471,7 +2476,7 @@ struct DeviceDriverIssuesNoIssues : DeviceDriverIssuesWindows
    **/
   static constexpr bool hasDepthCopyResourceBug = false;
   /**
-   * \brief Is constant true on \xbone, \scarlett, \ps4, \ps5, \ios, \tvos, \nswitch, \mac, \linux and \win32
+   * \brief Is constant false on \xbone, \scarlett, \ps4, \ps5, \tvos, \nswitch and \linux
    * \baseissue{DeviceDriverIssuesBase::hasBrokenUAVOnlyPasses}
    **/
   static constexpr bool hasBrokenUAVOnlyPasses = false;
@@ -2480,6 +2485,14 @@ struct DeviceDriverIssuesNoIssues : DeviceDriverIssuesWindows
    * \baseissue{DeviceDriverIssuesBase::hasBrokenAmplificationShaderDrawID}
    **/
   static constexpr bool hasBrokenAmplificationShaderDrawID = false;
+};
+
+/**
+ * \brief Issues structure specific for \mac.
+ */
+struct DeviceDriverIssuesMacOSX : DeviceDriverIssuesNoIssues
+{
+  using DeviceDriverIssuesBase::hasBrokenUAVOnlyPasses;
 };
 
 /**
@@ -2511,7 +2524,7 @@ using DeviceDriverIssues = DeviceDriverIssuesNoIssues;
 #elif _TARGET_ANDROID
 using DeviceDriverIssues = DeviceDriverIssuesAndroid;
 #elif _TARGET_PC_MACOSX
-using DeviceDriverIssues = DeviceDriverIssuesNoIssues;
+using DeviceDriverIssues = DeviceDriverIssuesMacOSX;
 #elif _TARGET_PC_LINUX
 using DeviceDriverIssues = DeviceDriverIssuesNoIssues;
 #elif _TARGET_PC_WIN

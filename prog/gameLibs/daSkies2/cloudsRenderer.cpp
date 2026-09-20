@@ -40,30 +40,29 @@ void CloudsRenderer::renderTiledDist(CloudsRendererData &data)
   if (!data.clouds_tile_distance)
     return;
   TIME_D3D_PROFILE(tiledDist);
+  const IPoint2 tiled = data.getUsedTiledRes();
   if (data.useCompute)
   {
-    TextureInfo ti;
-    data.clouds_tile_distance_tmp->getinfo(ti, 0);
     d3d::set_rwtex(STAGE_CS, 0, data.clouds_tile_distance_tmp.getTex2D(), 0, 0);
-    clouds_tile_dist_prepare_cs->dispatchThreads(ti.w, ti.h, 1);
+    clouds_tile_dist_prepare_cs->dispatchThreads(tiled.x, tiled.y, 1);
     d3d::set_rwtex(STAGE_CS, 0, data.clouds_tile_distance.getTex2D(), 0, 0);
-    clouds_tile_dist_min_cs->dispatchThreads(ti.w, ti.h, 1);
+    clouds_tile_dist_min_cs->dispatchThreads(tiled.x, tiled.y, 1);
     d3d::set_rwtex(STAGE_CS, 0, nullptr, 0, 0);
   }
   else
   {
     d3d::set_render_target({}, DepthAccess::RW, {{data.clouds_tile_distance_tmp.getTex2D(), 0, 0}});
+    d3d::setviewscissor(0, 0, tiled.x, tiled.y);
     clouds_tile_dist_prepare_ps.render();
     d3d::set_render_target({}, DepthAccess::RW, {{data.clouds_tile_distance.getTex2D(), 0, 0}});
+    d3d::setviewscissor(0, 0, tiled.x, tiled.y);
     clouds_tile_dist_min_ps.render();
   }
   if (clouds_tile_dist_count_cs && data.clouds_close_layer_is_outside)
   {
     TIME_D3D_PROFILE(non_empty_tiles);
-    TextureInfo ti;
-    data.clouds_tile_distance_tmp->getinfo(ti, 0);
     STATE_GUARD_NULLPTR(d3d::set_rwbuffer(STAGE_CS, 0, VALUE), data.clouds_close_layer_is_outside.getBuf());
-    clouds_tile_dist_count_cs->dispatchThreads(ti.w, ti.h, 1);
+    clouds_tile_dist_count_cs->dispatchThreads(tiled.x, tiled.y, 1);
   }
 }
 
@@ -133,11 +132,11 @@ int CloudsRenderer::getNotLesserDepthLevel(CloudsRendererData &data, int &depth_
   depth_levels = depth->level_count();
   if (!data.cloudTexRes.x)
     return 0;
+  const IPoint2 used = data.usedRes;
   TextureInfo depthInfo;
   depth->getinfo(depthInfo, 0);
   int level = 0;
-  for (int mw = depthInfo.w, mh = depthInfo.h; mw >= data.cloudTexRes.x && mh >= data.cloudTexRes.y && level < depth_levels;
-       mw >>= 1, mh >>= 1, level++)
+  for (int mw = depthInfo.w, mh = depthInfo.h; mw >= used.x && mh >= used.y && level < depth_levels; mw >>= 1, mh >>= 1, level++)
     ;
   level = max(0, level - 1);
   return level;
@@ -167,6 +166,8 @@ void CloudsRenderer::renderCloudsPrepare(CloudsRendererData &data, BaseTexture *
 
   TIME_D3D_PROFILE(render_clouds);
   ScopeReprojection reprojectionScope;
+  if (isMainView)
+    data.advanceUsedResolution();
   data.setVars(isMainView);
   if (setCameraVars)
     set_viewvecs_to_shader(view_tm, proj_tm);
@@ -273,8 +274,10 @@ void CloudsRenderer::renderCloudsPrepare(CloudsRendererData &data, BaseTexture *
   taaUseCompute &= use_compute.get();
 #endif
 
+  // the raster paths below restrict the viewport to the used sub-rect; restoring the render
+  // target is what resets it to the full target again
   eastl::optional<ScopeRenderTarget> rtScope;
-  if ((!useCompute || !taaUseCompute) && isMainView)
+  if (!useCompute || !taaUseCompute)
     rtScope.emplace();
 
   const bool checkerCompiled = clouds_checkerboard_compiled();
@@ -312,8 +315,9 @@ void CloudsRenderer::renderCloudsPrepare(CloudsRendererData &data, BaseTexture *
     ShaderGlobal::set_int(clouds_checkerboardVarId, checkerActive ? 1 : 0);
   // the trace target size: consumers must not derive it from the clouds res (the
   // packed checker target is quarter size; classic equals the clouds res)
-  ShaderGlobal::set_int4(traced_clouds_resVarId, checkerActive ? (data.cloudTexRes.x + 1) / 2 : data.cloudTexRes.x,
-    checkerActive ? (data.cloudTexRes.y + 1) / 2 : data.cloudTexRes.y, 0, 0);
+  const IPoint2 used = data.usedRes;
+  ShaderGlobal::set_int4(traced_clouds_resVarId, checkerActive ? (used.x + 1) / 2 : used.x, checkerActive ? (used.y + 1) / 2 : used.y,
+    0, 0);
 
   if (useCompute)
   {
@@ -349,9 +353,9 @@ void CloudsRenderer::renderCloudsPrepare(CloudsRendererData &data, BaseTexture *
   int depthLevels = 1;
   int level = getNotLesserDepthLevel(data, depthLevels, depth);
 
-  // the TAA depth texel math needs each texture's really sampled mip size: under
-  // dynamic resolution the depth pair follows the current scale while the clouds
-  // res stays at the stable maximum, and current vs prev differ on a step frame
+  // the TAA depth texel math needs each texture's really sampled mip size: the depth pair
+  // follows the current scale, which the clouds grid is locked to, and current vs prev
+  // differ on a step frame
   if (depth)
   {
     TextureInfo dti;
@@ -365,6 +369,14 @@ void CloudsRenderer::renderCloudsPrepare(CloudsRendererData &data, BaseTexture *
     ShaderGlobal::set_float4(clouds_depth_gbuf_dimsVarId, depthDims.x, depthDims.y, 1.f / depthDims.x, 1.f / depthDims.y);
     ShaderGlobal::set_float4(clouds_prev_depth_gbuf_dimsVarId, prevDepthDims.x, prevDepthDims.y, 1.f / prevDepthDims.x,
       1.f / prevDepthDims.y);
+#if DAGOR_DBGLEVEL > 0
+    // only a caller that names a render resolution promises this; 2:1 is fullres clouds on a half res depth
+    if (isMainView && data.pendingUsedRes.x > 0 && data.pendingUsedRes.y > 0)
+    {
+      G_LOGERR_ONCE_AND_DO(data.usedRes == depthDims || depthDims * 2 == data.usedRes, (void)0,
+        "clouds grid %dx%d is not locked to the scene depth grid %dx%d", data.usedRes.x, data.usedRes.y, depthDims.x, depthDims.y);
+    }
+#endif
   }
   else
   {
@@ -374,8 +386,8 @@ void CloudsRenderer::renderCloudsPrepare(CloudsRendererData &data, BaseTexture *
     ShaderGlobal::set_float4(clouds_prev_depth_gbuf_dimsVarId, 0, 0, 0, 0);
   }
 
-  int w = data.cloudTexRes.x;
-  int h = data.cloudTexRes.y;
+  const int w = used.x;
+  const int h = used.y;
 
   ShaderGlobal::set_texture_unsafe(clouds_depth_gbufVarId, depth);
   DispatchGroups2D dg = set_dispatch_groups(w, h, CLOUD_TRACE_WARP_X, CLOUD_TRACE_WARP_Y, data.lowresCloseClouds);
@@ -407,6 +419,7 @@ void CloudsRenderer::renderCloudsPrepare(CloudsRendererData &data, BaseTexture *
     {
       d3d::set_render_target({}, DepthAccess::RW,
         {{data.nextCloudsColor->getTex2D(), 0, 0}, {data.cloudsTextureDepth.getTex2D(), 0, 0}});
+      d3d::setviewscissor(0, 0, used.x, used.y);
       clouds2_temporal_ps.render();
     }
   }
@@ -446,6 +459,8 @@ void CloudsRenderer::renderCloudsPrepare(CloudsRendererData &data, BaseTexture *
     else
     {
       d3d::set_render_target({}, DepthAccess::RW, {{data.clouds_color_close.getTex2D(), 0, 0}});
+      const IPoint2 closeUsed = data.getCloseRes(used);
+      d3d::setviewscissor(0, 0, closeUsed.x, closeUsed.y);
       if (clouds_create_indirect.get() && data.cloudsIndirectBuffer)
       {
         clouds2_close_temporal_ps.getElem()->setStates();
@@ -502,9 +517,8 @@ void CloudsRenderer::renderCloudsPrepare(CloudsRendererData &data, BaseTexture *
     {
       d3d::set_render_target({}, DepthAccess::RW,
         {{data.cloudsTextureColor->getTex2D(), 0, 0}, {data.cloudsTextureWeight->getTex2D(), 0, 0}});
-      d3d::setview(0, 0, w, h, 0, 1);
-      d3d::setscissor(0, 0, w, h);
-      d3d::clearview(CLEAR_DISCARD_TARGET, 0, 0, 0);
+      d3d::setviewscissor(0, 0, used.x, used.y);
+      d3d::clearview(DISCARD_TARGET, 0, 0, 0);
       if (clouds_create_indirect.get() && data.cloudsIndirectBuffer)
       {
         clouds2_taa_ps_has_empty.getElem()->setStates();
@@ -544,6 +558,7 @@ void CloudsRenderer::renderCloudsPrepare(CloudsRendererData &data, BaseTexture *
     else
     {
       d3d::set_render_target({}, DepthAccess::RW, {{data.nextCloudsColor->getTex2D(), 0, 0}});
+      d3d::setviewscissor(0, 0, used.x, used.y);
       clouds2_apply_blur_ps.render();
       d3d::resource_barrier({data.nextCloudsColor->getTex2D(), RB_RW_RENDER_TARGET | RB_STAGE_PIXEL, 0, 0});
     }
@@ -578,22 +593,17 @@ void CloudsRenderer::renderDirect(CloudsRendererData &data)
 }
 /*static*/ void CloudsRenderer::set_program(ShaderElement *oe, ShaderElement *ne)
 {
-  uint32_t program;
-  ShaderStateBlockId state_index;
-  shaders::RenderStateId rstate;
-  shaders::ConstStateIdx cstate;
-  shaders::TexStateIdx tstate;
-  int curVariant = get_dynamic_variant_states(ne->native(), program, state_index, rstate, cstate, tstate);
-  uint32_t program2;
-  ShaderStateBlockId state_index2;
-  shaders::RenderStateId rstate2;
-  shaders::ConstStateIdx cstate2;
-  shaders::TexStateIdx tstate2;
-  int curVariant2 = get_dynamic_variant_states(oe->native(), program2, state_index2, rstate2, cstate2, tstate2);
-  if (curVariant2 != curVariant || rstate2 != rstate || state_index2 != state_index)
+  shaders::CombinedDynVariantState dvState = get_dynamic_variant_states(ne->native());
+  shaders::CombinedDynVariantState dvState2 = get_dynamic_variant_states(oe->native());
+  if (dvState.variant != dvState2.variant || dvState.render_state != dvState2.render_state ||
+      dvState.state_index != dvState2.state_index)
+  {
     ne->setStates();
+  }
   else
-    d3d::set_program(program);
+  {
+    d3d::set_program(dvState.program);
+  }
 }
 
 void CloudsRenderer::renderCloudsApply(CloudsRendererData &data, BaseTexture *downsampled_depth, BaseTexture *target_depth,

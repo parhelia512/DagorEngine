@@ -351,7 +351,7 @@ struct IndexDownloadRequest : public DownloadRequest
     entry = back->filecache->set(INDEX_FILE_NAME);
   }
 
-  const char *getJobName(bool &) const override { return "IndexDownloadRequest"; }
+  const char *getJobName(bool &) const override { return DAPROFILER_STRING("IndexDownloadRequest"); }
 
   virtual void doJob()
   {
@@ -418,7 +418,7 @@ struct FileDownloadRequest : public DownloadRequest
     entry = back->filecache->set(key_);
   }
 
-  const char *getJobName(bool &) const override { return "FileDownloadRequest"; }
+  const char *getJobName(bool &) const override { return DAPROFILER_STRING("FileDownloadRequest"); }
 
   virtual void doJob()
   {
@@ -527,7 +527,7 @@ struct NonIndexedFileDownloadRequest : public DownloadRequest
       interlocked_increment(num_opened_write_streams);
   }
 
-  const char *getJobName(bool &) const override { return "NonIndexedFileDownloadRequest"; }
+  const char *getJobName(bool &) const override { return DAPROFILER_STRING("NonIndexedFileDownloadRequest"); }
 
   virtual void doJob()
   {
@@ -586,7 +586,7 @@ struct AsyncHashCalcJob : public AsyncJob
     G_ASSERT(entry);
     memset(entryHash, 0, sizeof(entryHash));
   }
-  const char *getJobName(bool &) const override { return "AsyncHashCalcJob"; }
+  const char *getJobName(bool &) const override { return DAPROFILER_STRING("AsyncHashCalcJob"); }
   virtual void doJob()
   {
     dag::ConstSpan<uint8_t> edata = entry->getData();
@@ -642,7 +642,7 @@ struct PassRespHeadersToCallback final : public cpujobs::IJob
       respHeadersList.push_back(eastl::make_pair(to_string(kv.first), to_string(kv.second)));
   }
 
-  const char *getJobName(bool &) const override { return "PassRespHeadersToCallback"; }
+  const char *getJobName(bool &) const override { return DAPROFILER_STRING("PassRespHeadersToCallback"); }
   virtual void doJob() override {}
   void releaseJob() override
   {

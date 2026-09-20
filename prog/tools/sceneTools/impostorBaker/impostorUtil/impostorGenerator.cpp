@@ -252,6 +252,22 @@ ImpostorGenerator::ImpostorGenerator(const char *app_dir, DataBlock &app_blk, Da
     make_eff_app_relative_path(folder, assetsBlk->getStr("impostor_data_folder"), true);
   }
 
+  String impostorShaderVarsFile = String(0, "%simpostor_shader_vars.blk", folder.c_str());
+  debug("impostorShaderVarsFile: looking for a file at <%s>", impostorShaderVarsFile);
+  if (::dd_file_exists(impostorShaderVarsFile.c_str()))
+  {
+    debug("impostorShaderVarsFile: was found");
+    DataBlock impostorShaderVarsBlk;
+    if (impostorShaderVarsBlk.load(impostorShaderVarsFile.c_str()))
+    {
+      const DataBlock *shaderBlock = impostorShaderVarsBlk.getBlockByName("shaderVar");
+      G_ASSERTF(shaderBlock != nullptr, "Add shaderVar{} block to the impostor_shader_vars.blk");
+      ShaderGlobal::set_vars_from_blk(*shaderBlock, true);
+    }
+  }
+  else
+    debug("impostorShaderVarsFile: was not found");
+
   context.assetMgr = assetManager;
   context.rendintsRefProvider = context.assetMgr->getAssetRefProvider(context.assetMgr->getAssetTypeId("rendinst"));
   G_ASSERT(context.rendintsRefProvider);

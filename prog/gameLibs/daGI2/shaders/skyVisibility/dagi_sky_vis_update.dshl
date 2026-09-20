@@ -52,7 +52,7 @@ macro DAGI_SKY_VIS_SW_TRILINEAR(code)
         int4 lt = sample_dagi_sky_vis_clipmap_lt_coord(i);
         coordF = worldPos.xzy/asfloat(lt.w);
         float3 coordLt = coordF - lt.xyz;
-        if (all(coordLt >= border && coordLt < float3(dagi_sky_vis_get_clip_size().xxy)-border))
+        if (all(and(coordLt >= border, coordLt < float3(dagi_sky_vis_get_clip_size().xxy)-border)))
           return i;
         ++i;// moving that to while () causes invalid shader compilation on dx11
       } while (i < clipCount);
@@ -291,13 +291,13 @@ shader dagi_sky_visibility_toroidal_movement_interpolate_cs
       float3 coordOtherF = absCoord*2.f + 1.f;
       int3 ltOther = dagi_sky_vis_abs_coord_lt(min(otherClip, uint(dagi_sky_vis_get_clip_count() - 1)));
       BRANCH
-      if (clip == 0 || any(coordOtherF - ltOther < 0.5 || coordOtherF - ltOther > dagi_sky_vis_get_clip_size().xxy-0.5))
+      if (clip == 0 || any(or(coordOtherF - ltOther < 0.5, coordOtherF - ltOther > dagi_sky_vis_get_clip_size().xxy-0.5)))
       {
         otherClip = clip + 1;
         coordOtherF = absCoord*0.5 + 0.25;
         ltOther = dagi_sky_vis_abs_coord_lt(otherClip);
         BRANCH
-        if (any(coordOtherF - ltOther < 0.5 || coordOtherF - ltOther > dagi_sky_vis_get_clip_size().xxy-0.5))
+        if (any(or(coordOtherF - ltOther < 0.5, coordOtherF - ltOther > dagi_sky_vis_get_clip_size().xxy-0.5)))
           return 0;
       }
 
@@ -432,7 +432,7 @@ shader dagi_sky_visibility_toroidal_movement_spatial_filter_split_cs
       UNROLL
       for (uint i = 0; i < 8; ++i)
       {
-        float3 ofs = uint3(i&1, i&2, i&4) ? 1.f : 0;
+        float3 ofs = select(uint3(i&1, i&2, i&4) != 0, float3(1,1,1), float3(0,0,0));
         float3 absCoord1 = clamp(ofs + absCoordF, minCoordF, maxCoordF);
         float3 worldTc = absCoord1*dagi_sky_vis_sizef.zzw;
         worldTc.z = frac(worldTc.z)*decodeClip.x + decodeClip.y;

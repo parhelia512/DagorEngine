@@ -2,11 +2,13 @@
 #pragma once
 
 #include <driver.h>
-#include <supp/dag_comPtr.h>
-#include <winapi_helpers.h>
+#include "names.h"
 #include "trace_status.h"
 #include "trace_id.h"
 #include "trace_run_status.h"
+
+#include <supp/dag_comPtr.h>
+#include <winapi_helpers.h>
 
 
 namespace drv3d_dx12::debug
@@ -218,6 +220,13 @@ private:
       newPool.memory.reset();
       newPool.memoryHeap.Reset();
       return;
+    }
+
+    if constexpr (DX12_NAME_OBJECTS)
+    {
+      auto serial = debug::next_pool_object_serial();
+      name_resource(newPool.buffer.Get(), make_object_name("GpuTraceRecording", serial));
+      name_object(newPool.memoryHeap.Get(), make_object_name("GpuTraceRecordingHeap", serial));
     }
 
     newPool.bufferMemory = newPool.buffer->GetGPUVirtualAddress();

@@ -1,6 +1,9 @@
+from "%sqstd/frp.nut" import WatchedRo
+
 return {
   DE4_MODE_CREATE_ENTITY = "DE4_MODE_CREATE_ENTITY"
   get_instance = @() null
+  sceneTree = WatchedRo({ scenes = [], entries = {}, entityCounts = {}, freeEntities = [] })
   get_scene_filepath = @() "scene"
   clear_entity_save_order = @() null
   add_entity_save_order_comp = @(_name) null

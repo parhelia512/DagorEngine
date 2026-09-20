@@ -1,10 +1,11 @@
 // Copyright (C) Gaijin Games KFT.  All rights reserved.
 
 #include <render/daFrameGraph/ecs/frameGraphNode.h>
+#include <render/daFrameGraph/singleShaders.h>
 #include <render/world/frameGraphHelpers.h>
 #include <shaders/dag_postFxRenderer.h>
 #include <render/viewVecs.h>
-#include <render/world/cameraParams.h>
+#include <render/cameraParams.h>
 
 // TODO: Rewrite this code and console command on das.
 void set_up_debug_indoor_probes_on_screen_entity(bool render)
@@ -26,7 +27,7 @@ void set_up_debug_indoor_probes_on_screen_entity(bool render)
       auto camera = registry.readBlob<CameraParams>("current_camera");
       CameraViewShvars{camera}.bindViewVecs();
 
-      return [debugIndoorProbesOnScreen = PostFxRenderer("debug_indoor_probes_on_screen")] { debugIndoorProbesOnScreen.render(); };
+      dafg::postFx("debug_indoor_probes_on_screen", registry);
     });
   g_entity_mgr->createEntityAsync("debug_indoor_probes_on_screen", eastl::move(init));
 }

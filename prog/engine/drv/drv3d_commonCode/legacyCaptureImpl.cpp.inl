@@ -5,7 +5,7 @@
 #include <memory/dag_framemem.h>
 #include <EASTL/string.h>
 
-namespace d3d
+namespace d3d _MULTI_INTERFACE
 {
 
 bool start_capture(const char *name, const char *)
@@ -23,4 +23,4 @@ void stop_capture()
   d3d::driver_command(Drv3dCommand::PIX_GPU_END_CAPTURE);
 }
 
-} // namespace d3d
+} // namespace d3d _MULTI_INTERFACE

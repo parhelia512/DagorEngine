@@ -373,6 +373,9 @@ public:
 	/// Constructs an instance with a null pointer.
 	inline rcScopedDelete() : ptr(0) {}
 
+	/// Inject pointer of delayed allocation (dagor)
+	inline void Inject(T *p) { if (ptr) rcFree(ptr); ptr = p; }
+
 	/// Constructs an instance with the specified pointer.
 	///  @param[in]		p	An pointer to an allocated array.
 	inline rcScopedDelete(T* p) : ptr(p) {}

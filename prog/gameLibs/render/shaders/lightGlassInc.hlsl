@@ -55,7 +55,11 @@
     BRANCH
     if (!useRTReflection)
     {
+    #if !defined(GLASS_USE_INDOOR_PROBES) || GLASS_USE_INDOOR_PROBES == 1
       float4 indoorRefl__localWeight = use_indoor_probes(worldPos.xyz, worldNormal, reflectionVec, roughnessMip, dist);
+    #else
+      float4 indoorRefl__localWeight = float4(0.0, 0.0, 0.0, 1.0);
+    #endif
       reflectedEnvi = enviPanoramaScale
                     * glass_sample_envi_probe(GET_SCREEN_POS(input.pos).xy, worldNormal, reflectionVec, roughnessMip, cameraToPoint).rgb
                     * indoorRefl__localWeight.w + indoorRefl__localWeight.rgb;
@@ -92,7 +96,9 @@
             float4 indoorRefl__localWeight_blurred = use_indoor_probes(worldPos.xyz, worldNormal, reflectionVec, 4, dist);
             float3 reflectedEnviBlurred = glass_sample_envi_probe(GET_SCREEN_POS(input.pos).xy, worldNormal, reflectionVec, 4, cameraToPoint)
                                         * indoorRefl__localWeight_blurred.w + indoorRefl__localWeight_blurred.rgb;
-            giSpecular = lerp(giSpecular, reflectedEnvi*(giSpecular/max(1e-6, reflectedEnviBlurred)), 1 - linearRoughness*2);
+            const float maxAdjustment = 4; // Note could be capped further, but want it to match deferred_lighting
+            float3 cappedAdjustment = min(maxAdjustment, (1e-3 + giSpecular)/(1e-3 + reflectedEnviBlurred));
+            giSpecular = lerp(giSpecular, reflectedEnvi * cappedAdjustment, 1 - linearRoughness*2);
           }
         }
       }

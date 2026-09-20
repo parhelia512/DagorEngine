@@ -16,9 +16,7 @@ AddIncludes =
 
 local AllSrcFolder_ES = ;
 
-local AllSrcFolder_DAS =
-  main
-;
+local AllSrcFolder_DAS = ;
 local AllSrcFolder_CPP = ;
 
 if $(HaveRenderer) = yes {

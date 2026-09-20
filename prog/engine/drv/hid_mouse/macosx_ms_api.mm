@@ -3,8 +3,6 @@
 #import <Cocoa/Cocoa.h>
 #include <osApiWrappers/setProgGlobals.h>
 #include "api_wrappers.h"
-#include <drv/3d/dag_driver.h>
-#include <drv/3d/dag_info.h>
 #include <debug/dag_debug.h>
 #include <math/dag_Point2.h>
 
@@ -12,14 +10,16 @@ bool mac_video_fullscreen = false;
 int  mac_video_width = -1;
 int  mac_video_height = -1;
 
+// The macOS Metal view always has contentsScale 1, so a render pixel is a display point and the
+// cursor needs no scaling; only an exclusive-fullscreen video mode can differ from the desktop one.
 Point2 getBackingScale()
 {
+  if (!mac_video_fullscreen)
+    return Point2(1, 1);
+
   NSRect r = [[NSScreen mainScreen] frame];
-  if (mac_video_fullscreen)
-    return Point2(r.size.width > 0 ? mac_video_width / (float)r.size.width : 1.0f,
-                  r.size.height > 0 ? mac_video_height / (float)r.size.height : 1.0f);
-  float s = d3d::get_driver_code().is(d3d::metal) ? [NSScreen mainScreen].backingScaleFactor : 1.0f;
-  return Point2(s, s);
+  return Point2(r.size.width > 0 ? mac_video_width / (float)r.size.width : 1.0f,
+                r.size.height > 0 ? mac_video_height / (float)r.size.height : 1.0f);
 }
 
 void mouse_api_SetFullscreenMode(int width, int hight)
@@ -72,13 +72,21 @@ bool mouse_api_GetCursorPosRel(POINT *pt, void *w)
 }
 void mouse_api_SetCursorPosRel(void *w, POINT *pt)
 {
-  NSRect r = [(NSWindow*)w convertRectToScreen:NSMakeRect(pt->x, pt->y, 0, 0)];
-  CGPoint p;
-
+  NSWindow *wnd = (NSWindow*)w;
   Point2 scale = getBackingScale();
 
-  p.x = r.origin.x / scale.x;
-  p.y = r.origin.y / scale.y;
+  // exact inverse of mouse_api_GetCursorPosRel(): unscale, then flip back to the bottom-up
+  // window space convertRectToScreen expects
+  float x = pt->x / scale.x;
+  float y = [[wnd contentView] frame].size.height - pt->y / scale.y;
+
+  NSRect r = [wnd convertRectToScreen:NSMakeRect(x, y, 0, 0)];
+
+  // Cocoa screen space is bottom-up from screens[0], CGWarpMouseCursorPosition wants top-down
+  NSScreen *primary = NSScreen.screens.firstObject;
+  CGPoint p;
+  p.x = r.origin.x;
+  p.y = primary ? NSMaxY(primary.frame) - r.origin.y : r.origin.y;
   CGWarpMouseCursorPosition(p);
 }
 void mouse_api_ClipCursorToAppWindow()

@@ -27,7 +27,7 @@ float corruption_infl = 0;
 
 shader screen_frost
 {
-  supports global_const_block;
+  GLOBAL_CONSTS(ps)
 
   cull_mode = none;
   z_write = false;

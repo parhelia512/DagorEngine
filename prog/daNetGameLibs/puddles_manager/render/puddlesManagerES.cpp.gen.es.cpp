@@ -13,9 +13,9 @@ static constexpr ecs::ComponentDesc init_puddles_manager_es_comps[] =
 };
 static void init_puddles_manager_es_all_events(const ecs::Event &__restrict evt, const ecs::QueryView &__restrict components)
 {
-  G_FAST_ASSERT(evt.is<OnLevelLoaded>());
+  G_FAST_ASSERT(evt.is<EventRenderSceneLoaded>());
   auto comp = components.begin(), compE = components.end(); G_ASSERT(comp!=compE); do
-    init_puddles_manager_es(static_cast<const OnLevelLoaded&>(evt)
+    init_puddles_manager_es(static_cast<const EventRenderSceneLoaded&>(evt)
         , ECS_RW_COMP(init_puddles_manager_es_comps, "puddles__manager", PuddlesManager)
     , ECS_RO_COMP(init_puddles_manager_es_comps, "puddles__bare_minimum_dist", float)
     );
@@ -30,7 +30,7 @@ static ecs::EntitySystemDesc init_puddles_manager_es_es_desc
   make_span(init_puddles_manager_es_comps+1, 1)/*ro*/,
   empty_span(),
   empty_span(),
-  ecs::EventSetBuilder<OnLevelLoaded>::build(),
+  ecs::EventSetBuilder<EventRenderSceneLoaded>::build(),
   0
 ,"render");
 static constexpr ecs::ComponentDesc reinit_puddles_es_comps[] =
@@ -95,9 +95,9 @@ static constexpr ecs::ComponentDesc after_device_reset_puddles_es_comps[] =
 };
 static void after_device_reset_puddles_es_all_events(const ecs::Event &__restrict evt, const ecs::QueryView &__restrict components)
 {
-  G_FAST_ASSERT(evt.is<AfterDeviceReset>());
+  G_FAST_ASSERT(evt.is<EventAfterDeviceReset>());
   auto comp = components.begin(), compE = components.end(); G_ASSERT(comp!=compE); do
-    after_device_reset_puddles_es(static_cast<const AfterDeviceReset&>(evt)
+    after_device_reset_puddles_es(static_cast<const EventAfterDeviceReset&>(evt)
         , ECS_RW_COMP(after_device_reset_puddles_es_comps, "puddles__manager", PuddlesManager)
     );
   while (++comp != compE);
@@ -111,7 +111,7 @@ static ecs::EntitySystemDesc after_device_reset_puddles_es_es_desc
   empty_span(),
   empty_span(),
   empty_span(),
-  ecs::EventSetBuilder<AfterDeviceReset>::build(),
+  ecs::EventSetBuilder<EventAfterDeviceReset>::build(),
   0
 ,"render");
 static constexpr ecs::ComponentDesc remove_puddles_in_crater_es_comps[] =
@@ -173,9 +173,9 @@ static constexpr ecs::ComponentDesc unload_puddles_es_comps[] =
 };
 static void unload_puddles_es_all_events(const ecs::Event &__restrict evt, const ecs::QueryView &__restrict components)
 {
-  G_FAST_ASSERT(evt.is<UnloadLevel>());
+  G_FAST_ASSERT(evt.is<EventRenderSceneUnload>());
   auto comp = components.begin(), compE = components.end(); G_ASSERT(comp!=compE); do
-    unload_puddles_es(static_cast<const UnloadLevel&>(evt)
+    unload_puddles_es(static_cast<const EventRenderSceneUnload&>(evt)
         , ECS_RW_COMP(unload_puddles_es_comps, "puddles__manager", PuddlesManager)
     );
   while (++comp != compE);
@@ -189,6 +189,6 @@ static ecs::EntitySystemDesc unload_puddles_es_es_desc
   empty_span(),
   empty_span(),
   empty_span(),
-  ecs::EventSetBuilder<UnloadLevel>::build(),
+  ecs::EventSetBuilder<EventRenderSceneUnload>::build(),
   0
 ,"render");

@@ -13,10 +13,6 @@
 
 #include <string>
 
-#define TX_MODULATE   0
-#define TX_ALPHABLEND 1
-#define BMIDATA(x)    ((UBYTE *)((BYTE *)(x) + sizeof(BITMAPINFOHEADER)))
-
 
 class MaterDlg : public ParamDlg
 {
@@ -82,6 +78,11 @@ public:
   DagorMat(BOOL loading);
   ~DagorMat() override;
   void NotifyChanged();
+  void ClearDlg(MaterDlg *d)
+  {
+    if (dlg == d)
+      dlg = NULL;
+  }
 
   void *GetInterface(ULONG) override;
   void ReleaseInterface(ULONG, void *) override;
@@ -262,7 +263,9 @@ MaterDlg::MaterDlg(HWND hwMtlEdit, IMtlParams *imp, DagorMat *m)
 
 MaterDlg::~MaterDlg()
 {
-  theMtl->dlg = NULL;
+  SetWindowLongPtr(hPanel, GWLP_USERDATA, NULL);
+  if (theMtl)
+    theMtl->ClearDlg(this);
   ReleaseISpinner(iShin);
   ReleaseICustEdit(eclassname);
   ReleaseIColorSwatch(csa);
@@ -273,7 +276,6 @@ MaterDlg::~MaterDlg()
   {
     ReleaseICustButton(tbut[i]);
   }
-  SetWindowLongPtr(hPanel, GWLP_USERDATA, NULL);
 }
 
 int MaterDlg::FindSubTexFromHWND(HWND hw)
@@ -459,6 +461,8 @@ void MaterDlg::Invalidate()
 
 void MaterDlg::SetThing(ReferenceTarget *m)
 {
+  if (theMtl)
+    theMtl->ClearDlg(this);
   theMtl = (DagorMat *)m;
   if (theMtl)
     theMtl->dlg = this;
@@ -872,28 +876,7 @@ void DagorMat::SetupGfxMultiMaps(TimeValue t, Material *mtl, MtlMakerCallback &c
   if (!texHandle[0])
   {
     Interval valid;
-    BITMAPINFO *bmiColor = texmaps->gettex(0)->GetVPDisplayDIB(t, cb, valid, FALSE, 0, 0);
-    if (!bmiColor)
-      return;
-
-    BITMAPINFO *bmiAlpha = texmaps->gettex(0)->GetVPDisplayDIB(t, cb, valid, TRUE, 0, 0);
-    if (!bmiAlpha)
-      return;
-
-    UBYTE *bmiPtr = BMIDATA(bmiColor);
-    UBYTE *bmiAlphaPtr = BMIDATA(bmiAlpha);
-    for (unsigned int pixelNo = 0; pixelNo < bmiColor->bmiHeader.biWidth * bmiColor->bmiHeader.biHeight; pixelNo++)
-    {
-      bmiPtr[3] = (UBYTE)(((int)bmiAlphaPtr[0] + bmiAlphaPtr[1] + bmiAlphaPtr[2]) / 3);
-      bmiPtr += 4;
-      bmiAlphaPtr += 4;
-    }
-
-    TexHandle *tmpTexHandle = cb.MakeHandle(bmiAlpha);
-    if (tmpTexHandle)
-      tmpTexHandle->DeleteThis();
-
-    texHandle[0] = cb.MakeHandle(bmiColor);
+    texHandle[0] = make_vp_tex_handle(texmaps, t, cb, valid);
     if (!texHandle[0])
       return;
   }
@@ -902,7 +885,6 @@ void DagorMat::SetupGfxMultiMaps(TimeValue t, Material *mtl, MtlMakerCallback &c
   if (pIHWMat)
   {
     pIHWMat->SetNumTexStages(1);
-    int texOp = TX_ALPHABLEND;
     pIHWMat->SetTexture(0, texHandle[0]->GetHandle());
     mtl->texture[0].useTex = 0;
     cb.GetGfxTexInfoFromTexmap(t, mtl->texture[0], texmaps->texmap[0]);
@@ -1051,17 +1033,7 @@ const TCHAR *DagorMat::get_classname() { return classname; }
 
 const TCHAR *DagorMat::get_script() { return script; }
 
-const TCHAR *DagorMat::get_texname(int i)
-{
-  Texmap *tex = texmaps->gettex(i);
-  if (tex)
-    if (tex->ClassID() == Class_ID(BMTEX_CLASS_ID, 0))
-    {
-      BitmapTex *b = (BitmapTex *)tex;
-      return b->GetMapName();
-    }
-  return NULL;
-}
+const TCHAR *DagorMat::get_texname(int i) { return texmaps->gettexname(i); }
 
 float DagorMat::get_param(int i) { return 0; }
 
@@ -1144,18 +1116,19 @@ void DagorMat::set_texname(int i, const TCHAR *s)
 {
   if (i < 0 || i >= NUMTEXMAPS)
     return;
-  if (s)
-    if (!*s)
-      s = NULL;
+
+  const std::wstring path = (s && *s) ? resolve_tex_path(s).native() : std::wstring();
+
+  // replacing the slot drops the settings of the texmap that is already there, so replace it only
+  // when the name is not the one the slot shows
+  if (texmaps->holds_texname(i, path))
+    return;
+
   BitmapTex *bm = NULL;
-  if (s)
+  if (!path.empty())
   {
-    if (*s == '\\' || *s == '/')
-      ++s;
     bm = NewDefaultBitmapTex();
     assert(bm);
-
-    const auto path = dagor_path / s;
     bm->SetMapName(path.c_str());
   }
   texmaps->settex(i, bm);

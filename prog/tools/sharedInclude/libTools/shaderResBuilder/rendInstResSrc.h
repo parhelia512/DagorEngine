@@ -15,7 +15,6 @@
 #include <EASTL/functional.h>
 #include <EASTL/string.h>
 #include <EASTL/vector.h>
-#include <sceneRay/dag_sceneRayDecl.h>
 #include <generic/dag_carray.h>
 
 class LodsEqualMaterialGather;
@@ -156,7 +155,7 @@ public:
     occlBb.setempty();
   }
 
-  void addNode(Lod &, Node *, Node *key_node, LodsEqualMaterialGather &mat_gather, StaticSceneRayTracer *ao_tracer);
+  void addNode(int lod_no, Lod &, Node *, Node *key_node, LodsEqualMaterialGather &mat_gather);
 
   bool addLod(const char *filename, real range, LodsEqualMaterialGather &mat_gather, Tab<AScene *> &scene_list,
     const DataBlock &material_overrides, const char *add_mat_script = nullptr);
@@ -198,7 +197,7 @@ protected:
 
 private:
   // add mesh node, if mesh found
-  void addMeshNode(Lod &lod, Node *n, Node *key_node, LodsEqualMaterialGather &mat_gather, StaticSceneRayTracer *ao_tracer);
+  void addMeshNode(int lod_no, Lod &lod, Node *n, Node *key_node, LodsEqualMaterialGather &mat_gather);
   void processImpostorMesh(Mesh &m, dag::ConstSpan<ShaderMaterial *> mat);
 
   void splitRealTwoSided(Mesh &m, Bitarray &is_material_real_two_sided_array);

@@ -1,6 +1,11 @@
 include "shader_global.dshl"
 include "gbuffer.dshl"
 
+// Per-game hook for whatever the game's gbuffer decode needs beyond
+// INIT/USE_READ_GBUFFER itself
+define_macro_if_not_defined PROJECT_GI_VERIFY_GBUFFER_SUPPORT()
+endmacro
+
 // giVerifier screenshot verification (gameLibs/render/giVerifierCapture.cpp):
 // decode the game's packed gbuffer into the canonical replay planes so the
 // capture format never depends on a game's gbuffer packing. Outputs:
@@ -10,6 +15,7 @@ include "gbuffer.dshl"
 //   RT3 linear view-space depth, meters (R32F; 0 = sky)
 shader gi_verify_capture
 {
+  PROJECT_GI_VERIFY_GBUFFER_SUPPORT()
   cull_mode = none;
   z_write = false;
   z_test = false;
@@ -111,7 +117,11 @@ shader gi_verify_env_latlong
   }
 
   (ps) {
-    envi_probe_specular@smpCube = envi_probe_specular;
+    envi_probe_specular@texCube = envi_probe_specular;
+  }
+  INIT_GLOBAL_LINEAR_WRAP_SAMPLER(ps)
+  hlsl(ps) {
+    #define envi_probe_specular_samplerstate global_linear_wrap_sampler
   }
 
   hlsl(ps) {

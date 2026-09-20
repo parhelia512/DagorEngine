@@ -94,6 +94,7 @@ public:
   virtual bool hasExposure() const = 0;
   virtual void setExposure(float exposure) = 0;
   virtual float getExposure() = 0;
+  virtual float getEffectiveExposure() { return getExposure(); }
 
   virtual void getPostFxSettings(DemonPostFxSettings &set) = 0;
   virtual void setPostFxSettings(DemonPostFxSettings &set) = 0;
@@ -107,6 +108,7 @@ public:
   virtual BaseTexture *getDepthBuffer() = 0;
   virtual D3DRESID getDepthBufferId() = 0;
   virtual const ManagedTex &getDownsampledFarDepth() = 0;
+  virtual const ManagedTex &getPrevDownsampledFarDepth() = 0;
 
   virtual void toggleVrMode() = 0;
 
@@ -115,8 +117,11 @@ public:
 
   virtual void invalidateEditorClipmap() {}
   virtual void updateEditorLandmesh() {}
+  virtual void setEditorHmapMirroring(bool) {}
 
   virtual void onGrassCreated(const DataBlock *) {}
+
+  virtual bool isThermalVisionActive() const { return false; }
 };
 
 class IRenderHelperService

@@ -213,4 +213,4 @@ wait.time 100
 screenshot.window
 wait.time 500
 
-app.terminate 0
+app.exit

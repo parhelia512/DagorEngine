@@ -1182,7 +1182,7 @@ void EnvironmentPlugin::loadObjects(const DataBlock &blk, const DataBlock &local
         selectedEnvironmentNo = 0;
 
 #define LOAD_ETS(NM, TYPE) ets.NM = local_data.get##TYPE(#NM, ets.NM)
-      // LOAD_ETS(forceWeather, Bool);
+      LOAD_ETS(forceWeather, Bool);
       // LOAD_ETS(forceGeoDate, Bool);
       // LOAD_ETS(forceTime, Bool);
       // LOAD_ETS(forceSeed, Bool);

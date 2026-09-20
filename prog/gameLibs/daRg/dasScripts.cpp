@@ -6,6 +6,7 @@
 #include <memory/dag_dbgMem.h>
 #include "guiScene.h"
 #include <dasModules/dasFsFileAccess.h>
+#include <dasModules/dasAotErrorsLog.h>
 
 #include <ioSys/dag_dataBlock.h>
 #include <osApiWrappers/dag_files.h>
@@ -356,7 +357,7 @@ public:
   virtual const char *getJobName(bool &copy) const override
   {
     copy = false;
-    return "DargDasLoadAndCompileJob";
+    return DAPROFILER_STRING("DargDasLoadAndCompileJob");
   }
 
   // ---- worker thread -------------------------------------------------------
@@ -493,12 +494,7 @@ private:
   {
     // must not touch program->library modules: the host may have unloaded them by now
     if (dasMgr->aotMode == AotMode::AOT && !program->aotErrors.empty())
-    {
-      logwarn("daScript: failed to link cpp aot <%s>\n", fileName.c_str());
-      if (dasMgr->needAotErrorLog == LogAotErrors::YES)
-        for (auto &err : program->aotErrors)
-          logwarn(das::reportError(err.at, err.what, err.extra, err.fixme, err.cerr).c_str());
-    }
+      das_log_aot_link_errors(fileName.c_str(), program->aotErrors, dasMgr->needAotErrorLog == LogAotErrors::YES);
 
 #if DAGOR_DBGLEVEL > 0
     if (const uint64_t heapLimit = ctx->heap->getLimit())

@@ -112,7 +112,7 @@ public:
     using method_UndoSystem_begin = DAS_CALL_MEMBER(UndoSystem::begin);
     das::addExtern<DAS_CALL_METHOD(method_UndoSystem_begin)>(*this, lib, "begin", das::SideEffects::modifyArgument,
       DAS_CALL_MEMBER_CPP(UndoSystem::begin))
-      ->args({"undo_system"});
+      ->args({"undo_system", "can_cancel"});
 
     using method_UndoSystem_accept = DAS_CALL_MEMBER(UndoSystem::accept);
     das::addExtern<DAS_CALL_METHOD(method_UndoSystem_accept)>(*this, lib, "accept", das::SideEffects::modifyArgument,

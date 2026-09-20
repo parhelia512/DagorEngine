@@ -111,13 +111,14 @@ void initBuildInfo(VkAccelerationStructureBuildGeometryInfoKHR &dst, const Raytr
   dst.scratchData.deviceAddress = build_data.scratchBuf.devOffset(0);
 }
 
-void BEContext::buildAccelerationStructure(const RaytraceStructureBuildData &build_data)
+void BEContext::addAccelerationStructureBuild(const RaytraceStructureBuildData &build_data,
+  ExecutionScratch::RaytraceBuildBatch &batch)
 {
+  VkAccelerationStructureBuildGeometryInfoKHR &buildInfo = batch.infos.push_back();
+  initBuildInfo(buildInfo, build_data);
+
   if (build_data.type == VK_ACCELERATION_STRUCTURE_TYPE_TOP_LEVEL_KHR)
   {
-    VkAccelerationStructureBuildGeometryInfoKHR buildInfo;
-    initBuildInfo(buildInfo, build_data);
-
     VkAccelerationStructureGeometryInstancesDataKHR instancesData = //
       {VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_GEOMETRY_INSTANCES_DATA_KHR};
     instancesData.data.deviceAddress = build_data.tlas.instanceBuffer.devOffset(0);
@@ -128,20 +129,16 @@ void BEContext::buildAccelerationStructure(const RaytraceStructureBuildData &bui
     tlasGeo.geometry.instances = instancesData;
 
     buildInfo.geometryCount = 1;
-    buildInfo.pGeometries = &tlasGeo;
+    buildInfo.pGeometries = &batch.tlasGeometries.push_back(tlasGeo);
 
     VkAccelerationStructureBuildRangeInfoKHR rangeInfo = {};
     rangeInfo.primitiveOffset = 0;
     rangeInfo.primitiveCount = build_data.tlas.instanceCount;
 
-    const VkAccelerationStructureBuildRangeInfoKHR *build_range = &rangeInfo;
-    VULKAN_LOG_CALL(Backend::cb.wCmdBuildAccelerationStructuresKHR(1, &buildInfo, &build_range));
+    batch.ranges.push_back(&batch.tlasRanges.push_back(rangeInfo));
   }
   else
   {
-    VkAccelerationStructureBuildGeometryInfoKHR buildInfo;
-    initBuildInfo(buildInfo, build_data);
-
 #if VK_EXT_opacity_micromap
     // stores are frozen at execution time, safe to install pointers into them now
     for (RaytraceBLASOmmLinkageData &l :
@@ -155,8 +152,7 @@ void BEContext::buildAccelerationStructure(const RaytraceStructureBuildData &bui
     buildInfo.geometryCount = build_data.blas.geometryCount;
     buildInfo.pGeometries = data->raytraceGeometryKHRStore.data() + build_data.blas.firstGeometry;
 
-    const VkAccelerationStructureBuildRangeInfoKHR *build_range = &data->raytraceBuildRangeInfoKHRStore[build_data.blas.firstGeometry];
-    VULKAN_LOG_CALL(Backend::cb.wCmdBuildAccelerationStructuresKHR(1, &buildInfo, &build_range));
+    batch.ranges.push_back(&data->raytraceBuildRangeInfoKHRStore[build_data.blas.firstGeometry]);
 
     if (build_data.blas.compactionSizeBuffer)
     {
@@ -251,8 +247,13 @@ TSPEC void BEContext::execCmd(const CmdRaytraceBuildStructures &cmd)
   for (RaytraceStructureBuildData &itr : dataRange)
     accumulateRaytraceBuildAccesses(itr);
   Backend::sync.completeNeeded();
+
+  ExecutionScratch::RaytraceBuildBatch &batch = scratch.raytraceBuildBatch;
+  batch.reset(cmd.count);
   for (RaytraceStructureBuildData &itr : dataRange)
-    buildAccelerationStructure(itr);
+    addAccelerationStructureBuild(itr, batch);
+  VULKAN_LOG_CALL(Backend::cb.wCmdBuildAccelerationStructuresKHR(batch.infos.size(), batch.infos.data(), batch.ranges.data()));
+
   Backend::sync.completeNeeded();
   for (RaytraceStructureBuildData &itr : dataRange)
     queryAccelerationStructureCompationSizes(itr);
@@ -273,7 +274,8 @@ TSPEC void BEContext::execCmd(const CmdRaytraceBuildMicromaps &cmd)
     accumulateMicromapBuildAccesses(itr);
   Backend::sync.completeNeeded();
 
-  dag::Vector<VkMicromapBuildInfoEXT> buildInfos;
+  dag::Vector<VkMicromapBuildInfoEXT> &buildInfos = scratch.micromapBuildInfos;
+  buildInfos.clear();
   buildInfos.reserve(cmd.count);
   for (const RaytraceMicromapBuildData &itr : dataRange)
   {

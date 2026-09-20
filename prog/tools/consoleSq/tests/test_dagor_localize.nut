@@ -1,6 +1,7 @@
 // Quirrel module under test: dagor.localize (registered by localization.cpp)
 // No localization tables are loaded in csq-dev, so loc() falls back to the
-// provided default or the key. We exercise that documented passthrough plus
+// provided default or the key, with the params appended to the key as
+// "key: name=value, ...". We exercise that documented passthrough plus
 // language metadata getters.
 
 // getLangId is bound but dereferences a null locTable when no .csv is loaded
@@ -82,6 +83,10 @@ println("--- Section 6: loc with param table substitutes {{key}} ---")
 let r6 = loc("definitely/missing/key", "Hello {name}", {name = "world"})
 assert(r6 == "Hello world", $"loc param substitution: {r6}")
 
+// no plural rule is loaded, so the last form is picked; for 5 that matches english as well
+let r6plural = loc("definitely/missing/key", "{count} {count=item/items}", {count = 5})
+assert(r6plural == "5 items", $"loc plural form: {r6plural}")
+
 println("Section 6 PASSED")
 
 
@@ -114,7 +119,32 @@ try {
 }
 // getLocTextForLang tolerates non-string keys via SQ_FAILED early-return; non-throw is acceptable
 
+threw = false
+try {
+  loc("definitely/missing/key", 123)
+} catch (e) {
+  threw = true
+}
+assert(threw, "loc with a non-string, non-table argument must throw")
+
 println("Section 7 PASSED")
+
+
+// ============================================================
+// Section 8: missing key with params returns the key and the values
+// ============================================================
+println("--- Section 8: missing key with params returns the key and the values ---")
+
+let r8 = loc("definitely/missing/key", {name = "world", count = 3})
+assert(r8 == "definitely/missing/key: count=3, name=world", $"missing key keeps params, sorted by name: {r8}")
+
+let r8lang = getLocTextForLang("definitely/missing/key", "english", {count = 3})
+assert(r8lang == "definitely/missing/key: count=3", $"missing key for lang keeps params: {r8lang}")
+
+let r8empty = loc("", {count = 3})
+assert(r8empty == "", $"empty key stays empty: {r8empty}")
+
+println("Section 8 PASSED")
 
 
 println("ALL TESTS PASSED")

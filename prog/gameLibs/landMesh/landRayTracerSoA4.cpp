@@ -9,6 +9,7 @@
 #include <util/dag_globDef.h>
 #include <ioSys/dag_genIo.h>
 #include <memory/dag_mem.h>
+#include <memory/dag_framemem.h>
 #include <osApiWrappers/dag_sharedMem.h>
 #include <util/dag_parallelFor.h>
 #include <util/dag_threadPool.h>
@@ -29,7 +30,12 @@ struct LandRayTracerSoA4::CellTmp
   Cell meta;
   dag::Vector<uint8_t> soa;   // SoA4 BLAS: [tree][pad][vert21]
   dag::Vector<uint8_t> htMip; // max-height mip chain, box-space u8
+  bool wireFlags = false;     // the blob carried the edge flags words (bvhIO v2): no fill for this cell
 };
+
+static __forceinline vec4f inv_scale_of(vec4f scale) { return v_div(V_C_ONE, v_sel(V_C_ONE, scale, v_cast_vec4f(V_CI_MASK1110))); }
+// the frame a chunk reader decodes with: world = vert21 * inv_scale + bmin
+static __forceinline vec4f cell_bmin(vec4f ofs, vec4f inv_scale) { return v_neg(v_mul(ofs, inv_scale)); }
 
 float LandRayTracerSoA4::Cell::htMaxAt(const uint8_t *ht, float bx, float bz) const
 {
@@ -104,6 +110,17 @@ void LandRayTracerSoA4::buildCellGeom(CellTmp &out, dag::Vector<vec4f> &v4, dag:
   }
   m.hasGeom = 1;
   finalizeCellAccel(out);
+  buildCellEdgeFlags(out);
+}
+
+// Jolt's active edges of the cell's triangles, into the BLAS's flags words: what its physics shape reads
+void LandRayTracerSoA4::buildCellEdgeFlags(CellTmp &out)
+{
+  FRAMEMEM_REGION; // the pass allocates from framemem: retreat per cell, not per worker queue drain
+  const Cell &m = out.meta;
+  const vec4f invScale = inv_scale_of(m.scale);
+  soa4::computeEdgeFlags(out.soa.data(), m.root, (uint32_t)m.vertsOfs, (unsigned)(out.soa.size() - m.vertsOfs) / 8u,
+    cell_bmin(m.ofs, invScale), invScale);
 }
 
 // derived acceleration data rebuilt from the SoA4 leaves themselves (shared by build and load):
@@ -318,6 +335,7 @@ bool LandRayTracerSoA4::build(int cells_x, int cells_y, float cell_size, const P
       idx[v] = (uint32_t)s.indices[v];
     buildCellGeom(tmp[i], v4, idx);
   });
+  h.flags = DumpHeader::CELL_EDGE_FLAGS;
   return assemble(h, make_span(tmp));
 }
 
@@ -458,14 +476,16 @@ LandRayTracerSoA4::LegacyLoadResult LandRayTracerSoA4::loadStreamToDump(IGenLoad
 }
 
 static constexpr int LTS4_MAGIC = _MAKE4C('LTS4');
-// gates the ENTIRE layout, per-cell records included: any future change to any field, per-cell
-// shape included, bumps this; readers reject unknown versions, which leaves LTS4-only levels
-// tracer-less (only transitional dual-stream files can still rebuild from their LTdump)
+// gates the stream's own fields; the per-cell BLAS blob carries its own bvhIO version, so a blob
+// shape change (the edge flags section) needs no bump here - an old reader refuses the blob
+// itself. Readers reject unknown versions, which leaves LTS4-only levels tracer-less (only
+// transitional dual-stream files can still rebuild from their LTdump).
 static constexpr int LTS4_VERSION = 1;
 
 bool LandRayTracerSoA4::save(IGenSave &cwr) const
 {
   const DumpHeader &h = hdr();
+  dag::Vector<uint16_t> words; // per-cell wire words, reused across cells
   cwr.writeInt(LTS4_MAGIC);
   cwr.writeInt(LTS4_VERSION);
   cwr.writeInt(h.numCellsX);
@@ -493,7 +513,12 @@ bool LandRayTracerSoA4::save(IGenSave &cwr) const
     const vec4f safeScale = v_sel(V_C_ONE, c.scale, v_cast_vec4f(V_CI_MASK1110));
     lb.bmin = v_div(v_neg(c.ofs), safeScale);
     lb.bmax = v_div(v_sub(v_splats(65535.f), c.ofs), safeScale);
-    if (!build_bvh::serializeQuadBLAS(cwr, stk.data(), sr.treeBytes, sr.vertsOfs, vertBytes / 8, lb))
+    // the cell's edge flags words ride inside the blob (bvhIO v2), extracted from the dump: they
+    // are present after every build and load (filled, or wire-carried)
+    words.clear();
+    build_bvh::collectLeafEdgeFlags(cellData(c), c.root, words);
+    if (!build_bvh::serializeQuadBLAS(cwr, stk.data(), sr.treeBytes, sr.vertsOfs, vertBytes / 8, lb, BVH_BLAS_LEAF_SIZE, 8,
+          make_span_const(words)))
       return false;
   }
   return true;
@@ -612,6 +637,7 @@ bool LandRayTracerSoA4::load(IGenLoad &crd)
     serializedTotal += r.serializedBytes;
     if (serializedTotal > MAX_STREAM_SIZE)
       return false;
+    t.wireFlags = r.edgeFlags; // a bvhIO v2 blob carried the words: this cell needs no fill
     // the serialized box and the world->box mapping are redundant (the writer derives the box
     // from the mapping): reconciling them catches a finite mutation of either, Y axis included
     alignas(16) float bmin[4], bmax[4];
@@ -648,7 +674,11 @@ bool LandRayTracerSoA4::load(IGenLoad &crd)
     cellsMax.x = max(cellsMax.x, (65535.f - ov[0]) / sv[0]), cellsMax.y = max(cellsMax.y, (65535.f - ov[2]) / sv[2]);
     finalizeCellAccel(t);
     // runtime allocation budget on per-cell claims; assemble() adds the final dump while releasing
-    // each copied cell, so this cap also bounds the whole-load transient peak at roughly 2x
+    // each copied cell, so this cap also bounds the whole-load transient peak at roughly 2x. The
+    // edge flags fill's scratch is not resident and not charged: per cell, a small factor of the
+    // payload admitted here, and freed before the next cell (FRAMEMEM_REGION), so a worker holds
+    // at most the largest admitted cell's worth; the deserializer's own wire-words buffer (a
+    // uint16 per leaf, ~1/14th of a cell's stackless tree) rides the same bound.
     allocTotal += (int64_t)t.soa.size() + (int64_t)t.htMip.size();
     if (allocTotal > (int64_t)MAX_STREAM_SIZE)
       return false;
@@ -660,6 +690,10 @@ bool LandRayTracerSoA4::load(IGenLoad &crd)
     return false;
   if (check_extents_in_box(cellsMin, cellsMax, cellsMinY, cellsMaxY, bb))
     return false;
+  for_each_cell_parallel((int)tmp.size(), [&](uint32_t i) { // wire-carried cells (bvhIO v2 blobs) skip the fill
+    if (tmp[i].meta.hasGeom && !tmp[i].wireFlags)
+      buildCellEdgeFlags(tmp[i]);
+  });
   DumpHeader h;
   h.numCellsX = cx;
   h.numCellsY = cy;
@@ -670,6 +704,7 @@ bool LandRayTracerSoA4::load(IGenLoad &crd)
   // over-inclusion only (a corrupt lower top would false-negative every query above it); the
   // public bbox keeps the header value
   h.maxY = max(bb[1].y, cellsMaxY);
+  h.flags = DumpHeader::CELL_EDGE_FLAGS;
   return assemble(h, make_span(tmp));
 }
 
@@ -1063,7 +1098,7 @@ bool LandRayTracerSoA4::getFaces(bbox3f_cref world_box, vec4f *__restrict triang
       bbox3f qb; // query box in this cell's box space
       qb.bmin = v_madd(world_box.bmin, c.scale, c.ofs);
       qb.bmax = v_madd(world_box.bmax, c.scale, c.ofs);
-      const vec4f invScale = v_div(V_C_ONE, v_sel(V_C_ONE, c.scale, v_cast_vec4f(V_CI_MASK1110)));
+      const vec4f invScale = inv_scale_of(c.scale);
       const bool overflow = soa4::boxTriWalk(cellData(c), (uint32_t)c.root.v, qb, [&](vec3f a, vec3f b, vec3f cc) {
         if (left <= 0) // the caller may pass an exhausted budget
           return true;
@@ -1097,7 +1132,7 @@ float LandRayTracerSoA4::calcHighestHorizon(const Point3 &pos) const
   float high = -1.f;
 
   auto vertHorizon = [&](const Cell &c) {
-    const vec4f invScale = v_div(V_C_ONE, v_sel(V_C_ONE, c.scale, v_cast_vec4f(V_CI_MASK1110)));
+    const vec4f invScale = inv_scale_of(c.scale);
     const uint8_t *data = cellData(c);
     const int vertCount = (int)(c.dataBytes - c.vertsOfs) / 8;
     vec4f hi = v_splats(high);
@@ -1111,7 +1146,7 @@ float LandRayTracerSoA4::calcHighestHorizon(const Point3 &pos) const
     high = v_extract_x(hi);
   };
   auto faceHorizon = [&](const Cell &c) {
-    const vec4f invScale = v_div(V_C_ONE, v_sel(V_C_ONE, c.scale, v_cast_vec4f(V_CI_MASK1110)));
+    const vec4f invScale = inv_scale_of(c.scale);
     const uint8_t *data = cellData(c);
     vec4f hi = v_splats(high);
     soa4::iterateLeafRefs(
@@ -1200,6 +1235,23 @@ int LandRayTracerSoA4::getCellTriCount(int cell_idx) const
   return cellsTab()[cell_idx].triCount;
 }
 
+bool LandRayTracerSoA4::getCellChunk(int cell_idx, soa4::ChunkRef &out) const
+{
+  if (uint32_t(cell_idx) >= uint32_t(hdr().cellCount))
+    return false;
+  const Cell &c = cellsTab()[cell_idx];
+  if (!c.hasGeom)
+    return false;
+  G_ASSERT(hdr().flags & DumpHeader::CELL_EDGE_FLAGS); // every build and load fills the words
+  out.tree = cellData(c);
+  out.treeBytes = (uint32_t)c.treeBytes;
+  out.root = c.root;
+  out.invScale = inv_scale_of(c.scale);
+  out.bmin = cell_bmin(c.ofs, out.invScale);
+  out.triCount = (uint32_t)c.triCount;
+  return true;
+}
+
 void LandRayTracerSoA4::iterateCellVerticesImpl(int cell_idx, void *ctx, void (*cb)(void *, const Point3 &)) const
 {
   const int vertCount = getCellVertCount(cell_idx);
@@ -1207,7 +1259,7 @@ void LandRayTracerSoA4::iterateCellVerticesImpl(int cell_idx, void *ctx, void (*
     return;
   const Cell &c = cellsTab()[cell_idx];
   const uint8_t *data = cellData(c);
-  const vec4f invScale = v_div(V_C_ONE, v_sel(V_C_ONE, c.scale, v_cast_vec4f(V_CI_MASK1110)));
+  const vec4f invScale = inv_scale_of(c.scale);
   for (int i = 0; i < vertCount; ++i)
   {
     vec3f w = v_mul(v_sub(RayData::unpackVert21(data + c.vertsOfs + i * 8), c.ofs), invScale);

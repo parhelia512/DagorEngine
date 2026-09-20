@@ -22,6 +22,8 @@ AddIncludes +=
   $(Root)/prog/gameLibs/publicInclude
 ;
 
+Sources += ver_obj_spirv.cpp ;
+
 UseProgLibs +=
   tools/ShaderCompiler2/hlsl2spirv
   3rdPartyLibs/regExp

@@ -1,8 +1,7 @@
 from "%darg/ui_imports.nut" import *
 import "%dngscripts/ecs.nut" as ecs
-
-let { EventSqChatMessage, mkCmdChatMessage } = require("%scripts/globs/sqevents.nut")
-let { userName } = require("%scripts/ui/login.nut")
+from "%scripts/globs/sqevents.nut" import EventSqChatMessage, mkCmdChatMessage
+from "%scripts/ui/login.nut" import userName
 
 let chatLines = persist("chatLines", @() [])
 let linesGen = mkWatched(persist, "linesGen", 0)

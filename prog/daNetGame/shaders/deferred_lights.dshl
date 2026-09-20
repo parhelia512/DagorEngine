@@ -2,6 +2,7 @@ include "clustered/deferred_lights.dshl"
 include "sky_shader_global.dshl"
 include "viewVecVS.dshl"
 include "gbuffer.dshl"
+include "camera_in_camera.dshl"
 
 interval special_vision : special_vision_off<1, thermal_vision;
 
@@ -19,6 +20,7 @@ shader point_lights, spot_lights
   INIT_AND_USE_PHOTOMETRY_TEXTURES(ps)
   DEFERRED_LIGHTS_COMMON_SHADER()
 
+  INIT_AND_USE_ON_TOP_CAMERA_IN_CAMERA(ps)
   BRUNETON_FOG()
   USE_SCREENPOS_TO_TC()
   USE_AND_INIT_VIEW_VEC_PS()

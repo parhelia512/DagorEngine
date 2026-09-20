@@ -26,6 +26,10 @@ shader debug_mirror_sphere
   }
   USE_AND_INIT_VIEW_VEC_VS()
   USE_INDOOR_LIGHT_PROBES(ps, false)
+  INIT_LOCAL_SPECULAR()
+  INIT_SKY_POLARIZATION_FILTER_TERM(ps)
+  INIT_ENVI_SPECULAR_SAMPLE(ps)
+  USE_ENVI_SPECULAR_SAMPLE(ps)
 
   hlsl(vs)
   {
@@ -53,8 +57,10 @@ shader debug_mirror_sphere
     float4 debug_light_probe_spheres_ps(VsOutput input):SV_Target0
     {
       float3 normal = normalize(input.normal);
-      float4 indoorRefl__localWeight = use_indoor_probes(input.worldPos.xyz, normal, reflect(normalize(input.worldPos.xyz - world_view_pos.xyz), normal), 0 /* roughMip */, 0 /* viewDist */);
-      return float4(indoorRefl__localWeight.rgb, 1);
+      float3 reflectionVec = reflect(normalize(input.worldPos.xyz - world_view_pos.xyz), normal);
+      float4 indoorRefl__localWeight = use_indoor_probes(input.worldPos.xyz, normal, reflectionVec, 0 /* roughMip */, 0 /* viewDist */);
+      float3 enviRefl = sample_envi_probe(float4(reflectionVec, 0 /* roughMip */)).rgb;
+      return float4(enviRefl * indoorRefl__localWeight.w + indoorRefl__localWeight.rgb, 1);
     }
   }
   compile("target_ps", "debug_light_probe_spheres_ps");

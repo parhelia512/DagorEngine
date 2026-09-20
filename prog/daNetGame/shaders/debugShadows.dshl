@@ -10,6 +10,7 @@ shader debug_shadows
   z_write = false;
   z_test = false;
   (ps) { world_view_pos@f3 = world_view_pos; }
+  GLOBAL_CONSTS(ps)
 
   USE_EMISSION_DECODE_COLOR_MAP(ps)
   INIT_COMBINE_SHADOWS()
@@ -106,11 +107,15 @@ shader static_shadow_debug_mesh_shader
   (vs)
   {
     globtm@f44 = globtm;
-    static_shadow_tex@smp2d = static_shadow_tex;
+    static_shadow_tex@tex2d = static_shadow_tex;
     inverseViewProjectionMatrix@f44 = static_shadow_matrix_inverse;
     texture_size@i1 = static_shadow_size;
     sampling_range@f1 = static_shadow_sampling_range;
     toroidal_center@f2 = (static_shadow_cascade_0_scale_ofs_z_tor.z, static_shadow_cascade_0_scale_ofs_z_tor.w, 0, 0);
+  }
+  INIT_GLOBAL_POINT_CLAMP_SAMPLER(vs)
+  hlsl(vs) {
+    #define static_shadow_tex_samplerstate global_point_clamp_sampler
   }
   hlsl(vs)
   {

@@ -3,11 +3,11 @@
 #include <collisionGeometryFeeder/collisionGeometryFeeder.h>
 
 #include <daBVH/dag_bvhBuild.h>
-#include <daBVH/dag_bvhSerialization.h>
+#include <daBVH/dag_bvhSerialization.h> // build_bvh::checkIfIsBox (the analytic-box shortcut)
 #include <daBVH/dag_quadBLASBuilder.h>
 #include <daBVH/dag_bvhReencode.h>
-#include <daBVH/dag_swBLAS_leaf.h>        // RayData::unpackVert21; no stackless traversal here
-#include <daBVH/dag_swBLAS_soa4Convert.h> // soa4::buildStackless (grid stores the SoA4 CPU layout)
+#include <daBVH/dag_swBLAS_leaf.h>        // RayData::unpackVert21 (chunk fast-path vert reencode)
+#include <daBVH/dag_swBLAS_soa4Convert.h> // soa4::buildStackless (chunks store the SoA4 CPU layout)
 #include <daSWRT/swBVH.h>
 #include <daSWRT/swBLASBoxResemblance.h>
 #include <generic/dag_tab.h>
@@ -18,67 +18,37 @@
 #include <vecmath/dag_vecMath.h>
 #include <daBVH/swBLASLeafDefs.hlsli>
 
-// Fast path: emit the pre-built collision grid BLAS as a daSWRT BuiltBLAS, skipping the
-// triangle-soup flatten + SAH rebuild: convert the grid's SoA4 tree to the stackless GPU layout
-// (byte-identical vert region), then reencode boxes and verts to the same-size GPU formats in
-// place (details at the loops below). The caller gates on fp16 (the 12 B float3 GPU format widens
-// verts and takes the soup path) and guarantees the grid's resident-node set equals the eligible
-// set (all nodes IDENT, so no TM to apply and no geometry dropped).
-static int buildSwrtBLAS_gridFast(RenderSWRT &swrt, const CollisionResource::Grid &grid, float dim_as_box_min, float dim_as_box_max)
+
+// Distance under which a BLAS this box-like renders as an analytic box (SWRT LOD knob).
+// encoding must match the tree bytes: the splice hands an FP16-reencoded tree; the soup tail a
+// still-uint16 writeDoubleQuadBLAS tree (addPreBuiltModel reencodes it internally).
+static float scoreDimAsBoxDist(const uint8_t *tree, int tree_bytes, bbox3f_cref box, float dim_min, float dim_max,
+  daSWRT::BlasBoxEncoding encoding)
+{
+  if (dim_max <= dim_min)
+    return dim_max;
+  const float boxLike = daSWRT::computeBlasBoxResemblanceVoxel(tree, 0, tree_bytes, box, encoding);
+  return lerp(dim_max, dim_min, powf(boxLike, 1.5f));
+}
+
+// Fast path: collapsed content is one IDENT mesh node in the common case, and its per-node chunk
+// is one SoA4 tree over one quantization frame -- the shape the SWRT BLAS wants. The byte math
+// lives in buildSwrtChunkSpliceBLAS (collisionSwrtFeeder_splice.cpp, unit-tested); the score and
+// the model registration happen here. Gated by the caller on fp16 verts and an IDENT live pose
+// (chunk verts are node-local); a material filter carves whole leaves inside the splice.
+static int buildSwrtBLAS_chunkFast(RenderSWRT &swrt, const CollisionResource &coll_res, int node_index, float dim_as_box_min,
+  float dim_as_box_max, const CollisionGeometryFeeder::PhysMatFilter &mat_pred)
 {
   daSWRT::BuiltBLAS built;
-  // Verts/tree were quantized against grid.blasBBox; the SWRT model box must be that same box so the
-  // [0,65535] -> [-1,1] remap below stays consistent with the runtime world -> BLAS mapping.
-  built.box = grid.blasBBox;
-  // built.vertsFp16 stays at the BuiltBLAS default (true): this fast path's in-place reencode emits 8 B
-  // fp16 verts, and the caller gates it on blasVertsFp16.
-
-  const soa4::StacklessResult rt = soa4::buildStackless(grid.blasData.data(), grid.blasRootRef, (int)grid.blasVertsOfs(),
-    (int)(grid.blasData.size() - grid.blasVertsOfs()), built.data);
-  if (!rt.valid())
-  {
-    // Structurally impossible for a validly built grid (the conversion round-trips 1:1); degrade
-    // loudly to "no SWRT model for this resource", never a corrupt upload.
-    logerr("swrtFeeder: SoA4->stackless conversion failed for grid BLAS; no SWRT model");
+  CollisionGeometryFeeder::ChunkSpliceInfo info;
+  if (!CollisionGeometryFeeder::buildSwrtChunkSpliceBLAS(coll_res, node_index, built, info, mat_pred))
     return -1;
-  }
-  const int treeBytes = rt.treeBytes;
-  const int srcVertsOfs = rt.vertsOfs;
-  const int vertCount = (int)((built.data.size() - (size_t)srcVertsOfs) / 8u);
-  G_ASSERT(treeBytes > 0 && vertCount > 0);
-  built.treeBytes = (uint32_t)treeBytes;
-
-  // Score box-resemblance on the emitted stackless tree (still Quantized16), before the boxes are
-  // reencoded.
-  built.dimAsBoxDist = dim_as_box_max;
-  if (dim_as_box_max > dim_as_box_min)
-  {
-    float boxLike =
-      daSWRT::computeBlasBoxResemblanceVoxel(built.data.data(), 0, treeBytes, built.box, daSWRT::BlasBoxEncoding::Quantized16);
-    boxLike = powf(boxLike, 1.5f);
-    built.dimAsBoxDist = lerp(dim_as_box_max, dim_as_box_min, boxLike);
-  }
-
-  uint8_t *dst = built.data.data();
-  for (int ofs = 0; ofs < treeBytes;)
-  {
-    uint32_t encWord;
-    memcpy(&encWord, dst + ofs + 12, sizeof(uint32_t)); // QUAD_LEAF_FLAG + quad/single encoding live at +12
-    build_bvh::reencodeBoxNodeToFP16(dst + ofs);        // box uint16 [0,65535] -> FP16 [-1,1]; preserves +12
-    ofs += (encWord & QUAD_LEAF_FLAG) ? BVH_BLAS_LEAF_SIZE : BVH_BLAS_NODE_SIZE;
-  }
-
-  // vert21 -> fp16 in place: unpack to box space, map f/32767.5 - 1 to [-1,1], repack. Same 8 B slot, so
-  // the read completes (into a register) before the write -- no aliasing.
-  const vec4f vertToNorm = v_splats(1.0f / 32767.5f);
-  const vec4f vertBias = v_splats(-1.0f);
-  uint8_t *verts = dst + srcVertsOfs;
-  for (int v = 0; v < vertCount; ++v)
-  {
-    vec3f n = v_madd(RayData::unpackVert21(verts + (size_t)v * 8), vertToNorm, vertBias);
-    build_bvh::writeGpuBlasVert(verts + (size_t)v * 8, n, /*fp16*/ true);
-  }
-
+  // The producer names its byte format and reports the carve, so neither the score decoder nor the
+  // box rule can drift from the bytes. A carved model's box is the full quantization frame: 0 (the
+  // far cap) keeps it from occluding through removed material; the soup path fits a tight box.
+  built.dimAsBoxDist = info.carved ? 0.f
+                                   : scoreDimAsBoxDist(built.data.data(), (int)built.treeBytes, built.box, dim_as_box_min,
+                                       dim_as_box_max, info.boxEncoding);
   return swrt.addBuiltModel(eastl::move(built));
 }
 
@@ -94,96 +64,75 @@ int CollisionGeometryFeeder::buildSwrtBLASFromCollisionResource(RenderSWRT &swrt
 
   const auto allNodes = coll_res.getAllNodes();
 
-  auto nodeIsEligible = [&](const CollisionNode *node) {
-    if (!node || !node->checkBehaviorFlags(CollisionNode::TRACEABLE))
-      return false;
-    // a mirrored/singular live pose hides the node from CPU traces; SWRT must match
-    if (!coll_res.getDefaultInstance().isNodeTraceable(node->nodeIndex))
-      return false;
-    // Require both verts AND indices: a node with indices but zero verts is malformed and would
-    // make the indices loop below reference the previous node's vertex base (firstVertex does not
-    // advance for the zero-vert node, but we still push its indices).
-    if (coll_res.getNodeVertCount((int)node->nodeIndex) == 0 || coll_res.getNodeIndexCount((int)node->nodeIndex) == 0)
-      return false;
-    if (node->type != COLLISION_NODE_TYPE_MESH && node->type != COLLISION_NODE_TYPE_CONVEX)
-      return false;
-    if (node_filter && !node_filter(node->physMatId))
-      return false;
-    return true;
-  };
+  // The game's physmat filter, asked per FACE (one collision node can carry several materials); an
+  // empty filter keeps everything.
+  auto faceMaterialPasses = [&node_filter](int phys_mat_id) { return !node_filter || node_filter(phys_mat_id); };
 
-  // Whole-grid fast path. The TRACEABLE combined-per-behavior BLAS already covers exactly the IDENT
-  // mesh nodes of that behavior. When every node this feeder would emit is precisely that grid's
-  // resident set, re-encode the grid BLAS in one pass (buildSwrtBLAS_gridFast) and skip the soup +
-  // SAH rebuild. Bail to the soup path when:
-  //   - the grid wasn't built (small/SOLID/non-IDENT-only resource -- hasBlas is false);
-  //   - any eligible node is CONVEX or non-IDENT mesh (never in the BLAS, so grid bytes would miss
-  //     geometry); or
-  //   - node_filter carves out a strict subset of the grid's nodes (e.g. skyquake filters out
-  //     transparent phys-mats) -- eligibleCount trails blasNodeRanges and a partial tree can't be
-  //     reproduced without re-splicing leaves; or
-  //   - the GPU vertex format is 12 B float3 (swrt.blasVertsFp16 == false) -- the in-place reencode
-  //     only matches the 8 B fp16 layout, so the wider-stride case takes the soup path.
-  // SOLID needs no special test: a single SOLID node in TRACEABLE makes Grid::buildBLAS abandon the
-  // whole grid, so hasBlas already excludes that.
+  // One pass classifies every node for the three consumers below (the single-node splice gate,
+  // the reserve, the gather): eligibility is the trace's own early-out plus a well-formedness
+  // guard (a node with indices but zero verts would desync the gather's vertex base), and the
+  // node's material set answers "any face kept" (eligibility) and "all faces kept" (the splice
+  // and the gather's unfiltered arm) in the same walk.
+  struct EligibleNode
   {
-    const CollisionResource::Grid &grid = coll_res.getBlasGrid(CollisionNode::TRACEABLE);
-    // bind-grid bytes are valid only while every grid member still holds its seed pose: a
-    // setNodeTm-posed member must fall to the soup path, which composes the current pose
-    if (!grid.blasData.empty() && coll_res.getDefaultInstance().isGridResidentPoseAtBind())
-    {
-      uint32_t eligibleCount = 0;
-      bool allEligibleInGrid = true;
-      for (int ni = 0, ne = (int)allNodes.size(); ni < ne && allEligibleInGrid; ++ni)
-      {
-        const CollisionNode *node = coll_res.getNode(ni);
-        if (!nodeIsEligible(node))
-          continue;
-        ++eligibleCount;
-        // Gate on blasNodeRanges membership, NOT residency: residency only says whose vert21
-        // array node->verticesOfs indexes (a TRACEABLE|PHYS_COLLIDABLE node is stamped resident in
-        // the COLLIDABLE grid -- see getBlasGridForResidentNode). A node in this grid's ranges has
-        // its triangles in THIS grid's BLAS bytes regardless of vert span, which is all gridFast
-        // re-encodes.
-        bool inGrid = false;
-        for (const auto &nr : grid.blasNodeRanges)
-          if (nr.nodeIndex == node->nodeIndex)
-          {
-            inGrid = true;
-            break;
-          }
-        allEligibleInGrid &= inGrid;
-      }
-      if (allEligibleInGrid && eligibleCount > 0 && eligibleCount == grid.blasNodeRanges.size() && swrt.blasVertsFp16)
-        return buildSwrtBLAS_gridFast(swrt, grid, dim_as_box_min, dim_as_box_max);
-    }
-  }
-
+    int nodeIndex, vertCount;
+    bool allFacesKept;
+  };
+  dag::Vector<EligibleNode> eligible;
+  eligible.reserve(allNodes.size());
   int totalVxCnt = 0, totalIdxCnt = 0;
   for (int ni = 0, ne = (int)allNodes.size(); ni < ne; ++ni)
   {
     const CollisionNode *node = coll_res.getNode(ni);
-    if (!nodeIsEligible(node))
+    if (!node || !node->checkBehaviorFlags(CollisionNode::TRACEABLE))
       continue;
-    totalVxCnt += coll_res.getNodeVertCount(ni);
-    totalIdxCnt += coll_res.getNodeIndexCount(ni);
+    // a mirrored/singular live pose hides the node from CPU traces; SWRT must match
+    if (!coll_res.getDefaultInstance().isNodeTraceable(node->nodeIndex))
+      continue;
+    if (node->type != COLLISION_NODE_TYPE_MESH && node->type != COLLISION_NODE_TYPE_CONVEX)
+      continue;
+    const int vertCount = coll_res.getNodeVertCount(ni);
+    const int faceCount = (int)coll_res.getNodeFaceCount(ni);
+    if (vertCount == 0 || faceCount == 0)
+      continue;
+    bool anyKept = !node_filter, allKept = true;
+    if (node_filter)
+      // The own-authority / material-less dispatch lives on the resource, one home with the
+      // per-face enumeration the gather uses.
+      coll_res.classifyNodeMaterials(*node, faceMaterialPasses, anyKept, allKept);
+    if (!anyKept)
+      continue;
+    eligible.push_back(EligibleNode{ni, vertCount, allKept});
+    totalVxCnt += vertCount;
+    totalIdxCnt += faceCount * 3;
   }
-  if (totalIdxCnt == 0 || totalVxCnt == 0)
+  if (eligible.empty())
     return -1;
 
+  // Single-node fast path (the common collapsed shape): splice the node's chunk instead of the
+  // gather + SAH build. A material filter carves during the splice (a leaf holds one material,
+  // so whole leaf records drop and emptied subtrees prune; boxes stay conservative). The soup
+  // remains for multi-node resources, non-IDENT live poses (chunk verts are node-local) and the
+  // 12 B float3 GPU vert format.
+  // Eligibility already excluded chunkless nodes (zero faces).
+  // Tiny nodes (a box is 8 verts) fall through to the soup so checkIfIsBox can still emit the
+  // analytic box; their gather + SAH is trivial at that size.
+  // An all-kept node passes no filter: a shortcut past the fold and the prune walks, not a scoring
+  // rule (the splice reports the carve itself).
+  if (swrt.blasVertsFp16 && eligible.size() == 1 && eligible[0].vertCount > 8 && coll_res.isIdentNode(eligible[0].nodeIndex))
+    return buildSwrtBLAS_chunkFast(swrt, coll_res, eligible[0].nodeIndex, dim_as_box_min, dim_as_box_max,
+      eligible[0].allFacesKept ? CollisionGeometryFeeder::PhysMatFilter{} : node_filter);
+
   scratch.verts.reserve(totalVxCnt);
+  // Upper bound: a partially filtered node books its full face count; the fill emits only the
+  // passing faces.
   scratch.indices.reserve(totalIdxCnt);
 
   uint32_t firstVertex = 0;
-  for (int ni = 0, ne = (int)allNodes.size(); ni < ne; ++ni)
+  for (const EligibleNode &en : eligible)
   {
-    const CollisionNode *node = coll_res.getNode(ni);
-    if (!nodeIsEligible(node))
-      continue;
-
-    const int vertCount = coll_res.getNodeVertCount(ni);
-    const bool needsTransform = !coll_res.isIdentNode(ni);
-    if (needsTransform)
+    const int ni = en.nodeIndex;
+    if (!coll_res.isIdentNode(ni))
     {
       mat44f nodeTm;
       v_mat44_make_from_43cu_unsafe(nodeTm, coll_res.getNodeTm(ni)[0]);
@@ -195,12 +144,16 @@ int CollisionGeometryFeeder::buildSwrtBLASFromCollisionResource(RenderSWRT &swrt
     }
 
     const uint32_t vertOffset = firstVertex;
-    coll_res.iterateNodeFaces(ni, [&](int, uint32_t i0, uint32_t i1, uint32_t i2) {
+    auto pushFace = [&](int, uint32_t i0, uint32_t i1, uint32_t i2) {
       scratch.indices.push_back(i0 + vertOffset);
       scratch.indices.push_back(i1 + vertOffset);
       scratch.indices.push_back(i2 + vertOffset);
-    });
-    firstVertex += vertCount;
+    };
+    if (en.allFacesKept)
+      coll_res.iterateNodeFaces(ni, pushFace);
+    else
+      coll_res.iterateNodeFacesByMaterial(ni, faceMaterialPasses, pushFace);
+    firstVertex += (uint32_t)en.vertCount;
   }
 
   // Box fast path on the raw gather, before the SAH reorder: a box resource is emitted as an analytic
@@ -253,16 +206,9 @@ int CollisionGeometryFeeder::buildSwrtBLASFromCollisionResource(RenderSWRT &swrt
   if (!builtBlas) // vert span overflowed the unsigned 24-bit leaf base; drop this model's SWRT BLAS
     return -1;
 
-  // Score box-resemblance on the SWRT BuiltBLAS itself (FP16-encoded tree)
-  // if its already a box, we have early exit above (build_bvh::checkIfIsBox)
-  float dimAsBoxDist = dim_as_box_max;
-  if (dim_as_box_max > dim_as_box_min)
-  {
-    const int treeBytes = (int)blasBytes.size() - vertCountTotal * 12;
-    float boxLike = daSWRT::computeBlasBoxResemblanceVoxel(blasBytes.data(), 0, treeBytes, box, daSWRT::BlasBoxEncoding::Quantized16);
-    boxLike = powf(boxLike, 1.5f);
-    dimAsBoxDist = lerp(dim_as_box_max, dim_as_box_min, boxLike);
-  }
+  // Scored on the SWRT BuiltBLAS itself (a genuine box exited above at build_bvh::checkIfIsBox).
+  const float dimAsBoxDist = scoreDimAsBoxDist(blasBytes.data(), (int)blasBytes.size() - vertCountTotal * 12, box, dim_as_box_min,
+    dim_as_box_max, daSWRT::BlasBoxEncoding::Quantized16);
 
   return swrt.addPreBuiltModel(box, eastl::move(blasBytes), vertCountTotal, (int)nodes.size(), (int)dqPrims.size(), dimAsBoxDist);
 }

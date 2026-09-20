@@ -23,26 +23,14 @@ class BBox2
 {
 public:
   Point2 lim[2];
-  INLINE BBox2() { setempty(); }
-  BBox2(const Point2 &a, real s) { makebox(a, s); }
-  INLINE BBox2(const Point2 &left_top, const Point2 &right_bottom)
-  {
-    lim[0] = left_top;
-    lim[1] = right_bottom;
-  }
-  INLINE BBox2(real left, real top, real right, real bottom)
-  {
-    lim[0] = Point2(left, top);
-    lim[1] = Point2(right, bottom);
-  }
+  constexpr INLINE BBox2() : lim{Point2(MAX_REAL / 4, MAX_REAL / 4), Point2(MIN_REAL / 4, MIN_REAL / 4)} {}
+  constexpr INLINE BBox2(const Point2 &a, real s) { makebox(a, s); }
+  constexpr INLINE BBox2(const Point2 &left_top, const Point2 &right_bottom) : lim{left_top, right_bottom} {}
+  constexpr INLINE BBox2(real left, real top, real right, real bottom) : lim{Point2(left, top), Point2(right, bottom)} {}
 
-  INLINE void setempty()
-  {
-    lim[0] = Point2(MAX_REAL / 4, MAX_REAL / 4);
-    lim[1] = Point2(MIN_REAL / 4, MIN_REAL / 4);
-  }
+  constexpr INLINE void setempty() { *this = BBox2(); }
   INLINE bool isempty() const { return lim[0].x > lim[1].x || lim[0].y > lim[1].y; }
-  INLINE void makebox(const Point2 &p, real s)
+  constexpr INLINE void makebox(const Point2 &p, real s)
   {
     Point2 d(s / 2, s / 2);
     lim[0] = p - d;

@@ -3,7 +3,8 @@
 
 // LSB-packed alpha:
 // a8 == 0     : hole / no-data
-// a8 != 0     : valid
+// a8 in 1..7  : glint tag (depthQ == 0 is never produced normally), treated as a hole for reprojection/mips
+// a8 >= 8     : valid
 // shadow      : a8 & 7   (3 bits, 0..7)
 // depthQ      : a8 >> 3  (5 bits, 0..31)
 // depth01     : depthQ / 31
@@ -20,6 +21,7 @@ struct ReflAlphaDecoded
   uint shadow;   // 0..7  (0 = full shadow, 7 = fully lit)
   uint depthQ;   // 0..31
   float depth01; // depthQ / 31
+  uint glint;
   uint hole;
 };
 
@@ -37,10 +39,11 @@ ReflAlphaDecoded DecodeReflAlpha(float a)
 {
   ReflAlphaDecoded d;
   d.a8 = ReflAlphaToA8(a);
-  d.hole = (d.a8 == 0u);
   d.shadow = d.a8 & REFL_SHADOW_MAX;
   d.depthQ = d.a8 >> REFL_SHADOW_BITS;
   d.depth01 = (float)d.depthQ * (1.0 / (float)REFL_DEPTH_MAX);
+  d.glint = (d.a8 != 0u && d.depthQ == 0u);
+  d.hole = a < 7.5h / 255.h; // same as (d.a8 == 0u) || d.glint;
   return d;
 }
 

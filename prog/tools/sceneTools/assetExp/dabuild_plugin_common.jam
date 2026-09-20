@@ -9,3 +9,8 @@ OutDir = $(OutDir)/plugins/dabuild ;
 
 ImportProgLibs = tools/libTools/daKernel ;
 ImportsRelativeDir = ../.. ;
+
+UseProgLibs =
+  tools/libTools/assetMgrHlp
+  tools/libTools/util
+;

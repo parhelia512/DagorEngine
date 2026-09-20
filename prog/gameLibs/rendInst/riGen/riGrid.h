@@ -64,6 +64,10 @@ VECTORCALL RiGridObject rigrid_find_in_box_by_bounding_max(const RiGrid &grid_ho
   float max_radius);
 VECTORCALL RiGridObject rigrid_find_in_box_by_bounding_pool(const RiGrid &grid_holder, const bbox3f &bbox, uint32_t pool,
   const RiGridObjPred &pred);
+// pool_bits as in rendinst::gatherRIGenExtraCollidable: a typed filter, so other pools drop
+// before their bounds test and the type erased pred call
+VECTORCALL RiGridObject rigrid_find_in_box_by_bounding_pool_bits(const RiGrid &grid_holder, const bbox3f &bbox, uint32_t first_pool,
+  dag::ConstSpan<uint32_t> pool_bits, const RiGridObjPred &pred);
 VECTORCALL RiGridObject rigrid_find_in_sphere_by_pos(const RiGrid &grid_holder, const Point3 &bsphere_c, float radius,
   const RiGridObjPred &pred);
 VECTORCALL RiGridObject rigrid_find_in_sphere_by_bounding(const RiGrid &grid_holder, const Point3 &bsphere_c, float radius,

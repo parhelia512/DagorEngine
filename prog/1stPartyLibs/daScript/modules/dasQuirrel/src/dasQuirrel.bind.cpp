@@ -2,7 +2,6 @@
 
 #include "daScript/ast/ast.h"
 #include "daScript/ast/ast_interop.h"
-#include "daScript/ast/ast_typefactory_bind.h"
 #include "daScript/src/builtin/module_builtin_rtti.h"
 #include "daScript/ast/ast_handle.h"
 
@@ -86,7 +85,7 @@ SQInteger call_binded_func(HSQUIRRELVM vm) {
     return hasException ? sq_throwerror(vm, exp.c_str()) : cast<SQInteger>::to(res);
 }
 
-void register_bound_funcs(HSQUIRRELVM vm, function<void(const char *module_name, HSQOBJECT tab)> cb, daScriptEnvironment *environment) {
+void register_bound_funcs(HSQUIRRELVM vm, daScriptEnvironment *environment, function<void(const char *module_name, HSQOBJECT tab)> cb) {
     lock_guard<mutex> guard(lock);
     DAS_ASSERTF(environment != nullptr, "register_bound_funcs: environment is null, called before daScript environment is ready?");
     bindedEnvironment = environment;

@@ -68,7 +68,7 @@ static ecs::EntitySystemDesc collimator_moa_on_device_reset_es_event_handler_es_
   empty_span(),
   empty_span(),
   empty_span(),
-  ecs::EventSetBuilder<AfterDeviceReset>::build(),
+  ecs::EventSetBuilder<EventAfterDeviceReset>::build(),
   0
 ,"render",nullptr,"*");
 static constexpr ecs::ComponentDesc collimator_moa_image_validation_es_event_handler_comps[] =

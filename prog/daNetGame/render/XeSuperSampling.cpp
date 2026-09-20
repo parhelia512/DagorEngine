@@ -6,7 +6,7 @@
 #include <perfMon/dag_statDrv.h>
 #include <render/resourceSlot/registerAccess.h>
 #include <render/antialiasing.h>
-#include <render/world/cameraParams.h>
+#include <render/cameraParams.h>
 
 #include <EASTL/finally.h>
 
@@ -43,11 +43,10 @@ XeSuperSampling::XeSuperSampling(const IPoint2 &outputResolution) : AntiAliasing
       Point2 mvScale = inputResolution;
       d3d::driver_command(Drv3dCommand::SET_XESS_VELOCITY_SCALE, &mvScale.x, &mvScale.y);
       render::antialiasing::ApplyContext ctx;
-      ctx.depthTexture = depthHndl.get();
       ctx.motionTexture = motionVecsHndl.get();
       ctx.jitterPixelOffset = camera.ref().jitterOffset;
       ctx.resetHistory = is_teleporting(camera.ref(), cameraHistory.ref());
-      render::antialiasing::apply_xess(opaqueFinalTargetHndl.get(), ctx, antialiasedHndl.get());
+      render::antialiasing::apply_xess(opaqueFinalTargetHndl.get(), depthHndl.get(), ctx, antialiasedHndl.get());
     };
   });
 
@@ -97,7 +96,6 @@ XeSuperSampling::XeSuperSampling(const IPoint2 &outputResolution) : AntiAliasing
       registry.readTextureHistory("ui_tex").atStage(dafg::Stage::PS_OR_CS).useAs(dafg::Usage::SHADER_RESOURCE);
       registry.readTextureHistory("depth_for_postfx").atStage(dafg::Stage::PS_OR_CS).useAs(dafg::Usage::SHADER_RESOURCE);
       registry.readTextureHistory("motion_vecs_after_transparency").atStage(dafg::Stage::PS_OR_CS).useAs(dafg::Usage::SHADER_RESOURCE);
-      return [] {};
     });
   }
 

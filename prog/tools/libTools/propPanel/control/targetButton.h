@@ -32,6 +32,8 @@ public:
 
   void reset() override { controlValue.clear(); }
 
+  const char *getImguiTypeName() const override { return "TargetButton"; }
+
   void updateImgui() override
   {
     ScopedImguiBeginDisabled scopedDisabled(!controlEnabled);
@@ -56,6 +58,7 @@ public:
 
     const char *buttonTitle = controlValue.empty() ? "<none>" : controlValue.c_str();
     const bool clicked = ImGui::Button(buttonTitle, ImVec2(buttonWidth, 0.0f));
+    setImguiTestItemInfo();
 
     setPreviousImguiControlTooltip();
 

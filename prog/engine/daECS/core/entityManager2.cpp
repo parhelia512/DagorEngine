@@ -16,6 +16,10 @@
 #include "entityCreationProfiler.h"
 #include "ecsInternal.h"
 #include "demandClearBitArray.h"
+#if DAECS_EXTENSIVE_CHECKS
+#include <daECS/core/tokenize_const_string.h>
+#include <util/dag_string.h>
+#endif
 
 
 #define ASYNC_RESOURCES "render"
@@ -779,6 +783,10 @@ template_t EntityManager::instantiateTemplate(int id, bool update_queries)
   }
   DA_PROFILE_TAG(template, templ.getName());
   FRAMEMEM_REGION;
+#if DAECS_EXTENSIVE_CHECKS
+  // by now every load the sets can refer to has happened; a dangling name here is real
+  templ.validateSets(getTemplateDB().data(), &getTemplateDB().info());
+#endif
   // Collect (component_index, data_ptr) pairs into flat vector, sort once at end - O(n log n)
   dag::RelocatableFixedVector<eastl::pair<component_index_t, const ChildComponent *>, 32, true, framemem_allocator> compEntries;
   dag::RelocatableFixedVector<component_index_t, 8, true, framemem_allocator> templReplicatedEntries;
@@ -980,6 +988,57 @@ void EntityManager::forceServerEidGeneration(EntityId from_eid)
   entDescs[ei].generation = get_generation(from_eid);
 }
 
+#if DAECS_EXTENSIVE_CHECKS
+// re-create names repeat each other almost completely, so log the base plus the delta
+static void debug_recreate_delta(EntityId eid, const char *from, const char *to)
+{
+  if (strcmp(from, to) == 0)
+  {
+    const char *e = strchr(from, '+');
+    debug("collapseRecreate %d templ %.*s (same)", eid, int(e ? e - from : strlen(from)), from);
+    return;
+  }
+  typedef dag::RelocatableFixedVector<eastl::string_view, 32, true, framemem_allocator> SubTemplates;
+  SubTemplates a, b;
+  tokenize_const_string(from, "+", [&](eastl::string_view t) { return a.push_back(t), true; });
+  tokenize_const_string(to, "+", [&](eastl::string_view t) { return b.push_back(t), true; });
+  String delta(framemem_ptr());
+  for (const auto &t : b)
+    if (eastl::find(a.begin(), a.end(), t) == a.end())
+      delta.aprintf(0, " +%.*s", (int)t.size(), t.data());
+  for (const auto &t : a)
+    if (eastl::find(b.begin(), b.end(), t) == b.end())
+      delta.aprintf(0, " -%.*s", (int)t.size(), t.data());
+  // order fixes parent override precedence, so position changes print both names in full
+  bool reordered = false;
+  int lastKept = -1, firstAdded = (int)b.size();
+  for (int bi = 0; bi < (int)b.size(); bi++)
+    if (eastl::find(a.begin(), a.end(), b[bi]) != a.end())
+      lastKept = bi;
+    else
+      firstAdded = min(firstAdded, bi);
+  for (auto ai = a.begin(), bi = b.begin(); !reordered && ai != a.end(); ++ai)
+  {
+    if (eastl::find(b.begin(), b.end(), *ai) == b.end())
+      continue;
+    while (bi != b.end() && eastl::find(a.begin(), a.end(), *bi) == a.end())
+      ++bi;
+    reordered = bi == b.end() || *bi != *ai;
+    if (bi != b.end())
+      ++bi;
+  }
+  if (reordered || firstAdded < lastKept)
+    debug("collapseRecreate %d templ %s -> %s", eid, from, to);
+  else if (delta.empty())
+    debug("collapseRecreate %d templ %s -> %s (repeated sub-template)", eid, from, to);
+  else
+  {
+    const int headLen = (!b.empty() && eastl::find(a.begin(), a.end(), b[0]) != a.end()) ? (int)b[0].size() : 0;
+    debug("collapseRecreate %d templ %.*s%s", eid, headLen, b.empty() ? to : b[0].data(), headLen ? delta.str() : delta.str() + 1);
+  }
+}
+#endif
+
 bool EntityManager::collapseRecreate(EntityId eid, const char *template_name, ComponentsInitializer &cinit, ComponentsMap &cmap,
   create_entity_async_cb_t &&creation_cb)
 {
@@ -992,8 +1051,7 @@ bool EntityManager::collapseRecreate(EntityId eid, const char *template_name, Co
         else if (!cr->isToDestroy())
         {
 #if DAECS_EXTENSIVE_CHECKS
-          // template names in re-creates might be too long (hence use id)
-          debug("%s %d templ %s -> %s", __FUNCTION__, eid, cr->templateName.c_str(), template_name);
+          debug_recreate_delta(eid, cr->templateName.c_str(), template_name);
 #endif
           eastl::move(cinit.begin(), cinit.end(), eastl::back_inserter(static_cast<BaseComponentsInitializer &>(cr->compInit)));
           for (auto &ckv : static_cast<BaseComponentsMap &>(cmap))
@@ -1211,6 +1269,25 @@ EntityManager::EntityManager(const EntityManager &from) :
   dataComponents.componentToLT.iterate([](uint64_t, LTComponentList *component) { component->info.cidx = INVALID_COMPONENT_INDEX; });
 }
 
+uint32_t EntityManager::logAliveEntities(uint32_t max_logged_cnt) const
+{
+  uint32_t aliveEntities = 0;
+  for (int i = 1, e = (int)entDescs.allocated_size(); i < e; ++i)
+  {
+    const EntityDesc entDesc = entDescs[i];
+    if (entDesc.archetype == INVALID_ARCHETYPE)
+      continue;
+    if (aliveEntities < max_logged_cnt)
+    {
+      const EntityId eid(make_eid(i, entDesc.generation));
+      debug_("%@<%s> ", eid, getEntityTemplateName(eid));
+    }
+    aliveEntities++;
+  }
+  debug("");
+  return aliveEntities;
+}
+
 void EntityManager::clear()
 {
   broadcastEventImmediate(EventEntityManagerBeforeClear());
@@ -1247,9 +1324,13 @@ void EntityManager::clear()
   if (clearAttempts == 0)
   {
     const uint32_t eventsLeft = deferredEventsCount;
+    const uint32_t eventsBytesLeft = eventsStorage.active.size();
+    const int exhaustedBuffers = (int)eventsStorage.buffers.size();
+    const uint32_t aliveEntities = logAliveEntities(/* max logged cnt */ 32);
     destroyAndLogEvents(eventsStorage, /* max logged cnt */ 32); // destroy all other events left and log first
-    logerr("infinite recursion during destruction of ECS, spend %d attempts, %d deferred Events left", max_destroy_attempts,
-      eventsLeft);
+    logerr("infinite recursion during destruction of ECS, spend %d attempts, %d deferred Events left, %d alive entities, "
+           "%d bytes of events in storage, %d exhausted buffers",
+      max_destroy_attempts, eventsLeft, aliveEntities, eventsBytesLeft, exhaustedBuffers);
   }
   else
     nextResevedEidIndex = 0;
@@ -1261,6 +1342,11 @@ void EntityManager::clear()
   for (auto &e : eventsForLoadingEntities)
     destroyEvents(e.events);
   eventsForLoadingEntities.clear();
+  if (singletonEntities.size() > 0)
+  {
+    logerr("%d stale singletonEntities left after ECS clear", singletonEntities.size());
+    singletonEntities.clear();
+  }
   templates.clear(archetypes, dataComponents, componentTypes);
   templateDB.clear();
   canBeReplicated.clear();

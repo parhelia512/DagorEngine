@@ -54,13 +54,6 @@ void BillboardDecals::init_textures(SharedTexWithShaderVar &&diffuse, SharedTexW
 
   bumpTex = eastl::move(normal);
   bumpTex.setVar();
-  {
-    d3d::SamplerInfo smpInfo;
-    smpInfo.address_mode_u = smpInfo.address_mode_v = smpInfo.address_mode_w = d3d::AddressMode::Clamp;
-    d3d::SamplerHandle sampler = d3d::request_sampler(smpInfo);
-    ShaderGlobal::set_sampler(get_shader_variable_id("billboard_decals_diff_tex_samplerstate", true), sampler);
-    ShaderGlobal::set_sampler(get_shader_variable_id("billboard_decals_bump_tex_samplerstate", true), sampler);
-  }
   // Textures.
 
   TextureInfo tinfo;

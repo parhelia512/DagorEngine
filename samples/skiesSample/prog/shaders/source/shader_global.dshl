@@ -277,8 +277,6 @@ endmacro
 
 macro INIT_HDR_STCODE()
 endmacro
-macro INIT_SUN_STCODE()
-endmacro
 macro USE_SUN()
 endmacro
 

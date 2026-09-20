@@ -28,8 +28,6 @@ endmacro
 float4 sun_color_0;
 float4 sky_color;//==
 
-macro INIT_SUN_STCODE()
-endmacro
 macro USE_SUN()
   hlsl(ps) {
     #define to_sun_direction (-(from_sun_direction.xyz))
@@ -109,7 +107,6 @@ block(frame) water3d_block
     globtm@f44 = globtm;
   }
 
-  INIT_SUN_STCODE()
   INIT_CLOUDS_SHADOW(to_sun_direction)
   INIT_VSM()
   INIT_ZNZFAR()

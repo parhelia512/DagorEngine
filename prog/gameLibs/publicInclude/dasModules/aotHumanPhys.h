@@ -116,15 +116,26 @@ inline void human_phys_calcGunTm(const HumanPhys &phys, PrecomputedPresetMode mo
 
 inline bool human_phys_isGoProneAllowed(const HumanPhys &phys) { return phys.isGoProneAllowed(); }
 
-inline const char *human_phys_get_seg_anim_name(const HumanPhys &phys, int seg_index)
+inline int human_phys_get_segphys_num_anims(const HumanPhys &phys)
+{
+  const SegmentedHumanPhysics *segPhys = phys.segPhysShared;
+  return segPhys ? (int)segPhys->anims.size() : 0;
+}
+
+inline const char *human_phys_get_segphys_anim_name(const HumanPhys &phys, int anim_id)
+{
+  const SegmentedHumanPhysics *segPhys = phys.segPhysShared;
+  if (segPhys && (0 <= anim_id && anim_id < segPhys->anims.size()))
+    return segPhys->anims[anim_id].c_str();
+  return "";
+}
+
+inline int human_phys_get_segphys_anim_id(const HumanPhys &phys, int seg_index)
 {
   const SegmentedHumanPhysics *segPhys = phys.segPhysShared;
   if (segPhys && (0 <= seg_index && seg_index < segPhys->segs.size()))
-  {
-    const int animID = segPhys->segs[seg_index].animID;
-    return (0 <= animID && animID < segPhys->anims.size()) ? segPhys->anims[animID].c_str() : "";
-  }
-  return "";
+    return segPhys->segs[seg_index].animID;
+  return -1;
 }
 
 inline void human_control_state_set_walk_speed(HumanControlState &ct, float speed) { ct.setWalkSpeed(speed); }

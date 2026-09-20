@@ -1,7 +1,7 @@
 // Copyright (C) Gaijin Games KFT.  All rights reserved.
 
 #include "portalRenderer.h"
-#include <render/world/cameraParams.h>
+#include <render/cameraParams.h>
 #include <osApiWrappers/dag_cpuJobs.h>
 #include <util/dag_threadPool.h>
 #include <util/dag_convar.h>
@@ -13,6 +13,7 @@
 #include <render/viewVecs.h>
 #include <rendInst/visibility.h>
 #include <drv/3d/dag_matricesAndPerspective.h>
+#include <drv/3d/dag_texture.h>
 #include <shaders/dag_shaderBlock.h>
 #include <rendInst/rendInstGenRender.h>
 #include <main/main.h>
@@ -147,7 +148,7 @@ public:
 
   void wait() { threadpool::wait(this); }
 
-  const char *getJobName(bool &) const override { return "portal_visibility_cull"; }
+  const char *getJobName(bool &) const override { return DAPROFILER_STRING("portal_visibility_cull"); }
 
   void doJob() override
   {
@@ -197,6 +198,14 @@ void PortalRenderer::PortalVisibility::startVisibilityJob(const mat44f &cull_tm,
   portal_visibility_cull_job.start(cull_tm, view_pos, getVisibility());
 }
 
+void PortalRenderer::waitVisibilityJob()
+{
+  if (interlocked_acquire_load(portal_visibility_cull_job.done))
+    return;
+  TIME_PROFILE(wait_portal_visibility);
+  portal_visibility_cull_job.wait();
+}
+
 PortalRenderer::PortalRenderer()
 {
   G_STATIC_ASSERT(PortalRenderer::MAX_RENDERED_CUBES < (1 << PORTAL_INDEX_BITS));
@@ -243,6 +252,11 @@ static TMatrix getModifiedCameraMatrix(const TMatrix view_itm)
   TMatrix tm = TMatrix::IDENT;
   tm.setcol(3, view_itm.getcol(3));
   return tm;
+}
+
+void PortalRenderer::setTransparentRt()
+{
+  d3d::set_render_target({renderTargetGbuf->getDepth(), 0}, DepthAccess::SampledRO, {{tmpRenderTargetTex.getBaseTex(), 0}});
 }
 
 void PortalRenderer::renderCube(int portal_cube_index, CameraParams &camera_params)
@@ -329,8 +343,9 @@ void PortalRenderer::renderCube(int portal_cube_index, CameraParams &camera_para
       callbackParams.renderRiNormal(view_itm, riGenVisibility, currentTexCtx, riex_renderer);
     }
     {
-      // dummy transparent rendering (gbuffer is used as target), only used for texture streaming
+      // dummy transparent rendering, only used for texture streaming
       TIME_D3D_PROFILE(portal_render_ri_trans);
+      setTransparentRt();
       callbackParams.renderRiTrans(view_itm, riGenVisibility, currentTexCtx, riex_renderer);
     }
     return;
@@ -378,7 +393,7 @@ void PortalRenderer::renderCube(int portal_cube_index, CameraParams &camera_para
   {
     TIME_D3D_PROFILE(portal_render_ri_trans);
     FRAME_LAYER_GUARD(globalFrameBlockId);
-    d3d::set_render_target({renderTargetGbuf->getDepth(), 0}, DepthAccess::SampledRO, {{tmpRenderTargetTex.getBaseTex(), 0}});
+    setTransparentRt();
     callbackParams.renderRiTrans(view_itm, riGenVisibility, currentTexCtx, riex_renderer);
   }
 
@@ -620,7 +635,7 @@ void PortalRenderer::copyFrameImpl(int cube_index, int face_start, int face_coun
     for (int faceNumber = face_start; faceNumber < face_start + face_count; ++faceNumber)
     {
       const int dstCubeFace = mip + mips * (faceNumber + cube_index * 6);
-      arrayTex->updateSubRegion(tmpRenderTargetTex.getTex2D(), mip, 0, 0, 0, cubeMipSide, cubeMipSide, 1, dstCubeFace, 0, 0, 0);
+      d3d::update_sub_region(tmpRenderTargetTex.getTex2D(), mip, 0, 0, 0, cubeMipSide, cubeMipSide, 1, arrayTex, dstCubeFace, 0, 0, 0);
     }
   }
 }

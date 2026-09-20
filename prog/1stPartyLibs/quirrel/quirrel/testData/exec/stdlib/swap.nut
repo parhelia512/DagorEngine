@@ -37,8 +37,8 @@ try {
   err = e
 }
 if (err)
-  print("error thrown: " + err + "\n")
-print("t2.a = " + t2.a + ", t2.b = " + t2.b + "\n")
+  println($"error thrown: {err}")
+println($"t2.a = {t2.a}, t2.b = {t2.b}")
 if (err == null)
   print("BUG: swap() with missing key did not throw\n")
 if (t2.a == null)

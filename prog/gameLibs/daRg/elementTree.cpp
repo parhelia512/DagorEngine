@@ -608,10 +608,12 @@ bool ElementTree::removeExpiredFadeOutChildren(Element *elem)
 }
 
 
-void ElementTree::releaseXmbOnDetach(Element *elem)
+void ElementTree::releaseXmb(Element *elem)
 {
   if (!elem->xmb)
     return;
+
+  guiScene->onXmbNodeRemoved(elem);
 
   if (elem->xmb->xmbParent)
   {
@@ -695,7 +697,7 @@ int ElementTree::detachElement(Element *elem)
 
   kineticScroll.erase(elem);
 
-  releaseXmbOnDetach(elem);
+  releaseXmb(elem);
 
   elem->onDetach(guiScene);
 

@@ -79,12 +79,13 @@ static bool sq_parse_int(const char* str_begin, const char* str_end, SQObjectPtr
 static SQInteger get_allowed_args_count(const SQObject &closure, SQInteger num_supported)
 {
     if(sq_type(closure) == OT_CLOSURE) {
-        return _closure(closure)->_function->_nparameters;
+        SQInteger nParams = _closure(closure)->_function->_nparameters;
+        return nParams < num_supported ? nParams : num_supported;
     }
     else if (sq_type(closure) == OT_NATIVECLOSURE) {
         SQInteger nParamsCheck = _nativeclosure(closure)->_nparamscheck;
         if (nParamsCheck > 0)
-            return nParamsCheck;
+            return nParamsCheck < num_supported ? nParamsCheck : num_supported;
         else // push all params when there is no check or only minimal count set
             return num_supported;
     }
@@ -2278,8 +2279,8 @@ static SQInteger closure_getfuncinfos_obj(HSQUIRRELVM v, SQObjectPtr & o) {
             _array(defparams)->Set((SQInteger)j,_closure(o)->_defaultparams[j]);
         }
         SET_SLOT("native", false);
-        SET_SLOT("pure", f->_purefunction);
-        SET_SLOT("nodiscard", f->_nodiscard);
+        SET_SLOT("pure", bool(f->_purefunction));
+        SET_SLOT("nodiscard", bool(f->_nodiscard));
         SET_SLOT("fastcall", false);  // script closures are never fastcall
         SET_SLOT("name", f->_name);
         SET_SLOT("freevars", f->_noutervalues);
@@ -2293,11 +2294,9 @@ static SQInteger closure_getfuncinfos_obj(HSQUIRRELVM v, SQObjectPtr & o) {
         SET_SLOT("return_type_mask", SQObjectPtr(int(f->_result_type_mask)));
         SET_SLOT("varargs_type_mask", SQObjectPtr(int(f->_varparams ? f->_param_type_masks[f->_nparameters - 1] : 0)));
 
-        SQObjectPtr key;
         SQObjectPtr docObject;
-        key._type = OT_USERPOINTER;
-        key._unVal.pUserPointer = (void *)_closure(o)->_function;
-        _table(_ss(v)->doc_objects)->Get(key, docObject);
+        if (SQString *doc = _ss(v)->GetDocString(sq_getdocstring_id(o)))
+            docObject = doc;
         SET_SLOT("doc", docObject);
     }
     else { //OT_NATIVECLOSURE
@@ -2311,33 +2310,30 @@ static SQInteger closure_getfuncinfos_obj(HSQUIRRELVM v, SQObjectPtr & o) {
         SQObjectPtr parameters;
         SQObjectPtr defparams;
         SQObjectPtr typecheck;
-        SQObjectPtr key = sq_declstring_key(nc);
-        SQObjectPtr value;
-        if (_table(_ss(v)->doc_objects)->Get(key, value)) {
+        SQString *declString = _ss(v)->GetNativeDeclString(nc->_docstring_id);
+        if (declString) {
             SQFunctionType ft(_ss(v));
             SQInteger errorPos = -1;
             SQObjectPtr errorString;
-            if (sq_isstring(value)) {
-               if (sq_parse_function_type_string(v, _stringval(value), ft, errorPos, errorString)) {
+            if (sq_parse_function_type_string(v, declString->_val, ft, errorPos, errorString)) {
 
-                   parameters = SQObjectPtr(SQArray::Create(_ss(v), ft.argNames.size() + 1));
-                   _array(parameters)->Set(SQInteger(0), SQObjectPtr(SQString::Create(_ss(v), "this", -1)));
-                   for (SQUnsignedInteger n = 0; n < ft.argNames.size(); n++) {
-                       _array(parameters)->Set((SQInteger)n + 1, SQObjectPtr(ft.argNames[n]));
-                   }
+                parameters = SQObjectPtr(SQArray::Create(_ss(v), ft.argNames.size() + 1));
+                _array(parameters)->Set(SQInteger(0), SQObjectPtr(SQString::Create(_ss(v), "this", -1)));
+                for (SQUnsignedInteger n = 0; n < ft.argNames.size(); n++) {
+                    _array(parameters)->Set((SQInteger)n + 1, SQObjectPtr(ft.argNames[n]));
+                }
 
-                   int defParamsCount = ft.argNames.size() - ft.requiredArgs;
-                   defparams = SQObjectPtr(SQArray::Create(_ss(v), defParamsCount));
-                   for (SQUnsignedInteger n = 0; n < defParamsCount; n++) {
-                       _array(defparams)->Set((SQInteger)n, ft.defaultValues[ft.requiredArgs + n]);
-                   }
+                int defParamsCount = ft.argNames.size() - ft.requiredArgs;
+                defparams = SQObjectPtr(SQArray::Create(_ss(v), defParamsCount));
+                for (SQUnsignedInteger n = 0; n < defParamsCount; n++) {
+                    _array(defparams)->Set((SQInteger)n, ft.defaultValues[ft.requiredArgs + n]);
+                }
 
-                   varargs = ft.ellipsisArgTypeMask != 0;
-                   varargsTypeMask = int(ft.ellipsisArgTypeMask);
-               }
-               else {
-                   // TODO: raise errorString
-               }
+                varargs = ft.ellipsisArgTypeMask != 0;
+                varargsTypeMask = int(ft.ellipsisArgTypeMask);
+            }
+            else {
+                // TODO: raise errorString
             }
         }
         else {
@@ -2359,9 +2355,9 @@ static SQInteger closure_getfuncinfos_obj(HSQUIRRELVM v, SQObjectPtr & o) {
         }
 
         SET_SLOT("native", true);
-        SET_SLOT("pure", nc->_purefunction);
-        SET_SLOT("nodiscard", nc->_nodiscard);
-        SET_SLOT("fastcall", nc->_isfastcall);
+        SET_SLOT("pure", bool(nc->_purefunction));
+        SET_SLOT("nodiscard", bool(nc->_nodiscard));
+        SET_SLOT("fastcall", bool(nc->_isfastcall));
         SET_SLOT("name", nc->_name);
         SET_SLOT("freevars", SQInteger(nc->_noutervalues));
         SET_SLOT("src", SQObjectPtr());
@@ -2376,7 +2372,8 @@ static SQInteger closure_getfuncinfos_obj(HSQUIRRELVM v, SQObjectPtr & o) {
         SET_SLOT("varargs_type_mask", varargsTypeMask);
 
         SQObjectPtr docObject;
-        _table(_ss(v)->doc_objects)->Get(sq_docstring_key(nc), docObject);
+        if (SQString *doc = _ss(v)->GetDocString(sq_getdocstring_id(o)))
+            docObject = doc;
         SET_SLOT("doc", docObject);
     }
 

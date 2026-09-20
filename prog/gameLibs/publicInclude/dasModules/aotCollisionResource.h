@@ -106,12 +106,19 @@ inline const CollisionNode *collres_get_node(const CollisionResource &collres, c
   return collres.getNode(coll_node_id);
 }
 
+// The LIVE flags (rules apply here); CollisionNode.behaviorFlags stays the authored value.
+// int, not uint16_t: the das interop ABI carries sub-int returns badly.
+inline int collres_get_node_behavior_flags(const CollisionResource &collres, const int coll_node_id)
+{
+  return (int)collres.getNodeBehaviorFlags(coll_node_id);
+}
+
 inline int collres_get_nodesCount(const CollisionResource &collres) { return collres.getAllNodes().size(); }
 
 // Per-node accessors below mirror the C++ contract the script side cannot read: an invalid
 // node_id returns a zero/empty/IDENT value indistinguishable from legitimate data, node ids are
-// positional and stay stable only until the resource's node list is mutated (sortNodesList /
-// append), and box/sphere bbox values, sphere bsphere values and capsule endpoints all
+// positional (a rebuilt resource may order its nodes differently), and box/sphere bbox values,
+// sphere bsphere values and capsule endpoints all
 // compose the node's current placement (see the frame table in dag_collisionResource.h) --
 // do not multiply those by collres_get_node_tm. A BOX node's bsphere is the one stored
 // NODE-LOCAL value. Dev builds assert on out-of-range ids so stale ids surface in CI.
@@ -133,6 +140,13 @@ inline bool collres_get_node_capsule(const CollisionResource &collres, int node_
 {
   return collres.getNodeCapsule(node_id, out);
 }
+// A node's physmat, asked of the RESOURCE -- the node's field carries an encoding only the resource can resolve.
+// Index 0 is the dominant material of a node holding a set.
+inline int collres_get_node_phys_mat(const CollisionResource &collres, int node_id)
+{
+  collres_assert_node_id(collres, node_id);
+  return collres.getNodePhysMatId(node_id, 0);
+}
 inline const char *collres_get_node_name(const CollisionResource &collres, int node_id)
 {
   collres_assert_node_id(collres, node_id);
@@ -142,6 +156,20 @@ inline TMatrix collres_get_node_tm(const CollisionResource &collres, int node_id
 {
   collres_assert_node_id(collres, node_id);
   return collres.getNodeTm(node_id);
+}
+// How many materials the node holds: 0 for none, 1 for one, else its set size.
+inline int collres_get_node_phys_mat_count(const CollisionResource &collres, int node_id)
+{
+  collres_assert_node_id(collres, node_id);
+  return collres.getNodePhysMatCount(node_id);
+}
+// One material of the node's set, palette_index in 0 .. count-1 (out of range answers PHYSMAT_INVALID).
+// A node has several only where something fused nodes of unlike materials into one; every other node answers its single material at
+// index 0.
+inline int collres_get_node_phys_mat_index(const CollisionResource &collres, int node_id, int palette_index)
+{
+  collres_assert_node_id(collres, node_id);
+  return collres.getNodePhysMatId(node_id, palette_index);
 }
 inline float collres_get_node_max_tm_scale(const CollisionResource &collres, int node_id)
 {
@@ -276,10 +304,6 @@ inline void collres_node_iterate_verts(const CollisionResource &collres, int nod
     at);
 }
 
-inline bool collres_check_grid_available(const CollisionResource &collres, uint8_t behavior_filter)
-{
-  return collres.checkGridAvailable(behavior_filter);
-}
 
 inline bool apply_collres_node_flag_rules(ecs::EntityId eid, const ecs::Array &rules)
 {

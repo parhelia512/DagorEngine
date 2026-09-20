@@ -564,13 +564,18 @@ public:
     void *buf;
     {
       const char *target = a.props.getStr("target", "");
+      const char *fsh = a.props.getStr("fsh", nullptr);
+      String fshNum(fsh ? fsh : "5.0");
+      fshNum.replaceAll(".", "");
       String outFn(0, "%s.tmp", a.getName());
-      String outFnBindump(0, "%s%s.ps50.shdump.bin", outFn,
-        strcmp(target, "spirvb") == 0 || strcmp(target, "metalb") == 0 ? ".bindless" : "");
+      String outFnBindump(0, "%s%s.ps%s.shdump.bin", outFn,
+        strcmp(target, "spirvb") == 0 || strcmp(target, "metalb") == 0 ? ".bindless" : "", fshNum);
       String cmd(0,
         "%s -dshlShaderName:%s -s:%s -singleInputJson:%s -singleOutputBin:%s -target:%s -p:shader_editor -silent "
         "-optionalGraphs:%s -supressLogs",
         compilerExePath, a.getName(), subgraphsFolder, inputJson, outFn.c_str(), target, allPermutationSubgraphs.str());
+      if (fsh)
+        cmd.aprintf(0, " -fsh:%s", fsh);
 
       dd_erase(outFnBindump);
 

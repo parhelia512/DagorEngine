@@ -23,6 +23,7 @@ local 3rdPartyDir = $(Root)/prog/3rdPartyLibs ;
 Sources =
   init_d3di.cpp
   dx12.cpp
+  enhanced_barrier_validation.cpp
   device.cpp
   device_queue.cpp
   swapchain.cpp
@@ -48,6 +49,7 @@ Sources =
   resource_update_buffer.cpp
   pipeline/blk_cache.cpp
   ray_trace_pipeline.cpp
+  debug/names.cpp
 ;
 
 AddIncludes +=
@@ -117,12 +119,7 @@ if $(Platform) in windows {
     ;
   }
 
-  local NvapiDir = $(_DEVTOOL)/nvapi-$(NvApiVer) ;
-  if [ GLOB $(NvapiDir) : * ] && $(PlatformArch) != arm64 {
-    AddIncludes += $(NvapiDir) ;
-    # nvapiXXX.lib is added to AddLibs throughd drv3d_commonCode
-    CPPopt += -DHAS_NVAPI ;
-  }
+  include $(Root)/prog/engine/drv/drv3d_commonCode/nvapi.jam ;
 
   local WinPixEventRuntimeDir = $(3rdPartyDir)/winpixeventruntime ;
   if [ GLOB $(WinPixEventRuntimeDir) : * ] && $(Config) != rel {
@@ -202,6 +199,7 @@ if $(Platform) in windows {
 
 UseProgLibs +=
   engine/drv/drv3d_commonCode
+  engine/drv/shadersMetaData/dxil
   engine/shaders
 ;
 

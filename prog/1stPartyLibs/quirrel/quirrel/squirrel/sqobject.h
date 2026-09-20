@@ -8,6 +8,9 @@
 
 struct SQSharedState;
 
+typedef SQUnsignedInteger32 SQDocStringId;
+static const SQDocStringId SQ_MAX_DOCSTRING_ID = 0xFFFFFFu;
+
 #define METAMETHODS_LIST \
     MM_IMPL(MT_ADD      ,"_add")\
     MM_IMPL(MT_SUB      ,"_sub")\
@@ -297,18 +300,7 @@ inline void _Swap(SQObject &a,SQObject &b)
     b = t;
 }
 
-inline SQObjectPtr sq_docstring_key(const void *obj)
-{
-    SQObjectPtr key;
-    key._type = OT_USERPOINTER;
-    key._unVal.pUserPointer = (void *)obj;
-    return key;
-}
-
-inline SQObjectPtr sq_declstring_key(const void *obj)
-{
-    return sq_docstring_key((void *)(((size_t)obj) ^ ~size_t(0)));
-}
+SQDocStringId sq_getdocstring_id(const SQObject &obj);
 
 struct SQCollectable;
 // Counterpart to SQRELEASEHOOK: lets a native binding trace HSQOBJECTs hidden behind an

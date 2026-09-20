@@ -23,7 +23,6 @@ float4 world_to_far_grass_ofs = (1.0/512, 1.0/512, 0, 0);
 
 shader fast_grass
 {
-  supports global_const_block;
   supports global_frame;
 
   INIT_HMAP_HOLES(vs)
@@ -298,16 +297,6 @@ shader fast_grass
 shader fast_grass_precomp
 {
   (cs) {
-    output_hmap@uav = fast_grass_pre_hmap hlsl {
-      RWTexture2DArray<float> output_hmap@uav;
-    };
-    output_gmap@uav = fast_grass_pre_gmap hlsl {
-      RWTexture2DArray<uint> output_gmap@uav;
-    };
-    output_cmap@uav = fast_grass_pre_cmap hlsl {
-      RWTexture2DArray<half4> output_cmap@uav;
-    };
-    output_size@u2 = get_dimensions(fast_grass_pre_hmap, 0);
     world_to_hmap_low@f4 = (world_to_hmap_low.x, world_to_hmap_low.y, world_to_hmap_low.z + 0.5*tex_hmap_inv_sizes.x, world_to_hmap_low.w+0.5*tex_hmap_inv_sizes.y);
     tex_hmap_low@smp2d = tex_hmap_low;
     heightmap_scale@f4 = (heightmap_scale.x, heightmap_scale.y, 1.5*tex_hmap_inv_sizes.x, 1.5*tex_hmap_inv_sizes.y);
@@ -324,6 +313,7 @@ shader fast_grass_precomp
     }
   }
 
+  USE_FAST_GRASS_CLIP_RECTS(cs)
   USE_GRASS_TC(cs)
   INIT_HEIGHTMAP_OFS(cs)
   USE_HEIGHTMAP_OFS(cs)
@@ -331,7 +321,6 @@ shader fast_grass_precomp
   USE_RENDINST_HEIGHTMAP_OFS(cs)
   INIT_HMAP_HOLES(cs)
   USE_HMAP_HOLES(cs)
-  USE_FAST_GRASS_CLIP_RECTS(cs)
 
   hlsl(cs) {
     #include <grassInstance.hlsli>
@@ -440,23 +429,7 @@ shader fast_grass_precomp
       grassChannel = min(grassChannel, GRASS_MAX_CHANNELS);
       grassWeight = maskScale;
     }
-
-    [numthreads(16, 16, 1)]
-    void main(uint3 dtId : SV_DispatchThreadID)
-    {
-      if (any(dtId.xy >= output_size))
-        return;
-      float4 proj = get_fg_clip_to_world(dtId.z);
-      float3 wpos = float3(dtId.xy * proj.xy + proj.zw, 0).xzy;
-      half grassWeight;
-      uint grassChannel;
-      half3 grassColor;
-      sampleGrassCS(wpos, grassChannel, grassWeight, grassColor);
-      texture3DAt(output_hmap, dtId) = (wpos.y - heightmap_scale.y) * (1.0 / heightmap_scale.x);
-      texture3DAt(output_gmap, dtId) = grassChannel;
-      texture3DAt(output_cmap, dtId) = half4(grassColor, grassWeight);
-    }
   }
 
-  compile("target_cs", "main");
+  USE_FAST_GRASS_PRECOMP()
 }

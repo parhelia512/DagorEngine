@@ -87,6 +87,12 @@ HolesMtxTempVec getInverseMatrices(const ecs::Point4List &holes)
 void holes_initialize(int &hmap_holes_scale_step_offset_varId, int &hmap_holes_temp_ofs_size_varId, bool &should_render_ground_holes,
   ecs::Point4List &holes)
 {
+#if DAGOR_DBGLEVEL > 0
+  const float scale = ShaderGlobal::get_float4(hmap_holes_scale_step_offsetVarId.get_var_id()).r;
+  if (scale != 0.f)
+    LOGERR_ONCE("hmap_holes_scale_step_offset.x is %f, expected 0: the ground hole system is in an invalid state", scale);
+#endif
+
   hmap_holes_scale_step_offset_varId = hmap_holes_scale_step_offsetVarId.get_var_id();
   hmap_holes_temp_ofs_size_varId = hmap_hole_ofs_sizeVarId.get_var_id();
   holes.reserve(MAX_GROUND_HOLES);

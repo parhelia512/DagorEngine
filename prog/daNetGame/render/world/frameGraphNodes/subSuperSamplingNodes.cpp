@@ -110,7 +110,6 @@ eastl::fixed_vector<dafg::NodeHandle, 5, false> makeSubsamplingNodes(bool sub_sa
         registry.multiplex(dafg::multiplexing::Mode::Viewport);
         registry.registerTexture(supersampledTextureName,
           [](auto) -> ManagedTexView { return get_world_renderer()->getSuperResolutionScreenshot(); });
-        return [] {};
       }));
 
     const char *texToSupersampleName = sub_sampling ? subsampledTextureName : inputTextureName;

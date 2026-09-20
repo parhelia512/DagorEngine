@@ -2,6 +2,7 @@
 
 #include <daECS/core/entitySystem.h>
 #include <ecs/render/updateStageRender.h>
+#include <generic/dag_relocatableFixedVector.h>
 #include <shaders/dag_dynSceneRes.h>
 #include <drv/3d/dag_matricesAndPerspective.h>
 #include <drv/3d/dag_driver.h>
@@ -285,10 +286,12 @@ static void bvh_destructables_iterate_es(BVHAdditionalAnimcharIterate &event)
       if (!lodResource)
         continue;
 
-      auto additionalData =
-        animchar_additional_data::prepare_fixed_space<AAD_RAW_INITIAL_TM__HASHVAL>(make_span_const(destr->intialTmAndHash));
+      const auto additionalData =
+        animchar_additional_data::prepare_fixed_space<AAD_RAW_INITIAL_TM__HASHVAL, dag::RelocatableFixedVector<Point4, 4 + 2>>(
+          make_span_const(destr->intialTmAndHash));
 
-      event.get<0>()({}, modelDynScene, lodResource, additionalData, VISFLG_BVH);
+      event.get<0>()({}, modelDynScene, lodResource,
+        animchar_additional_data::AnimcharAdditionalDataView::get_optional_data(&additionalData), VISFLG_BVH);
     }
   }
 };

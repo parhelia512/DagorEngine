@@ -22,7 +22,6 @@ static void createTemplate()
 {
   ecs::ComponentsMap map;
   map[ECS_HASH(TEMPLATE_NAME)] = ecs::Tag();
-  eastl::string name = template_name;
   g_entity_mgr->addTemplate(ecs::Template(template_name, eastl::move(map), ecs::Template::component_set(),
     ecs::Template::component_set(), ecs::Template::component_set(), false));
   g_entity_mgr->instantiateTemplate(g_entity_mgr->buildTemplateIdByName(template_name), true);

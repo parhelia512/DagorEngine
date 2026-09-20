@@ -5,7 +5,7 @@
 #include "util/dag_baseDef.h"
 
 // Increase this number if changes in the compiler invalidate .obj for SPIR-V
-extern const int VER_OBJ_SPIRV_VAL = _MAKE4C('14.2');
+extern const int VER_OBJ_SPIRV_VAL = _MAKE4C('14.4');
 
 #if _CROSS_TARGET_SPIRV
 #include <drv/shadersMetaData/spirv/compiled_meta_data.h>

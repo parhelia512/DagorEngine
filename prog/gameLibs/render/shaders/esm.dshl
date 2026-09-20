@@ -2,6 +2,14 @@
 include "hardware_defines.dshl"
 
 texture downsampled_shadows;
+sampler downsampled_shadows_samplerstate
+{
+  comparison_func = less;
+  mipmap_mode = point;
+  address_u = clamp;
+  address_v = clamp;
+  address_w = clamp;
+};
 
 // TODO: spare this interval, use a stub texture instead
 int assume_downsampled_shadows;
@@ -11,7 +19,8 @@ macro INIT_ESM_SHADOW(stage)
 if (assume_downsampled_shadows == on)
 {
   (stage) {
-    downsampled_shadows@shd = downsampled_shadows;
+    downsampled_shadows@tex2d = downsampled_shadows;
+    downsampled_shadows_cmpSampler@cmpSampler = downsampled_shadows_samplerstate;
   }
 }
 endmacro

@@ -86,6 +86,7 @@ enum AppendArrayType {
     SQ_OPCODE(_OP_GETOUTER) \
     SQ_OPCODE(_OP_NEWOBJ) \
     SQ_OPCODE(_OP_APPENDARRAY) \
+    SQ_OPCODE(_OP_SPREAD) \
     SQ_OPCODE(_OP_COMPARITH) \
     SQ_OPCODE(_OP_COMPARITH_K) \
     SQ_OPCODE(_OP_INC) \
@@ -117,7 +118,7 @@ enum AppendArrayType {
     SQ_OPCODE(_OP_NULLCOALESCE) \
     SQ_OPCODE(_OP_NULLCALL) \
     SQ_OPCODE(_OP_LOADCALLEE) \
-    SQ_OPCODE(_OP_PATCH_DOCOBJ) \
+    SQ_OPCODE(_OP_SET_CLASS_DOCSTRING) \
     SQ_OPCODE(_OP_LOAD_STATIC_MEMO) \
     SQ_OPCODE(_OP_SAVE_STATIC_MEMO) \
     SQ_OPCODE(_OP_FREEZE) \
@@ -197,6 +198,7 @@ inline bool sq_is_pure_op(int op) {
         op != _OP_PREPCALLK &&
         op != _OP_NEWOBJ &&
         op != _OP_APPENDARRAY &&
+        op != _OP_SPREAD &&
         op != _OP_NEWSLOT &&
         op != _OP_NEWSLOTK &&
         op != _OP_NEWSLOTA &&

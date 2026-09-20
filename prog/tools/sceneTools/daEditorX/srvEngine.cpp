@@ -843,12 +843,15 @@ public:
     return texconvcache::get_tex_asset_built_ddsx(a, dest, target, profile, log);
   }
 
-  void imguiBegin(const char *name, bool *open, unsigned window_flags) override { editor_core_imgui_begin(name, open, window_flags); }
+  bool imguiBegin(const char *name, bool *open, unsigned window_flags) override
+  {
+    return editor_core_imgui_begin(name, open, window_flags);
+  }
 
-  void imguiBegin(PropPanel::PanelWindowPropertyControl &panel_window, bool *open, unsigned window_flags) override
+  bool imguiBegin(PropPanel::PanelWindowPropertyControl &panel_window, bool *open, unsigned window_flags) override
   {
     panel_window.beforeImguiBegin();
-    imguiBegin(panel_window.getStringCaption(), open, window_flags);
+    return imguiBegin(panel_window.getStringCaption(), open, window_flags);
   }
 
   void imguiEnd() override { ImGui::End(); }
@@ -1063,7 +1066,7 @@ IObjEntity *IObjEntity::clone(IObjEntity *origin)
 static OAHashNameMap<true> entSubType;
 static unsigned entSubTypeMask[4] = {0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF};
 static bool showInvalidAssets = false;
-static LayerHiddenMask entLayerHiddenMask(LayerHiddenMask::BIT_COUNT - 1, true); // mark layer=127 as hidden
+static LayerHiddenMask entLayerHiddenMask(IObjEntity::LAYER_INDEX_ALWAYS_HIDDEN, true);
 
 int IObjEntity::registerSubTypeId(const char *subtype_str)
 {
@@ -1076,7 +1079,7 @@ unsigned IObjEntityFilter::getSubTypeMask(int mask_type) { return entSubTypeMask
 void IObjEntityFilter::setLayerHiddenMask(LayerHiddenMask lhmask)
 {
   entLayerHiddenMask = lhmask;
-  entLayerHiddenMask.setHidden(LayerHiddenMask::BIT_COUNT - 1);
+  entLayerHiddenMask.setHidden(IObjEntity::LAYER_INDEX_ALWAYS_HIDDEN);
 }
 LayerHiddenMask IObjEntityFilter::getLayerHiddenMask() { return entLayerHiddenMask; }
 void IObjEntityFilter::setShowInvalidAsset(bool show) { showInvalidAssets = show; }

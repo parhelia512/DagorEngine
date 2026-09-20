@@ -13,8 +13,6 @@ shader deferred_shadow_compute
     dont_render;
   }
 
-  supports global_const_block;
-
   COMMON_RESOLVE_EXTENDED(cs)
 
   INIT_PACK_UNPACK_DYNSTCODE(cs)

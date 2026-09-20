@@ -6,7 +6,7 @@ commit diffs correctly and classify what was wrong and what was fixed.
 ## What daRg is
 
 daRg (Dagor Reactive GUI) is a reactive UI framework in the Dagor engine,
-inspired by React/Flutter. UI is scripted in Quirrel (a Squirrel dialect).
+inspired by React/Flutter. UI is scripted in Quirrel script language.
 A UI scene is a tree of elements built from "components": plain Quirrel
 tables describing an element, or functions (closures) returning such tables.
 
@@ -26,21 +26,25 @@ let view = @() {
 ## Component builder semantics (critical)
 
 - A builder function (closure component) is called EVERY time any observable
-  listed in its `watch` property changes, and on initial build. The engine
-  diffs the returned description against the old one and rebuilds changed
-  subtrees.
+  listed in its `watch` property changes, and on initial build. The element
+  is set up again from the new description. Its children are matched to the
+  old children: same `key`, or the same description table, or (both keyless)
+  the same behavior list. A child closure that is the same object as before
+  is reused without a call. Unmatched children are recreated.
 - Therefore a builder must be a PURE function of state: it must only read
   state and return a description. Side effects in the builder body (setting
   Watched values, sending events/requests, playing sounds, subscribing,
   logging business actions) run on every rebuild, at unpredictable times,
-  and are a classic bug source. Setting a Watched inside a builder can cause
-  re-invalidation loops ("frp cycle" / "recursion in observable update").
+  and are a classic bug source. Setting a Watched inside a builder is not
+  detected by frp: the set is deferred, invalidates the watching element
+  next frame, and the builder runs again, so the loop repeats every frame.
 - One-shot effects belong in lifecycle hooks: `onAttach` (element inserted
   into the tree), `onDetach` (removed). These are script-level properties of
   the component table.
 - A `function ... { return { ... } }` or `@() {...}` component WITHOUT a
-  `watch` field still gets re-invoked when a parent rebuilds it; effects
-  there are equally wrong.
+  `watch` field is still re-invoked when a parent rebuild passes a new
+  closure object (the usual case for a lambda created in the parent
+  builder); effects there are equally wrong.
 - `watch` must list ALL observables whose `.get()` the builder reads.
   A missing entry means the UI silently does not update ("stale UI");
   an extra/too-broad entry means over-invalidation (perf).
@@ -48,10 +52,12 @@ let view = @() {
 ## FRP primitives (module "frp")
 
 - `Watched(v)` - mutable observable.
-  - `.get()` read (older code uses `.value` for both read and write; commits
-    migrating `.value` -> `.get()/.set()` are style/API migrations).
-  - `.set(v)` assign; propagation to subscribers/computeds is deferred and
-    batched (`update_deferred`), so multiple sets in one frame coalesce.
+  - `.get()` read. `.value` read still works but logs a deprecation error
+    in debug builds; `.value` write and calling the observable (`state(v)`)
+    throw. Commits migrating `.value` -> `.get()/.set()` are API migrations.
+  - `.set(v)` assign; the stored value changes at once, but propagation to
+    subscribers/computeds is deferred and batched (`update_deferred`), so
+    multiple sets in one frame coalesce.
   - `.modify(fn)` set to `fn(currentValue)`.
   - `.mutate(fn)` mutate contained table/array in place, then trigger.
     Mutating `w.get().field = x` WITHOUT `mutate` does NOT notify anyone:
@@ -60,25 +66,30 @@ let view = @() {
   - `.subscribe(fn)` / `.unsubscribe(fn)` change callbacks. A subscribe
     without matching unsubscribe (e.g. subscribing in a builder, or in
     module scope of a repeatedly executed file) leaks and fires callbacks
-    for dead UI. `subscribe_with_nasty_disregard_of_frp_update` (or
-    similarly named variant) runs callback immediately mid-update: it can
-    cause ordering bugs and is regularly replaced by plain subscribe.
+    for dead UI. `subscribe_with_nasty_disregard_of_frp_update` runs in the
+    same deferred pass as a plain subscriber; its only difference is that it
+    may `.set` other observables without the subscriber-validation error
+    (the set lands in the next update). It is regularly replaced by plain
+    subscribe.
 - `Computed(fn)` - derived read-only observable. `fn` must be a pure,
-  cheap function of other observables; dependencies are auto-tracked from
-  the `.get()` calls made inside. Bugs seen in practice:
+  cheap function of other observables; the sources are the observables
+  among the free variables and literals of `fn` (nested lambdas included),
+  fixed at construction. Bugs seen in practice:
   - doing heavy work or allocation in a Computed that runs often;
-  - reading a value conditionally so a dependency is not tracked on first
-    run (conditional deps ARE supported/retracked, but ordering surprises
-    happen);
-  - setting other Watched values inside a Computed (side effect: forbidden,
-    can produce cycles);
-  - Computed returning a fresh table/array each recompute forces dependents
-    to see a "new" value every time (no equality) -> over-invalidation.
-- Value identity: propagation is skipped when the new value equals the old
-  by reference/primitive equality. Replacing a table with an equal-content
-  but new table still counts as a change.
-- FRP graph in games is usually set to immutable/frozen values mode:
-  values stored in Watched should be treated as immutable; use `mutate`.
+  - reading an observable only inside a named helper function, so it is
+    not a source: "Computed must have at least one source observable", or
+    a Computed that never recomputes on that observable;
+  - setting other Watched values inside a Computed (side effect: frp logs
+    "triggered during recalc of" and defers the set to the next update);
+  - Computed results are compared one level deep by value, so a fresh table
+    with the same top-level entries is not a change; a fresh table that
+    holds fresh nested tables/arrays is, and re-runs every dependent.
+- Value identity: `Watched.set` skips propagation when the new value equals
+  the old by reference/primitive equality; a new equal-content table counts
+  as a change. `mutate` always propagates.
+- Computed values are always frozen. `make_all_observables_immutable(true)`
+  freezes Watched values too, but nothing in this repo enables it; treat
+  stored values as immutable anyway and use `mutate`.
 
 ## Element description properties you will see in diffs
 
@@ -101,10 +112,11 @@ let view = @() {
   alignment), `hplace/vplace` (self placement), `gap`, `margin`, `padding`,
   `pos`, `minWidth/maxWidth/minHeight/maxHeight`, `clipChildren`,
   `sortOrder/sortChildren`, `zOrder`.
-- `key` - stable identity across rebuilds. Wrong/missing/non-unique keys
-  cause: element state (scroll pos, input focus, animations) jumping to
-  wrong items, fade-out animations not playing, needless full rebuilds.
-  `key` also controls whether an element is reused vs recreated.
+- `key` - stable identity across rebuilds; equal keys match old and new
+  children first. Wrong/missing/non-unique keys cause: element state (scroll
+  pos, input focus, animations) jumping to wrong items, fade-out playing on
+  the wrong item, needless recreation. Duplicate keys are not reported; the
+  first free match wins.
 - `transform` - `{ pivot, rotate, scale, translate }`, render-only. Must be
   present (even `transform = {}` / `true`) for transform animations to work.
 - `animations` / `transitions` - declarative anims; `play=true` on appear,
@@ -119,8 +131,8 @@ let view = @() {
 
 Watched change -> element(s) watching it are invalidated -> next frame the
 builder closures re-run -> new description diffed against old -> changed
-subtrees rebuilt, unchanged children reused (matched by key, desc identity,
-or structure). Consequences:
+subtrees rebuilt, unchanged children reused (matched by key, the same
+description table, or the same behavior list). Consequences:
 
 - Descriptions that are re-created identically every time (new closures,
   new arrays/tables inline) defeat reuse and cost CPU. Hoisting static
@@ -133,7 +145,7 @@ or structure). Consequences:
 
 ## Quirrel language notes (for reading diffs)
 
-- Squirrel 3 dialect: tables `{a = 1}`, no commas needed between slots on
+- Tables `{a = 1}`, no commas needed between slots on
   separate lines; `<-` new slot assignment; `@(x) expr` lambda;
   `$"text {expr}"` string interpolation; `?.` null-propagation; `??`
   null-coalesce.
@@ -144,9 +156,7 @@ or structure). Consequences:
   `from "module" import name1, name2`; `import "module" as m`. Migration
   from require to import statements is stylistic unless it fixes a real
   double-execution/cycle problem.
-- `::name` = global root table access (discouraged; commits removing global
-  state access are correctness/style fixes).
-- `.freeze()` freezes a table (immutability); `freeze(...)` helper common.
+- `freeze(obj)` returns frozen reference to the object.
   Sharing one mutable table/array between components (default parameter
   tables, module-level mutable tables passed as `children`, `__merge`
   results aliasing) causes cross-component contamination; fixes clone
@@ -154,9 +164,9 @@ or structure). Consequences:
 - Truthiness: 0, null are false-ish, empty string/array/table are TRUTHY -
   `if (arr.len())` vs `if (arr)` bugs.
 - Integer division: `1/2 == 0`; float needed for fractions.
-- Default parameter values are evaluated once per call, but a mutable
-  default table literal is shared per call site in some idioms - watch for
-  fixes around that.
+- A function parameter whose default value is a mutable table/array literal
+  (`function f(opts = {}) {...}`) shares one object across all calls that omit
+  the argument; mutating it leaks state between calls.
 - Common stdlib in UI code: `array.map/filter/reduce/each/findindex/
   findvalue`, `tbl.__merge(other)` (returns new table), `tbl.__update`
   (mutates in place - aliasing hazard when applied to shared tables).

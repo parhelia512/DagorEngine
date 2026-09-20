@@ -145,6 +145,7 @@ return {
           - lineSpacing // extra spacing between lines
           - parSpacing  //spacing between paragraphs
           - indent //indent on new lines
+          - breakLongWords // set to false to let a wide word overflow the area, see textarea_long_words.ui.nut
           - color //color
           - padding //padding of textarea. Can be padding = 100 | sh(2), padding=10 - [top, right, bottom, left]
           - monoWidth //monowidth output. can be character or size monWidth='W' or monowidth=20

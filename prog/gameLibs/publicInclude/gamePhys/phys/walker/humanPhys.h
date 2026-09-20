@@ -18,7 +18,7 @@
 #include "humanWeapState.h"
 #include "humanControlState.h"
 #include <gameMath/quantization.h>
-#include <gameMath/traceUtils.h>
+#include <rendInst/traceUtils.h>
 #include <scene/dag_physMat.h>
 
 // This causing controls overhead (and don't needed if you don't use 'change unit inplace' hack)
@@ -263,6 +263,8 @@ struct HumanPhysState : public HumanSerializableState
   int16_t torsoContactRendinstPool = -1;
   StaticTab<gamephys::CollisionContactDataMin, 2> torsoContacts;
 
+  SegmentedHumanPhysicsState segPhysState;
+
   HumanPhysState();
 
   void reset();
@@ -273,6 +275,7 @@ struct HumanPhysState : public HumanSerializableState
 
   void applyAlternativeHistoryState(const HumanPhysState &state);
   void applyPartialState(const CommonPhysPartialState &state);
+  void applyResyncedState(const HumanPhysState &state);
   void applyDesyncedState(const HumanPhysState & /*state*/);
 
   bool isAttachedToLadder() const { return attachedToLadder; }
@@ -482,8 +485,6 @@ public:
 
   float maxStepAngle = 74.0f;
 
-  float flatGroundCos = 0.f;
-
   float crawlWalkNormTau = 0.2f;
 
   float wallJumpSpd = 5.f;
@@ -645,6 +646,7 @@ public:
   float collRad = 0.2f;
   float ccdRad = 0.2f;
   bool ccdSolveByNormal = false;
+  Point3 ccdSkippedOffset = Point3(0.f, 0.f, 0.f);
   float collideRiPosMinDiff = -1.f;
   float postMoveFrictionViscosityMult = 1.f;
   float maxStamina = 100.f;
@@ -704,27 +706,23 @@ public:
   const PrecomputedWeaponPositions *precompWeaponPos = nullptr; // if not null points to shared comp data
 
   const SegmentedHumanPhysics *segPhysShared = nullptr; // if not null point to shared comp data
-  SegmentedHumanPhysicsState segPhysState;
 
   enum SegPhysUpdateType
   {
     SEGPHYS_UPDATE_INIT,
     SEGPHYS_UPDATE_STEP,
-    SEGPHYS_UPDATE_STEP_QUICK,
-    SEGPHYS_UPDATE_STEP_QUICK_FAR,
+    SEGPHYS_UPDATE_STEP_REMOTE,
   };
   enum SegPhysResultType
   {
     SEGPHYS_RESULT_CONTINUE,
-    SEGPHYS_RESULT_NEXT,
+    SEGPHYS_RESULT_NEXT_SEG,
     SEGPHYS_RESULT_END,
     SEGPHYS_RESULT_HALT_ON_ERROR,
   };
-  struct SegPhysUpdateContext
+  struct SegPhysUpdateResult
   {
-    SegPhysUpdateType update = SEGPHYS_UPDATE_STEP;
     SegPhysResultType result = SEGPHYS_RESULT_CONTINUE;
-    float stepTime = 0.f;
     float usedTime = 0.f;
   };
 
@@ -737,13 +735,20 @@ public:
   void updatePhys(double at_time, float dt, bool is_for_real);
   void updatePhysInWorld(const TMatrix &tm) override;
 
-  void segPhysInit(int init_seg);
-  void segPhysUpdate(SegPhysUpdateType update_type, float step_time);
-  void segPhysUpdateSegment(SegPhysUpdateContext &ctx, const SegPhysSegment &seg);
-  void segPhysClimbMoveToPullUpPos(SegPhysUpdateContext &ctx, const SegPhysSegment &seg);
-  void segPhysClimbByTrajectory(SegPhysUpdateContext &ctx, const SegPhysSegment &seg);
-  void segPhysClimbEnd(SegPhysUpdateContext &ctx);
-  bool segPhysClimbCheckFloor(float trace_len);
+  void segPhysInit(int init_seg, bool start_anew, const Point3 &displace_offset);
+  void segPhysUpdate(SegPhysUpdateType update_type, float dt);
+  SegPhysUpdateResult segPhysUpdateSegment(SegPhysUpdateType update_type, float step_time, float dt, const SegPhysSegment &seg);
+  SegPhysUpdateResult segPhysUpdateSegment_Wait(SegPhysUpdateType update_type, float step_time, const SegPhysSegment &seg);
+  SegPhysUpdateResult segPhysUpdateSegment_ClimbMoveByTrajectory(SegPhysUpdateType update_type, float step_time, float dt,
+    const SegPhysSegment &seg);
+  SegPhysUpdateResult segPhysUpdateSegment_ClimbMoveToTrajectory(SegPhysUpdateType update_type, float step_time,
+    const SegPhysSegment &seg);
+  SegPhysUpdateResult segPhysUpdateSegment_ClimbStart(SegPhysUpdateType update_type, const SegPhysSegment &seg);
+  SegPhysUpdateResult segPhysUpdateSegment_ClimbResumeDefault(SegPhysUpdateType update_type, float step_time);
+  SegPhysUpdateResult segPhysUpdateSegment_ClimbEnd(SegPhysUpdateType update_type, float step_time);
+  bool segPhysTest_ClimbCheckFloor(float trace_len, const Point3 &trace_offset) const;
+  bool segPhysTest_ClimbHeightLess(float height_value) const;
+  bool isSegPhysNoGravity() const;
 
   int getCollisionMatId() const { return humanCollision->collObjUd.matId; }
   void setCollisionMatId(int mat_id) { humanCollision->collObjUd.matId = mat_id; }
@@ -816,6 +821,7 @@ public:
   void performClimb(const ClimbQueryResults &climb_res, float at_time);
   bool canClimbOverObstacle(const ClimbQueryResults &climb_res);
 
+  static bool isDebugDrawEnabled();
   void drawDebug();
 
   void setWeaponLen(float len, int slot_id = -1);

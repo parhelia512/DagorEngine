@@ -156,7 +156,7 @@ ECS_REQUIRE(const FFTWater &water)
 static void disable_water_effects_es(const ecs::Event &) { destroy_water_effects_entity(); }
 
 ECS_TAG(render)
-ECS_ON_EVENT(AfterDeviceReset)
+ECS_ON_EVENT(EventAfterDeviceReset)
 static void reset_water_effects_es(const ecs::Event &, WaterEffects &water_effects) { water_effects.reset(); }
 
 ECS_TAG(render)
@@ -446,7 +446,7 @@ void WaterEffects::render(FFTWater &water,
       ShaderGlobal::set_float4(wfx_normal_pixel_sizeVarId, 1.0f / normalTexInfo.w, 1.0f / normalTexInfo.h, 0.0f, 0.0f);
 
       d3d::set_render_target({}, DepthAccess::RW, {{normalsTex, 0}});
-      d3d::clearview(CLEAR_DISCARD, 0, 0, 0);
+      d3d::clearview(DISCARD_ALL, 0, 0, 0);
 
       set_viewvecs_to_shader(view_tm, proj_tm);
       normalsRender.render();

@@ -221,13 +221,6 @@ ShaderMesh *EcGeom::geomObjectGetShaderMesh(const GeomObject &go, int idx) const
 
 
 //==================================================================================================
-bool EcGeom::geomObjectShadowRayHitTest(GeomObject &go, const Point3 &p, const Point3 &dir, real maxt, int trace_flags) const
-{
-  return go.shadowRayHitTest(p, dir, maxt, trace_flags);
-}
-
-
-//==================================================================================================
 bool EcGeom::geomObjectTraceRay(GeomObject &go, const Point3 &p, const Point3 &dir, real &maxt, Point3 *norm) const
 {
   return go.traceRay(p, dir, maxt, norm);
@@ -745,44 +738,10 @@ bool EcInput::isShiftKeyDown() const { return ec_is_shift_key_down(); }
 
 
 //==================================================================================================
-int EcScene::staticSceneRayTracerTraceRay(StaticSceneRayTracer &rt, const Point3 &p, const Point3 &wdir2, real &mint2,
-  int from_face) const
-{
-  return rt.traceray(p, wdir2, mint2, from_face);
-}
-
-
-//==================================================================================================
 int EcScene::fastRtDumpTraceRay(FastRtDump &frt, int custom, const Point3 &p, const Point3 &dir, real &t, int &out_pmid) const
 {
   return frt.traceray(custom, p, dir, t, out_pmid);
 }
-
-
-//==================================================================================================
-BuildableStaticSceneRayTracer *EcScene::createBuildableStaticmeshsceneRaytracer(const Point3 &lsz, int lev) const
-{
-  return ::create_buildable_staticmeshscene_raytracer(lsz, lev);
-}
-
-
-//==================================================================================================
-bool EcScene::buildableStaticSceneRayTracerAddmesh(BuildableStaticSceneRayTracer &rt, const Point3 *vert, int vcount,
-  const unsigned *face, unsigned stride, int fn, const unsigned *face_flags, bool rebuild) const
-{
-  return rt.addmesh(vert, vcount, face, stride, fn, face_flags, rebuild);
-}
-
-
-//==================================================================================================
-bool EcScene::buildableStaticSceneRayTracerReserve(BuildableStaticSceneRayTracer &rt, int face_count, int vert_count) const
-{
-  return rt.reserve(face_count, vert_count);
-}
-
-
-//==================================================================================================
-bool EcScene::buildableStaticSceneRayTracerRebuild(BuildableStaticSceneRayTracer &rt) const { return rt.rebuild(); }
 
 
 //==================================================================================================

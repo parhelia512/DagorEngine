@@ -563,10 +563,20 @@ var g_jit_clopts_parsed = false
 // instead of a baked codegen-process address. run_jit sets/clears it around codegen.
 var public g_emit_aot_object_globals = false
 
-// Emit-object mode: cross-module / non-jit das call + ctor target globs hold a host-
-// meaningless SimFunction*. Recorded here (glob + callee mnh) during codegen; the
-// globinit ctor fills them from the host Context at load. run_jit clears per compile.
-var public g_aot_func_globs : array<tuple<glob : LLVMOpaqueValue?; mnh : uint64>>
+// Get-or-add das_aot_get_func_by_mnh and build a call resolving `mnh` against `ctx_arg` to the host's
+// SimFunction* (void*). A SimFunction* belongs to one Context, so emit-object codegen calls this at
+// every use site instead of caching the result - same shape as the C++ AOT emitter's
+// `__context__->fnByMangledName(hash)`. Lives here so both llvm_jit and llvm_exe can reach it.
+def public build_aot_get_func_by_mnh(b : LLVMBuilderRef; types : PrimitiveTypes?; mnh : uint64; ctx_arg : LLVMOpaqueValue?) : LLVMOpaqueValue? {
+    let gfType = LLVMFunctionType(types.LLVMVoidPtrType(),
+        fixed_array<LLVMTypeRef>(types.t_int64, types.LLVMVoidPtrType()))
+    var gfFn = LLVMGetNamedFunction(g_mod, "das_aot_get_func_by_mnh")
+    if (gfFn == null) {
+        gfFn = LLVMAddFunctionWithType(g_mod, "das_aot_get_func_by_mnh", gfType)
+    }
+    var gf_args = array<LLVMValueRef>(types.ConstI64(mnh), ctx_arg)
+    return LLVMBuildCall2(b, gfType, gfFn, gf_args, "")
+}
 
 // LLVM's unroll / partial-unroll / unroll-and-jam cost-model thresholds are compiled-in cl::opt
 // globals; daslang's JIT path never runs cl::ParseCommandLineOptions, so without these the O3
@@ -946,6 +956,10 @@ def public with_default_target_machine(opt_level : uint; use_host_cpu : bool;
 // use_host_cpu=false (default) targets a generic CPU so the .o is portable; true bakes host features.
 def public emit_object_only(mod : LLVMOpaqueModule?; out_path : string; use_host_cpu : bool = false) {
     with_default_target_machine(3u, use_host_cpu) $(targetMachine : LLVMTargetMachineRef) {
+        let dl = LLVMCreateTargetDataLayout(targetMachine)
+        LLVMSetModuleDataLayout(mod, dl)
+        LLVMSetTarget(mod, LLVMGetDefaultTargetTriple())
+        LLVMDisposeTargetData(dl)
         let error : string?
         let file = add_obj_extension(out_path)
         let filetype = LLVMCodeGenFileType.LLVMObjectFile

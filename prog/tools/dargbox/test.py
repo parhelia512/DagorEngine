@@ -25,21 +25,47 @@ def gather_files_to_check(path, relative="", cwd=None):
       files2check.append({"rel":os.path.relpath(path, relative), "direct":path, "cwd":cwd})
   return files2check
 
+# One render frame is enough to smoke-check a scene: it catches a load error or a
+# logerr. A test that has to drive several act frames - scrolling, focus moves -
+# names its own settings here and calls exit() itself, non-zero when it failed.
+# limit_updates counts RENDER frames, so it is only a backstop against a hang.
+# Every subprocess a worker starts is bounded here, so the pool below needs no
+# deadline of its own: a script error does not stop dargbox, which would
+# otherwise run to that backstop, and csq executes the module it checks.
+DARG_TIMEOUT_SEC = 30
+CSQ_TIMEOUT_SEC = 60
+
+MULTI_FRAME_TESTS = {
+  "samples_prog/benchmarks/test_virtual_list_focus.ui.nut": {"limit_updates": 200000, "act_rate": 1000},
+  "samples_prog/benchmarks/test_virtual_list_horiz.ui.nut": {"limit_updates": 200000, "act_rate": 1000},
+  "samples_prog/benchmarks/test_virtual_list_keepfocus.ui.nut": {"limit_updates": 200000, "act_rate": 1000},
+  "samples_prog/benchmarks/test_virtual_list_padding.ui.nut": {"limit_updates": 200000, "act_rate": 1000},
+}
+
 def check(file_info):
-  cmd_darg = '{exe} -quiet -silent -config:script:t={file} -config:debug/profiler:t=off -config:debug/limit_updates:i=1 -config:video/driver:t="stub" -fatals_to_stderr -logerr_to_stderr -config:workcycle/act_rate:i=0 -config:debug/useAddonVromSrc:b=yes -config:debug/fatalOnLogerrOnExit:b=no'.format(exe=get_dargbox_exe(), file=file_info["rel"])
+  cfg = MULTI_FRAME_TESTS.get(file_info["rel"].replace("\\", "/"), {"limit_updates": 1, "act_rate": 0})
+  cmd_darg = '{exe} -quiet -silent -config:script:t={file} -config:debug/profiler:t=off -config:debug/limit_updates:i={limit} -config:video/driver:t="stub" -fatals_to_stderr -logerr_to_stderr -config:workcycle/act_rate:i={rate} -config:debug/useAddonVromSrc:b=yes -config:debug/fatalOnLogerrOnExit:b=no'.format(exe=get_dargbox_exe(), file=file_info["rel"], limit=cfg["limit_updates"], rate=cfg["act_rate"])
   cmd_sq = '..\\dagor_cdk\\windows-x86_64\\csq-dev.exe {file}'.format(file=file_info["rel"])
   failedBy = ""
   failText = ""
-  result = subprocess.run(cmd_sq, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, cwd=file_info["cwd"])
-  if result.returncode != 0:
+  try:
+    result = subprocess.run(cmd_sq, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, cwd=file_info["cwd"], timeout=CSQ_TIMEOUT_SEC)
+    if result.returncode != 0:
+      failedBy = "csq"
+      failText = failText + result.stdout + "\n" + result.stderr + "\n"
+  except subprocess.TimeoutExpired:
     failedBy = "csq"
-    failText = failText + result.stdout + "\n" + result.stderr + "\n"
+    failText = failText + "timed out after {}s".format(CSQ_TIMEOUT_SEC)
 
   if file_info["rel"].endswith(".ui.nut"):
-    result = subprocess.run(cmd_darg, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
-    if result.returncode != 0:
+    try:
+      result = subprocess.run(cmd_darg, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, timeout=DARG_TIMEOUT_SEC)
+      if result.returncode != 0:
+        failedBy = "dargbox"
+        failText = failText + result.stdout + "\n" + result.stderr + "\n"
+    except subprocess.TimeoutExpired:
       failedBy = "dargbox"
-      failText = failText + result.stdout + "\n" + result.stderr + "\n"
+      failText = failText + "timed out after {}s without exiting".format(DARG_TIMEOUT_SEC)
 
   return {
     "success": (failedBy == ""),
@@ -85,7 +111,7 @@ if __name__ == "__main__":
   success = []
   failed = []
   dargboxFailedScript = ""
-  for r in res.get(timeout=60):
+  for r in res.get():
     if not r["success"]:
       failedBy = r["failedBy"]
       failed.append(r["fileInfo"]["direct"] + "\n" + r["failText"] + "\n")

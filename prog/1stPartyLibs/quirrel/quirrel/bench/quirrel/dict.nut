@@ -10,6 +10,7 @@ function dict(tab, src) {
   return maxOcc
 }
 
+local PASSES = 10
 local TAB = {}
 local SRC = []
 local n = 500000
@@ -27,4 +28,4 @@ try {
     throw "no loadfile"
 } catch(e) profile_it = require("profile.nut")
 
-print("\"dictionary\", " + profile_it(25, function () {TAB={}; dict(TAB, SRC) }) + ", 25\n")
+print("\"dictionary\", " + profile_it(25, function () { for (local r = 0; r < PASSES; ++r) { TAB = {}; dict(TAB, SRC) } }) + ", 25\n")

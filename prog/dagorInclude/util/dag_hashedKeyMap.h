@@ -8,6 +8,7 @@
 #include <EASTL/unique_ptr.h>
 #include <hash/wyhash.h>
 #include <debug/dag_assert.h>
+#include <util/dag_compilerDefs.h>
 
 // this is simple Open Addressing hash table with separated (hashed, integral type) keys and values map. Keys==EmptyKey Key(), are
 // special and not allowed although that results in two cache miss in a case of hit, it also allows keys to be of a different size than
@@ -191,7 +192,7 @@ struct DefaultValCB
 
 template <class Key, class Value, Key EmptyKey = Key(), class Hasher = oa_hashmap_util::NoHash<Key>,
   class allocator_type = EASTLAllocatorType, int load_factor_nom = 3, int load_factor_denom = 4>
-struct HashedKeyMap
+struct DAGOR_WARN_IF_UNUSED HashedKeyMap
 {
   typedef Key key_t;
   typedef Value val_t;
@@ -504,7 +505,7 @@ public:
 
 template <class Key, Key EmptyKey = Key(), class Hasher = oa_hashmap_util::NoHash<Key>, class allocator_type = EASTLAllocatorType,
   int load_factor_nom = 3, int load_factor_denom = 4>
-struct HashedKeySet
+struct DAGOR_WARN_IF_UNUSED HashedKeySet
 {
   typedef Key key_t;
   typedef HashedKeySet<Key, EmptyKey, Hasher, allocator_type, load_factor_nom, load_factor_denom> this_type_t;

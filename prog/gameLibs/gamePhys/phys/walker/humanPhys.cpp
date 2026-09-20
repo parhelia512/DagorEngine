@@ -16,7 +16,7 @@
 #include <gamePhys/phys/walker/humanWeapPosInfo.h>
 #include <gamePhys/phys/walker/humanPhysUtils.h>
 
-#include <gameMath/traceUtils.h>
+#include <rendInst/traceUtils.h>
 #include <perfMon/dag_statDrv.h>
 #include <memory/dag_framemem.h>
 #include <util/dag_string.h>
@@ -193,12 +193,20 @@ void HumanPhysState::reset()
   reduceToWalk = false;
   isLadderQuickMovingUp = false;
   isLadderQuickMovingDown = false;
+
+  segPhysState.reset();
 }
 
 void HumanPhysState::applyPartialState(const CommonPhysPartialState &state)
 {
   location = state.location;
   velocity = state.velocity;
+}
+
+void HumanPhysState::applyResyncedState(const HumanPhysState &state)
+{
+  segPhysState.currSeg = -1;
+  segPhysState.syncVersion = state.segPhysState.syncVersion + 1;
 }
 
 void HumanPhysState::applyDesyncedState(const HumanPhysState & /*state*/) {}
@@ -211,6 +219,7 @@ void HumanPhysState::applyAlternativeHistoryState(const HumanPhysState &state)
   canAim = state.canAim;
   zoomPosition = state.zoomPosition;
   ladderAttachProgress = state.ladderAttachProgress;
+  segPhysState = state.segPhysState;
 }
 
 void HumanPhysState::serialize(danet::BitStream &bs) const
@@ -518,8 +527,6 @@ void HumanPhys::loadFromBlk(const DataBlock *blk, const CollisionResource * /*co
   crawlSlideAngle = cosf(DegToRad(blk->getReal("crawlSlideAngle", crawlSlideAngle)));
   climbSlideAngle = cosf(DegToRad(blk->getReal("climbSlideAngle", climbSlideAngle)));
 
-  flatGroundCos = blk->getReal("flatGroundCos", flatGroundCos);
-
   maxStepAngle = cosf(DegToRad(blk->getReal("maxStepAngle", maxStepAngle)));
 
   forcedSlidingIfWalkTraceFailed = blk->getBool("forcedSlidingIfWalkTraceFailed", forcedSlidingIfWalkTraceFailed);
@@ -645,26 +652,93 @@ static Point3 climb_dir(const Point3 &vel, const Point3 &normal, const Point3 &u
   return vel - overbounceProj * correctedNormal;
 }
 
+template <typename MatProps>
+const MatProps *get_mat_props(const gamephys::CollisionContactData &contact)
+{
+  return contact.matId < 0 ? nullptr : MatProps::get_props(contact.matId);
+};
+
 bool HumanPhys::processCcdOffset(TMatrix &tm, const Point3 &to_pos, const Point3 &offset, float collision_margin, float speed_hardness,
   bool secondary_ccd, const Point3 &ccd_pos)
 {
-  constexpr real MIN_OFFSET_SQ = 1e-5f;  // NOTE: sqrt(0.00001f) ~ 0.0031622 ~ 3 millimeters
-  if (lengthSq(offset) <= MIN_OFFSET_SQ) // don't check CCD for too small offsets to avoid math errors
+  constexpr real MIN_OFFSET_SQ = 1e-5f; // NOTE: sqrt(0.00001f) ~ 0.0031622 ~ 3 millimeters
+  Point3 curOffset = offset + ccdSkippedOffset;
+  ccdSkippedOffset.zero();
+  if (lengthSq(curOffset) <= MIN_OFFSET_SQ) // don't check CCD for too small offsets to avoid math errors
   {
     if (isSimplifiedPhys)
       applyOffset(-offset); // for bots don't allow EVEN small movements without CCD
+    else
+      ccdSkippedOffset = curOffset;
     return false;
   }
 
-  Point3 fromPos = to_pos - offset;
+  Point3 fromPos = to_pos - curOffset;
   dacoll::ShapeQueryOutput shapeQuery;
   bool res = dacoll::sphere_cast(fromPos, to_pos, ccdRad, shapeQuery, rayMatId, getTraceHandle());
   if (res)
   {
-    // Allow unrestricted offset, this is always safe, since we've sphere casted it.
-    Point3 overMovement = offset * (1.f - shapeQuery.t);
     if (ccdSolveByNormal && shapeQuery.t == 0.f) // inside collision
-      overMovement = ccdRad * shapeQuery.norm;
+    {
+      Point3 allowedOffset = curOffset;
+      if (torsoCollision.body)
+      {
+        Tab<gamephys::CollisionContactData> contacts(framemem_ptr());
+        TMatrix ccdTm = TMatrix::IDENT;
+        ccdTm.setcol(3, fromPos);
+        dacoll::set_vert_capsule_shape_size(torsoCollision, ccdRad, ccdRad * 0.01f);
+        dacoll::set_collision_object_tm(torsoCollision, ccdTm);
+        dacoll::test_collision_frt(torsoCollision, contacts);
+        dacoll::test_collision_lmesh(torsoCollision, ccdTm, 1.f, -1, contacts, getCollisionMatId());
+        dacoll::test_collision_ri(torsoCollision, BSphere3(Point3(0.f, 0.f, 0.f), ccdRad * 2.f), contacts, getTraceHandle(),
+          getCollisionMatId());
+        Tab<Point3> clipNormals(framemem_ptr());
+        clipNormals.reserve(contacts.size());
+        for (const gamephys::CollisionContactData &contact : contacts)
+        {
+          if (contact.matId >= 0 && !PhysMat::isMaterialsCollide(getCollisionMatId(), contact.matId))
+          {
+            const physmat::PhysContactProps *contactProps = get_mat_props<physmat::PhysContactProps>(contact);
+            if (contactProps && contactProps->removePhysContact)
+              continue;
+          }
+          const physmat::SoftMaterialProps *softProps = get_mat_props<physmat::SoftMaterialProps>(contact);
+          if (softProps && softProps->physViscosity != 1.f)
+            continue;
+          clipNormals.push_back(contact.wnormB);
+          float spdDiff = min(currentState.velocity * contact.wnormB, 0.f) * speed_hardness;
+          currentState.spdSummaryDiff -= contact.wnormB * spdDiff;
+          currentState.velocity -= spdDiff * contact.wnormB;
+        }
+        constexpr int MAX_CLIP_PASSES = 16;
+        for (int pass = 0; pass < MAX_CLIP_PASSES && !clipNormals.empty(); ++pass)
+        {
+          bool clipped = false;
+          for (const Point3 &normal : clipNormals)
+          {
+            float intoContact = allowedOffset * normal;
+            if (intoContact < -1e-5f)
+            {
+              allowedOffset -= intoContact * normal;
+              clipped = true;
+            }
+          }
+          if (!clipped)
+            break;
+          if (pass == MAX_CLIP_PASSES - 1)
+            allowedOffset.zero();
+        }
+      }
+      else
+        allowedOffset.zero();
+      applyOffset(allowedOffset - curOffset);
+      currentState.location.toTM(tm);
+      updatePhysInWorld(tm);
+      FM_SYNC_DEBUG(WALKER_POS, P3D(currentState.location.P));
+      return true;
+    }
+    // Allow unrestricted offset, this is always safe, since we've sphere casted it.
+    Point3 overMovement = curOffset * (1.f - shapeQuery.t);
     applyOffset(-overMovement);
     currentState.location.toTM(tm);
 
@@ -675,7 +749,7 @@ bool HumanPhys::processCcdOffset(TMatrix &tm, const Point3 &to_pos, const Point3
       // It might seem to be "ok" because collision_margin is not "very big", but the thing is that you
       // can get sucked into other geometry with it during several frames, sphere cast above can push you further and further
       // if there's some other collision on the other side. In order to mitigate this we start another sphere cast.
-      Point3 appliedNormal = -offset * safeinv(offset.length());
+      Point3 appliedNormal = -curOffset * safeinv(curOffset.length());
       // We'll use smallOffset so that ccd sphere starts NOT within / touching some geometry.
       float marginDist = collision_margin + smallOffset;
       Point3 marginOffset = appliedNormal * marginDist;
@@ -697,7 +771,7 @@ bool HumanPhys::processCcdOffset(TMatrix &tm, const Point3 &to_pos, const Point3
     {
       // Try restricted part constrained by sphere_cast normal
       Point3 restrictedOffset = clip_dir(overMovement, shapeQuery.norm) + /*try finish the move*/
-                                clamp(((shapeQuery.t * -offset) * shapeQuery.norm), 0.f, collision_margin) *
+                                clamp(((shapeQuery.t * -curOffset) * shapeQuery.norm), 0.f, collision_margin) *
                                   shapeQuery.norm /*try to become parallel to normal*/;
       applyOffset(restrictedOffset);
       currentState.location.toTM(tm);
@@ -889,8 +963,7 @@ void HumanPhys::processShapeCastWalkResult(const PhysShapeQueryResult &shapeQuer
 
   const bool belowGround = dot(up_dir, shapeQuery.res) >= dot(up_dir, pos);
   const bool wasInAir = currentState.isInAirHistory & 2;
-  const bool hasFlatGround = flatGroundCos > 0.f && dot(up_dir, res.walkNormal) > flatGroundCos;
-  res.isInAir = !hasFlatGround && wasInAir && !belowGround;
+  res.isInAir = wasInAir && !belowGround;
 }
 
 HumanPhys::WalkQueryResults HumanPhys::queryWalkPosition(const Point3 &pos, float from_ht, float down_ht, bool ignore_slide,
@@ -952,8 +1025,7 @@ HumanPhys::WalkQueryResults HumanPhys::queryWalkPosition(const Point3 &pos, floa
 
         const bool belowGround = dot(resPoint, upDir) >= dot(pos, upDir);
         const bool wasInAir = currentState.isInAirHistory & 2;
-        const bool hasFlatGround = flatGroundCos > 0.f && dot(upDir, res.walkNormal) > flatGroundCos;
-        res.isInAir = !hasFlatGround && wasInAir && !belowGround;
+        res.isInAir = wasInAir && !belowGround;
         res.walkMatId = matId;
       }
     }
@@ -1251,7 +1323,8 @@ ClimbQueryResults HumanPhys::climbQueryImpl(const TMatrix &tm, const Point3 &ove
 
         bool ceilingFound = false;
         Point3 tryFindCeilingPt = shapeQuery.res - dir * climbOnMinVertSize + forwDir * climbOnMinVertForwDist;
-        if (dacoll::trace_sphere_cast_ex(shapeQuery.res - dir * climbCeilRad, tryFindCeilingPt, climbCeilRad, CLIMB_RAYS_CEILINGS,
+        if (!currentState.attachedToLadder &&
+            dacoll::trace_sphere_cast_ex(shapeQuery.res - dir * climbCeilRad, tryFindCeilingPt, climbCeilRad, CLIMB_RAYS_CEILINGS,
               vertQuery, ray_mat_id, getActor()->getId(), handle, CLIMB_CAST_FLAGS))
         {
           ceilingFound = true;
@@ -1265,8 +1338,7 @@ ClimbQueryResults HumanPhys::climbQueryImpl(const TMatrix &tm, const Point3 &ove
             // todo: make gravity-aware
             const float nonMiddleCoef = 0.33f; // to avoid problems with crossed planks windows (bad materials)
             Point3 ohPos = Point3(overhead_pos.x, overhead_pos.y - dist + vertSize * nonMiddleCoef, overhead_pos.z);
-            res = climbThroughQueryImpl(tm, ohPos, cur_ccd_pos, climb_from_pos, shapeQuery.res + climbThroughPosOffset, ray_mat_id,
-              handle);
+            res = climbThroughQueryImpl(tm, ohPos, cur_ccd_pos, climb_from_pos, shapeQuery.res, ray_mat_id, handle);
           }
           else
           {
@@ -1355,11 +1427,9 @@ ClimbQueryResults HumanPhys::climbThroughQueryImpl(const TMatrix &tm, const Poin
   res.climbNorm = Point3(0.0f, 1.0f, 0.0f);
   res.canClimb = true;
   res.isClimbThrough = true;
-  // It's safe to climb here, climb to mid point.
   res.climbToPos = Point3::xVz(startPosWorld + dirWorld * (climbThroughForwardDist + collRad), orig_climb_to_pos.y);
   res.climbFromPos = climb_from_pos;
   res.climbOverheadPos = overhead_pos;
-
   return res;
 }
 
@@ -1424,10 +1494,17 @@ void HumanPhys::performClimb(const ClimbQueryResults &climb_res, float at_time)
   if (segPhysShared && segPhysShared->initSeg_performClimb >= 0)
   {
     // When configured try handle climbing with SegmentedHumanPhysics
-    segPhysInit(segPhysShared->initSeg_performClimb);
-    return;
+    segPhysInit(segPhysShared->initSeg_performClimb, true, Point3::ZERO);
+    if (currentState.segPhysState.currSeg >= 0)
+      return;
   }
 
+  if (currentState.climbThrough)
+  {
+    // It's safe to climb through here, climb to mid point.
+    currentState.climbToPos += climbThroughPosOffset.y * currentState.vertDirection;
+    currentState.climbDeltaHt = (currentState.climbToPos - climb_res.climbFromPos) * currentState.vertDirection;
+  }
   if (currentState.isClimbingOverObstacle)
   {
     Point3 targetPos = currentState.climbToPos + currentState.climbDir * climbOverForwardOffset;
@@ -1493,13 +1570,15 @@ bool HumanPhys::testClimbingIteration(int front_pos, int horz_pos, bool need_min
     currentState.attachedToLadder, getTraceHandle() /*TODO: provide specific tracehandle to climb query for better behaviour*/);
   if (climbRes.canClimb && (need_min_pos || !climbRes.minPos || only_one_climb_pos))
   {
-    float dotProduct = normalize(climbRes.climbToPos - gun_node_proj) * appliedCT.getWishLookDir();
+    const Point3 extraOffset = (climbRes.isClimbThrough ? climbThroughPosOffset.y : 0.f) * currentState.vertDirection;
+    const Point3 extraClimbToPos = climbRes.climbToPos + extraOffset;
+    float dotProduct = normalize(extraClimbToPos - gun_node_proj) * appliedCT.getWishLookDir();
     if (dotProduct < climbAngleCos && !isSimplifiedPhys && !currentState.attachedToLadder && !currentState.isSwimming)
       return false;
     have_min_pos |= climbRes.minPos;
     have_max_pos |= !climbRes.minPos;
     const float vertFactor = 0.1f;
-    float score = dotProduct + (climbRes.climbToPos - gun_node_proj) * currentState.vertDirection * vertFactor;
+    float score = dotProduct + (extraClimbToPos - gun_node_proj) * currentState.vertDirection * vertFactor;
 
     if (score > best_score && (!best_climb_thru || climbRes.isClimbThrough))
     {
@@ -1617,12 +1696,6 @@ ClimbQueryResults HumanPhys::climbQuery(const Point3 &offset, int ray_mat_id, bo
   res.climbDir = normalize(basis_aware_x0z(res.climbToPos - res.climbContactPos, vdir));
   return res;
 }
-
-template <typename MatProps>
-const MatProps *get_mat_props(const gamephys::CollisionContactData &contact)
-{
-  return contact.matId < 0 ? nullptr : MatProps::get_props(contact.matId);
-};
 
 static inline bool has_collision(const dacoll::CollisionLinks &links)
 {
@@ -2152,122 +2225,117 @@ static Quat calc_human_wish_orient(const HumanPhysState &state, const TMatrix &t
   return gunOrient;
 }
 
-void HumanPhys::segPhysInit(int init_seg)
+void HumanPhys::segPhysInit(int init_seg, bool start_anew, const Point3 &displace_offset)
 {
   if (!segPhysShared || init_seg < 0 || init_seg >= segPhysShared->segs.size())
     return;
 
-  segPhysState.prevSeg = init_seg;
-  segPhysState.currSeg = init_seg;
-  segPhysState.prevTime = 0.f;
-  segPhysState.currTime = 0.f;
-  segPhysState.prevDuration = 0.f;
-  segPhysState.currDuration = 0.f;
-  segPhysState.currFromPos = Point3(currentState.location.P);
+  TMatrix tm = currentState.location.makeTM();
 
-  SegPhysUpdateContext ctx;
-  ctx.update = SEGPHYS_UPDATE_INIT;
-  ctx.stepTime = 0.f;
-
-  const SegPhysSegment &seg = segPhysShared->segs[segPhysState.currSeg];
-  segPhysUpdateSegment(ctx, seg);
-  segPhysState.prevDuration = segPhysState.currDuration;
-}
-
-void HumanPhys::segPhysUpdateSegment(SegPhysUpdateContext &ctx, const SegPhysSegment &seg)
-{
-  ctx.usedTime = ctx.stepTime;
-  switch (seg.type)
+  if (start_anew)
   {
-    case SEGPHYS_END: ctx.result = SEGPHYS_RESULT_END; break;
-    case SEGPHYS_PASS:
-      ctx.result = SEGPHYS_RESULT_NEXT;
-      ctx.usedTime = 0.f;
-      break;
-    case SEGPHYS_WAIT: break; // not implemented yet
-    case SEGPHYS_CLIMB_MOVE_TO_PULL_UP_POS: segPhysClimbMoveToPullUpPos(ctx, seg); break;
-    case SEGPHYS_CLIMB_MOVE_BY_TRAJECTORY: segPhysClimbByTrajectory(ctx, seg); break;
-    case SEGPHYS_CLIMB_END: segPhysClimbEnd(ctx); break;
-    case SEGPHYS_INVALID: ctx.result = SEGPHYS_RESULT_HALT_ON_ERROR; break;
+    currentState.segPhysState.prevSeg = init_seg;
+    currentState.segPhysState.prevTime = 0.f;
+    currentState.segPhysState.prevDuration = 0.f;
+  }
+
+  currentState.segPhysState.currSeg = init_seg;
+  currentState.segPhysState.currTime = 0.f;
+  currentState.segPhysState.currDuration = 0.f;
+  currentState.segPhysState.currFromTM = tm;
+  currentState.segPhysState.currFromTM.setcol(3, tm.getcol(3) + displace_offset);
+  currentState.segPhysState.currTimer = 0.f;
+  currentState.segPhysState.currIndex = 0;
+
+  currentState.segPhysState.syncVersion += 1;
+
+  const SegPhysSegment &seg = segPhysShared->segs[currentState.segPhysState.currSeg];
+  segPhysUpdateSegment(SEGPHYS_UPDATE_INIT, 0.f, 0.f, seg);
+
+  if (start_anew)
+  {
+    currentState.segPhysState.prevDuration = currentState.segPhysState.currDuration;
+    segPhysUpdate(SEGPHYS_UPDATE_STEP, 0.f);
   }
 }
 
-void HumanPhys::segPhysUpdate(SegPhysUpdateType update_type, float step_time)
+void HumanPhys::segPhysUpdate(SegPhysUpdateType update_type, float dt)
 {
-  if (!segPhysShared)
+  if (!segPhysShared || currentState.segPhysState.currSeg < 0)
     return;
 
-  segPhysState.prevSeg = segPhysState.currSeg;
-  segPhysState.prevTime = segPhysState.currTime;
-  segPhysState.prevDuration = segPhysState.currDuration;
+  const bool isRemote = update_type == SEGPHYS_UPDATE_STEP_REMOTE;
 
-  float timeLeft = step_time;
-  bool currSegInit = true;
+  currentState.segPhysState.prevSeg = currentState.segPhysState.currSeg;
+  currentState.segPhysState.prevTime = currentState.segPhysState.currTime;
+  currentState.segPhysState.prevDuration = currentState.segPhysState.currDuration;
+
+  float timeLeft = dt;
 
   const int MAX_ITERATIONS = 16;
   int numIterations = 0;
-  while (timeLeft > 0.f)
+  while (timeLeft > 0.f || currentState.segPhysState.currDuration <= 0.f)
   {
     if (numIterations++ >= MAX_ITERATIONS)
       break;
 
-    SegPhysUpdateContext ctx;
-    ctx.update = update_type;
-    ctx.stepTime = timeLeft;
+    const SegPhysSegment &seg = segPhysShared->segs[currentState.segPhysState.currSeg];
+    SegPhysUpdateResult res = segPhysUpdateSegment(update_type, timeLeft, dt, seg);
 
-    const SegPhysSegment &seg = segPhysShared->segs[segPhysState.currSeg];
-    segPhysUpdateSegment(ctx, seg);
-    currSegInit = true;
+    timeLeft -= min(timeLeft, res.usedTime);
 
-    timeLeft -= min(timeLeft, ctx.usedTime);
-
-    switch (ctx.result)
+    switch (res.result)
     {
       case SEGPHYS_RESULT_CONTINUE: break;
 
-      case SEGPHYS_RESULT_NEXT:
+      case SEGPHYS_RESULT_NEXT_SEG:
       {
-        bool transitionTaken = false;
+        int transitionResult = 0;
         for (const SegPhysTransition &transition : seg.transitions)
         {
-          bool passed = false;
-          bool invalid = false;
-
+          int passed = 0;
           switch (transition.on)
           {
-            case SEGPHYS_ON_ALWAYS: passed = true; break;
-            case SEGPHYS_ON_IS_CLIMB_THRU: passed = currentState.climbThrough; break;
-            case SEGPHYS_ON_CLIMB_CHECK_FLOOR: passed = segPhysClimbCheckFloor(transition.len); break;
+            case SEGPHYS_ON_ALWAYS: passed = 1; break;
+            case SEGPHYS_ON_IS_CLIMB_THRU: passed = isRemote ? -1 : (currentState.climbThrough ? 1 : 0); break;
+            case SEGPHYS_ON_CLIMB_CHECK_FLOOR:
+              passed = isRemote ? -1 : (segPhysTest_ClimbCheckFloor(transition.len, transition.offs) ? 1 : 0);
+              break;
+            case SEGPHYS_ON_CLIMB_HEIGHT_LESS: passed = isRemote ? -1 : (segPhysTest_ClimbHeightLess(transition.len) ? 1 : 0); break;
+            case SEGPHYS_ON_STARTED_ON_LADDER: passed = isRemote ? -1 : (currentState.segPhysState.startedOnLadder ? 1 : 0); break;
             case SEGPHYS_ON_INVALID:
-            default: invalid = true; break;
+            default: passed = -2; break;
           }
 
-          if (invalid)
+          if (passed == -2)
           {
-            logerr("SegmentedHumanPhysics invalid transition error!");
-            segPhysState.currSeg = -1;
+            logerr("SegmentedHumanPhysics: Invalid transition (seg %d)", currentState.segPhysState.currSeg);
+            currentState.segPhysState.reset();
             return;
           }
 
-          if (transition.inv)
-            passed = !passed;
-
-          if (passed)
+          if (passed == -1)
           {
-            segPhysState.currSeg = transition.to;
-            segPhysState.currTime = 0.f;
-            segPhysState.currDuration = 0.f;
-            currentState.location.P += DPoint3(transition.disp);
-            segPhysState.currFromPos = Point3(currentState.location.P); // FIXME
-            transitionTaken = true;
-            currSegInit = false;
+            // delay transition for remotes until sync
+            transitionResult = -1;
+            timeLeft = 0.f;
+            break;
+          }
+
+          if (transition.not_on)
+            passed = 1 - passed;
+
+          if (passed == 1)
+          {
+            transitionResult = 1;
+            segPhysInit(transition.to, false, transition.disp);
             break;
           }
         }
 
-        if (!transitionTaken)
+        if (transitionResult == 0)
         {
-          segPhysState.currSeg = -1;
+          currentState.segPhysState.reset();
           return;
         }
       }
@@ -2275,201 +2343,386 @@ void HumanPhys::segPhysUpdate(SegPhysUpdateType update_type, float step_time)
 
       case SEGPHYS_RESULT_END:
       {
-        segPhysState.currSeg = -1;
+        currentState.segPhysState.reset();
         return;
       }
       break;
 
       case SEGPHYS_RESULT_HALT_ON_ERROR:
       {
-        logerr("SegmentedHumanPhysics update error!");
-        segPhysState.currSeg = -1;
+        logerr("SegmentedHumanPhysics: Update halt on error (seg %d)", currentState.segPhysState.currSeg);
+        currentState.segPhysState.reset();
         return;
       }
       break;
     }
   }
-
-  if (!currSegInit)
-  {
-    SegPhysUpdateContext ctx;
-    ctx.update = SEGPHYS_UPDATE_INIT;
-    ctx.stepTime = 0.f;
-
-    const SegPhysSegment &seg = segPhysShared->segs[segPhysState.currSeg];
-    segPhysUpdateSegment(ctx, seg);
-  }
 }
 
-void HumanPhys::segPhysClimbMoveToPullUpPos(SegPhysUpdateContext &ctx, const SegPhysSegment &seg)
+HumanPhys::SegPhysUpdateResult HumanPhys::segPhysUpdateSegment(SegPhysUpdateType update_type, float step_time, float dt,
+  const SegPhysSegment &seg)
 {
-  if (ctx.update == SEGPHYS_UPDATE_INIT)
+  switch (seg.type)
   {
-    segPhysState.currDuration = 0.f;
-    return;
+    case SEGPHYS_END: return {SEGPHYS_RESULT_END, step_time};
+    case SEGPHYS_PASS: return {SEGPHYS_RESULT_NEXT_SEG, 0.f};
+    case SEGPHYS_WAIT: return segPhysUpdateSegment_Wait(update_type, step_time, seg);
+    case SEGPHYS_CLIMB_MOVE_BY_TRAJECTORY: return segPhysUpdateSegment_ClimbMoveByTrajectory(update_type, step_time, dt, seg);
+    case SEGPHYS_CLIMB_MOVE_TO_TRAJECTORY: return segPhysUpdateSegment_ClimbMoveToTrajectory(update_type, step_time, seg);
+    case SEGPHYS_CLIMB_START: return segPhysUpdateSegment_ClimbStart(update_type, seg);
+    case SEGPHYS_CLIMB_RESUME_DEFAULT: return segPhysUpdateSegment_ClimbResumeDefault(update_type, step_time);
+    case SEGPHYS_CLIMB_END: return segPhysUpdateSegment_ClimbEnd(update_type, step_time);
+    case SEGPHYS_INVALID: return {SEGPHYS_RESULT_HALT_ON_ERROR, step_time};
   }
-
-  if (!currentState.isClimbing)
-  {
-    ctx.result = SEGPHYS_RESULT_END;
-    return;
-  }
-
-  const float dt = ctx.stepTime;
-  currentState.climbToPos += currentState.climbToPosVel * dt;
-  currentState.climbFromPos += currentState.climbToPosVel * dt;
-  currentState.climbContactPos += currentState.climbToPosVel * dt;
-
-  const float climbingSpeedMult = currentState.climbingSpeedMult * (currentState.isFastClimbing ? fastClimbingMult : 1.f);
-  const float velY = -(currentState.velocity * currentState.gravDirection);
-  const float gravVertSpd = velY - currentState.gravMult * gamephys::atmosphere::g() * dt;
-  const float maxVertSpd = maxClimbSpeed * climbingSpeedMult;
-
-  const float vertAccel = (currentState.velocity * currentState.vertDirection > 0.f ? climbVertAccel : climbVertBrake);
-  const float vertSpd = currentState.velocity * currentState.vertDirection + dt * vertAccel * climbingSpeedMult;
-  const float clampedY = clamp(vertSpd, gravVertSpd, maxVertSpd);
-  currentState.velocity = currentState.vertDirection * clampedY;
-
-  // TODO optimize and why use coll center?
-  TMatrix tm = currentState.location.makeTM();
-  Point3 curCollCenter = calcCollCenter(); // WHY?
-
-  Point3 curClimbPos = tm * curCollCenter;
-  Point3 climbStartPos = currentState.climbContactPos + tm % seg.offset; // why coll center and why offset?
-  if (dot(curClimbPos, currentState.vertDirection) >= dot(climbStartPos, currentState.vertDirection))
-  {
-    ctx.result = SEGPHYS_RESULT_NEXT;
-    currentState.location.P = DPoint3(climbStartPos);
-  }
+  return {SEGPHYS_RESULT_HALT_ON_ERROR, step_time};
 }
 
-void HumanPhys::segPhysClimbByTrajectory(SegPhysUpdateContext &ctx, const SegPhysSegment &seg)
+HumanPhys::SegPhysUpdateResult HumanPhys::segPhysUpdateSegment_Wait(SegPhysUpdateType update_type, float step_time,
+  const SegPhysSegment &seg)
 {
-  const float trajlDuration = (!seg.trajectory.empty() && seg.speedCoef > 0.f) ? seg.trajectory.back().t / seg.speedCoef : 0.f;
-  segPhysState.currDuration = trajlDuration;
-  if (ctx.update == SEGPHYS_UPDATE_INIT)
-    return;
-
-  if (!currentState.isClimbing)
+  if (update_type == SEGPHYS_UPDATE_INIT)
   {
-    ctx.result = SEGPHYS_RESULT_END;
-    return;
+    currentState.segPhysState.currDuration = max(0.f, seg.timeout);
+    return SegPhysUpdateResult();
   }
 
-  if (seg.trajectory.empty())
+  const float leftTime = currentState.segPhysState.currDuration - currentState.segPhysState.currTime;
+  if (step_time < leftTime)
   {
-    ctx.result = SEGPHYS_RESULT_NEXT;
-    ctx.usedTime = 0.f;
-    return;
+    currentState.segPhysState.currTime += step_time;
+    return {SEGPHYS_RESULT_CONTINUE, step_time};
   }
 
-  const float dt = ctx.stepTime;
-  currentState.climbToPos += currentState.climbToPosVel * dt;
-  currentState.climbFromPos += currentState.climbToPosVel * dt;
-  currentState.climbContactPos += currentState.climbToPosVel * dt;
+  currentState.segPhysState.currTime = currentState.segPhysState.currDuration;
+  return {SEGPHYS_RESULT_NEXT_SEG, leftTime};
+}
 
-  segPhysState.currTime += dt;
-  const float segmentProgress = segPhysState.currTime * seg.speedCoef;
+HumanPhys::SegPhysUpdateResult HumanPhys::segPhysUpdateSegment_ClimbMoveByTrajectory(SegPhysUpdateType update_type, float step_time,
+  float dt, const SegPhysSegment &seg)
+{
+  int &refCurrIdx = currentState.segPhysState.currIndex;
+  const int numKeys = seg.trajectory.size();
 
-  // TODO optimize
-  int currIdx = 0;
-  for (int i = 0; i < seg.trajectory.size(); i++)
+  TMatrix &refTM = currentState.segPhysState.currFromTM;
+
+  const float effSpeedCoef =
+    seg.blendTwoTrajectories ? lerp(seg.speedCoef, seg.speedCoef2, currentState.segPhysState.blendTrajParam) : seg.speedCoef;
+
+  auto trajP = [&](int idx) {
+    return seg.blendTwoTrajectories ? lerp(seg.trajectory[idx].p, seg.trajectory2[idx].p, currentState.segPhysState.blendTrajParam)
+                                    : seg.trajectory[idx].p;
+  };
+  auto trajH = [&](int idx) {
+    return seg.blendTwoTrajectories ? lerp(seg.trajectory[idx].h, seg.trajectory2[idx].h, currentState.segPhysState.blendTrajParam)
+                                    : seg.trajectory[idx].h;
+  };
+
+  if (update_type == SEGPHYS_UPDATE_INIT)
   {
-    if (segmentProgress < seg.trajectory[i].t)
+    // climb trajectory always is based on currentState climbDir
+    refTM.setcol(0, currentState.climbDir);
+    refTM.setcol(1, currentState.vertDirection);
+    refTM.setcol(2, normalize(currentState.climbDir % currentState.vertDirection));
+    refTM.setcol(3, ZERO<Point3>()); // zero, as currentState.climbToPos can move
+
+    if (numKeys >= 2 && effSpeedCoef > 0.f)
+      currentState.segPhysState.currDuration = seg.trajectory.back().t / effSpeedCoef;
+
+    if (seg.inSkip && numKeys >= 2)
     {
-      currIdx = i;
-      break;
+      refCurrIdx = 1;
+      Point3 currPos = Point3(currentState.location.P);
+      while (refCurrIdx < numKeys)
+      {
+        const auto &prevPt = seg.trajectory[refCurrIdx - 1];
+        const auto &nextPt = seg.trajectory[refCurrIdx];
+        Point3 prevPtPos = currentState.climbToPos + refTM % trajP(refCurrIdx - 1);
+        Point3 nextPtPos = currentState.climbToPos + refTM % trajP(refCurrIdx);
+        Point3 betweenDelta = nextPtPos - prevPtPos;
+        const float betweenDist = length(betweenDelta);
+        const float invDist = safeinv(betweenDist);
+        betweenDelta *= invDist;
+        const float dist = dot(currPos - prevPtPos, betweenDelta);
+        if (dist < betweenDist)
+        {
+          const float ratio = dist * invDist;
+          currentState.segPhysState.currTime = lerp(prevPt.t, nextPt.t, ratio) * safeinv(effSpeedCoef);
+          break;
+        }
+        if (refCurrIdx >= numKeys - 1)
+          break;
+        ++refCurrIdx;
+      }
     }
+    return SegPhysUpdateResult();
   }
 
-  Point3 climbRight = normalize(currentState.vertDirection % currentState.climbDir);
-  TMatrix climbOrient;
-  climbOrient.setcol(2, -currentState.climbDir);
-  climbOrient.setcol(1, currentState.vertDirection);
-  climbOrient.setcol(0, climbRight);
-  climbOrient.setcol(3, ZERO<Point3>());
+  if (currentState.segPhysState.currDuration <= 0.f || numKeys < 2)
+    return {SEGPHYS_RESULT_NEXT_SEG, 0.f};
+
+  if (!currentState.isClimbing)
+    return {SEGPHYS_RESULT_END, step_time};
+
+  if (currentState.segPhysState.currTimer >= max(seg.timeout, currentState.segPhysState.currDuration))
+  {
+    currentState.isClimbing = false;
+    return {SEGPHYS_RESULT_END, step_time};
+  }
+  currentState.segPhysState.currTimer += step_time;
+
+  // dragging (when climbToPos is moving since climbing start)
+  currentState.climbToPos += currentState.climbToPosVel * step_time;
+  currentState.climbFromPos += currentState.climbToPosVel * step_time;
+  currentState.climbContactPos += currentState.climbToPosVel * step_time;
 
   if (draw_climb_update)
   {
     const E3DCOLOR colors[4] = {
-      E3DCOLOR_MAKE(255, 0, 0, 255),
-      E3DCOLOR_MAKE(255, 100, 0, 255),
-      E3DCOLOR_MAKE(200, 0, 100, 255),
-      E3DCOLOR_MAKE(0, 255, 255, 255),
+      E3DCOLOR_MAKE(255, 160, 0, 255),  // amber
+      E3DCOLOR_MAKE(230, 0, 200, 255),  // magenta
+      E3DCOLOR_MAKE(0, 200, 200, 255),  // teal
+      E3DCOLOR_MAKE(150, 90, 255, 255), // violet
     };
-    const E3DCOLOR chosenColor = colors[segPhysState.currSeg % 4];
-
-    draw_debug_sphere_buffered(Point3(currentState.location.P), 0.01f, E3DCOLOR_MAKE(0, 255, 0, 255), 12, 5000);
+    const E3DCOLOR chosenColor = colors[currentState.segPhysState.currSeg % 4];
     Point3 q;
     for (int i = 0; i < seg.trajectory.size(); i++)
     {
-      Point3 p = climbOrient % seg.trajectory[i].p + segPhysState.currFromPos;
+      Point3 p = currentState.climbToPos + refTM % trajP(i);
       if (i > 0)
         draw_debug_line_buffered(p, q, chosenColor, 5000);
-      draw_debug_sphere_buffered(p, 0.01f * segPhysState.currSeg, chosenColor, 12, 5000);
+      draw_debug_sphere_buffered(p, 0.05f, chosenColor, 12, 5000);
       q = p;
     }
   }
 
-  if (segPhysState.currTime >= trajlDuration)
+  bool done = false;
+  Point3 currPos = Point3(currentState.location.P);
+  for (int pass = 0; pass < 2; ++pass)
   {
-    currentState.isClimbing = true;
-    currentState.climbThrough = false;
-    currentState.isInAirHistory = -1;
+    Point3 trajPos = currPos;
+    Point3 trajVel = currentState.velocity;
+    float trajHt = currentState.height;
+    float trajHtVel = currentState.heightCurVel;
 
-    const auto &lastPt = seg.trajectory.back();
-    const float wasHeight = currentState.height;
-
-    ctx.result = SEGPHYS_RESULT_NEXT;
-    ctx.usedTime = ctx.stepTime - (segPhysState.currTime - segPhysState.currDuration);
-    currentState.location.P = DPoint3(segPhysState.currFromPos + climbOrient % lastPt.p);
-    currentState.height = lastPt.h;
-    currentState.heightCurVel = (ctx.usedTime > 0.f) ? (lastPt.h - wasHeight) / ctx.usedTime : 0.f;
-  }
-  else if (currIdx > 0)
-  {
-    const SegPhysTrajectoryPoint &prevPt = seg.trajectory[currIdx - 1];
-    const SegPhysTrajectoryPoint &currPt = seg.trajectory[currIdx];
-
-    const float timeBetweenKeys = currPt.t - prevPt.t;
-    if (timeBetweenKeys > 0.f)
+    const float trajTime = currentState.segPhysState.currTime * effSpeedCoef;
+    const int lastKeyIdx = numKeys - 1;
+    while (refCurrIdx < lastKeyIdx)
     {
-      const float divTime = 1.f / timeBetweenKeys;
-      float ratio = (segmentProgress - prevPt.t) * divTime;
-      Point3 localPos = lerp(prevPt.p, currPt.p, ratio);
-      Point3 localVel = (currPt.p - prevPt.p) * divTime;
-
-      Point3 nextPos = segPhysState.currFromPos + climbOrient % localPos;
-
-      currentState.velocity = (climbOrient % localVel) * seg.speedCoef;
-      currentState.location.P = DPoint3(nextPos);
-      currentState.height = currPt.h;
-      currentState.heightCurVel = (currPt.h - prevPt.h) * divTime;
-      currentState.isClimbing = true;
-      currentState.climbThrough = false;
-      currentState.isInAirHistory = -1;
+      const auto &pt = seg.trajectory[refCurrIdx];
+      if (trajTime < pt.t)
+        break;
+      ++refCurrIdx;
     }
+
+    if (refCurrIdx <= 0)
+    {
+      trajPos = currentState.climbToPos + refTM % trajP(refCurrIdx);
+      trajVel = currentState.velocity;
+      trajHt = trajH(refCurrIdx);
+      trajHtVel = 0.f;
+    }
+    else
+    {
+      const auto &prevPt = seg.trajectory[refCurrIdx - 1];
+      const auto &nextPt = seg.trajectory[refCurrIdx];
+      const Point3 prevP = trajP(refCurrIdx - 1);
+      const Point3 nextP = trajP(refCurrIdx);
+      const float prevH = trajH(refCurrIdx - 1);
+      const float nextH = trajH(refCurrIdx);
+      const float trajPartTime = nextPt.t - prevPt.t;
+      const float ratio = (trajTime - prevPt.t) * safeinv(trajPartTime);
+      const Point3 localPos = lerp(prevP, nextP, ratio);
+      trajPos = currentState.climbToPos + refTM % localPos;
+
+      const float partTime = trajPartTime / effSpeedCoef;
+      const float divTime = safeinv(partTime);
+      trajVel = (refTM % (nextP - prevP)) * divTime;
+      trajHt = lerp(prevH, nextH, ratio);
+      trajHtVel = (nextH - prevH) * divTime;
+    }
+
+    if (seg.inTime > 0.f)
+    {
+      const float ratio = min(currentState.segPhysState.currTimer, seg.inTime) / seg.inTime;
+      const Point3 forwDir = normalize(trajVel);
+      const float forw = dot(trajPos - currPos, forwDir);
+      const Point3 fromPos = currPos + forwDir * forw;
+      trajPos = lerp(fromPos, trajPos, ratio);
+    }
+
+    if (pass == 0)
+    {
+      const bool stuck = refCurrIdx > 0 && lengthSq(currPos - trajPos) > sqr(seg.stuckDist);
+      if (!stuck)
+      {
+        const float timeToEnd = currentState.segPhysState.currDuration - currentState.segPhysState.currTime;
+        if (step_time < timeToEnd)
+          currentState.segPhysState.currTime += step_time;
+        else
+        {
+          step_time = timeToEnd;
+          currentState.segPhysState.currTime = currentState.segPhysState.currDuration;
+          done = true;
+        }
+        continue;
+      }
+    }
+
+    if (draw_climb_update)
+    {
+      draw_debug_sphere_buffered(trajPos, 0.01f, E3DCOLOR_MAKE(255, 0, 0, 255), 12, 5000);
+      draw_debug_sphere_buffered(currPos, 0.01f, E3DCOLOR_MAKE(0, 255, 0, 255), 12, 5000);
+    }
+
+    if (lengthSq(currPos - trajPos) > sqr(seg.stuckDist))
+    {
+      currentState.location.P = DPoint3(trajPos);
+      currPos = trajPos;
+    }
+
+    // Target velocity is what brings position to the target by the end of the physics tick
+    // Use physics dt, not step_time, because this velocity will be running whole physics tick
+    Point3 targetVel = (trajPos - currPos) * safeinv(dt);
+    const float maxSpeedSq = sqr(length(trajVel) + seg.maxCorrectionSpeed);
+    const float targetSpeedSq = lengthSq(targetVel);
+    if (targetSpeedSq > maxSpeedSq)
+      targetVel *= sqrtf(maxSpeedSq * safeinv(targetSpeedSq)); // normalize targetVel and multiply by maxSpeed
+
+    currentState.velocity = targetVel;
+    currentState.height = trajHt;
+    currentState.heightCurVel = trajHtVel;
+    currentState.isInAirHistory = -1; // always in air
+    currentState.collisionLinksStateFrom = ESS_CROUCH;
+    currentState.collisionLinksStateTo = trajHt < 0.f ? ESS_CRAWL : ESS_STAND;
+    const float absHt = fabsf(trajHt);
+    currentState.collisionLinkProgress = absHt >= 1.f ? -1.f : absHt;
+    break;
   }
+
+  return {done ? SEGPHYS_RESULT_NEXT_SEG : SEGPHYS_RESULT_CONTINUE, step_time};
 }
 
-void HumanPhys::segPhysClimbEnd(SegPhysUpdateContext &ctx)
+HumanPhys::SegPhysUpdateResult HumanPhys::segPhysUpdateSegment_ClimbMoveToTrajectory(SegPhysUpdateType update_type, float step_time,
+  const SegPhysSegment &seg)
 {
+  TMatrix &refTM = currentState.segPhysState.currFromTM;
+
+  if (seg.trajectory.size() != 2)
+    return {SEGPHYS_RESULT_END, step_time};
+
+  if (update_type == SEGPHYS_UPDATE_INIT)
+  {
+    refTM.setcol(0, currentState.climbDir);
+    refTM.setcol(1, currentState.vertDirection);
+    refTM.setcol(2, normalize(currentState.climbDir % currentState.vertDirection));
+    refTM.setcol(3, ZERO<Point3>());
+
+    const Point3 currPos = Point3(currentState.location.P);
+    const Point3 key0Pos = currentState.climbToPos + refTM % seg.trajectory[0].p;
+    const Point3 key1Pos = currentState.climbToPos + refTM % seg.trajectory[1].p;
+    const Point3 keyDelta = (key1Pos - key0Pos);
+    const float partTime = (seg.trajectory[1].t - seg.trajectory[0].t) / seg.speedCoef;
+    const float reach = dot(key1Pos - currPos, keyDelta) * safeinv(lengthSq(keyDelta));
+    currentState.segPhysState.currDuration = reach * partTime;
+    return SegPhysUpdateResult();
+  }
+
+  if (!currentState.isClimbing)
+    return {SEGPHYS_RESULT_END, step_time};
+
+  if (currentState.segPhysState.currTimer >= max(seg.timeout, currentState.segPhysState.currDuration))
+  {
+    currentState.isClimbing = false;
+    return {SEGPHYS_RESULT_END, step_time};
+  }
+
+  // Precalculate climbToPos to use correct one on the current frame,
+  // but also to avoid advancing it twice: this segment and the next segment when reached
+  const Point3 climbToPos = currentState.climbToPos + currentState.climbToPosVel * step_time;
+  const Point3 currPos = Point3(currentState.location.P);
+  const Point3 key0Pos = climbToPos + refTM % seg.trajectory[0].p;
+  const Point3 key1Pos = climbToPos + refTM % seg.trajectory[1].p;
+  const Point3 keyDelta = (key1Pos - key0Pos);
+
+  const bool reached = dot(currPos - key0Pos, keyDelta) >= 0.f;
+  if (reached)
+    return {SEGPHYS_RESULT_NEXT_SEG, 0.f};
+
+  // dragging (when climbToPos is moving since climbing start)
+  currentState.climbToPos += currentState.climbToPosVel * step_time;
+  currentState.climbFromPos += currentState.climbToPosVel * step_time;
+  currentState.climbContactPos += currentState.climbToPosVel * step_time;
+
+  currentState.segPhysState.currTimer += step_time;
+
+  if (draw_climb_update)
+  {
+    draw_debug_sphere_buffered(key0Pos, 0.03f, E3DCOLOR_MAKE(255, 0, 0, 255), 12, 5000);
+    draw_debug_sphere_buffered(currPos, 0.03f, E3DCOLOR_MAKE(0, 255, 0, 255), 12, 5000);
+    draw_debug_line_buffered(currPos, key0Pos, E3DCOLOR_MAKE(255, 255, 0, 255), 5000);
+  }
+
+  const float trajPartTime = seg.trajectory[1].t - seg.trajectory[0].t;
+  const float partTime = trajPartTime / seg.speedCoef;
+  const Point3 trajVel = keyDelta * safeinv(partTime);
+
+  currentState.velocity = trajVel + currentState.climbToPosVel;
+  currentState.height = seg.trajectory[0].h;
+  currentState.heightCurVel = 0.f;
+  currentState.isInAirHistory = -1; // always in air
+  currentState.collisionLinksStateFrom = ESS_CROUCH;
+  currentState.collisionLinksStateTo = seg.trajectory[0].h < 0.f ? ESS_CRAWL : ESS_STAND;
+  const float absHt = fabsf(seg.trajectory[0].h);
+  currentState.collisionLinkProgress = absHt >= 1.f ? -1.f : absHt;
+
+  return {SEGPHYS_RESULT_CONTINUE, step_time};
+}
+
+HumanPhys::SegPhysUpdateResult HumanPhys::segPhysUpdateSegment_ClimbStart(SegPhysUpdateType update_type, const SegPhysSegment &seg)
+{
+  if (update_type == SEGPHYS_UPDATE_INIT)
+  {
+    const Point3 currPos = Point3(currentState.location.P);
+    const Point3 climbToPos = currentState.climbToPos;
+    const float heightUp = dot(climbToPos - currPos, currentState.vertDirection);
+    currentState.segPhysState.blendTrajParam = cvt(heightUp, seg.blendTrajMinHeight, seg.blendTrajMaxHeight, 0.f, 1.f);
+    currentState.segPhysState.startedOnLadder = currentState.attachedToLadder;
+  }
+  return {SEGPHYS_RESULT_NEXT_SEG, 0.f};
+}
+
+HumanPhys::SegPhysUpdateResult HumanPhys::segPhysUpdateSegment_ClimbResumeDefault(SegPhysUpdateType update_type, float step_time)
+{
+  if (update_type == SEGPHYS_UPDATE_INIT)
+    return SegPhysUpdateResult();
+  return {SEGPHYS_RESULT_END, step_time};
+}
+
+HumanPhys::SegPhysUpdateResult HumanPhys::segPhysUpdateSegment_ClimbEnd(SegPhysUpdateType update_type, float step_time)
+{
+  if (update_type == SEGPHYS_UPDATE_INIT)
+    return SegPhysUpdateResult();
+
   currentState.isClimbing = false;
-  ctx.result = SEGPHYS_RESULT_END;
+  return {SEGPHYS_RESULT_END, step_time};
 }
 
-bool HumanPhys::segPhysClimbCheckFloor(float trace_len)
+bool HumanPhys::segPhysTest_ClimbCheckFloor(float trace_len, const Point3 &trace_offset) const
 {
-  Point3 climbRight = normalize(currentState.vertDirection % currentState.climbDir);
   TMatrix climbOrient;
-  climbOrient.setcol(2, -currentState.climbDir);
+  climbOrient.setcol(0, currentState.climbDir);
   climbOrient.setcol(1, currentState.vertDirection);
-  climbOrient.setcol(0, climbRight);
+  climbOrient.setcol(2, normalize(currentState.climbDir % currentState.vertDirection));
   climbOrient.setcol(3, ZERO<Point3>());
 
-  // Trace to decide the following stage + stage-blend bookkeeping, left disabled for now.
-  Point3 traceFrom = Point3(currentState.location.P) + climbOrient % Point3(1.f, 0.f, 0.f);
-  Point3 traceTo = traceFrom + climbOrient % Point3(0.f, -trace_len, 0.f);
+  const float traceRad = climbOnRad;
+  const float traceDist = trace_len - traceRad;
+  if (traceDist <= 0.f)
+    return false;
+
+  const float preStepDist = 0.5f;
+  Point3 traceFrom = currentState.climbToPos + climbOrient % trace_offset + currentState.vertDirection * preStepDist;
+  Point3 traceTo = traceFrom - currentState.vertDirection * (traceDist + preStepDist);
 
   if (draw_climb_update)
   {
@@ -2479,9 +2732,24 @@ bool HumanPhys::segPhysClimbCheckFloor(float trace_len)
   }
 
   dacoll::ShapeQueryOutput shapeQuery;
-  const bool traceHit = dacoll::trace_sphere_cast_ex(traceFrom, traceTo, climbOnRad, CLIMB_RAYS_INITIAL, shapeQuery, rayMatId,
+  const bool traceHit = dacoll::trace_sphere_cast_ex(traceFrom, traceTo, traceRad, CLIMB_RAYS_INITIAL, shapeQuery, rayMatId,
     getActor()->getId(), getTraceHandle(), CLIMB_CAST_FLAGS);
   return traceHit;
+}
+
+bool HumanPhys::segPhysTest_ClimbHeightLess(float height_value) const
+{
+  const Point3 currPos = Point3(currentState.location.P);
+  const Point3 climbToPos = currentState.climbToPos;
+  const float heightUp = dot(climbToPos - currPos, currentState.vertDirection);
+  return heightUp < height_value;
+}
+
+bool HumanPhys::isSegPhysNoGravity() const
+{
+  if (!segPhysShared || currentState.segPhysState.currSeg < 0 || currentState.segPhysState.currSeg >= segPhysShared->segs.size())
+    return false;
+  return segPhysShared->segs[currentState.segPhysState.currSeg].noGravity;
 }
 
 void HumanPhys::updatePhys(double at_time, float dt, bool /*is_for_real*/)
@@ -2657,7 +2925,7 @@ void HumanPhys::updatePhys(double at_time, float dt, bool /*is_for_real*/)
     isSliding = torsoRes.isSliding;
     if (!hasGuns)
       gunNodeTm = torsoRes.gunNodeTm;
-    const bool isSegPhysActive = segPhysShared && segPhysState.currSeg >= 0;
+    const bool isSegPhysActive = segPhysShared && currentState.segPhysState.currSeg >= 0;
     if (!disable_walk_query && !isSegPhysActive)
     {
       if (isCrawling)
@@ -2784,8 +3052,13 @@ void HumanPhys::updatePhys(double at_time, float dt, bool /*is_for_real*/)
     if (isSegPhysActive)
       segPhysUpdate(SEGPHYS_UPDATE_STEP, dt);
 
-    if ((isInAir || isSliding) && !currentState.isClimbing && !currentState.isSwimming && !currentState.attachedToLadder &&
-        !currentState.pulledToLadder)
+    bool applyGravity = false;
+    if ((isInAir || isSliding) && !(currentState.isClimbing && !isSegPhysActive) && !currentState.isSwimming &&
+        !currentState.attachedToLadder && !currentState.pulledToLadder)
+      applyGravity = true;
+    if (isSegPhysNoGravity())
+      applyGravity = false;
+    if (applyGravity)
       currentState.velocity += currentState.gravDirection * atmosphereGravity * dt;
     FM_SYNC_DEBUG(WALKER_VEL, P3D(currentState.velocity));
   }
@@ -3406,11 +3679,14 @@ void HumanPhys::updatePhys(double at_time, float dt, bool /*is_for_real*/)
   currentState.location.P += offset + (currentState.posOffset - prevOffset);
 
   // sphere cast to figure out "kindof" CCD
+  const DPoint3 posBeforeMove = currentState.location.P;
+  const Point3 velBeforeMove = currentState.velocity;
   currentState.location.P += dpoint3(currentState.velocity * dt);
   currentState.location.toTM(tm);
 
   curCcdPos = calcCcdPos();
   postMoveFrictionViscosityMult = 1.f;
+  bool hadCcdCollision = false;
   if (!currentState.disableCollision)
   {
     if (!isSimplifiedPhys || fallbackFromSimplePhys || isConsideredInAir || isSliding)
@@ -3426,9 +3702,18 @@ void HumanPhys::updatePhys(double at_time, float dt, bool /*is_for_real*/)
 
     Point3 toCcdWorldPos = tm * curCcdPos;
     Point3 totalOffset = toCcdWorldPos - prevWorldCcdPos;
-    bool hadCcdCollision = processCcdOffset(tm, toCcdWorldPos, totalOffset, collRad - ccdRad, speedCollisionHardness, true, curCcdPos);
+    hadCcdCollision = processCcdOffset(tm, toCcdWorldPos, totalOffset, collRad - ccdRad, speedCollisionHardness, true, curCcdPos);
     if (hadCcdCollision)
       currentState.lastCcdCollisionTick = curTick;
+  }
+
+  if (hadCcdCollision && isConsideredInAir && !currentState.isClimbing && !currentState.isSwimming && !currentState.attachedToLadder &&
+      !currentState.pulledToLadder)
+  {
+    const Point3 actualDisp = Point3(currentState.location.P - posBeforeMove);
+    const Point3 wishDisp = velBeforeMove * dt;
+    if (lengthSq(velBeforeMove) > sqr(1.f) && actualDisp * wishDisp < lengthSq(wishDisp) * 0.1f)
+      currentState.velocity = actualDisp * safeinv(dt);
   }
 
   // TODO: maybe move it somehow inside another function to make this code cleaner?
@@ -3510,6 +3795,7 @@ void HumanPhys::applyOffset(const Point3 &offset) { currentState.location.P += d
 
 void HumanPhys::reset()
 {
+  ccdSkippedOffset.zero();
   currentState.reset();
   currentState.height = 1.f;
   currentState.resetStamina(maxStamina * currentState.maxStaminaMult * currentState.staminaBoostMult);
@@ -3559,6 +3845,16 @@ CONSOLE_BOOL_VAL("walkerphys", draw_trace_cache_misses, false);
 CONSOLE_BOOL_VAL("walkerphys", draw_trace_cache_query_box, false);
 
 CONSOLE_BOOL_VAL("walkerphys", draw_air_state, false);
+
+bool HumanPhys::isDebugDrawEnabled()
+{
+  return draw_collision || draw_gun_trace || draw_gun_debug || draw_proc_collision || draw_sprint_collision ||
+         draw_climber_collision || draw_coll_center || draw_ccd_collision || draw_walk_query || draw_walk_height || draw_spd ||
+         draw_standing_spd || draw_body_yaw || draw_gun_angles || draw_walk_traces || draw_trace_cache || draw_ladder_state ||
+         draw_height_state || draw_climb_state || draw_climb_on_pos || debug_climb_perf || draw_walk_res || draw_trace_cache_stats ||
+         draw_trace_cache_invalidates || draw_trace_cache_casts || draw_trace_cache_misses || draw_trace_cache_query_box ||
+         draw_air_state;
+}
 
 void HumanPhys::drawDebug()
 {

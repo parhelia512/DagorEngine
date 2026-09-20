@@ -231,7 +231,7 @@ static SelectedTlas select_tlas(ContextId context_id, const TlasSizes &sizes, co
     case 1:
       selected.instances = context_id->tlasUploadTerrain.getBuf();
       selected.instancesId = context_id->tlasUploadTerrain.getBufId();
-      selected.instanceCount = context_id->tlasTerrainValid ? sizes.terrainCount : 0;
+      selected.instanceCount = context_id->tlasTerrainValid && sizes.terrainBuilt ? sizes.terrainCount : 0;
       selected.regions = &regions.terrain;
       selected.name = "terrain";
       break;
@@ -280,13 +280,13 @@ static void collect_blas_addresses(ContextId context_id, dag::Vector<uint64_t> &
   // so the entries add() keeps exactly the unclaimed ones, whatever the cursor says.
   auto addPool = [&](auto &pools) {
     for (auto &pool : pools)
-      for (auto &blas : pool.second.blases)
-        add(pooled, blas);
+      for (auto &entry : pool.second.blases)
+        add(pooled, entry.blas);
   };
 
   {
     Context::BvhObjectReadLock objectsGuard(context_id->objectsLock);
-    WinAutoLock treesGuard(context_id->tidyUpTreesLock);
+    WinAutoLock riGuard(context_id->tidyUpRendinstsLock);
     WinAutoLock skinsGuard(context_id->tidyUpSkinsLock);
 
     for (auto &object : context_id->objects)
@@ -297,7 +297,8 @@ static void collect_blas_addresses(ContextId context_id, dag::Vector<uint64_t> &
     addAgedElems(context_id->uniqueSkinBuffers);
     addElems(context_id->uniqueHeliRotorBuffers);
     addElems(context_id->uniqueDeformedBuffers);
-    addElems(context_id->uniqueRiExtraFlagBuffers);
+    for (auto &lod : context_id->uniqueRiExtraFlagBuffers)
+      addAgedElems(lod);
     for (auto &lod : context_id->uniqueTreeBuffers)
       addAgedElems(lod);
     for (auto &lod : context_id->uniqueRiExtraTreeBuffers)
@@ -309,6 +310,7 @@ static void collect_blas_addresses(ContextId context_id, dag::Vector<uint64_t> &
 
     addPool(context_id->freeUniqueTreeBLASes);
     addPool(context_id->freeUniqueRiExtraTreeBLASes);
+    addPool(context_id->freeUniqueRiExtraFlagBLASes);
     addPool(context_id->freeUniqueSkinBLASes);
 
     // Trees that appeared this frame are referenced by the descriptors but are only merged into the

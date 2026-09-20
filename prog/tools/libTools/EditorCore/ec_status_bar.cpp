@@ -561,6 +561,9 @@ int ToolBarManager::getRotateGizmoDef() const { return DEF_ROTATE; }
 //==============================================================================
 void ToolBarManager::setClientValues(Point3 &val)
 {
+  if (!client)
+    return;
+
   Point3 pt;
   client->gizmoStarted();
 

@@ -3,7 +3,6 @@
 #include "uiRender.h"
 #include "userUi.h"
 #include "ui/overlay.h"
-#include "net/net.h" // NetSnapshotScope
 #include "render/world/dargPanelAnchorResolve.h"
 #include <gui/dag_stdGuiRender.h>
 
@@ -62,11 +61,10 @@ static struct UIRenderJob final : public cpujobs::IJob
   };
   uint8_t runState = INITIAL;
 
-  const char *getJobName(bool &) const override { return "darg_scene_build_render"; }
+  const char *getJobName(bool &) const override { return DAPROFILER_STRING("darg_scene_build_render"); }
 
   void doJob() override
   {
-    net::NetSnapshotScope snapshotScope(/*assumeSingleUpdate*/ true, "UIRenderJob"); // daRg transitively reads get_sync_time()
     WinAutoLock lock(critSec);
 
     // Note: daRg "owns" `StdGuiRender` until this job's completion so no much sense to do this reset in main thread
@@ -120,10 +118,9 @@ void wait_ui_render_job_done()
 static struct UIBeforeRenderJob final : public cpujobs::IJob
 {
   float dt;
-  const char *getJobName(bool &) const override { return "gui_before_render_update"; }
+  const char *getJobName(bool &) const override { return DAPROFILER_STRING("gui_before_render_update"); }
   void doJob() override
   {
-    net::NetSnapshotScope snapshotScope(/*assumeSingleUpdate*/ true, "UIBeforeRenderJob"); // daRg update reads get_sync_time()
     WinAutoLock lock(ui_render_job.critSec);
 
     for (darg::IGuiScene *scn : get_all_scenes())

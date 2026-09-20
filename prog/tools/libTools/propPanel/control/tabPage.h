@@ -17,6 +17,7 @@ public:
   {}
 
   int getImguiControlType() const override { return (int)ControlType::TabPage; }
+  const char *getImguiTypeName() const override { return "TabPage"; }
 
   unsigned getTypeMaskForSet() const override { return CONTROL_CAPTION; }
   unsigned getTypeMaskForGet() const override { return 0; }

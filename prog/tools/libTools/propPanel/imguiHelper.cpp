@@ -84,6 +84,103 @@ static bool IsRootOfOpenMenuSet()
 static float getMenuCheckmarkSize(const ImGuiContext &context) { return context.FontSize * 0.866f; }
 static float getMenuCheckmarkPadding(const ImGuiContext &context) { return context.FontSize * 0.40f; }
 
+// The checkmark gutter, or the plain padding a menu with nothing to check asked for instead.
+static float getMenuRowLeftPad(const ImGuiContext &context, const PropPanel::MenuStyle &menu_style)
+{
+  if (menu_style.checkmarkColumn)
+    return IM_TRUNC(getMenuCheckmarkPadding(context) + getMenuCheckmarkSize(context) + getMenuCheckmarkPadding(context));
+  return menu_style.rowPadX >= 0.0f ? IM_TRUNC(menu_style.rowPadX) : 0.0f;
+}
+
+// The open arrow's slot. Sized off the checkmark box so a restored trailing check would line up with
+// it across rows -- upstream's is commented out below.
+static float getMenuMarkSlotWidth(const ImGuiContext &context)
+{
+  return IM_TRUNC(getMenuCheckmarkSize(context) + (context.FontSize * 0.30f));
+}
+
+// Anchored to the same FontSize-square box as ImGui::RenderArrow, so the two are interchangeable.
+static void renderSubmenuChevron(ImDrawList *draw_list, const ImVec2 &pos, ImU32 col)
+{
+  const float box = draw_list->_Data->FontSize;
+  const ImVec2 center(pos.x + box * 0.5f, pos.y + box * 0.5f);
+  const float halfWidth = box * 0.25f;
+  const float halfHeight = box * 0.419f;
+  const ImVec2 points[3] = {
+    ImVec2(center.x - halfWidth, center.y - halfHeight),
+    ImVec2(center.x + halfWidth, center.y),
+    ImVec2(center.x - halfWidth, center.y + halfHeight),
+  };
+  draw_list->AddPolyline(points, 3, col, ImDrawFlags_None, ImMax(1.0f, box * 0.125f));
+}
+
+// Slack to add to the shortcut column's start to right-align text inside it. Taken from the column
+// MenuColumns already sized and placed, so rows with and without a trailing mark share a right edge.
+static float getSecondaryTextColumnSlack(const ImGuiWindow *window, float text_width)
+{
+  const ImGuiMenuColumns &columns = window->DC.MenuColumns;
+  const float markWidth = float(columns.TotalWidth) - float(columns.OffsetMark);
+  const float columnWidth =
+    float(columns.OffsetMark) - float(columns.OffsetShortcut) - (markWidth > 0.0f ? float(columns.Spacing) : 0.0f);
+  return ImMax(0.0f, columnWidth - text_width);
+}
+
+static float calcSecondaryTextWidth(const char *text, const PropPanel::MenuStyle &menu_style)
+{
+  if (menu_style.secondaryFontSizeBase <= 0.0f)
+    return ImGui::CalcTextSize(text, nullptr).x;
+
+  ImGui::PushFont(nullptr, menu_style.secondaryFontSizeBase);
+  const float width = ImGui::CalcTextSize(text, nullptr).x;
+  ImGui::PopFont();
+  return width;
+}
+
+static void renderSecondaryText(const ImVec2 &pos, const char *text, const PropPanel::MenuStyle &menu_style)
+{
+  ImGuiContext &g = *ImGui::GetCurrentContext();
+  if (menu_style.secondaryFontSizeBase <= 0.0f)
+  {
+    ImGui::RenderText(pos, text, nullptr, false);
+    return;
+  }
+
+  // The field is a base size, so it centres against GetFontSize() after the push, never against
+  // g.FontSize, which the global factors have already been applied to.
+  const float labelFontSize = g.FontSize;
+  ImGui::PushFont(nullptr, menu_style.secondaryFontSizeBase);
+  const float dy = IM_TRUNC((labelFontSize - ImGui::GetFontSize()) * 0.5f);
+  ImGui::RenderText(ImVec2(pos.x, pos.y + dy), text, nullptr, false);
+  ImGui::PopFont();
+}
+
+// The row's second column. `pos` must already carry the row's leading pad, and stretch_w the width
+// MenuColumns left over, so a leaf row and a sub-menu row place their text identically.
+static void renderRowSecondaryText(const ImGuiWindow *window, const ImVec2 &pos, float stretch_w, float label_width, const char *text,
+  float text_width, bool is_comment, const PropPanel::MenuStyle &menu_style)
+{
+  const ImGuiMenuColumns &offsets = window->DC.MenuColumns;
+  const ImGuiStyle &style = ImGui::GetStyle();
+
+  float x;
+  if (is_comment)
+  {
+    // A comment pins to the end of the label column, without the stretch that carries a shortcut to
+    // the trailing edge. Floored at this row's own label: the column offsets are a frame behind, and
+    // on the first frame they would put the comment over it.
+    x = pos.x + ImMax(float(offsets.OffsetShortcut), label_width + style.ItemSpacing.x);
+  }
+  else
+  {
+    x = pos.x + float(offsets.OffsetShortcut) + stretch_w +
+        (menu_style.rightAlignShortcut ? getSecondaryTextColumnSlack(window, text_width) : 0.0f);
+  }
+
+  ImGui::PushStyleColor(ImGuiCol_Text, style.Colors[ImGuiCol_TextDisabled]);
+  renderSecondaryText(ImVec2(x, pos.y), text, menu_style);
+  ImGui::PopStyleColor();
+}
+
 bool ImguiHelper::checkboxWithDragSelection(const char *label, bool *value)
 {
   if (ImGui::GetCurrentWindow()->SkipItems)
@@ -311,8 +408,21 @@ bool ImguiHelper::treeNodeWithSpecialHoverBehaviorStart(ImGuiID id, ImGuiTreeNod
     ImVec2 text_pos(window->DC.CursorPos.x + text_offset_x, window->DC.CursorPos.y + text_offset_y);
     ItemSize(ImVec2(text_width, frame_height), padding.y);
 
+    // GAIJIN {
+    // Tree nodes are meant to be tightly packed together with no hover, click or drop gap, so item_bb takes in the
+    // vertical spacing between the rows, like ImGui::Selectable() does. frame_bb stays the row itself, because the
+    // hierarchy lines and the open/close icon are placed from it.
+    ImRect item_bb = frame_bb;
+    const float spacing_above = IM_TRUNC(style.ItemSpacing.y * 0.5f);
+    item_bb.Min.y -= spacing_above;
+    item_bb.Max.y += style.ItemSpacing.y - spacing_above;
+    // GAIJIN }
+
     // For regular tree nodes, we arbitrary allow to click past 2 worth of ItemSpacing
-    ImRect interact_bb = frame_bb;
+    // GAIJIN {
+    // ImRect interact_bb = frame_bb;
+    ImRect interact_bb = item_bb;
+    // GAIJIN }
     if ((flags & (ImGuiTreeNodeFlags_Framed | ImGuiTreeNodeFlags_SpanAvailWidth | ImGuiTreeNodeFlags_SpanFullWidth | ImGuiTreeNodeFlags_SpanLabelWidth | ImGuiTreeNodeFlags_SpanAllColumns)) == 0)
        interact_bb.Max.x = frame_bb.Min.x + text_width + (label_size.x > 0.0f ? style.ItemSpacing.x * 2.0f : 0.0f);
 
@@ -577,7 +687,8 @@ bool ImguiHelper::treeNodeWithSpecialHoverBehaviorStart(ImGuiID id, ImGuiTreeNod
     end_data.isMultiSelect = is_multi_select;
     end_data.displayFrame = display_frame;
     end_data.held = held;
-    end_data.frameBB = frame_bb;
+    end_data.rowBB = frame_bb;
+    end_data.itemBB = item_bb;
     end_data.selected = selected;
     end_data.textOffset = ImVec2(text_offset_x, text_offset_y);
     end_data.padding = padding;
@@ -620,8 +731,8 @@ void ImguiHelper::treeNodeWithSpecialHoverBehaviorRender(TreeNodeWithSpecialHove
     const ImU32 bg_col = GetColorU32((end_data.held && end_data.hovered) ? ImGuiCol_HeaderActive
                                      : end_data.hovered                  ? ImGuiCol_HeaderHovered
                                                                          : ImGuiCol_Header);
-    RenderFrame(end_data.frameBB.Min, end_data.frameBB.Max, bg_col, true, style.FrameRounding);
-    RenderNavCursor(end_data.frameBB, end_data.id, nav_highlight_flags);
+    RenderFrame(end_data.itemBB.Min, end_data.itemBB.Max, bg_col, true, style.FrameRounding);
+    RenderNavCursor(end_data.itemBB, end_data.id, nav_highlight_flags);
     if (end_data.flags & ImGuiTreeNodeFlags_Bullet)
       RenderBullet(window->DrawList,
         ImVec2(end_data.textPos.x - end_data.textOffset.x * 0.60f, end_data.textPos.y + g.FontSize * 0.5f), text_col);
@@ -632,8 +743,12 @@ void ImguiHelper::treeNodeWithSpecialHoverBehaviorRender(TreeNodeWithSpecialHove
         1.0f);
     else // Leaf without bullet, left-adjusted text
       end_data.textPos.x -= end_data.textOffset.x - end_data.padding.x;
-    if (end_data.flags & ImGuiTreeNodeFlags_ClipLabelForTrailingButton)
-      end_data.frameBB.Max.x -= g.FontSize + style.FramePadding.x;
+    // GAIJIN {
+    // rowBB is the row rect the callers read. The label clip belongs to the label_clip_max_x of
+    // treeNodeWithSpecialHoverBehaviorEnd, which is where the label is drawn.
+    // if (end_data.flags & ImGuiTreeNodeFlags_ClipLabelForTrailingButton)
+    //   end_data.rowBB.Max.x -= g.FontSize + style.FramePadding.x;
+    // GAIJIN }
     if (g.LogEnabled)
       LogSetNextTextDecoration("###", "###");
   }
@@ -645,9 +760,9 @@ void ImguiHelper::treeNodeWithSpecialHoverBehaviorRender(TreeNodeWithSpecialHove
       const ImU32 bg_col = GetColorU32((end_data.held && end_data.hovered) ? ImGuiCol_HeaderActive
                                        : end_data.hovered                  ? ImGuiCol_HeaderHovered
                                                                            : ImGuiCol_Header);
-      RenderFrame(end_data.frameBB.Min, end_data.frameBB.Max, bg_col, false);
+      RenderFrame(end_data.itemBB.Min, end_data.itemBB.Max, bg_col, false);
     }
-    RenderNavCursor(end_data.frameBB, end_data.id, nav_highlight_flags);
+    RenderNavCursor(end_data.itemBB, end_data.id, nav_highlight_flags);
     if (end_data.flags & ImGuiTreeNodeFlags_Bullet)
       RenderBullet(window->DrawList, ImVec2(end_data.textPos.x - end_data.textOffset.x * 0.5f, end_data.textPos.y + g.FontSize * 0.5f),
         text_col);
@@ -812,6 +927,28 @@ bool ImguiHelper::beginListBoxWithWindowFlags(const char* label, const ImVec2& s
 }
 
 // clang-format on
+
+void ImguiHelper::hookWindowScrollbarsForTestRuntime()
+{
+  ImGuiContext &g = *GImGui;
+  if (!g.TestEngineHookItems)
+    return;
+
+  ImGuiWindow *window = ImGui::GetCurrentWindow();
+
+  if (window->ScrollbarX)
+  {
+    const ImGuiID id = ImGui::GetWindowScrollbarID(window, ImGuiAxis_X);
+    IMGUI_TEST_ENGINE_ITEM_INFO(id, "#SCROLLX", 0);
+  }
+
+  if (window->ScrollbarY)
+  {
+    const ImGuiID id = ImGui::GetWindowScrollbarID(window, ImGuiAxis_Y);
+    IMGUI_TEST_ENGINE_ITEM_INFO(id, "#SCROLLY", 0);
+  }
+}
+
 bool ImguiHelper::imageButtonFrameless(ImGuiID id, ImTextureID texture_id, const ImVec2 &image_size, const ImVec2 &uv0,
   const ImVec2 &uv1, const ImVec4 &tint_col)
 {
@@ -910,30 +1047,6 @@ bool ImguiHelper::imageCheckButtonWithBackground(const char *str_id, IconId icon
 {
   const ImTextureID textureId = image_helper.getImTextureIdFromIconId(icon_id);
   return imageCheckButtonWithBackground(str_id, textureId, image_size, checked, tooltip);
-}
-
-ImVec2 ImguiHelper::getImageButtonSize(const ImVec2 &image_size) { return ImVec2(image_size + GImGui->Style.FramePadding * 2.0f); }
-
-ImVec2 ImguiHelper::getImageButtonWithDownArrowSizeInternal(const ImVec2 &image_size, float &default_height, ImVec2 &arrow_half_size)
-{
-  const ImGuiContext &g = *GImGui;
-  const float arrowScale = 0.5f;
-
-  default_height = ImGui::GetFrameHeight();
-  arrow_half_size = ImVec2(g.FontSize * 0.5f * arrowScale, g.FontSize * 0.25f * arrowScale);
-
-  const ImVec2 size(
-    g.Style.FramePadding.x + image_size.x + g.Style.ItemInnerSpacing.x + (arrow_half_size.x * 2.0f) + g.Style.FramePadding.x,
-    ImMax(image_size.y, default_height));
-
-  return size;
-}
-
-ImVec2 ImguiHelper::getImageButtonWithDownArrowSize(const ImVec2 &image_size)
-{
-  float defaultHeight;
-  ImVec2 arrowHalfSize;
-  return getImageButtonWithDownArrowSizeInternal(image_size, defaultHeight, arrowHalfSize);
 }
 
 bool ImguiHelper::imageButtonWithArrow(const char *str_id, ImTextureID texture_id, const ImVec2 &image_size, bool checked,
@@ -1071,14 +1184,6 @@ bool ImguiHelper::imageButtonWithText(const char *label, IconId icon_id, const I
   return imageButtonWithText(label, textureId, image_size, size_arg, flags);
 }
 
-ImVec2 ImguiHelper::getButtonSize(const char *label, bool hide_text_after_double_hash, const ImVec2 &size_arg)
-{
-  const ImVec2 labelSize = ImGui::CalcTextSize(label, nullptr, hide_text_after_double_hash);
-  const ImVec2 buttonSize = ImGui::CalcItemSize(size_arg, labelSize.x + ImGui::GetStyle().FramePadding.x * 2.0f,
-    labelSize.y + ImGui::GetStyle().FramePadding.y * 2.0f);
-  return buttonSize;
-}
-
 bool ImguiHelper::searchInput(const void *focus_id, const char *label, const char *hint, String &text_to_search,
   ImTextureID search_icon, ImTextureID clear_icon, bool *input_focused, ImGuiID *input_id, ImRect *input_rect,
   bool *deactivated_after_edit)
@@ -1157,7 +1262,7 @@ bool ImguiHelper::searchInput(const void *focus_id, const char *label, const cha
 
 // The changed parts compared to ImGui::MenuItemEx are marked with GAIJIN.
 // clang-format off
-bool ImguiHelper::menuItemExWithLeftSideCheckmark(const char *label, const char *icon, const char *shortcut, bool selected, bool enabled, bool bullet, bool menu_item_selected)
+bool ImguiHelper::menuItemExWithLeftSideCheckmark(const char *label, const char *icon, const char *shortcut, bool selected, bool enabled, bool bullet, bool menu_item_selected, const MenuStyle &menu_style, bool secondary_is_comment)
 {
     ImGuiWindow* window = GetCurrentWindow();
     if (window->SkipItems)
@@ -1204,17 +1309,15 @@ bool ImguiHelper::menuItemExWithLeftSideCheckmark(const char *label, const char 
         // (In a typical menu window where all items are BeginMenu() or MenuItem() calls, extra_w will always be 0.0f.
         //  Only when they are other items sticking out we're going to add spacing, yet only register minimum width into the layout system.
         float icon_w = (icon && icon[0]) ? CalcTextSize(icon, NULL).x : 0.0f;
-        float shortcut_w = (shortcut && shortcut[0]) ? CalcTextSize(shortcut, NULL).x : 0.0f;
+        float shortcut_w = (shortcut && shortcut[0]) ? calcSecondaryTextWidth(shortcut, menu_style) : 0.0f;
 
         // GAIJIN {
-        // float checkmark_w = IM_TRUNC(g.FontSize * 1.20f);
-
-        const float checkmarkSize = getMenuCheckmarkSize(g);
-        const float checkmarkPadding = getMenuCheckmarkPadding(g);
-        const float checkmark_w = IM_TRUNC(checkmarkPadding + checkmarkSize + checkmarkPadding);
+        // Upstream's mark column (float checkmark_w = IM_TRUNC(g.FontSize * 1.20f)) carries the row's
+        // left pad instead, so the measured width accounts for the shift that pad puts on the rest.
+        const float rowLeftPad = getMenuRowLeftPad(g, menu_style);
         // GAIJIN }
 
-        float min_w = window->DC.MenuColumns.DeclColumns(icon_w, label_size.x, shortcut_w, checkmark_w); // Feedback for next frame
+        float min_w = window->DC.MenuColumns.DeclColumns(icon_w, label_size.x, shortcut_w, rowLeftPad); // Feedback for next frame
         float stretch_w = ImMax(0.0f, GetContentRegionAvail().x - min_w);
         // GAIJIN {
         // pressed = Selectable("", false, selectable_flags | ImGuiSelectableFlags_SpanAvailWidth, ImVec2(min_w, label_size.y));
@@ -1223,26 +1326,26 @@ bool ImguiHelper::menuItemExWithLeftSideCheckmark(const char *label, const char 
         if (g.LastItemData.StatusFlags & ImGuiItemStatusFlags_Visible)
         {
             // GAIJIN {
-            if (selected)
+            // The mark lives in the gutter, so a menu without one has nowhere to put it.
+            if (selected && menu_style.checkmarkColumn)
             {
+                const float checkmarkPadding = getMenuCheckmarkPadding(g);
                 if (bullet)
                     RenderBullet(window->DrawList, pos + ImVec2(offsets->OffsetLabel + checkmarkPadding + g.FontSize * 0.5f, g.FontSize * 0.5f), GetColorU32(ImGuiCol_Text));
                 else
-                    RenderCheckMark(window->DrawList, pos + ImVec2(offsets->OffsetLabel + checkmarkPadding, g.FontSize * 0.134f * 0.5f), GetColorU32(ImGuiCol_Text), checkmarkSize);
+                    RenderCheckMark(window->DrawList, pos + ImVec2(offsets->OffsetLabel + checkmarkPadding, g.FontSize * 0.134f * 0.5f), GetColorU32(ImGuiCol_Text), getMenuCheckmarkSize(g));
             }
 
-            pos.x += IM_TRUNC(checkmarkPadding + checkmarkSize + checkmarkPadding);
+            pos.x += rowLeftPad;
             // GAIJIN }
 
             RenderText(pos + ImVec2(offsets->OffsetLabel, 0.0f), label);
             if (icon_w > 0.0f)
                 RenderText(pos + ImVec2(offsets->OffsetIcon, 0.0f), icon);
+            // GAIJIN {
             if (shortcut_w > 0.0f)
-            {
-                PushStyleColor(ImGuiCol_Text, style.Colors[ImGuiCol_TextDisabled]);
-                RenderText(pos + ImVec2(offsets->OffsetShortcut + stretch_w, 0.0f), shortcut, NULL, false);
-                PopStyleColor();
-            }
+                renderRowSecondaryText(window, pos, stretch_w, label_size.x, shortcut, shortcut_w, secondary_is_comment, menu_style);
+            // GAIJIN }
 
             // GAIJIN {
             //if (selected)
@@ -1263,7 +1366,7 @@ bool ImguiHelper::menuItemExWithLeftSideCheckmark(const char *label, const char 
 
 // The changed parts compared to ImGui::BeginMenuEx are marked with GAIJIN.
 // clang-format off
-bool ImguiHelper::beginMenuExWithLeftSideCheckmark(const char* label, const char* icon, bool enabled)
+bool ImguiHelper::beginMenuExWithLeftSideCheckmark(const char* label, const char* icon, const char* shortcut, bool enabled, const MenuStyle& menu_style)
 {
     ImGuiWindow* window = GetCurrentWindow();
     if (window->SkipItems)
@@ -1337,31 +1440,41 @@ bool ImguiHelper::beginMenuExWithLeftSideCheckmark(const char* label, const char
         //  Only when they are other items sticking out we're going to add spacing, yet only register minimum width into the layout system.
         popup_pos = ImVec2(pos.x, pos.y - style.WindowPadding.y);
         float icon_w = (icon && icon[0]) ? CalcTextSize(icon, NULL).x : 0.0f;
+        float shortcut_w = (shortcut && shortcut[0]) ? calcSecondaryTextWidth(shortcut, menu_style) : 0.0f;
 
         // GAIJIN {
-        //float checkmark_w = IM_TRUNC(g.FontSize * 1.20f);
-
-        const float checkmarkSize = getMenuCheckmarkSize(g);
-        const float checkmarkPadding = getMenuCheckmarkPadding(g);
-        const float checkmarkWidth = IM_TRUNC(checkmarkPadding + checkmarkSize + checkmarkPadding);
-        const float rightSideSpace = IM_TRUNC(checkmarkSize + (g.FontSize * 0.30f)); // Leave space for the sub-menu open arrow.
-        const float checkmark_w = checkmarkWidth + rightSideSpace;
+        // Upstream's mark column carries the row's left pad plus the open arrow's slot.
+        const float rowLeftPad = getMenuRowLeftPad(g, menu_style);
+        const float arrowSlotWidth = getMenuMarkSlotWidth(g);
+        const float markColumnWidth = rowLeftPad + arrowSlotWidth;
         // GAIJIN }
 
-        float min_w = window->DC.MenuColumns.DeclColumns(icon_w, label_size.x, 0.0f, checkmark_w); // Feedback to next frame
+        float min_w = window->DC.MenuColumns.DeclColumns(icon_w, label_size.x, shortcut_w, markColumnWidth); // Feedback to next frame
         float extra_w = ImMax(0.0f, GetContentRegionAvail().x - min_w);
         ImVec2 text_pos(window->DC.CursorPos.x + offsets->OffsetLabel, window->DC.CursorPos.y + window->DC.CurrLineTextBaseOffset);
 
         // GAIJIN {
-        extra_w += checkmarkWidth;
-        text_pos.x += checkmarkWidth;
+        // Both origins carry the pad, as in the item helper, so the label, the second column and the
+        // arrow line up with a leaf row's. popup_pos is taken above, off the unshifted position.
+        pos.x += rowLeftPad;
+        text_pos.x += rowLeftPad;
         // GAIJIN }
 
         pressed = Selectable("", menu_is_open, selectable_flags | ImGuiSelectableFlags_SpanAvailWidth, ImVec2(min_w, label_size.y));
         RenderText(text_pos, label);
         if (icon_w > 0.0f)
             RenderText(pos + ImVec2(offsets->OffsetIcon, 0.0f), icon);
-        RenderArrow(window->DrawList, pos + ImVec2(offsets->OffsetMark + extra_w + g.FontSize * 0.30f, 0.0f), GetColorU32(ImGuiCol_Text), ImGuiDir_Right);
+        // GAIJIN {
+        if (shortcut_w > 0.0f)
+            renderRowSecondaryText(window, pos, extra_w, label_size.x, shortcut, shortcut_w, /*is_comment =*/false, menu_style);
+        // GAIJIN }
+        // GAIJIN {
+        const ImVec2 arrowPos = pos + ImVec2(offsets->OffsetMark + extra_w + g.FontSize * 0.30f, 0.0f);
+        if (menu_style.submenuChevronArrow)
+            renderSubmenuChevron(window->DrawList, arrowPos, GetColorU32(ImGuiCol_Text));
+        else
+            RenderArrow(window->DrawList, arrowPos, GetColorU32(ImGuiCol_Text), ImGuiDir_Right);
+        // GAIJIN }
     }
     if (!enabled)
         EndDisabled();
@@ -1517,6 +1630,16 @@ bool ImguiHelper::isKeyChordPressedOwned(ImGuiKeyChord key_chord, ImGuiID canvas
     return false;
 
   ImGui::SetKeyOwnersForKeyChord(key_chord, canvas_id);
+  return true;
+}
+
+bool ImguiHelper::deactivateItemIfActiveAndDisabled(const char *str_id)
+{
+  ImGuiContext &context = *ImGui::GetCurrentContext();
+  if ((context.CurrentItemFlags & ImGuiItemFlags_Disabled) == 0 || context.ActiveId == 0 || context.ActiveId != ImGui::GetID(str_id))
+    return false;
+
+  ImGui::ClearActiveID();
   return true;
 }
 

@@ -30,7 +30,9 @@ SQSharedState::SQSharedState(SQAllocContext allocctx) :
     _releasehook = NULL;
     _asyncState = NULL;
     compilationOptions = 0;
-    doc_object_index = 1;
+#if SQ_STORE_DOC_OBJECTS
+    _docstrings = NULL;
+#endif
     rand_seed = 0;
     table_iter_seed = sq_generate_seed();
     watchdog_last_alive_time_msec = 0;
@@ -99,10 +101,9 @@ static SQClass *CreateBuiltInTypeClass(SQSharedState *ss, const char *name, cons
                 nc->_purefunction = true;
             if (funcz[i].nodiscard)
                 nc->_nodiscard = true;
-            if (funcz[i].docstring) {
-                SQObjectPtr docValue(SQString::Create(ss, funcz[i].docstring));
-                _table(ss->doc_objects)->NewSlot(sq_docstring_key(nc), docValue);
-            }
+            if (funcz[i].docstring)
+                nc->_docstring_id = ss->AddNativeStrings(funcz[i].docstring, NULL);
+            assert(!funcz[i].docstring || nc->_docstring_id != 0);
 
             cls->NewSlot(ss, SQObjectPtr(nc->_name), SQObjectPtr(nc), /*static*/ true);
             i++;
@@ -176,7 +177,10 @@ void SQSharedState::Init()
 
     _registry = SQTable::Create(this,0);
     _consts = SQTable::Create(this,0);
-    doc_objects = SQTable::Create(this,0);
+#if SQ_STORE_DOC_OBJECTS
+    sq_new(_alloc_ctx, _docstrings, sqvector<SQString *>, _alloc_ctx);
+    _docstrings->push_back(NULL);
+#endif
 
     _null_class     = CreateBuiltInTypeClass(this, "Null", _null_default_type_methods_funcz, OT_NULL);
     _integer_class  = CreateBuiltInTypeClass(this, "Integer", _integer_default_type_methods_funcz, OT_INTEGER);
@@ -212,11 +216,9 @@ SQSharedState::~SQSharedState()
     _table(_registry)->Finalize();
     _table(_consts)->Finalize();
     _table(_metamethodsmap)->Finalize();
-    _table(doc_objects)->Finalize();
     _registry.Null();
     _consts.Null();
     _metamethodsmap.Null();
-    doc_objects.Null();
     while(!_systemstrings->empty()) {
         _systemstrings->back().Null();
         _systemstrings->pop_back();
@@ -264,35 +266,89 @@ SQSharedState::~SQSharedState()
     sq_delete(_alloc_ctx, _types, SQObjectPtrVec);
     sq_delete(_alloc_ctx, _systemstrings, SQObjectPtrVec);
     sq_delete(_alloc_ctx, _metamethodnames, SQObjectPtrVec);
+#if SQ_STORE_DOC_OBJECTS
+    for (SQUnsignedInteger32 i = 1; i < _docstrings->size(); ++i)
+        __ObjRelease((*_docstrings)[i]);
+    sq_delete(_alloc_ctx, _docstrings, sqvector<SQString *>);
+#endif
     sq_delete(_alloc_ctx, _stringtable,SQStringTable);
     if(_scratchpad)SQ_FREE(_alloc_ctx,_scratchpad,_scratchpadsize);
 }
 
 
-#if SQ_STORE_DOC_OBJECTS
-void SQSharedState::RemoveDocObjects(const void *obj)
+SQDocStringId SQSharedState::AddDocString(const char *text)
 {
-    // Called from destructors, so doc_objects may already be gone: ~SQSharedState
-    // finalizes it before the objects that still point into it are released.
-    if (sq_type(doc_objects) != OT_TABLE)
-        return;
-    SQTable *docs = _table(doc_objects);
-    if (docs->CountUsed() == 0)
-        return;
-    docs->Remove(sq_docstring_key(obj));
-    docs->Remove(sq_declstring_key(obj));
+#if SQ_STORE_DOC_OBJECTS
+    if (!text || _docstrings->size() > SQ_MAX_DOCSTRING_ID)
+        return 0;
+    SQString *str = SQString::Create(this, text);
+    __ObjAddRef(str);
+    _docstrings->push_back(str);
+    return SQDocStringId(_docstrings->size() - 1);
+#else
+    (void)text;
+    return 0;
+#endif
 }
 
-void SQSharedState::CopyDocObjects(const void *from, const void *to)
+SQDocStringId SQSharedState::AddNativeStrings(const char *docstring, const char *declstring)
 {
-    SQTable *docs = _table(doc_objects);
-    SQObjectPtr value;
-    if (docs->Get(sq_docstring_key(from), value))
-        docs->NewSlot(sq_docstring_key(to), value);
-    if (docs->Get(sq_declstring_key(from), value))
-        docs->NewSlot(sq_declstring_key(to), value);
-}
+#if SQ_STORE_DOC_OBJECTS
+    if (_docstrings->size() >= SQ_MAX_DOCSTRING_ID)
+        return 0;
+
+    SQString *doc = docstring ? SQString::Create(this, docstring) : NULL;
+    SQString *decl = declstring ? SQString::Create(this, declstring) : NULL;
+    if (doc)
+        __ObjAddRef(doc);
+    if (decl)
+        __ObjAddRef(decl);
+
+    SQDocStringId id = SQDocStringId(_docstrings->size());
+    _docstrings->push_back(doc);
+    _docstrings->push_back(decl);
+    return id;
+#else
+    (void)docstring;
+    (void)declstring;
+    return 0;
 #endif
+}
+
+SQString *SQSharedState::GetDocString(SQDocStringId id) const
+{
+#if SQ_STORE_DOC_OBJECTS
+    if (id == 0)
+        return NULL;
+    assert(id < _docstrings->size());
+    return id < _docstrings->size() ? (*_docstrings)[id] : NULL;
+#else
+    (void)id;
+    return NULL;
+#endif
+}
+
+SQString *SQSharedState::GetNativeDeclString(SQDocStringId id) const
+{
+#if SQ_STORE_DOC_OBJECTS
+    if (id == 0)
+        return NULL;
+    assert(SQUnsignedInteger32(id) + 1 < _docstrings->size());
+    return SQUnsignedInteger32(id) + 1 < _docstrings->size() ? (*_docstrings)[id + 1] : NULL;
+#else
+    (void)id;
+    return NULL;
+#endif
+}
+
+SQUnsignedInteger32 SQSharedState::GetDocStringRegistrySlotCount() const
+{
+#if SQ_STORE_DOC_OBJECTS
+    return _docstrings->size() - 1;
+#else
+    return 0;
+#endif
+}
 
 SQInteger SQSharedState::GetMetaMethodIdxByName(const SQObjectPtr &name)
 {
@@ -351,7 +407,6 @@ void SQSharedState::RunMark(SQVM* SQ_UNUSED_ARG(vm),SQCollectable **tchain)
     MarkObject(_weakref_class,tchain);
     MarkObject(_userdata_class,tchain);
 
-    MarkObject(doc_objects,tchain);
 }
 
 SQInteger SQSharedState::ResurrectUnreachable(SQVM *vm)

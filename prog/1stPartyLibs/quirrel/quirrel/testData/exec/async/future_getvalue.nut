@@ -7,16 +7,16 @@ async function consume(fut) { try { let _ = await fut } catch (_) {} }
 
 let p = Future()
 try { let _ = p.getValue(); print("BUG: pending no throw\n") }
-catch (e) { print("pending throws: " + e + "\n") }
+catch (e) { println($"pending throws: {e}") }
 
 let f = Future(); f.resolve(42)
-print("fulfilled getValue: " + f.getValue() + "\n")   // 42
+println($"fulfilled getValue: {f.getValue()}")        // 42
 
 let n = Future(); n.resolve(null)
-print("null state: " + n.getState() + " getValue is null: " + (n.getValue() == null) + "\n")  // fulfilled true
+println($"null state: {n.getState()} getValue is null: {n.getValue() == null}")               // fulfilled true
 
 let r = Future(); r.reject("boom")
-print("faulted getValue: " + r.getValue() + "\n")     // boom
+println($"faulted getValue: {r.getValue()}")          // boom
 consume(r)   // mark the fault handled so it is not reported as unhandled
 
 print("script done\n")

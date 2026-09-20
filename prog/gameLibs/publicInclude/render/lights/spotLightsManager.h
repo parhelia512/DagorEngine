@@ -13,6 +13,7 @@
 #include <generic/dag_carray.h>
 #include <math/dag_hlsl_floatx.h>
 #include <math/dag_half.h>
+#include <osApiWrappers/dag_spinlock.h>
 #include "renderLights.hlsli"
 #include <render/lights/lightsManager.h>
 #include <render/iesTextureManager.h>
@@ -20,12 +21,7 @@
 #include "light_mask_inc.hlsli"
 #include "spot_light_shadow_flags.hlsli"
 
-inline SpotLightMaskType &operator|=(SpotLightMaskType &lhs, SpotLightMaskType rhs)
-{
-  lhs = static_cast<SpotLightMaskType>(static_cast<eastl::underlying_type<SpotLightMaskType>::type>(lhs) | //-V1016
-                                       static_cast<eastl::underlying_type<SpotLightMaskType>::type>(rhs)); //-V1016
-  return lhs;
-}
+SpotLightMaskType &operator|=(SpotLightMaskType &lhs, SpotLightMaskType rhs);
 
 struct Frustum;
 class OmniShadowMap;
@@ -33,10 +29,8 @@ class Occlusion;
 class LightsPartition;
 
 // see the thread-safety NOTE on LightsManager in lightsManager.h
-class SpotLightsManager : public LightsManager<SpotLight, RenderSpotLight, SpotLightMaskType, MAX_SCENE_SPOT_LIGHTS>
+class SpotLightsManager final : public LightsManager<SpotLight, RenderSpotLight, SpotLightMaskType, MAX_SCENE_SPOT_LIGHTS>
 {
-  friend class LightsPartition;
-
 public:
   SpotLightsManager();
   SpotLightsManager(const char *name);
@@ -47,162 +41,50 @@ public:
   void beforeLightDeallocation(unsigned int id) override;
   void destroyLight(unsigned int id);
 
-  const Light &getLight(unsigned int id) const override { return rawLights[id]; }
-  void setLight(unsigned int id, const Light &l)
-  {
-    if (check_nan(l.pos_radius.x + l.pos_radius.y + l.pos_radius.z + l.pos_radius.w))
-    {
-      G_ASSERTF(0, "nan in setLight");
-      return;
-    }
-    // reset optimization only when optimization related parameters changed
-    bool resetOptimization = rawLights[id].pos_radius != l.pos_radius || rawLights[id].dir_tanHalfAngle != l.dir_tanHalfAngle;
-    rawLights[id] = l;
-    if (resetOptimization)
-      resetLightOptimization(id);
-    updateBoundingSphere(id);
-  }
-  RenderSpotLight getRenderLight(unsigned int id) const
-  {
-    const Light &l = rawLights[id];
-    const float cosInner = l.color_atten.a;
-    const float cosOuter = cosHalfAngles[id];
-    const float lightAngleScale = 1.0f / max(0.001f, (cosInner - cosOuter));
-    const float lightAngleOffset = -cosOuter * lightAngleScale;
-    const float rollAngle = l.normalizedRollAngle;
-    RenderSpotLight ret;
-    ret.lightPos_halfRadius_halfCullRadius.x = l.pos_radius.x;
-    ret.lightPos_halfRadius_halfCullRadius.y = l.pos_radius.y;
-    ret.lightPos_halfRadius_halfCullRadius.z = l.pos_radius.z;
-    uint32_t packedRadiuses =
-      (static_cast<uint32_t>(float_to_half(l.culling_radius)) << 16) | static_cast<uint32_t>(float_to_half(l.pos_radius.w));
-    ret.lightPos_halfRadius_halfCullRadius.w = eastl::bit_cast<float>(packedRadiuses);
-    ret.lightColorAngleScale = (const float4 &)l.color_atten;
-    ret.lightColorAngleScale.w = lightAngleScale;
-    ret.lightDirectionAngleOffset = (const float4 &)l.dir_tanHalfAngle;
-    ret.lightDirectionAngleOffset.w = lightAngleOffset;
-    ret.texId_scale_illuminatingplane_packedDataBits = (const float4 &)l.texId_scale_illuminatingPlane;
-    if (ret.texId_scale_illuminatingplane_packedDataBits.y == 0)
-    {
-      // Used for projected textures
-      const float halfAngleTan = l.dir_tanHalfAngle.w;
-      const float invHalfAngleSin = safediv(sqrtf(1.f + halfAngleTan * halfAngleTan), halfAngleTan);
-      ret.texId_scale_illuminatingplane_packedDataBits.y = invHalfAngleSin;
-    }
-    uint32_t packedRollAngle = static_cast<uint32_t>(float(SPOT_LIGHT_ROLL_MAX_VALUE) * rollAngle) << SPOT_LIGHT_ROLL_BIT_OFFSET;
-    uint32_t shadowFlags =
-      (l.contactShadows ? SPOT_LIGHT_NEEDS_CONTACT_SHADOWS_MASK : 0) | (l.shadows ? SPOT_LIGHT_HAS_SHADOW_MASK : 0);
-    G_STATIC_ASSERT((SPOT_LIGHT_NEEDS_CONTACT_SHADOWS_MASK | SPOT_LIGHT_HAS_SHADOW_MASK) == SPOT_LIGHT_CONTACT_SHADOW_MASK);
-    G_STATIC_ASSERT((SPOT_LIGHT_CONTACT_SHADOW_MASK & SPOT_LIGHT_ROLL_MASK) == 0);
-    G_ASSERT((shadowFlags & SPOT_LIGHT_CONTACT_SHADOW_MASK) == shadowFlags);
-    G_ASSERT((packedRollAngle & SPOT_LIGHT_ROLL_MASK) == packedRollAngle);
-    ret.texId_scale_illuminatingplane_packedDataBits.w = eastl::bit_cast<float, uint32_t>(packedRollAngle | shadowFlags);
+  const Light &getLight(unsigned int id) const override;
+  void setLight(unsigned int id, const Light &l);
+  RenderSpotLight getRenderLight(unsigned int id) const override;
 
-    return ret;
-  }
-
-  void updateBoundingSphere(unsigned id)
-  {
-    const Light &l = rawLights[id];
-    cosHalfAngles[id] = l.getCosHalfAngle();
-    boundingSpheres[id] = l.getBoundingSphere(cosHalfAngles[id]);
-    updateBoundingBox(id);
-  }
+  void updateBoundingSphere(unsigned id);
   void updateBoundingBox(unsigned id);
-  bbox3f getBoundingBox(unsigned id) const { return boundingBoxes[id]; }
-  vec4f getBoundingSphere(unsigned id) const override { return boundingSpheres[id]; }
+  bbox3f getBoundingBox(unsigned id) const;
+  vec4f getBoundingSphere(unsigned id) const override;
 
   // light_up_dir is only used if texture id is also provided
   int addLight(const Point3 &pos, const Color3 &color, const Point3 &dir, const float angle, float radius, float attenuation_k = 1.f,
     bool contact_shadows = false, const Point3 &light_up_dir = Point3(0, 1, 0), int tex = -1, float illuminating_plane = 0);
 
-  void setLightPos(unsigned int id, const Point3 &pos)
-  {
-    if (check_nan(pos.x + pos.y + pos.z))
-    {
-      G_ASSERTF(0, "nan in setLightPos");
-      return;
-    }
-    rawLights[id].pos_radius.x = pos.x;
-    rawLights[id].pos_radius.y = pos.y;
-    rawLights[id].pos_radius.z = pos.z;
-    resetLightOptimization(id);
-    updateBoundingSphere(id);
-  }
-  SpotLightMaskType getLightMask(unsigned int id) const { return masks[id]; }
-  void setLightMask(unsigned int id, SpotLightMaskType mask) { masks[id] = mask; }
-  Point3 getLightPos(unsigned int id) const { return Point3::xyz(rawLights[id].pos_radius); }
-  Point4 getLightPosRadius(unsigned int id) const { return rawLights[id].pos_radius; }
+  void setLightPos(unsigned int id, const Point3 &pos);
+  Point3 getLightPos(unsigned int id) const;
+  Point4 getLightPosRadius(unsigned int id) const;
   void getLightView(unsigned int id, mat44f &viewITM);
   void getLightPersp(unsigned int id, mat44f &proj);
-  void setLightDirAngle(unsigned int id, const Point4 &dir_tanHalfAngle, const Point3 &light_up_dir)
-  {
-    rawLights[id].dir_tanHalfAngle = dir_tanHalfAngle;
-    rawLights[id].normalizedRollAngle = SpotLight::get_normalized_roll_angle(Point3::xyz(dir_tanHalfAngle), light_up_dir);
-    resetLightOptimization(id);
-    updateBoundingSphere(id);
-  }
-  const Point4 &getLightDirAngle(unsigned int id) const { return rawLights[id].dir_tanHalfAngle; }
-  void setLightCol(unsigned int id, const Color3 &col)
-  {
-    rawLights[id].color_atten.r = col.r;
-    rawLights[id].color_atten.g = col.g;
-    rawLights[id].color_atten.b = col.b;
-  }
-  void setLightPosAndCol(unsigned int id, const Point3 &pos, const Color3 &color)
-  {
-    setLightPos(id, pos);
-    setLightCol(id, color);
-    updateBoundingSphere(id);
-  }
-  void setLightRadius(unsigned int id, float radius)
-  {
-    if (check_nan(radius))
-    {
-      G_ASSERTF(0, "nan in setLightRadius");
-      return;
-    }
-    rawLights[id].pos_radius.w = radius;
-    resetLightOptimization(id);
-    updateBoundingSphere(id);
-  }
-  void setLightCullingRadius(unsigned int id, float radius)
-  {
-    rawLights[id].culling_radius = radius;
-    updateBoundingSphere(id);
-  }
-  void setLightShadows(unsigned int id, bool shadows) { rawLights[id].shadows = shadows; }
+  void setLightDirAngle(unsigned int id, const Point4 &dir_tanHalfAngle, const Point3 &light_up_dir);
+  const Point4 &getLightDirAngle(unsigned int id) const;
+  void setLightCol(unsigned int id, const Color3 &col);
+  void setLightPosAndCol(unsigned int id, const Point3 &pos, const Color3 &color);
+  void setLightRadius(unsigned int id, float radius);
+  void setLightCullingRadius(unsigned int id, float radius);
+  void setLightShadows(unsigned int id, bool shadows);
 
-  // nonOptLightIds packs multiple lightIds per word: concurrent set() calls to different
-  // ids in the same word race. Only addLight/destroyLight serialize it, via
-  // lightAllocationSpinlock; resetLightOptimization/setLightOptimized below (reached from
-  // setLight/setLightPos/setLightDirAngle/setLightRadius and from the shadow readback
-  // completion path) do not, so they are excluded from the base class's per-lightId
-  // thread-safety guarantee.
-  bool isLightNonOptimized(int id) { return nonOptLightIds.test(id); }
-  bool tryGetNonOptimizedLightId(int &id)
-  {
-    if (int tId = nonOptLightIds.find_first(); tId != nonOptLightIds.kSize)
-    {
-      id = tId;
-      return true;
-    }
-    return false;
-  }
-  void setLightOptimized(int id) { nonOptLightIds.set(id, false); }
-  void resetLightOptimization(int id)
-  {
-    // Additional checks if optimization is needed can be added here
-    bool shouldBeOptimized = (rawLights[id].pos_radius.w > 0) && (masks[id] & SpotLightMaskType::SPOT_LIGHT_MASK_GI);
-    nonOptLightIds.set(id, shouldBeOptimized);
-    rawLights[id].culling_radius = -1.0f;
-  }
+  // nonOptLightIds packs multiple lightIds per word, so a non-atomic set() for one id
+  // can race a concurrent set() for another id sharing that word. resetLightOptimization/
+  // setLightOptimized are reached both from setters called under the caller's lightLock
+  // and from the shadow readback completion path (DistanceReadbackLights::completeQuery),
+  // which runs without lightLock, so nonOptLightIdsLock guards this state on its own instead
+  // of relying on the caller.
+  bool isLightNonOptimized(int id);
+  bool tryGetNonOptimizedLightId(int &id);
+  void setLightOptimized(int id);
 
   void updateShadowVolume(uint32_t light_id) override;
 
 private:
+  void resetLightOptimization(int id);
+
   carray<vec4f, MAX_LIGHTS> boundingSpheres;
   carray<bbox3f, MAX_LIGHTS> boundingBoxes;
   alignas(16) carray<float, MAX_LIGHTS> cosHalfAngles;
-  Bitset<MAX_LIGHTS> nonOptLightIds;
+  OSSpinlock nonOptLightIdsLock;
+  Bitset<MAX_LIGHTS> nonOptLightIds DAG_TS_GUARDED_BY(nonOptLightIdsLock);
 };

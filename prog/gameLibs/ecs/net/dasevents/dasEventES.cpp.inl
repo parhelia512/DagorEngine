@@ -14,7 +14,6 @@
 #include <daECS/net/msgSink.h>
 #include <daECS/net/serialize.h>
 #include <daECS/net/network.h>
-#include <daECS/net/topologyLock.h>
 
 #include <sqmodules/sqmodules.h>
 
@@ -313,10 +312,9 @@ void all_client_connections_filter(Tab<net::IConnection *> &out_conns)
 
 void send_dasevent(ecs::EntityManager *mgr, bool broadcast, const ecs::EntityId eid, bind_dascript::DasEvent *evt,
   const char *event_name, eastl::optional<dag::ConstSpan<net::IConnection *>> explicitConnections,
-  eastl::fixed_function<sizeof(void *), eastl::string()> debug_msg)
+  dag::FunctionRef<eastl::string() const> debug_msg)
 {
-  // UI/script paths reach this off-owner (darg TPWorker); pin for the get-conns + send span.
-  net::TopologyLock::ReadScope topoPin;
+  // UI/script paths reach this off-owner (darg TPWorker).
   if (has_network())
   {
     const ecs::event_type_t eventType = evt->getType();
@@ -434,7 +432,7 @@ static void base_das_event_msg_handler(const EventName *msg, CB send_event)
   invalidate_das_events_gen("event gen");
   ecs::EntityManager &mgr = msg->connection->getEntityManager();
   alignas(16) char buf[EVENT_STACK_SIZE];
-  const danet::BitStream bs = msg->template get<0>();
+  const danet::BitStream &bs = msg->template get<0>();
   if (bind_dascript::DasEvent *evt = deserialize_das_event(bs, msg, buf, EVENT_STACK_SIZE))
   {
     TRACE_RX_DAS_EVENT_STAT(evt->getType(), bs);
@@ -467,7 +465,7 @@ static void base_client_das_event_msg_handler(const EventName *msg, CB send_even
   invalidate_das_events_gen("client event gen");
   ecs::EntityManager &mgr = msg->connection->getEntityManager();
   alignas(16) char buf[EVENT_STACK_SIZE];
-  const danet::BitStream bs = msg->template get<0>();
+  const danet::BitStream &bs = msg->template get<0>();
   if (bind_dascript::DasEvent *evt = deserialize_das_event(bs, msg, buf, EVENT_STACK_SIZE))
   {
     TRACE_RX_DAS_EVENT_STAT(evt->getType(), bs);
@@ -499,7 +497,7 @@ static void base_client_controlled_das_event_msg_handler(const EventName *msg, C
   invalidate_das_events_gen("ctrl event gen");
   ecs::EntityManager &mgr = msg->connection->getEntityManager();
   alignas(16) char buf[EVENT_STACK_SIZE];
-  const danet::BitStream bs = msg->template get<0>();
+  const danet::BitStream &bs = msg->template get<0>();
   if (bind_dascript::DasEvent *evt = deserialize_das_event(bs, msg, buf, EVENT_STACK_SIZE))
   {
     TRACE_RX_DAS_EVENT_STAT(evt->getType(), bs);

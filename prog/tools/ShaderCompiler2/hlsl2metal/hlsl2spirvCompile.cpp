@@ -55,7 +55,7 @@ void applyD3DMacros(std::string &view, bool should_use_half)
 }
 
 Hlsl2SpirvResult hlsl2spirv(const spirv::DXCContext *dxc_ctx, const char *source, const char *profile, const char *entry,
-  bool hlsl2021, bool enable_fp16, bool skip_validation, CompileResult &compile_result, bool enable_bindless)
+  bool hlsl2021, bool enable_fp16, bool skip_validation, int implicit_cbuf_size, CompileResult &compile_result, bool enable_bindless)
 {
   Hlsl2SpirvResult result;
   result.failed = true;
@@ -70,7 +70,7 @@ Hlsl2SpirvResult hlsl2spirv(const spirv::DXCContext *dxc_ctx, const char *source
   auto hlsl2021flag = hlsl2021 ? spirv::CompileFlags::ENABLE_HLSL21 : spirv::CompileFlags::NONE;
   auto mesh_shader = profile[0] == 'm' || profile[0] == 'a' ? spirv::CompileFlags::ENABLE_MESH_SHADER : spirv::CompileFlags::NONE;
   // @TODO: why id fp16 enabled __always__?
-  auto finalSpirV = spirv::compileHLSL_DXC(dxc_ctx, sourceRange, entry, profile,
+  auto finalSpirV = spirv::compileHLSL_DXC(dxc_ctx, sourceRange, entry, profile, implicit_cbuf_size,
     spirv::CompileFlags::OUTPUT_REFLECTION | spirv::CompileFlags::OVERWRITE_DESCRIPTOR_SETS | spirv::CompileFlags::ENABLE_HALFS |
       spirv::CompileFlags::ENABLE_WAVE_INTRINSICS | bindless | hlsl2021flag | mesh_shader,
     disabledSpirvOptims);

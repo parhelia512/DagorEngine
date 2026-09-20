@@ -17,6 +17,7 @@
 class IGenLoad;
 class DataBlock;
 class IMemAlloc;
+class TMatrix;
 
 namespace acl
 {
@@ -154,6 +155,9 @@ public:
   bool load(IGenLoad &cb, IMemAlloc *ma = midmem);
 
   PrsAnimNodeRef getPrsAnim(const char *node_name);
+
+  float getDuration() const;
+  bool sampleNodeTm(dag::Index16 node_id, float time, TMatrix &tm) const;
 
   int getLabelTime(const char *name, bool fatal_err = true);
   bool isAdditive() const { return animAdditive; }

@@ -171,6 +171,9 @@ public:
   int getResCount() const { return resList.size(); }
 
   void buildStatusStrNoLock(String &out_str, bool full_res_list, bool (*resolve_res_name)(String &nm, const RES *r) = nullptr);
+  // fills out_str (framed by blank lines) at most once per period and always while reloads
+  // fail; a throttled call leaves it untouched
+  void buildStatusStrThrottled(String &out_str, unsigned period_usec);
   void buildStatusStr(String &out_str, bool full_res_list, bool (*resolve_res_name)(String &nm, const RES *r) = nullptr)
   {
     std::lock_guard<std::mutex> scopedLock(appendMutex);
@@ -223,6 +226,7 @@ protected:
   int uselessDiscardAttempts = 0;
   volatile int discardJobIsPending = 0;
   ska::flat_hash_set<RES *> failedVdataReloadResSet;
+  int64_t lastStatusReft = 0; // written under appendMutex by buildStatusStrThrottled
   volatile int pendingVdataReloadResCount = 0;
   unitedvdata::BufConfig hints;
   mutable std::mutex hintsMutex;

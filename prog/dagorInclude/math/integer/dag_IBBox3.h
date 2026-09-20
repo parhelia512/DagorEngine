@@ -14,22 +14,10 @@ class IBBox3
 public:
   IPoint3 lim[2];
 
-  IBBox3() { setEmpty(); }
-  IBBox3(const IPoint3 &lim0, const IPoint3 &lim1)
-  {
-    lim[0] = lim0;
-    lim[1] = lim1;
-  }
+  constexpr IBBox3() : lim{IPoint3(INT_MAX, INT_MAX, INT_MAX), IPoint3(INT_MIN, INT_MIN, INT_MIN)} {}
+  constexpr IBBox3(const IPoint3 &lim0, const IPoint3 &lim1) : lim{lim0, lim1} {}
 
-  void setEmpty()
-  {
-    lim[0].x = INT_MAX;
-    lim[0].y = INT_MAX;
-    lim[0].z = INT_MAX;
-    lim[1].x = INT_MIN;
-    lim[1].y = INT_MIN;
-    lim[1].z = INT_MIN;
-  }
+  constexpr void setEmpty() { *this = IBBox3(); }
 
   bool isEmpty() const { return lim[0].x > lim[1].x || lim[0].y > lim[1].y || lim[0].z > lim[1].z; }
 

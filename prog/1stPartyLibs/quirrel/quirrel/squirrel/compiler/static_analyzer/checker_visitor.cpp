@@ -1,6 +1,7 @@
 #include <assert.h>
 #include <squirrel.h>
 #include <limits.h>
+#include <cctype>
 
 #include "checker_visitor.h"
 #include "node_complexity_counter.h"
@@ -397,6 +398,8 @@ void CheckerVisitor::checkAccessFromStatic(const GetFieldExpr *acc) {
   const char *memberName = acc->fieldName();
 
   for (const auto &m : members) {
+    if (!m.hasKey())
+      continue;
     if (m.key->op() == TO_LITERAL && m.key->asLiteral()->kind() == LK_STRING) {
       const char *klassMemberName = m.key->asLiteral()->s();
       if (strcmp(memberName, klassMemberName) == 0) {
@@ -408,14 +411,6 @@ void CheckerVisitor::checkAccessFromStatic(const GetFieldExpr *acc) {
   }
 
   report(acc, DiagnosticsId::DI_USED_FROM_STATIC, memberName, "static member");
-}
-
-bool CheckerVisitor::hasDynamicContent(const SQObject &container) {
-  if (!sq_istable(container))
-    return false;
-  SQObjectPtr key(_ctx.getVm(), "__dynamic_content__");
-  SQObjectPtr val;
-  return _table(container)->Get(key, val);
 }
 
 void CheckerVisitor::checkExternalField(const GetFieldExpr *acc) {
@@ -433,7 +428,7 @@ void CheckerVisitor::checkExternalField(const GetFieldExpr *acc) {
   SQObjectPtr key(_ctx.getVm(), acc->fieldName());
   SQObject rawVal;
   if (!SQ_SUCCEEDED(sq_obj_get(_ctx.getVm(), &container, &key, &rawVal, false))) {
-    if (!acc->isNullable() && !hasDynamicContent(container)) {
+    if (!acc->isNullable()) {
       report(acc, DI_MISSING_FIELD, acc->fieldName(), GetTypeName(container));
       char buf[128];
       snprintf(buf, sizeof(buf), "source of %s", GetTypeName(container));
@@ -638,7 +633,7 @@ void CheckerVisitor::reportMutatingSharedDefault(const Expr *receiver, const Nod
     report(mod, DiagnosticsId::DI_MUTATING_SHARED_DEFAULT, param->name());
 }
 
-void CheckerVisitor::reportIfCannotBeNull(const Expr *checkee, const Expr *n, const char *loc) {
+bool CheckerVisitor::reportIfCannotBeNull(const Expr *checkee, const Expr *n, const char *loc) {
   assert(n);
 
   if (checkee->op() == TO_NULLC) {
@@ -652,12 +647,15 @@ void CheckerVisitor::reportIfCannotBeNull(const Expr *checkee, const Expr *n, co
 
     if (cannotBeNull(ifTrue) && cannotBeNull(ifFalse)) {
       report(n, DiagnosticsId::DI_EXPR_NOT_NULL, loc);
+      return true;
     }
-    return;
+    return false;
   }
 
-  if (cannotBeNull(checkee))
+  const bool isNotNull = cannotBeNull(checkee);
+  if (isNotNull)
     report(n, DiagnosticsId::DI_EXPR_NOT_NULL, loc);
+  return isNotNull;
 }
 
 void CheckerVisitor::reportModifyIfContainer(const Expr *e, const Expr *mod) {
@@ -1597,6 +1595,15 @@ void CheckerVisitor::checkExtendToAppend(const CallExpr *expr) {
   }
 }
 
+static bool isPlainDottedName(const Expr *e) {
+  while (e->op() == TO_GETFIELD) {
+    if (e->asGetField()->isNullable())
+      return false;
+    e = e->asGetField()->receiver();
+  }
+  return e->op() == TO_ID;
+}
+
 void CheckerVisitor::checkMergeEmptyTable(const CallExpr *expr) {
   if (isEffectsGatheringPass)
     return;
@@ -1609,7 +1616,19 @@ void CheckerVisitor::checkMergeEmptyTable(const CallExpr *expr) {
       Expr *arg0 = args[0];
       if (arg0->op() == TO_TABLE && arg0->asTableExpr()->members().size() == 0) {
         if (strcmp(callee->asGetField()->fieldName(), "__merge") == 0) {
-          report(expr, DiagnosticsId::DI_MERGE_EMPTY_TABLE);
+          const Expr *receiver = callee->asGetField()->receiver();
+          if (callee->asGetField()->isNullable() || expr->isNullable() || !isPlainDottedName(receiver))
+            return;
+
+          const Expr *resolved = maybeEval(receiver);
+          const bool receiverBuildsAClass = resolved && resolved->op() == TO_CLASS;
+          if (receiverBuildsAClass)
+            return;
+
+          char buffer[128] = { 0 };
+          const char *spreadSource = computeNameRef(receiver, buffer, sizeof buffer);
+          if (spreadSource)
+            report(expr, DiagnosticsId::DI_MERGE_EMPTY_TABLE, spreadSource);
         }
       }
     }
@@ -1964,7 +1983,7 @@ void CheckerVisitor::checkUselessNullC(const BinExpr *bin) {
 }
 
 void CheckerVisitor::checkCannotBeNull(const BinExpr *bin) {
-  if (isEffectsGatheringPass)
+  if (isEffectsGatheringPass && loopConditionCheckPass != LCCP_INITIAL)
     return;
 
   const char *loc = nullptr;
@@ -1991,7 +2010,16 @@ void CheckerVisitor::checkCannotBeNull(const BinExpr *bin) {
     }
   }
 
-  if (checkee)
+  if (!checkee)
+    return;
+
+  if (loopConditionCheckPass == LCCP_INITIAL) {
+    if (reportIfCannotBeNull(checkee, reportee, loc))
+      loopCannotBeNullChecks->push_back({ reportee, loc });
+    return;
+  }
+
+  if (loopConditionCheckPass != LCCP_FINAL)
     reportIfCannotBeNull(checkee, reportee, loc);
 }
 
@@ -4077,7 +4105,7 @@ void CheckerVisitor::checkUnutilizedResult(const ExprStatement *s) {
     }
   }
   else if (!isAssignExpr(e) && e->op() != TO_INC && e->op() != TO_NEWSLOT && e->op() != TO_DELETE
-           && e->op() != TO_AWAIT && e->op() != TO_YIELD) {
+           && e->op() != TO_AWAIT && e->op() != TO_YIELD && e->op() != TO_CODE_BLOCK_EXPR) {
     // TO_AWAIT / TO_YIELD: the suspension itself is the effect, even when the
     // resumed value is discarded (e.g. `await delay(0)` as a barrier).
     report(s, DiagnosticsId::DI_UNUTILIZED_EXPRESSION);
@@ -4141,15 +4169,23 @@ void CheckerVisitor::visitBlock(Block *b) {
   nodeStack.push_back({ SST_NODE, b });
 
   Statement* prevStatement = nullptr;
+  Statement* lastStatement = nullptr;
 
   for (Statement *s : b->statements()) {
     s->visit(this);
     blockScope.evalId += 1;
 
-    if (s->op() != TO_EMPTY) {
-      checkSuspiciousFormattingOfStetementSequence(prevStatement, s);
+    if (s->op() == TO_EMPTY)
+      continue;
+
+    checkSuspiciousFormattingOfStetementSequence(prevStatement, s);
+
+    // a statement put after `;` or `}` starts at an arbitrary column: report it,
+    // but never make it the indentation baseline for the lines below
+    if (!lastStatement || lastStatement->lineEnd() != s->lineStart())
       prevStatement = s;
-    }
+
+    lastStatement = s;
   }
 
   nodeStack.pop_back();
@@ -4181,10 +4217,6 @@ void CheckerVisitor::visitForStatement(ForStatement *loop) {
     init->visit(this);
   }
 
-  if (cond) {
-    cond->visit(this);
-  }
-
   bool wasGatheringEffects = isEffectsGatheringPass;
   isEffectsGatheringPass = true;
 
@@ -4205,6 +4237,11 @@ void CheckerVisitor::visitForStatement(ForStatement *loop) {
   }
 
   isEffectsGatheringPass = wasGatheringEffects;
+
+  currentScope = &loopScope;
+  if (cond) {
+    cond->visit(this);
+  }
 
   if (!isEffectsGatheringPass) {
     BreakableScope bs(this, loop, &loopScope, copyScope);
@@ -4313,27 +4350,43 @@ void CheckerVisitor::visitWhileStatement(WhileStatement *loop) {
   checkEmptyWhileBody(loop);
   checkSuspiciousFormatting(loop->body(), loop);
 
-  loop->condition()->visit(this);
-
   VarScope *trunkScope = currentScope;
   VarScope *loopScope = trunkScope->copy(arena);
   currentScope = loopScope;
+  std::vector<LoopCannotBeNullCheck> loopChecks;
+  auto *oldLoopCannotBeNullChecks = loopCannotBeNullChecks;
+  LoopConditionCheckPass oldLoopConditionCheckPass = loopConditionCheckPass;
+  loopCannotBeNullChecks = &loopChecks;
 
   bool wasGatheringEffects = isEffectsGatheringPass;
+  const bool shouldVisitLoopBody = !wasGatheringEffects;
   isEffectsGatheringPass = true;
+  loopConditionCheckPass = LCCP_INITIAL;
+  loop->condition()->visit(this);
+  loopConditionCheckPass = LCCP_NONE;
 
   {
     BreakableScope bs(this, loop, loopScope, nullptr); // null because we don't (??) interest in exit effect here
     loop->body()->visit(this);
   }
   isEffectsGatheringPass = wasGatheringEffects;
+  loopConditionCheckPass = LCCP_FINAL;
+  loop->condition()->visit(this);
+  loopConditionCheckPass = LCCP_NONE;
 
-  if (!isEffectsGatheringPass) {
+  for (const LoopCannotBeNullCheck &check : loopChecks) {
+    if (!isPotentiallyNullable(check.reportee))
+      report(check.reportee, DiagnosticsId::DI_EXPR_NOT_NULL, check.loc);
+  }
+
+  if (shouldVisitLoopBody) {
     BreakableScope bs(this, loop, loopScope, trunkScope);
     speculateIfConditionHeuristics(loop->condition(), loopScope, trunkScope);
 
     loop->body()->visit(this);
   }
+  loopCannotBeNullChecks = oldLoopCannotBeNullChecks;
+  loopConditionCheckPass = oldLoopConditionCheckPass;
 
   trunkScope->merge(loopScope);
   loopScope->~VarScope();
@@ -5021,7 +5074,7 @@ const char *CheckerVisitor::findSlotNameInStack(const Node *decl) {
       assert(slot.sst == SST_TABLE_MEMBER);
       Expr *lhs = slot.member->key;
       Expr *rhs = slot.member->value;
-      if (rhs == decl) {
+      if (rhs == decl && slot.member->hasKey()) {
         if (lhs->op() == TO_LITERAL) {
             if (lhs->asLiteral()->kind() == LK_STRING) {
               return lhs->asLiteral()->s();
@@ -5321,6 +5374,34 @@ void CheckerVisitor::checkEnumConstUsage(const GetFieldExpr *acc) {
   constV->info->used = true;
 }
 
+void CheckerVisitor::checkRedundantSpreadGuard(const Expr *spread, bool intoTable) {
+  if (isEffectsGatheringPass)
+    return;
+
+  const Expr *source = deparenStaticInline(spreadSourceOf(const_cast<Expr *>(spread)));
+  if (!source || source->op() != TO_NULLC)
+    return;
+
+  const Expr *fallback = deparenStaticInline(source->asBinExpr()->rhs());
+  if (!fallback)
+    return;
+
+  const Expr *empty = asEmptyContainerLiteral(fallback);
+  if (!empty || (empty->op() == TO_TABLE) != intoTable)
+    return;
+
+  report(source, DiagnosticsId::DI_REDUNDANT_SPREAD_GUARD, intoTable ? "table" : "array");
+}
+
+void CheckerVisitor::visitArrayExpr(ArrayExpr *arr) {
+  for (const Expr *element : arr->initializers()) {
+    if (element->op() == TO_SPREAD)
+      checkRedundantSpreadGuard(element, false);
+  }
+
+  Visitor::visitArrayExpr(arr);
+}
+
 void CheckerVisitor::visitTableExpr(TableExpr *table) {
   checkFunctionSimilarity(table);
 
@@ -5329,10 +5410,14 @@ void CheckerVisitor::visitTableExpr(TableExpr *table) {
     slot.sst = SST_TABLE_MEMBER;
     slot.member = &member;
 
-    checkKeyNameMismatch(member.key, member.value);
+    if (member.hasKey())
+      checkKeyNameMismatch(member.key, member.value);
+    else
+      checkRedundantSpreadGuard(member.value, true);
 
     nodeStack.push_back(slot);
-    member.key->visit(this);
+    if (member.hasKey())
+      member.key->visit(this);
     member.value->visit(this);
     nodeStack.pop_back();
   }

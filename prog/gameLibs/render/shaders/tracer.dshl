@@ -53,6 +53,8 @@ block(scene) tracer_frame
 {
   supports global_frame;
 
+  GLOBAL_CONSTS(vs)
+
   (vs) {
     globtm@f44 = globtm;
     hk_btime_tlen_tnum@f4 = (head_projection_hk, tracer_beam_time, tail_length_meters, tail_num_particles);
@@ -394,7 +396,6 @@ shader tracer_head2
 shader tracer_tail
 {
   supports tracer_frame;
-  supports global_const_block;
   render_trans;
 
   cull_mode = none;
@@ -415,7 +416,6 @@ shader tracer_tail
     INIT_HDR(ps)
   }
   USE_HDR(ps)
-  INIT_SUN_STCODE()
   DECL_POSTFX_TC_VS_DEP()
   GET_CLOUD_VOLUME_MASK()
   FOG_PS_NO_STCODE()
@@ -486,15 +486,15 @@ shader tracer_tail
         #include "../tracer/tracer.hlsli"
         StructuredBuffer<GPUFxSegment> segmentBuffer@buf;
       }
-
+    }
+    else
+    {
+      // FX_TRACER_DATA_NUM_REGISTERS = 6
+      tracerData@f4[6] : register(70);
     }
   }
 
   hlsl(vs) {
-##if fx_instancing_type != fx_instancing_sbuf
-    float4 tracerData[FX_TRACER_DATA_NUM_REGISTERS]: register(c70);
-##endif
-
     struct VsInput
     {
       int2 pos: POSITION;

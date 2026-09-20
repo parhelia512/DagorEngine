@@ -139,10 +139,9 @@ void net_init_late_server(ecs::EntityManager &mgr)
   }
   else
   {
-    // SP/offline session: no NetContext, but publish the EM binding so net_destroy's guard sees
-    // an active session even after g_entity_mgr->clear() removes msg_sink. clear_net_em() runs
-    // in destroy_net_ctx during net_destroy teardown.
-    net::publish_net_em(mgr);
+    // SP/offline: no NetContext; still mark authority so lifecycle and
+    // is_net_session_active see a live session.
+    net::set_net_authority_thread();
     create_simple_entity(mgr, "msg_sink");
     net::MessageClass::init(/*server*/ true, &mgr);
     reset_time_mgr(create_accum_time());

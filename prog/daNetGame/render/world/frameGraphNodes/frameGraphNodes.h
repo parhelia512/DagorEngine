@@ -34,7 +34,6 @@ dafg::NodeHandle makePrepareGbufferNode();
 
 dafg::NodeHandle makeHideAnimcharNodesEcsNode();
 
-dafg::NodeHandle makeGenAimRenderingDataNode();
 dafg::NodeHandle makeTargetRenameBeforeMotionBlurNode();
 dafg::NodeHandle makePrepareLightsNode();
 dafg::NodeHandle makePrepareTiledLightsNode();
@@ -60,7 +59,8 @@ dafg::NodeHandle makeOpaqueDynamicRendinstNode();
 // used for tiled architectures
 dafg::NodeHandle makeGroundNode(bool early, MainNodeRenderPass mode);
 
-eastl::fixed_vector<dafg::NodeHandle, 4> makeCreateVrsTextureNode(bool force_dummy_nodes);
+eastl::fixed_vector<dafg::NodeHandle, 5> makeCreateVrsTextureNode(bool motion_vrs, bool motion_vrs_dispatches);
+bool has_motion_vrs_strength();
 
 dafg::NodeHandle makeDecalsOnStaticNode();
 
@@ -109,15 +109,10 @@ dafg::NodeHandle makePrepareWaterNode();
 eastl::fixed_vector<dafg::NodeHandle, 5> makeEnvironmentNodes();
 
 extern const eastl::array<char const *, eastl::to_underlying(WaterRenderMode::COUNT_WITH_RENAMES)> WATER_SSR_DEPTH_TEX;
-extern const eastl::array<char const *, eastl::to_underlying(WaterRenderMode::COUNT_WITH_RENAMES)> WATER_SSR_COLOR_TEX;
-extern const eastl::array<char const *, eastl::to_underlying(WaterRenderMode::COUNT)> WATER_SSR_COLOR_TOKEN;
-extern const eastl::array<char const *, eastl::to_underlying(WaterRenderMode::COUNT_WITH_RENAMES)> WATER_SSR_STRENGTH_TEX;
-extern const eastl::array<char const *, eastl::to_underlying(WaterRenderMode::COUNT)> WATER_NORMAL_DIR_TEX;
-extern const eastl::array<char const *, eastl::to_underlying(WaterRenderMode::COUNT)> WATER_RT_DEPTH_TEX;
-extern const eastl::array<char const *, eastl::to_underlying(WaterRenderMode::COUNT)> WATER_DEPTH_TEX;
 
+eastl::fixed_vector<dafg::NodeHandle, 3, false> makeWaterDepthRenameNodes();
 dafg::NodeHandle makeWaterNode(WaterRenderMode mode);
-eastl::fixed_vector<dafg::NodeHandle, 4, false> makeWaterSSRNode(WaterRenderMode mode);
+eastl::fixed_vector<dafg::NodeHandle, 3, false> makeWaterSSRNode(WaterRenderMode mode);
 void bind_water_refraction_stub_if_unset();
 
 dafg::NodeHandle makeDownsampleDepthWithWaterNode();
@@ -185,9 +180,7 @@ dafg::NodeHandle makeNoFxFrameNode();
 
 dafg::NodeHandle makeRendinstUpdateNode();
 
-eastl::fixed_vector<dafg::NodeHandle, 2, false> makeCameraInCameraSetupNodes();
-
-dafg::NodeHandle makeViewCameraProviderNode(const char *view_ns, const char *src_camera_blob);
+dafg::NodeHandle makeLensAreaCameraSourceNode();
 
 eastl::array<dafg::NodeHandle, 4> makeResolveMotionAndEnviCoverNode(bool has_motion_vecs, bool use_envi_cover_nodes, bool use_NBS);
 

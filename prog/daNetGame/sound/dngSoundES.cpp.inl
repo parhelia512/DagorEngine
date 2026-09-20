@@ -59,7 +59,7 @@ namespace cvars
 {
 static CONSOLE_BOOL_VAL("snd", debug, false);
 static CONSOLE_BOOL_VAL("snd", mute, false);
-static CONSOLE_BOOL_VAL("snd", debug_occlusion_gpu, false);
+static CONSOLE_BOOL_VAL("snd", debug_occlusion_gpu, true);
 } // namespace cvars
 
 static bool g_master_preset_loaded = false;
@@ -245,8 +245,7 @@ void init()
   {
     if (dgs_get_argv("snddbg") || sndblk.getBool("debug", false))
       cvars::debug.set(true);
-    if (dgs_get_argv("snddbgoccgpu") || sndblk.getBool("debugOcclusionGpu", false))
-      cvars::debug_occlusion_gpu.set(true);
+    cvars::debug_occlusion_gpu.set(sndblk.getBool("debugOcclusionGpu", true));
   }
 #endif
 
@@ -309,8 +308,8 @@ void init()
       sndsys::set_system_callbacks(ctype);
 
       g_occlusion_suppress_value = sndblk.getReal("occlusionSuppressValue", g_default_occlusion_suppress_value);
-
-      sndsys::occlusion_gpu::set_external_factor(occlusion_gpu_external_factor);
+      if (g_occlusion_suppress_value > 1.f)
+        sndsys::occlusion_gpu::set_external_factor(occlusion_gpu_external_factor);
     }
   }
 
@@ -462,9 +461,11 @@ ECS_NO_ORDER
 static void dng_sound_debug_draw_es(const ecs::UpdateStageInfoRenderDebug &, ecs::EntityManager &manager)
 {
   if (cvars::debug.get())
+  {
     manager.broadcastEventImmediate(EventSoundDrawDebug());
-  if (cvars::debug_occlusion_gpu.get())
-    sndsys::occlusion_gpu::debug_render_3d();
+    if (cvars::debug_occlusion_gpu.get())
+      sndsys::occlusion_gpu::debug_render_3d();
+  }
 }
 
 // - expected correct order: -

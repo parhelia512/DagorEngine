@@ -16,7 +16,7 @@
 #include <render/viewVecs.h>
 #include <render/ssao.h>
 #include <render/downsampleDepth.h>
-#include <render/screenSpaceReflections.h>
+#include <screenSpaceReflections_api.h>
 #include <render/set_reprojection.h>
 #include <shaders/dag_postFxRenderer.h>
 
@@ -214,7 +214,7 @@ private:
 
     cacheShaderVars();
     ensureStubHeightmap();
-    global_frame_const_blockid = ShaderGlobal::getBlockId("global_const_block");
+    global_frame_blockid = ShaderGlobal::getBlockId("global_frame", ShaderGlobal::LAYER_FRAME);
 
     CascadeShadows::Settings csmSettings;
     csmSettings.cascadeWidth = 512;
@@ -232,14 +232,6 @@ private:
       shadersAvailable = false;
       unavailableReason = "Failed to allocate CSM depth texture for landscape preview.";
       return false;
-    }
-    {
-      d3d::SamplerInfo smpInfo;
-      smpInfo.filter_mode = d3d::FilterMode::Compare;
-      smpInfo.mip_map_mode = d3d::MipMapMode::Point;
-      smpInfo.address_mode_u = smpInfo.address_mode_v = smpInfo.address_mode_w = d3d::AddressMode::Clamp;
-      shadowCascadeDepthSampler = d3d::request_sampler(smpInfo);
-      ShaderGlobal::set_sampler(get_shader_variable_id("shadow_cascade_depth_tex_samplerstate", true), shadowCascadeDepthSampler);
     }
     csm = CascadeShadows::make(this, csmSettings, String("landscape_preview"));
 
@@ -652,6 +644,11 @@ private:
     d3d::setview(0, 0, ALLOC_W, ALLOC_H, 0, 1);
 
     setGlobalLightShaderVars();
+    // global_frame carries the sun/sky consts, so it has to be re-run after the vars above
+    if (global_frame_blockid >= 0)
+    {
+      ShaderGlobal::setBlock(global_frame_blockid, ShaderGlobal::LAYER_FRAME);
+    }
 
     // G-buffer
     target->setRt();
@@ -759,16 +756,16 @@ private:
 
     combineShadowsPass();
 
-    // Bind const block and depth texture before resolve
-    if (global_frame_const_blockid >= 0)
-    {
-      ShaderGlobal::setBlock(global_frame_const_blockid, ShaderGlobal::LAYER_GLOBAL_CONST);
-    }
-
     static int intz_depth_texVarId = get_shader_variable_id("intz_depth_tex", true);
     if (intz_depth_texVarId >= 0)
     {
       ShaderGlobal::set_texture(intz_depth_texVarId, target->getDepthId());
+    }
+
+    // re-snapshot global_frame: reprojection and CSM vars were written after the first bind
+    if (global_frame_blockid >= 0)
+    {
+      ShaderGlobal::setBlock(global_frame_blockid, ShaderGlobal::LAYER_FRAME);
     }
 
     // Resolve deferred -> frame
@@ -873,7 +870,6 @@ private:
   // "shadowCascadeDepthTex2D"; letting both instances use Internal collides in the managed
   // resource table (refCount>1) and asserts on teardown in UniqueRes::release.
   UniqueTex shadowCascadeDepthTex;
-  d3d::SamplerHandle shadowCascadeDepthSampler = d3d::INVALID_SAMPLER_HANDLE;
   eastl::unique_ptr<SSAORenderer> ssao;
   eastl::unique_ptr<ScreenSpaceReflections> ssr;
   carray<UniqueTex, 2> farDownsampledDepth;
@@ -922,7 +918,7 @@ private:
   int ssao_texVarId = -1;
   int ssr_targetVarId = -1;
   int shadow_cascade_depth_texVarId = -1;
-  int global_frame_const_blockid = -1;
+  int global_frame_blockid = -1;
 };
 
 void init_landscape_preview_service() { IDaEditor3Engine::get().registerService(new (inimem) LandscapePreviewServiceImpl); }

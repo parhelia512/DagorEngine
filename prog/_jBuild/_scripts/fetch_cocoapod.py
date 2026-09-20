@@ -37,11 +37,10 @@ import zipfile
 SPEC_URL = "https://trunk.cocoapods.org/api/v1/pods/{pod}/specs/{version}"
 USER_AGENT = "dagor-jam-cocoapods/1.0"
 RETRIES = 4
-# wall-clock budget for RETRYING one pod: the first attempt may legitimately
-# be slow (multi-hundred-MB archives), but retry loops must not compound into
-# an unbounded stall of the synchronous jam action
 RETRY_DEADLINE = 400
 _START = time.monotonic()
+
+RESOLVER_VERSION = 2
 
 
 def out_of_retry_budget():
@@ -49,8 +48,6 @@ def out_of_retry_budget():
 
 
 def redact_url(url):
-    """Distribution links may carry signed tokens in the query/userinfo;
-    they must not leak into build logs."""
     parts = urllib.parse.urlsplit(url)
     netloc = parts.hostname or ""
     if parts.port:
@@ -72,8 +69,6 @@ def fail(msg):
 
 
 def _ssl_contexts():
-    """Default context first; python.org builds on macOS often ship without
-    CA certs, so fall back to the system pem / certifi."""
     yield None
     try:
         import certifi
@@ -89,8 +84,6 @@ def _curl_get(url, dest_path):
     curl = shutil.which("curl")
     if not curl:
         return False
-    # abort on stalls (<1KB/s for 60s) rather than a tight total limit:
-    # some SDK archives are hundreds of MBs and legitimately slow
     cmd = [curl, "-fsSL", "--retry", "2",
            "--connect-timeout", "30",
            "--speed-limit", "1024", "--speed-time", "60",
@@ -117,8 +110,6 @@ def _http_get_once(url, dest_path=None):
                     with open(dest_path, "wb") as f:
                         shutil.copyfileobj(resp, f, length=1 << 20)
                     got = os.path.getsize(dest_path)
-                # CDNs sometimes drop the connection mid-stream without an
-                # error; a truncated archive must not reach the extractors
                 if expected is not None and got != int(expected):
                     raise urllib.error.URLError(
                         "truncated download: got %d of %s bytes" % (got, expected))
@@ -141,7 +132,6 @@ def _http_get_once(url, dest_path=None):
 
 
 def http_get(url, dest_path=None):
-    """GET with retries: parallel jam actions easily trip rate limits (429)."""
     for attempt in range(RETRIES):
         try:
             return _http_get_once(url, dest_path)
@@ -163,7 +153,6 @@ def http_get(url, dest_path=None):
 
 
 def get_podspec(pod, version):
-    # the CDN is made for mass automated access, the trunk API rate-limits it
     shard = hashlib.md5(pod.encode()).hexdigest()[:3]
     urls = [
         "https://cdn.cocoapods.org/Specs/%s/%s/%s/%s/%s/%s.podspec.json"
@@ -181,7 +170,7 @@ def get_podspec(pod, version):
 
 
 def archive_url_from_source(src, version):
-    """Return (url, kind) for the podspec 'source' dict."""
+    # Return (url, kind) for the podspec 'source' dict.
     if not isinstance(src, dict):
         return None
     if "http" in src:
@@ -200,8 +189,6 @@ def archive_url_from_source(src, version):
 
 
 def _entry_escapes(name, link_target=None):
-    """True for archive entries that would write outside the extraction dir
-    (zip-slip/tar-slip) or for symlinks pointing out of it."""
     parts = [p for p in name.replace("\\", "/").split("/") if p not in ("", ".")]
     if name.startswith("/") or ".." in parts:
         return True
@@ -215,8 +202,6 @@ def _entry_escapes(name, link_target=None):
 
 
 def _check_zip_entries(archive_path):
-    """Downloaded archives are untrusted; entries must be vetted before any
-    extractor (including ditto/unzip) touches them."""
     with zipfile.ZipFile(archive_path) as zf:
         for info in zf.infolist():
             target = None
@@ -260,9 +245,6 @@ def extract_archive(archive_path, dest_dir):
 
 
 def check_source_marker(prebuilt_src, pod, version, source_url):
-    """Prebuilt mirror trees carry a .source.json provenance marker when they
-    are copies of a downloaded src; verify it matches the request so a
-    mis-filed or stale mirror entry fails here, not at link/run time."""
     marker_path = os.path.join(prebuilt_src, ".source.json")
     try:
         with open(marker_path) as f:
@@ -287,13 +269,6 @@ def check_source_marker(prebuilt_src, pod, version, source_url):
 
 def ensure_src(pod_dir, pod, version, source_url=None, prebuilt_dir=None,
                no_download=False):
-    """Download+extract the pod archive into <pod_dir>/src (atomic, reusable).
-
-    A package of the same version pre-downloaded into <prebuilt_dir> (e.g.
-    devtools mirror for offline build agents) is used as-is instead of
-    downloading; only the prepared slice dirs are written to the cache.
-    With no_download the mirror (or an already populated cache) is the only
-    permitted source."""
     src_dir = os.path.join(pod_dir, "src")
     if os.path.isdir(src_dir):
         return src_dir
@@ -326,8 +301,6 @@ def ensure_src(pod_dir, pod, version, source_url=None, prebuilt_dir=None,
         archive_name = os.path.basename(url.split("?")[0]) or "archive.zip"
         archive_path = os.path.join(tmp_dir, "__" + archive_name)
         extract_dir = os.path.join(tmp_dir, "x")
-        # a corrupted archive usually means the download was cut short in a
-        # way http could not detect, so re-download instead of giving up
         for attempt in range(RETRIES):
             log("downloading %s" % redact_url(url))
             http_get(url, archive_path)
@@ -344,8 +317,6 @@ def ensure_src(pod_dir, pod, version, source_url=None, prebuilt_dir=None,
                 log("archive is corrupted (%s), re-downloading in %.1fs" % (e, delay))
                 time.sleep(delay)
         os.remove(archive_path)
-        # save podspec and provenance next to sources: the marker lets a
-        # prebuilt mirror copy of this tree be verified later
         with open(os.path.join(extract_dir, ".podspec.json"), "w") as f:
             json.dump(spec, f, indent=2)
         with open(os.path.join(extract_dir, ".source.json"), "w") as f:
@@ -369,8 +340,6 @@ def slice_matches(lib, platform, arch, variant):
 
 
 def add_bundles_under(root, add):
-    """Resource bundles of static frameworks may sit anywhere inside the
-    framework/slice dir and must be copied to the app bundle explicitly."""
     for r, dirs, _files in os.walk(root, followlinks=False):
         for d in list(dirs):
             if d.endswith(".bundle"):
@@ -379,8 +348,6 @@ def add_bundles_under(root, add):
 
 
 def vendored_paths_from_podspec(spec, platform):
-    """Collect vendored_frameworks/vendored_libraries relative paths for the
-    platform (top level, platform section and subspecs)."""
     paths = []
 
     def take(d):
@@ -405,7 +372,6 @@ def vendored_paths_from_podspec(spec, platform):
 
 
 def add_artifact_at(path, platform, arch, variant, add):
-    """Add a framework/xcframework/static lib located at an explicit path."""
     if path.endswith(".xcframework") and os.path.isdir(path):
         info = os.path.join(path, "Info.plist")
         if not os.path.isfile(info):
@@ -428,13 +394,24 @@ def add_artifact_at(path, platform, arch, variant, add):
         add(os.path.basename(path), path)
 
 
-def find_artifacts(src_dir, platform, arch, variant, spec=None):
-    """Return {name: path} of frameworks/bundles/static libs for the slice.
+def select_linkage_variant(path, linkage, src_dir):
+    if linkage == "dynamic":
+        want, other = "Dynamic", "Static"
+    else:  # "auto" (default, prefer static) or explicit "static"
+        want, other = "Static", "Dynamic"
+    seg = os.sep + other + os.sep
+    if seg in path:
+        alt = path.replace(seg, os.sep + want + os.sep)
+        if os.path.exists(alt):
+            log("linkage=%s: using %s" % (linkage, os.path.relpath(alt, src_dir)))
+            return alt
+        if linkage != "auto":
+            log("linkage=%s requested but no %s variant found for %s"
+                % (linkage, want, os.path.relpath(path, src_dir)))
+    return path
 
-    Artifacts listed in the podspec (vendored_frameworks/libraries) win:
-    archives often carry several variants of the same framework and only
-    the podspec knows the right one. Everything else found by walking the
-    tree (resource bundles, adapter libs) is added unless already taken."""
+
+def find_artifacts(src_dir, platform, arch, variant, spec=None, linkage="auto"):
     import glob as _glob
 
     found = {}
@@ -461,6 +438,7 @@ def find_artifacts(src_dir, platform, arch, variant, spec=None):
         if not matches:
             log("vendored path not found in archive: %s" % rel)
         for m in sorted(matches):
+            m = select_linkage_variant(m, linkage, src_dir)
             add_artifact_at(m, platform, arch, variant, add_vendored)
     vendored_names = set(found)
     if vendored_names:
@@ -482,9 +460,6 @@ def find_artifacts(src_dir, platform, arch, variant, spec=None):
 
 
 def slice_lock(slice_dir):
-    """Exclusive lock keyed by the slice path: concurrent jam invocations
-    (e.g. two configs of the same platform) share the same slice dir and
-    must serialize its rebuild."""
     lf = open(slice_dir + ".lock", "w")
     fcntl.flock(lf, fcntl.LOCK_EX)
     return lf  # keep the fd open for the lifetime of the critical section
@@ -516,17 +491,27 @@ def check_expected_frameworks(expected, available, pod, version):
              % (pod, version, ", ".join(missing), ", ".join(sorted(available))))
 
 
+def resolved_linkage(artifacts):
+    for p in artifacts.values():
+        if os.sep + "Static" + os.sep in p:
+            return "static"
+        if os.sep + "Dynamic" + os.sep in p:
+            return "dynamic"
+    return None
+
+
 def check_stamp(stamp, args):
-    """Warm cache: re-validate the request against the recorded artifact
-    list, so a renamed framework fails here and not at link time."""
     if not os.path.isfile(stamp):
         return False
     try:
         with open(stamp) as f:
-            artifacts = json.load(f).get("artifacts", [])
+            data = json.load(f)
     except (OSError, ValueError):
         return False  # unreadable stamp, rebuild the slice
-    check_expected_frameworks(args.frameworks, artifacts, args.pod, args.pod_version)
+    if data.get("resolver") != RESOLVER_VERSION:
+        return False
+    check_expected_frameworks(args.frameworks, data.get("artifacts", []),
+                              args.pod, args.pod_version)
     return True
 
 
@@ -538,8 +523,17 @@ def main():
     p.add_argument("--platform", default="ios", choices=["ios", "tvos"])
     p.add_argument("--arch", default="arm64")
     p.add_argument("--variant", default=None, choices=[None, "simulator", "maccatalyst"])
+    p.add_argument("--slice", required=True,
+                   help="cache slice dir name; computed once by cocoapods.jam "
+                        "(single source of truth, incl. any linkage suffix). "
+                        "platform/arch/variant are still used to resolve the "
+                        "matching xcframework slice.")
     p.add_argument("--frameworks", nargs="*", default=[],
                    help="framework names the build expects to link (validated)")
+    p.add_argument("--linkage", default="auto", choices=["auto", "static", "dynamic"],
+                   help="for pods shipping both Static/ and Dynamic/ framework "
+                        "variants: 'auto' (default) and 'static' prefer static, "
+                        "'dynamic' forces the dynamic variant")
     p.add_argument("--source-url", default=None,
                    help="download this archive instead of the podspec source")
     p.add_argument("--prebuilt-dir", default=None,
@@ -549,9 +543,7 @@ def main():
                         "or an already populated cache may be used")
     args = p.parse_args()
 
-    slice_id = "%s-%s" % (args.platform, args.arch)
-    if args.variant:
-        slice_id += "-" + args.variant
+    slice_id = args.slice
 
     pod_dir = os.path.join(args.cache_dir, args.pod, args.pod_version)
     slice_dir = os.path.join(pod_dir, slice_id)
@@ -571,7 +563,7 @@ def main():
     if os.path.isfile(spec_path):
         with open(spec_path) as f:
             spec = json.load(f)
-    artifacts = find_artifacts(src_dir, args.platform, args.arch, args.variant, spec)
+    artifacts = find_artifacts(src_dir, args.platform, args.arch, args.variant, spec, args.linkage)
     if not artifacts:
         fail("no frameworks/bundles/libs for slice %s found in %s" % (slice_id, src_dir))
 
@@ -580,7 +572,10 @@ def main():
     populate_slice_dir(slice_dir, artifacts)
     with open(stamp, "w") as f:
         json.dump({"pod": args.pod, "version": args.pod_version,
-                   "slice": slice_id, "artifacts": sorted(artifacts)}, f, indent=1)
+                   "slice": slice_id, "linkage": args.linkage,
+                   "resolved": resolved_linkage(artifacts),
+                   "resolver": RESOLVER_VERSION,
+                   "artifacts": sorted(artifacts)}, f, indent=1)
     log("%s/%s [%s]: %s" % (args.pod, args.pod_version, slice_id, ", ".join(sorted(artifacts))))
 
 

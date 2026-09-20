@@ -112,9 +112,29 @@ public:
   EO_IMPLEMENT_RTTI(CID_HMapSplineObject);
 
 
+  // rebuild bezierSpline / spline2d; both reconcile fillets first, so they may insert or remove generated points and renumber arrId:
+  // do not hold points[] indices, iterators or sizes across these calls
   void getSpline();
-  void getSpline(DagSpline &spline);
   void getSplineXZ(BezierSpline2d &spline2d);
+  // read-only export of current knots, no reconcile. A filleted spline exports its blend knots, so the DAG carries the
+  // curve as drawn and a re-import gives that shape in real points, the way baking would
+  void getSpline(DagSpline &spline);
+
+  // knot whose handles the curve type collapses: a corner of a plain polygon, or a road junction. The fillet reconcile shares
+  // this with getSpline() so a rule change cannot put the cuts off the rebuilt curve
+  bool isPlainKnotType(const SplinePointObject *pt) const;
+  // control knots a curve is built from: one per point, plus the closure duplicate of a polygon
+  int knotCount() const { return points.size() + (poly ? 1 : 0); }
+  enum KnotSrc
+  {
+    KNOT_CURVE,  // knots as drawn: a filleted corner reads the middle of its blend
+    KNOT_SOURCE, // raw source handles: the base curve a fillet cuts into
+  };
+  // the three bezier control entries of one knot, collapsed on a plain knot. Every curve build shares it,
+  // so the layout the fillet cuts are measured on cannot drift from the layout getSpline() rebuilds
+  void getKnotControls(const SplinePointObject *pt, KnotSrc src, Point3 &out_in, Point3 &out_pos, Point3 &out_out) const;
+  // curve segment that degenerates to a straight line, so the curve lies on the control polygon and drawing both hides it
+  bool isStraightSeg(const SplinePointObject *a, const SplinePointObject *b) const;
 
   void updateRoadBox();
   void updateLoftBox();
@@ -138,10 +158,17 @@ public:
   void onPointRemove(int id);
   void addPoint(SplinePointObject *pt);
 
-  void refine(int seg_id, real loc_t, Point3 &p_pos);
+  // false when baking the fillets of the segment reshaped points[] and no point was inserted: seg_id means another
+  // segment now, and so does every index measured on the old curve
+  bool refine(int seg_id, real loc_t, Point3 &p_pos);
   void split(int pt_id);
 
-  void save(DataBlock &blk);
+  enum FilletSave
+  {
+    FILLET_KEEP, // source points and their filletR, for a reader that reconciles
+    FILLET_BAKE, // the knots the curve runs through, for one that does not, like the composite spline service
+  };
+  void save(DataBlock &blk, FilletSave fillets = FILLET_KEEP);
   void load(const DataBlock &blk, bool use_undo);
 
   void regenerateObjects();
@@ -225,7 +252,14 @@ public:
   inline void setPolyBboxAlignStep(float s) { props.poly.bboxAlignStep = s; }
 
   void loadModifParams(const DataBlock &blk);
-  void attachTo(SplineObject *s, int to_idx = -1);
+  enum AttachAt
+  {
+    ATTACH_APPEND,
+    ATTACH_BEFORE_LAST, // splice in front of the target's last point, the one being placed
+  };
+  // where to splice, not which index: attachTo strips the derived points of both splines first, so a slot measured
+  // by the caller would address the array as it was before that
+  void attachTo(SplineObject *s, AttachAt at = ATTACH_APPEND);
 
   Point3 splineCenter() const;
   bool intersects(const BBox2 &r, bool mark_segments);
@@ -250,9 +284,52 @@ public:
   void makeLinearHt();
   void applyCatmull(bool xz, bool y);
 
+  // Non-destructive per-point fillet/chamfer: derived (generated) points are reconciled from filletR of source points before the curve
+  // is built. Generated points live only in this->points (not in ObjectEditor) and never reach the scene save:
+  // they are recomputed after any edit, undo or load.
+  void updateFilletPoints();
+  // strip before any structural edit of points[]: a split, a merge, a reverse or a point list swap addresses the array as
+  // the user's point list and the indices it holds were counted on it. The curve rebuild that follows derives them again.
+  // The strip lives here alone, but taking this route is the caller's discipline:
+  // an index-addressing edit that skips it counts generated points as user points
+  static void beforeStructuralEdit(SplineObject *s1, SplineObject *s2 = nullptr);
+  bool hasFilletPoints() const;
+  // converts the fillet of pt into real points, and rewrites the outer neighbours' handles to keep the shape.
+  // Records undo itself, so the caller has to hold an open transaction: outside one every put() runs its restore at once.
+  // The shape is kept, except an arc on a polygon, and at a smooth curvature neighbour, which cannot hold the subdivided
+  // handle without becoming explicit:
+  // real polygon points are plain knots, so it degrades to the polyline through them and says so in the console
+  void bakeFilletPoint(SplinePointObject *pt);
+  // bakes the fillets a segment touches so the segment can be edited in place;
+  // keeps points[] layout, so a segment index stays valid across the call
+  void bakeFilletsAtSegment(int seg_id);
+  // unique user points: no generated fillet points, no closed-spline duplicate;
+  // safe to transform while the points array is reshuffled by reconciliation
+  void gatherSourcePoints(PtrTab<SplinePointObject> &out_pts) const;
+  // points[] index <-> ordinal counted over non-generated entries. The ordinal skips the closure duplicate, the index
+  // resolves onto it: re-adding the last point of a closed spline lands in front of the duplicate, which is where it belongs
+  int sourcePointOrdinal(const SplinePointObject *pt) const;
+  int sourcePointIndex(int ordinal) const;
+  int sourcePointCount() const;
+  // nearest source point in the given direction, or nullptr past the end of the array. Generated points sit between real
+  // ones: they never form a cross, and they must not pull the auto tangent of a user point
+  SplinePointObject *nextRealPoint(int from, int dir) const;
+  // move undo for whole-spline ops; only source points have undoable state and an ObjectEditor to put the undo object into
+  void putPointsMoveUndo();
+
+private:
+  void removeFilletPoints();
+
+public:
   void setEditLayerIdx(int idx);
   int getEditLayerIdx() const { return editLayerIdx; }
   int lpIndex() const { return poly ? EditLayerProps::PLG : EditLayerProps::SPL; };
+
+  int getRenderLayerIdx() const;
+
+  // Moves the internal, generated entities to the appropriate layer.
+  // Call it after generating them, and after anything that changes isHidden().
+  void applyLayerIdxToEntities(bool use_render_layer = true);
 
   static void changeAsset(ObjectEditor &object_editor, dag::ConstSpan<RenderableEditableObject *> objects,
     const char *initially_selected_asset_name, bool is_poly);
@@ -296,7 +373,6 @@ public:
   const Props &getProps() const { return props; }
   const int getLayer() const { return min(LAYER_ORDER_MAX - 1, props.layerOrder); }
 
-  static int polygonSubtypeMask;
   static int splineSubtypeMask;
   static int tiledByPolygonSubTypeId;
   static int splineSubTypeId;
@@ -328,6 +404,7 @@ protected:
   Tab<BSphere3> segSph;
   bool poly;
   bool firstApply;
+  bool updatingFillets = false;
 
   SplineObject *flattenBySpline;
 

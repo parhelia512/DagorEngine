@@ -38,6 +38,6 @@ updater::Version get_overlay_ui_version();
 ECS_BROADCAST_EVENT_TYPE(EventScriptUiInitNetworkServices);
 ECS_BROADCAST_EVENT_TYPE(EventScriptUiInitNetworkVoicechatOnly);
 ECS_BROADCAST_EVENT_TYPE(EventScriptUiTermNetworkServices);
-ECS_BROADCAST_EVENT_TYPE(EventScriptUiUpdate)
+ECS_BROADCAST_PROFILE_EVENT_TYPE(EventScriptUiUpdate)
 ECS_BROADCAST_EVENT_TYPE(EventScriptUiBeforeEventbusShutdown, bool /*quit*/)
 ECS_BROADCAST_EVENT_TYPE(EventScriptUiShutdown, bool /*quit*/)

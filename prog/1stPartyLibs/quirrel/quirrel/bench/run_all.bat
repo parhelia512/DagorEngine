@@ -1,23 +1,25 @@
 echo off
+@rem the release sq built from this repo (jam -sConfig=rel in prog/tools/sq)
+set SQ=%~dp0..\..\..\..\..\tools\util\sq-64.exe
 pushd quirrel
 echo "Quirrel latest"
-csq.exe --version
-csq.exe version.nut
+%SQ% -v
+%SQ% version.nut
 echo "----"
-csq.exe fib_loop.nut
-csq.exe fib_recursive.nut
-csq.exe primes.nut
-csq.exe particles.nut
-csq.exe dict.nut
-csq.exe exp.nut
-csq.exe nbodies.nut
-rem csq.exe native.nut
-rem csq.exe profile_try_catch.nut 
+%SQ% fib_loop.nut
+%SQ% fib_recursive.nut
+%SQ% primes.nut
+%SQ% particles.nut
+%SQ% dict.nut
+%SQ% exp.nut
+%SQ% nbodies.nut
+rem %SQ% native.nut
+rem %SQ% profile_try_catch.nut 
 popd
 
 pushd lua
 echo ""echo "----"
-echo "LuaJIT2.1.0Beta -joff"
+echo "LuaJIT2.1 -joff"
 luajit.exe -joff fib_loop.lua
 luajit.exe -joff fib_recursive.lua
 luajit.exe -joff primes.lua
@@ -28,7 +30,7 @@ luajit.exe -joff exp.lua
 luajit.exe -joff nbodies.lua
 
 echo "----"
-echo "Lua 5.4.6 (low res timer)"
+echo "Lua 5.5.1"
 lua.exe fib_loop.lua
 lua.exe fib_recursive.lua
 lua.exe primes.lua

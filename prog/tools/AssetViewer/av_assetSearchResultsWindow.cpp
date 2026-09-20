@@ -100,7 +100,6 @@ void AssetSearchResultsWindow::saveResultsToBlk(DataBlock &blk) const
   for (const SimpleString &columnTitle : columnTitles)
     headerBlk->addStr("column", columnTitle);
 
-  String tempBuffer;
   for (const AssetSearchResultsListControl::SearchResult &searchResult : searchResultsList.getSearchResults())
   {
     DataBlock *resultBlk = blk.addNewBlock("result");

@@ -77,7 +77,8 @@
 #include "main/water.h"
 #include "main/appProfile.h"
 #include "main/gameLoad.h"
-#include "render/animatedSplashScreen.h"
+#include <animated_splash_screen_api.h>
+#include <perfMon/dag_perfTimer.h>
 #include <main/weatherPreset.h>
 #include <osApiWrappers/dag_files.h>
 #include <util/dag_strUtil.h>
@@ -295,7 +296,7 @@ public:
       for (int i = 0; i < cnt; ++i)
       {
         int curTag = crd.readInt();
-        if (curTag == _MAKE4C('FRT') || curTag == _MAKE4C('RIGz') || curTag == _MAKE4C('lmap'))
+        if (curTag == _MAKE4C('FRT') || curTag == _MAKE4C('SCol') || curTag == _MAKE4C('RIGz') || curTag == _MAKE4C('lmap'))
         {
           crd.read(hashSHA1, sizeof(hashSHA1));
           debug(" %c%c%c%c SHA1=%s", _DUMP4C(curTag), data_to_str_hex_buf(hash_str, sha1StrSize, hashSHA1, sha1Size));
@@ -481,6 +482,11 @@ public:
       debug("[load]frt");
       return dacoll::load_static_collision_frt(&crd);
     }
+    if (tag == _MAKE4C('SCol'))
+    {
+      debug("[load]static collision");
+      return dacoll::load_static_collision(crd);
+    }
     if (tag == _MAKE4C('Obj'))
     {
       auto objs = ObjectsToPlace::make(crd, crd.getBlockRest());
@@ -566,7 +572,7 @@ public:
       if (Cables *cablesMgr = get_cables_mgr())
       {
         cablesMgr->loadCables(crd);
-        rendinstdestr::set_on_rendinst_destroyed_cb([](rendinst::riex_handle_t, const TMatrix &tm, const BBox3 &box) {
+        rendinstdestr::set_on_rendinst_destroyed_cb([](rendinst::riex_handle_t, const TMatrix &tm, const BBox3 &box, const BBox3 &) {
           if (Cables *cablesMgr = get_cables_mgr())
             cablesMgr->onRIExtraDestroyed(tm, box);
         });
@@ -597,6 +603,9 @@ public:
   void onLoaded()
   {
     G_ASSERT(is_main_thread());
+    animated_splash_screen_begin_rush_exit();
+    // the level spawns in this act, before the frame that would publish it
+    set_loading_splash_opens_onto_game(splash_opens_onto_game());
     g_entity_mgr->broadcastEvent(EventRendinstsLoaded());
     const char *lvlBinName = levelBlk->getStr(LEVEL_BIN_NAME, "undefined");
     debug("level loaded: %s", lvlBinName);
@@ -638,7 +647,8 @@ public:
     g_entity_mgr->broadcastEventImmediate(EventDoFinishLocationDataLoad());
 
     G_ASSERT(levelBlk);
-    g_entity_mgr->broadcastEvent(EventLevelLoaded(*levelBlk.release())); // Note: freed by `level_es`
+    levelBlk.reset(); // no reader past loading, and the event no longer owns it
+    g_entity_mgr->broadcastEvent(EventLevelLoaded(saved_level_blk));
 
     if (!::dgs_app_active)
       flash_window();
@@ -703,6 +713,30 @@ struct OnLevelLoadedAction final : public DelayedAction
   void performAction() override;
 };
 
+static constexpr float DEFAULT_SLOW_EXIT_SEC = 1.5f;
+
+// riGen pregen progress, on the loading thread: estimate the phase end from
+// cell throughput and begin the slow exit while its frames still draw
+// (the post-pregen load tail adds about half a second on top)
+static void signal_finishing_loading_by_ri_pregen(int cells_done, int cells_total)
+{
+  static uint64_t phaseRef = 0;
+  if (cells_done == 0)
+  {
+    phaseRef = profile_ref_ticks();
+    return;
+  }
+  // trust the extrapolation only past 1/8 of the cells: one fast (near
+  // empty) early cell must not fire the exit seconds ahead of the end
+  if (cells_done * 8 < cells_total)
+    return;
+  float elapsedSec = profile_usec_from_ticks_delta(profile_ref_ticks() - phaseRef) * 1e-6f;
+  float etaSec = elapsedSec * float(cells_total - cells_done) / float(cells_done);
+  const float slowSec = animated_splash_screen_exit_seconds().slow;
+  if (etaSec <= (slowSec > 0.f ? slowSec : DEFAULT_SLOW_EXIT_SEC))
+    animated_splash_screen_begin_slow_exit();
+}
+
 struct LevelLoadJob final : public cpujobs::IJob
 {
 private:
@@ -728,11 +762,12 @@ private:
 
 public:
   LevelLoadJob(StrmSceneHolder *scn_, const char *bin_name) : scn(scn_), binName(bin_name), levelEid(scn->eid) {}
-  const char *getJobName(bool &) const override { return "LevelLoadJob"; }
+  const char *getJobName(bool &) const override { return DAPROFILER_STRING("LevelLoadJob"); }
   void doJob() override
   {
-    net::NetSnapshotScope snapshotScope(/*assumeSingleUpdate*/ false, "LevelLoadJob"); // long-running; spans multiple publishes
-
+    // paired with the clear below; serves the precompute that runs inside
+    // openSingle (RIGz tag)
+    rendinst::set_ri_gen_precompute_progress_cb(&signal_finishing_loading_by_ri_pregen);
     if (strcmp(binName, EMPTY_LEVEL_NAME) != 0)
     {
       scn->openSingle(binName);
@@ -744,6 +779,9 @@ public:
       wr->preloadLevelTextures();
 
     waitForPipelinesSetCompilation();
+
+    // pregen is done: a later precompute outside this load must not signal
+    rendinst::set_ri_gen_precompute_progress_cb(nullptr);
 
     // This intentionally stall loading thread to make sure that no further resources are loaded until
     // level is loaded/switched it's loading state (as various entities are implicitly depends on it)
@@ -1031,6 +1069,7 @@ private:
     if (!level)
       return;
     level.reset();
+    saved_level_blk.reset();
     delayed_binary_dumps_unload(); // without this call BinLevel won't be actually freed.
                                    // TODO: remove dependency on BaseStreamingSceneHolder and this crap
   }
@@ -1061,11 +1100,10 @@ static inline void level_render_es(const EventBeforeLocationEntityCreated &, boo
 }
 
 ECS_REQUIRE(LocationHolder level)
-static inline void level_es(const EventLevelLoaded &evt, bool *level__loaded)
+static inline void level_es(const EventLevelLoaded &, bool *level__loaded)
 {
   if (level__loaded)
     *level__loaded = true;
-  add_delayed_callback_buffered([](void *b) { delete (DataBlock *)b; }, (void *)&evt.get<0>());
 }
 
 ECS_REQUIRE(ecs::Tag world_renderer_tag)

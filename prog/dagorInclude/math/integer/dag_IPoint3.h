@@ -26,12 +26,7 @@ public:
   constexpr INLINE IPoint3(int ax, int ay, int az) : x(ax), y(ay), z(az) {}
   // IPoint3(const IPoint3& p) {x=p.x;y=p.y;z=p.z;}
   // IPoint3& operator =(const Point3& p) {x=p.x;y=p.y;z=p.z;return *this;}
-  INLINE explicit IPoint3(const Point3 &p)
-  {
-    x = (int)p.x;
-    y = (int)p.y;
-    z = (int)p.z;
-  }
+  constexpr INLINE explicit IPoint3(const Point3 &p) : x((int)p.x), y((int)p.y), z((int)p.z) {}
   constexpr INLINE explicit IPoint3(const int *p) : x(p[0]), y(p[1]), z(p[2]) {}
 
   static const IPoint3 ZERO;
@@ -248,6 +243,9 @@ public:
     x = (int)a.x, y = (int)a.z, z = v;
   }
 };
+
+inline constexpr IPoint3 IPoint3::ZERO(0, 0, 0);
+inline constexpr IPoint3 IPoint3::ONE(1, 1, 1);
 
 constexpr INLINE IPoint3 operator*(int a, const IPoint3 &p) { return IPoint3(p.x * a, p.y * a, p.z * a); }
 constexpr INLINE int lengthSq(const IPoint3 &a) { return a.x * a.x + a.y * a.y + a.z * a.z; }

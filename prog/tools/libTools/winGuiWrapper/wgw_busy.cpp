@@ -1,6 +1,8 @@
 // Copyright (C) Gaijin Games KFT.  All rights reserved.
 
+#ifndef _WIN32_WINNT
 #define _WIN32_WINNT 0x500
+#endif
 
 #include <windows.h>
 #include <stdio.h>

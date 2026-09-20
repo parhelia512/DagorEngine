@@ -159,7 +159,7 @@ shader world_sdf_voxelize_collision_cs
       float3 triBoxMin = min(min(va, vb), vc), triBoxMax = max(max(va, vb), vc);
       int3 minUnWrappedCoord = floor(triBoxMin.xzy), maxUnWrappedCoord = floor(triBoxMax.xzy);
       int3 world_sdf_update_rb_coord = world_sdf_update_lt_coord.xyz + world_sdf_update_sz_coord.xyz + 1;
-      if (any(maxUnWrappedCoord < world_sdf_update_lt_coord - 2 || minUnWrappedCoord > world_sdf_update_rb_coord))//that's just faster
+      if (any(or(maxUnWrappedCoord < world_sdf_update_lt_coord - 2, minUnWrappedCoord > world_sdf_update_rb_coord)))//that's just faster
         return;
       TrianglePlanes triPlanes = get_triangle_planes(va, vb, vc);
       #if 1

@@ -20,7 +20,7 @@ static ecs::EntitySystemDesc initial_transform_cache_create_manager_es_es_desc
   empty_span(),
   empty_span(),
   empty_span(),
-  ecs::EventSetBuilder<OnLevelLoaded>::build(),
+  ecs::EventSetBuilder<EventRenderSceneLoaded>::build(),
   0
 ,"render");
 static constexpr ecs::ComponentDesc initial_transform_cache_add_fix_globtm_es_comps[] =

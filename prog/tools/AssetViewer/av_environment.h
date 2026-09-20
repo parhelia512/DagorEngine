@@ -95,4 +95,6 @@ E3DCOLOR getSinglePaintColor();
 void updatePaintColorTexture();
 
 void on_asset_changed(const DagorAsset &asset, AssetLightData &ald);
+void before_render_objects();
+void after_d3d_reset(bool full_reset);
 }; // namespace environment

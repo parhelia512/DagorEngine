@@ -104,7 +104,7 @@
 #include "render/screencap.h"
 #include <render/cinematicMode.h>
 #include <render/antialiasing.h>
-#include "render/animatedSplashScreen.h"
+#include <animated_splash_screen_api.h>
 #include "sound/dngSound.h"
 #include "sound_net/registerSoundNetProps.h"
 #include "ui/userUi.h"
@@ -330,6 +330,8 @@ static
   void
   act_scene()
 {
+  g_entity_mgr->broadcastEventImmediate(EventWaitBeforeAct());
+
   if (log_memreport_interval.get() > 0)
     memreport::dump_memory_usage_report(int(log_memreport_interval.get() * 1000.f), memreport_sys.get(), memreport_gpu.get());
   if (sceneload::is_scene_switch_in_progress())
@@ -913,17 +915,16 @@ void app_start(bool register_dagor_scene)
   public:
     virtual void actScene() override
     {
-      net::NetSnapshotScope snapshotScope(/*assumeSingleUpdate*/ false, "DngGameScene::actScene"); // owner-thread publish runs within
       game_scene::act_scene();
       if (is_animated_splash_screen_in_thread() && !sceneload::is_load_in_progress())
       {
         debug("[splash] auto stop due to is_load_in_progress()=%d", sceneload::is_load_in_progress());
-        stop_animated_splash_screen_in_thread();
+        // the splash thread has no finished frame
+        stop_animated_splash_screen_thread_keep_scene();
       }
     }
     virtual void drawScene() override
     {
-      net::NetSnapshotScope snapshotScope(/*assumeSingleUpdate*/ false, "DngGameScene::drawScene");
       if (is_animated_splash_screen_in_thread())
       {
         d3d::set_render_target();
@@ -937,7 +938,6 @@ void app_start(bool register_dagor_scene)
     virtual void sceneDeselected(DagorGameScene *) override { game_scene::on_scene_deselected(); }
     virtual void beforeDrawScene(int realtime_elapsed_usec, float gametime_elapsed_sec) override
     {
-      net::NetSnapshotScope snapshotScope(/*assumeSingleUpdate*/ false, "DngGameScene::beforeDrawScene");
       if (is_animated_splash_screen_in_thread())
         return;
       game_scene::before_draw_scene(realtime_elapsed_usec, gametime_elapsed_sec);

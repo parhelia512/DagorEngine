@@ -103,7 +103,7 @@ shader make_puddles
       return -1000;
     }
 
-    float getPuddleHeight3(float2 hmapTc, float lod)
+    float getPuddleHeight3(float2 hmapTc, float lod, out float hmapHt)
     {
       const float2 texelSizeInTc = puddle_texels_to_world.w * world_to_hmap_low.xy;
 
@@ -115,6 +115,8 @@ shader make_puddles
         for (int x = -2; x <= 2; ++x)
           ht[y+2][x+2] = tex2Dlod(tex_hmap_low, float4(hmapTc+float2(x,y)*texelSizeInTc, 0, lod)).x;
       }
+
+      hmapHt = decode_height(ht[2][2]);
 
       float cPuddleHt = getPuddleHeightFrom(ht, int2(2,2));
       BRANCH
@@ -161,11 +163,11 @@ shader make_puddles
       return daoNormalY;
     }
 
-    float getFlatPuddleHt(float4 combinedUnclampedDaoTcs, float2 hmapTc, float lod, out float texHeight, out float heightMeters, float4 flatNoise)
+    float getFlatPuddleHt(float4 combinedUnclampedDaoTcs, float2 hmapTc, float lod, out float heightMeters, float4 flatNoise)
     {
       float vignette;
       float3 clampedDaoTc = clamp_depth_above_tc(combinedUnclampedDaoTcs.xy, combinedUnclampedDaoTcs.zw, vignette);
-      texHeight = tex3Dlod(depth_around, float4(clampedDaoTc, lod)).x;
+      float texHeight = tex3Dlod(depth_around, float4(clampedDaoTc, lod)).x;
       heightMeters = decode_depth_above(texHeight);
       float3 hmapNormal = getNormalLod(hmapTc, lod);
 
@@ -177,15 +179,19 @@ shader make_puddles
       return lerp(underHtWater, heightMeters + flat_puddle_reduce + flatNoise.r*flat_puddle_noise_height_reduce, normalEffect);
     }
 
-    float getAbsPuddleHeight(float4 combinedUnclampedDaoTcs, float2 hmapTc, out float bHt, out float baseHt, float lod, float4 flatNoise, float4 deepNoise)
+    float getAbsPuddleHeight(float4 combinedUnclampedDaoTcs, float2 hmapTc, out float baseHt, out float hmapHt, float lod, float4 flatNoise, float4 deepNoise)
     {
-      float flatPuddleHt = getFlatPuddleHt(combinedUnclampedDaoTcs, hmapTc, lod, bHt, baseHt, flatNoise);
-      float pudHt = getPuddleHeight3(hmapTc, lod);
+      float flatPuddleHt = getFlatPuddleHt(combinedUnclampedDaoTcs, hmapTc, lod, baseHt, flatNoise);
+      float pudHt = getPuddleHeight3(hmapTc, lod, hmapHt);
       float onlyPuddle = flatPuddleHt - baseHt;
 
       FLATTEN
       if (pudHt>0)
-        onlyPuddle = max(pudHt + deep_puddle_reduce + deepNoise.r*deep_puddle_noise_height_reduce, flatPuddleHt) - baseHt;
+      {
+        float deepPuddleHt = pudHt + deep_puddle_reduce + deepNoise.r*deep_puddle_noise_height_reduce;
+        // depth above can be below the heightmap, so measure the puddle level from the higher of the two
+        onlyPuddle = max(deepPuddleHt - max(hmapHt, baseHt), onlyPuddle);
+      }
 
       return onlyPuddle;
     }
@@ -193,7 +199,7 @@ shader make_puddles
     float postfx_ps(VsOutput input HW_USE_SCREEN_POS) : SV_Target
     {
       float4 pos = GET_SCREEN_POS(input.pos);
-      float baseHt, bHt;
+      float baseHt, hmapHt;
       float2 worldPosXZ = puddle_texels_to_world.w*pos.xy + puddle_texels_to_world.xy;
       float4 flatNoise = tex2D(noise_64_tex, worldPosXZ*flat_puddle_noise_size);
       float4 deepNoise = tex2D(noise_64_tex, worldPosXZ*deep_puddle_noise_size);
@@ -204,12 +210,14 @@ shader make_puddles
       float waterHeight = 0.0;
       get_water_height(worldPosXZ, waterHeight);
       waterHeight += water_level_offset;
-      float onlyPuddle = getAbsPuddleHeight(combinedUnclampedDaoTcs, hmapTc, bHt, baseHt, puddle_texels_to_world.z, flatNoise, deepNoise);
+      float onlyPuddle = getAbsPuddleHeight(combinedUnclampedDaoTcs, hmapTc, baseHt, hmapHt, puddle_texels_to_world.z, flatNoise, deepNoise);
 
-      float waterFade = saturate(((onlyPuddle + baseHt) - waterHeight) * water_level_inv_fade_range);
+      // the level onlyPuddle is measured from
+      float groundHt = max(hmapHt, baseHt);
+      float waterFade = saturate(((onlyPuddle + groundHt) - waterHeight) * water_level_inv_fade_range);
       onlyPuddle = lerp(NO_PUDDLE_VALUE, onlyPuddle, waterFade);
 
-      return encodePuddleHeight(baseHt, baseHt + onlyPuddle);
+      return encodePuddleHeight(groundHt, groundHt + onlyPuddle);
     }
   }
 

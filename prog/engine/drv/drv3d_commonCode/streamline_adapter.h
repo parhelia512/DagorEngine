@@ -108,7 +108,7 @@ public:
 
   void setEnabled(int frames_to_generate) override;
   bool isEnabled() const override { return framesToGenerate > 0; }
-  unsigned getActualFramesPresented() const override;
+  unsigned getActualFramesPresented() const;
 
   bool evaluate(const nv::DlssGParams<void> &params, void *commandBuffer);
 
@@ -116,18 +116,32 @@ public:
   uint64_t getMemorySize() const;
 
 private:
-  // slDLSSGGetState is NOT thread safe and must only be queried on the render backend thread. The backend
-  // caches the relevant parts of sl::DLSSGState into these atomics; the main-thread query methods read them.
   void updateCachedState(const sl::DLSSGState &state);
 
   int viewportId;
   FrameTracker &frameTracker;
   int framesToGenerate = 0;
-  // numFramesActuallyPresented is a "since last query" delta: accumulated on the backend, consumed on read.
-  mutable dag::AtomicInteger<uint32_t> presentedFramesAccum{0};
+  uint32_t lastPresentedFrames = 1;
   // estimatedVRAMUsageInBytes, refreshed by the backend each frame FG runs.
   dag::AtomicInteger<uint64_t> cachedMemorySize{0};
   static dag::AtomicPod<nv::DLSSFrameGenerationCapabilities> cachedFrameGenerationCapabilities;
+};
+
+class DLSSNeuralRendering
+{
+public:
+  DLSSNeuralRendering(int viewport_id, void *command_buffer, FrameTracker &frame_tracker);
+  ~DLSSNeuralRendering();
+
+  // Applied on the render backend thread (via SET_DLSS_NR_OPTIONS), like nv::DLSS::setOptions.
+  bool setOptions(const nv::DlssNROptions &options);
+  bool evaluate(const nv::DlssNRParams<void> &params, void *command_buffer);
+
+private:
+  int viewportId;
+  FrameTracker &frameTracker;
+  bool enabled = false;
+  bool initialized = false;
 };
 
 class Reflex
@@ -241,12 +255,14 @@ public:
   nv::SupportState isDlssSupported() const override;
   nv::SupportState isDlssGSupported() const override;
   nv::SupportState isDlssRRSupported() const override;
+  nv::SupportState isDlssNRSupported() const override;
   nv::SupportState isReflexSupported() const;
 
   dag::Expected<eastl::string, nv::SupportState> getDlssVersion() const override;
 
   nv::DLSS *createDlssFeature(int viewport_id, IPoint2 output_resolution, void *command_buffer);
   DLSSFrameGeneration *createDlssGFeature(int viewport_id, void *command_buffer);
+  DLSSNeuralRendering *createDlssNRFeature(int viewport_id, void *command_buffer);
   Reflex *createReflexFeature();
 
   nv::DLSS *getDlssFeature(int viewport_id) { return dlssFeatures[viewport_id].get(); }
@@ -254,10 +270,15 @@ public:
   {
     return dlssGFeatures[viewport_id] ? &dlssGFeatures[viewport_id].value() : nullptr;
   }
+  DLSSNeuralRendering *getDlssNRFeature(int viewport_id)
+  {
+    return dlssNRFeatures[viewport_id] ? &dlssNRFeatures[viewport_id].value() : nullptr;
+  }
   Reflex *getReflexFeature() { return reflexFeature ? &reflexFeature.value() : nullptr; }
 
   void releaseDlssFeature(int viewport_id) { dlssFeatures[viewport_id].reset(); }
   void releaseDlssGFeature(int viewport_id) { dlssGFeatures[viewport_id].reset(); }
+  void releaseDlssNRFeature(int viewport_id) { dlssNRFeatures[viewport_id].reset(); }
   void releaseReflexFeature() { reflexFeature.reset(); }
 
   nv::DLSSFrameGenerationCapabilities getFrameGenerationCapabilities() const override
@@ -286,5 +307,6 @@ private:
   static constexpr size_t MAX_VIEWPORTS = 2;
   eastl::array<eastl::unique_ptr<DLSSWithSizeQuery>, MAX_VIEWPORTS> dlssFeatures = {};
   eastl::array<eastl::optional<DLSSFrameGeneration>, MAX_VIEWPORTS> dlssGFeatures = {};
+  eastl::array<eastl::optional<DLSSNeuralRendering>, MAX_VIEWPORTS> dlssNRFeatures = {};
   eastl::optional<Reflex> reflexFeature;
 };

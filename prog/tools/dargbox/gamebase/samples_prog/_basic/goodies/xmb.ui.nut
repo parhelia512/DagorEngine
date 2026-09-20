@@ -50,6 +50,12 @@ function btn(params) {
   })
 
   mainNode = XmbNode({
+    function onFocus() {
+      vlog($"onFocus {params.text}")
+    }
+    function onBlur() {
+      vlog($"onBlur {params.text}")
+    }
     function onLeave(dir) {
       dlog($"onLeave({dir})")
       if (dir == DIR_LEFT)

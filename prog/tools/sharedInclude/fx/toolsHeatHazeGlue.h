@@ -94,7 +94,8 @@ struct ToolsHeatHazeRendererGlue
         targets.hazeColor = targetHazeColor.getTex2D();
         targets.hazeTemp = targetHazeTemp.getTex2D();
 
-        heatHazeRenderer->render(float(get_time_msec()) / 1000, targets, {info.w, info.h}, 0, renderParticles, nullptr, renderRI);
+        if (renderParticles) // the engine calls it unconditionally, unlike renderRI
+          heatHazeRenderer->render(float(get_time_msec()) / 1000, targets, {info.w, info.h}, 0, renderParticles, renderRI);
       }
     }
   }

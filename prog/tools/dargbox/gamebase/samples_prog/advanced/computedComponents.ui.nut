@@ -38,7 +38,7 @@ let btnControl = @() {
   }
 }
 
-let mkRoller = @(step, offset = 0) ComputedImmediate(@()
+let mkRoller = @(step, offset = 0) Computed(@()
   (extCounter.get() + offset) % step == 0 ? null : {
     rendObj = ROBJ_SOLID
     size = sh(5)

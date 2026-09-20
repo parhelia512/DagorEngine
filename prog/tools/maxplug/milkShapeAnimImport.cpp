@@ -2,7 +2,7 @@
 
 #include <max.h>
 #include <maxScript/maxScript.h>
-#include <locale.h>
+#include <format>
 
 #include "dagor.h"
 #include "resource.h"
@@ -50,20 +50,12 @@ bool inputFilename(HWND hpanel)
 }
 
 
-static void tabPrintf(Tab<TCHAR> &tab, const TCHAR *fmt, ...)
+static void tabAppend(Tab<wchar_t> &tab, const std::wstring &text)
 {
-  TCHAR buf[2048];
-
-  va_list ap;
-  va_start(ap, fmt);
-  _vstprintf(buf, fmt, ap);
-  va_end(ap);
-
   if (!tab.Count())
     tab.Append(1, (TCHAR *)_T(""));
 
-
-  tab.Insert(tab.Count() - 1, (int)_tcslen(buf), buf);
+  tab.Insert(tab.Count() - 1, (int)text.length(), (wchar_t *)text.c_str());
 }
 
 
@@ -178,8 +170,6 @@ void import_milkshape_anim(Interface *ip, HWND hpanel)
     return;
   }
 
-  setlocale(LC_NUMERIC, "C");
-
   const int LINELEN = 1024;
   char str[LINELEN];
 
@@ -227,7 +217,7 @@ void import_milkshape_anim(Interface *ip, HWND hpanel)
     errLine = __LINE__;
     if (!fgets(str, LINELEN, fh))
       break;
-    if (sscanf(str, "%d %f %f %f %f %f %f", &flags, &lpos.x, &lpos.y, &lpos.z, &lrot.x, &lrot.y, &lrot.z) != 7)
+    if (parse_spaced_nums(str, flags, lpos.x, lpos.y, lpos.z, lrot.x, lrot.y, lrot.z) != 7)
       break;
 
     anim.lpos = lpos;
@@ -239,7 +229,7 @@ void import_milkshape_anim(Interface *ip, HWND hpanel)
     errLine = __LINE__;
     if (!fgets(str, LINELEN, fh))
       break;
-    if (sscanf(str, "%d", &num) != 1)
+    if (parse_spaced_nums(str, num) != 1)
       break;
 
     Tab<MilkshapeKey> &posKeys = anim.pos.keys;
@@ -253,7 +243,7 @@ void import_milkshape_anim(Interface *ip, HWND hpanel)
       errLine = __LINE__;
       if (!fgets(str, LINELEN, fh))
         break;
-      if (sscanf(str, "%f %f %f %f", &k.time, &k.val.x, &k.val.y, &k.val.z) != 4)
+      if (parse_spaced_nums(str, k.time, k.val.x, k.val.y, k.val.z) != 4)
         break;
 
       if (k.time < minTime)
@@ -268,7 +258,7 @@ void import_milkshape_anim(Interface *ip, HWND hpanel)
     errLine = __LINE__;
     if (!fgets(str, LINELEN, fh))
       break;
-    if (sscanf(str, "%d", &num) != 1)
+    if (parse_spaced_nums(str, num) != 1)
       break;
 
     Tab<MilkshapeKey> &rotKeys = anim.rot.keys;
@@ -281,7 +271,7 @@ void import_milkshape_anim(Interface *ip, HWND hpanel)
       errLine = __LINE__;
       if (!fgets(str, LINELEN, fh))
         break;
-      if (sscanf(str, "%f %f %f %f", &k.time, &k.val.x, &k.val.y, &k.val.z) != 4)
+      if (parse_spaced_nums(str, k.time, k.val.x, k.val.y, k.val.z) != 4)
         break;
 
       if (k.time < minTime)
@@ -348,10 +338,10 @@ void import_milkshape_anim(Interface *ip, HWND hpanel)
       Tab<TCHAR> s;
 
       // set time slider
-      tabPrintf(s, _T("sliderTime=%ff\n"), keyTime);
+      tabAppend(s, std::format(L"sliderTime={:f}f\n", keyTime));
 
       // set pos keys
-      if (_tcsicmp(name, _T("Bip01")) == 0 || _tcsstr(name, _T("Pelvis")))
+      if (iequal(name, L"Bip01") || wcsstr(name, L"Pelvis"))
       {
         Matrix3 baseTm;
 
@@ -377,11 +367,11 @@ void import_milkshape_anim(Interface *ip, HWND hpanel)
 
         if (_tcsstr(name, _T("Pelvis")))
         {
-          tabPrintf(s, _T("biped.setTransform $'Bip01' #pos [%g, %g, %g] true\n"), p.x, p.y, p.z);
+          tabAppend(s, std::format(L"biped.setTransform $'Bip01' #pos [{:g}, {:g}, {:g}] true\n", p.x, p.y, p.z));
         }
         else
         {
-          tabPrintf(s, _T("biped.setTransform $'%s' #pos [%g, %g, %g] true\n"), name, p.x, p.y, p.z);
+          tabAppend(s, std::format(L"biped.setTransform $'{}' #pos [{:g}, {:g}, {:g}] true\n", name, p.x, p.y, p.z));
         }
       }
 
@@ -410,7 +400,7 @@ void import_milkshape_anim(Interface *ip, HWND hpanel)
         Matrix3 tm = rtm * baseTm * ptm;
         q = Quat(tm);
 
-        tabPrintf(s, _T("biped.setTransform $'%s' #rotation (quat %g %g %g %g) true\n"), name, q.x, q.y, q.z, q.w);
+        tabAppend(s, std::format(L"biped.setTransform $'{}' #rotation (quat {:g} {:g} {:g} {:g}) true\n", name, q.x, q.y, q.z, q.w));
       }
 
       ExecuteMAXScriptScript(&s[0], MAXScript::ScriptSource::NotSpecified);
@@ -419,7 +409,4 @@ void import_milkshape_anim(Interface *ip, HWND hpanel)
 
   ip->EnableSceneRedraw();
   ip->RedrawViews(ip->GetTime());
-
-
-  setlocale(LC_NUMERIC, "");
 }

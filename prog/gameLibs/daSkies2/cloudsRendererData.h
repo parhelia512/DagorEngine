@@ -2,6 +2,7 @@
 #pragma once
 
 #include <daSkies2/daSkies.h>
+#include <math/dag_mathUtils.h>
 #include <resourcePool/resourcePool.h>
 #include <util/dag_string.h>
 
@@ -10,6 +11,14 @@
 struct CloudsRendererData
 {
   IPoint2 cloudTexRes = IPoint2::ZERO;
+  // Dynamic resolution, see changeSkiesData: the work happens on a [0,0] anchored sub-rect of
+  // cloudTexRes, so the clouds grid follows the dynamic resolution together with the scene depth
+  // grid that the trace and the taa sample. The raster paths are confined to it by a viewport,
+  // the compute ones by the resolution shader vars. usedRes is this frame's sub-rect, prevUsedRes
+  // the one the history in the pools was written at, pendingUsedRes the caller's standing request
+  IPoint2 usedRes = IPoint2::ZERO;
+  IPoint2 prevUsedRes = IPoint2::ZERO;
+  IPoint2 pendingUsedRes = IPoint2::ZERO;
   String texPrefix; // managed-texture names must be unique per view data
 
   bool useBlurredClouds = false;
@@ -43,6 +52,13 @@ struct CloudsRendererData
   bool closeLayerWasActive = false;
 
   void clearTemporalData(uint32_t gen);
+  // zero, and never naming one, mean no dynamic resolution. Resolved against cloudTexRes by
+  // advanceUsedResolution, so it may be named before the targets are allocated
+  void setUsedResolution(const IPoint2 &res);
+  // call once per frame, from the main view prepare only
+  void advanceUsedResolution();
+  IPoint2 getUsedTiledRes() const { return IPoint2(div_ceil(usedRes.x, tileX), div_ceil(usedRes.y, tileY)); }
+  IPoint2 getCloseRes(const IPoint2 &far_res) const { return lowresCloseClouds ? far_res / 2 : far_res; }
   void ensureCheckerColor(bool wanted);
   void close();
   void setVars(const bool is_main_view);
@@ -71,7 +87,8 @@ private:
   void initTiledDist(const char *prefix); // only needed when it is not 100% cloudy. todo: calc pixels count allocation
   static void clear_black(ManagedTex &t);
 
-  static constexpr uint32_t tileX = CLOUDS_TILE_W, tileY = CLOUDS_TILE_H;
+  static constexpr int tileX = CLOUDS_TILE_W, tileY = CLOUDS_TILE_H;
+
   DPoint3 cloudsCameraOrigin{0., 0., 0.};
   uint32_t resetGen = 0;
 };

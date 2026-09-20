@@ -4899,21 +4899,10 @@ BRICKS: list[Brick] = [
           "  $out0_dbg.setdebughook(null)"),
 
     # =========================================================================
-    # Round 14: _OP_PATCH_DOCOBJ and instanceof built-in types
+    # Round 14: class docstrings and instanceof built-in types
     # =========================================================================
 
-    # Doc comment inside table body -- covers _OP_PATCH_DOCOBJ (lines 1673-1687)
-    # The @@"..." must be INSIDE the { } to set the table's docObject
-    Brick("docobj_table",
-          [Slot("in0", INT)],
-          [Slot("out0", INT)],
-          "let $out0_t = {\n"
-          "    @@\"fuzz doc\"\n"
-          "    val = $in0 + 1\n"
-          "  }\n"
-          "  let $out0 = $out0_t.val"),
-
-    # Doc comment inside class body -- covers _OP_PATCH_DOCOBJ for classes
+    # Doc comment inside a class body covers _OP_SET_CLASS_DOCSTRING.
     Brick("docobj_class",
           [Slot("in0", INT)],
           [Slot("out0", INT)],

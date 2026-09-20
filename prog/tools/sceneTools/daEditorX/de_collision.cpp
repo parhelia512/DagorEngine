@@ -31,7 +31,6 @@ static FastRtDump *rtdump = NULL;
 
 static Tab<IDagorEdCustomCollider *> colliders(midmem_ptr());
 static Tab<IDagorEdCustomCollider *> activeColliders(midmem_ptr());
-static Tab<IDagorEdCustomCollider *> activeShadows(midmem_ptr());
 
 
 bool DagorPhys::use_only_visible_colliders = false;
@@ -48,7 +47,6 @@ void register_custom_collider(IDagorEdCustomCollider *coll)
 
   ::colliders.push_back(coll);
   ::activeColliders.push_back(coll);
-  ::activeShadows.push_back(coll);
   DAEDITOR3.conNote("add collider <%s>, %d total", coll->getColliderName(), colliders.size());
 }
 
@@ -70,13 +68,6 @@ void unregister_custom_collider(IDagorEdCustomCollider *coll)
     if (::activeColliders[i] == coll)
     {
       erase_items(::activeColliders, i, 1);
-      break;
-    }
-
-  for (i = 0; i < ::activeShadows.size(); ++i)
-    if (::activeShadows[i] == coll)
-    {
-      erase_items(::activeShadows, i, 1);
       break;
     }
 }
@@ -282,50 +273,6 @@ dag::ConstSpan<IDagorEdCustomCollider *> get_current_colliders(unsigned &filter_
 }
 
 
-void enable_all_custom_shadows() { activeShadows = colliders; }
-
-
-void enable_custom_shadow(const char *name)
-{
-  if (!name)
-    return;
-
-  for (int i = 0; i < ::colliders.size(); ++i)
-    if (!::strcmp(colliders[i]->getColliderName(), name))
-    {
-      for (int j = 0; j < ::activeShadows.size(); ++j)
-        if (::activeShadows[j] == ::colliders[i])
-          return;
-
-      ::activeShadows.push_back(::colliders[i]);
-    }
-}
-
-
-void disable_custom_shadow(const char *name)
-{
-  if (!name)
-    return;
-
-  for (int i = 0; i < ::activeShadows.size(); ++i)
-    if (!::strcmp(activeShadows[i]->getColliderName(), name))
-    {
-      erase_items(::activeShadows, i, 1);
-      break;
-    }
-}
-
-
-bool is_custom_shadow_enabled(const IDagorEdCustomCollider *collider)
-{
-  for (int i = 0; i < ::activeShadows.size(); ++i)
-    if (::activeShadows[i] == collider)
-      return true;
-
-  return false;
-}
-
-
 static bool customTraceRay(const Point3 &p, const Point3 &dir, real &maxt, Point3 *norm, bool use_only_visible)
 {
   bool hit = false;
@@ -348,18 +295,6 @@ static void customClipCapsule(Capsule &c, Point3 &lpt, Point3 &wpt, real &md, co
   {
     activeColliders[i]->clipCapsule(c, lpt, wpt, md, norm);
   }
-}
-
-
-bool DagorEdAppWindow::shadowRayHitTest(const Point3 &p, const Point3 &dir, real maxt)
-{
-  for (int i = 0; i < ::activeShadows.size(); ++i)
-    if (::activeShadows[i]->shadowRayHitTest(p, dir, maxt))
-    {
-      return true;
-    }
-
-  return false;
 }
 
 
@@ -483,80 +418,12 @@ void DagorPhys::init_collision_binary(StaticSceneRayTracer *rt)
 FastRtDump *DagorPhys::getFastRtDump() { return rtdump; }
 
 
-bool fill_custom_colliders_list(PropPanel::ContainerPropertyControl &panel, const char *grp_caption, int grp_pid, int collider_pid,
-  bool shadow, bool open_grp)
-{
-  PropPanel::ContainerPropertyControl *grp = panel.createGroup(grp_pid, grp_caption);
-
-  if (!grp)
-    return false;
-
-  const int colCnt = ::get_custom_colliders_count();
-
-  for (int i = 0; i < colCnt; ++i)
-  {
-    const IDagorEdCustomCollider *collider = ::get_custom_collider(i);
-
-    if (collider)
-    {
-      bool enabled = (shadow) ? ::is_custom_shadow_enabled(collider) : ::is_custom_collider_enabled(collider);
-
-      grp->createCheckBox(collider_pid + i, collider->getColliderName(), enabled ? 1 : 0);
-    }
-  }
-
-  panel.setBool(grp_pid, !open_grp);
-
-  return true;
-}
-
-
-bool on_pp_collider_check(int pid, const PropPanel::ContainerPropertyControl &panel, int collider_pid, bool shadow)
-{
-  if (pid < collider_pid)
-    return false;
-
-  if (pid >= collider_pid + colliders.size())
-    return false;
-
-  Tab<IDagorEdCustomCollider *> &active = shadow ? activeShadows : activeColliders;
-
-  IDagorEdCustomCollider *collider = colliders[pid - collider_pid];
-  int colliderActive = 0;
-  int colliderIdx = -1;
-  int i;
-
-  for (i = 0; i < active.size(); ++i)
-  {
-    if (active[i] == collider)
-    {
-      colliderActive = 1;
-      colliderIdx = i;
-      break;
-    }
-  }
-
-  int enable = panel.getBool(pid);
-
-  if (enable != colliderActive)
-  {
-    if (enable)
-      active.push_back(collider);
-    else
-      erase_items(active, colliderIdx, 1);
-  }
-
-  return true;
-}
-
-
 const char *DagorPhys::get_collision_name() { return DAGORED2->getWorkspace().getCollisionName(); }
 
 void reset_colliders_data()
 {
   colliders.clear();
   activeColliders.clear();
-  activeShadows.clear();
   DagorPhys::use_only_visible_colliders = false;
 
   editorCollUsed = true;

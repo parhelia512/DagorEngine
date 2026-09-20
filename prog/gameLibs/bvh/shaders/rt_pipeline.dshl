@@ -216,8 +216,6 @@ macro USE_GENERIC_RAYGEN_AHS(stage, handle_translucent)
       {
         pl_set_call_counter(payload, callCounter + 1);
 
-        float3 ray_origin = WorldRayOrigin();
-        float3 ray_direction = WorldRayDirection();
         float ray_t = RayTCurrent();
         uint instanceId = InstanceID();
         uint triangleIx = PrimitiveIndex();
@@ -226,7 +224,7 @@ macro USE_GENERIC_RAYGEN_AHS(stage, handle_translucent)
         float2 barycentrics2 = attr.barycentrics;
         #if handle_translucent
           float lodT = calc_mip_level(ray_t, false, true);
-          if (AHS_Hit != alpha_test_ahs_lod(ray_origin, ray_direction, pl_get_lod(payload) + lodT, ray_t, triangleIx, instanceId, geometryIndex, barycentrics2, instanceIndex, 0.5))
+          if (AHS_Hit != alpha_test_ahs_lod(pl_get_lod(payload) + lodT, ray_t, triangleIx, instanceId, geometryIndex, barycentrics2, instanceIndex, 0.5))
             IgnoreHit();
         #endif
       }

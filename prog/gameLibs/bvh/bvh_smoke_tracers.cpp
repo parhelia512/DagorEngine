@@ -16,8 +16,6 @@
 namespace bvh
 {
 
-Sbuffer *alloc_scratch_buffer(uint32_t size, uint32_t &offset);
-
 namespace smoke_tracers
 {
 

@@ -460,4 +460,6 @@ ECS_BROADCAST_EVENT_TYPE(EventOnLocalSceneEntitiesCreated)
 ECS_BROADCAST_EVENT_TYPE(EventOnSceneCreated, Scene::SceneId /*sceneId*/)
 ECS_BROADCAST_EVENT_TYPE(EventOnSceneDestroyed, Scene::SceneId /*sceneId*/)
 ECS_BROADCAST_EVENT_TYPE(EventOnEntitySceneDataChanged, EntityId /*eid*/)
+ECS_BROADCAST_EVENT_TYPE(EventOnSceneOrderChanged, Scene::SceneId /*sceneId*/)
+ECS_BROADCAST_EVENT_TYPE(EventOnSceneParentChanged, Scene::SceneId /*sceneId*/)
 } // namespace ecs

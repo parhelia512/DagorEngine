@@ -34,7 +34,7 @@ struct BuiltBLAS
   bbox3f box = {};
   // FP16 tree bytes, then the GPU vertex payload (12 B float3 or 8 B fp16 per `vertsFp16`). Verts are
   // reached through each leaf's relative base, NOT at data+treeBytes: a padded producer (the collision
-  // grid fast path) 8-aligns the pool, so padding can sit between the tree and the vertex payload.
+  // single-node chunk splice) 8-aligns the pool, so padding can sit between the tree and the vertex payload.
   dag::Vector<uint8_t> data;
   uint32_t treeBytes = 0; // tree-walk span in bytes (GPU traversal bound), not the vertex offset; 0 iff pure box
   float dimAsBoxDist = 0;

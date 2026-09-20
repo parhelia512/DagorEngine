@@ -10,6 +10,7 @@ include "glass_hole_mask.dshl"
 include "glass_gbuffer_inc.dshl"
 include "rt_glass_apply.dshl"
 include "glass_icon_render_inc.dshl"
+include "camera_in_camera.dshl"
 
 float glass_specular_color_mul = 10;
 float glass_shadow_k = 0.5;
@@ -119,6 +120,7 @@ shader glass_crack, dynamic_masked_glass_chrome, dynamic_glass_chrome
   }
 
   DYNAMIC_SIMPLE_VS_BASE_PREAMBLE()
+  INIT_AND_USE_ON_TOP_CAMERA_IN_CAMERA(vs)
   BASE_USE_BRUNETON_FOG(vs)
 
   if (shader == dynamic_glass_chrome)
@@ -167,6 +169,7 @@ shader glass_crack, dynamic_masked_glass_chrome, dynamic_glass_chrome
       cockpit_radius@f1 = cockpit_radius;
     }
 
+    INIT_AND_USE_ON_TOP_CAMERA_IN_CAMERA(ps)
     BASE_USE_BRUNETON_FOG(ps)
     USE_CSM_SHADOW_DEFAULT(ps, 2)
     if (in_editor_assume == no)

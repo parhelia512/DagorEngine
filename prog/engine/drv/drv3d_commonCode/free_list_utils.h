@@ -113,50 +113,41 @@ inline auto free_list_find_smallest_fit_aligned(C &container, S count, S alignme
   using eastl::end;
   using eastl::find_if;
 
-  // find first
-  auto at = find_if(begin(container), end(container),
-    [count, alignment](auto range) //
+  // Usable size of a range when the allocation has to start at an aligned
+  // offset. Zero when the aligned offset is past the end of the range.
+  auto alignedSize = [alignment](auto range) -> S //
+  {
+    const S alignedStart = (range.front() + alignment - 1) & ~(alignment - 1);
+    if (alignedStart >= range.stop)
     {
-      auto r2 = range.front(((range.front() + alignment - 1) & ~(alignment - 1)) - range.front());
-      // alignment offset may push it over stop
-      if (!r2.isValidRange())
-      {
-        return false;
-      }
-      return r2.size() >= count;
-    });
+      return 0;
+    }
+    return range.stop - alignedStart;
+  };
+
+  auto at = find_if(begin(container), end(container),
+    [count, alignedSize](auto range) //
+    { return alignedSize(range) >= count; });
 
   if (at == end(container))
   {
     return at;
   }
 
-  // find smallest (may not be the best, though!)
-  auto cmp = at++;
-  if (at != end(container) && cmp->size() > count)
+  // find the smallest of the fitting ranges
+  auto best = at;
+  auto bestSize = alignedSize(*best);
+  for (++at; at != end(container) && bestSize > count; ++at)
   {
-    do
+    const S size = alignedSize(*at);
+    if (size >= count && size < bestSize)
     {
-      at = find_if(at, end(container),
-        [cmp, count, alignment](auto range) //
-        {
-          auto r2 = range.front(((range.front() + alignment - 1) & ~(alignment - 1)) - range.front());
-          // alignment offset may push it over stop
-          if (!r2.isValidRange())
-          {
-            return false;
-          }
-          return r2.size() >= count && r2.size() < cmp->size();
-        });
-      if (at == end(container))
-      {
-        break;
-      }
-      cmp = at++;
-    } while (at != end(container) && cmp->size() > count);
+      best = at;
+      bestSize = size;
+    }
   }
 
-  return cmp;
+  return best;
 }
 
 // Allocation algorithm trying to allocate a range with 'count' elements from

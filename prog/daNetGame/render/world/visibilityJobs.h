@@ -46,7 +46,7 @@ struct VisibilityReprojectJob final : public cpujobs::IJob
   Occlusion *occlusion;
 
   void start(Occlusion *occl);
-  const char *getJobName(bool &) const override { return "VisibilityReprojectJob"; }
+  const char *getJobName(bool &) const override { return DAPROFILER_STRING("VisibilityReprojectJob"); }
   void doJob() override;
 };
 
@@ -57,7 +57,7 @@ struct OcclusionReadbackGPUJob final : public cpujobs::IJob
   Occlusion *occlusion = nullptr;
 
   void start(const VisibilityJobsContext *jobs, Occlusion *occl);
-  const char *getJobName(bool &) const override { return "OcclusionReadbackGPUJob"; }
+  const char *getJobName(bool &) const override { return DAPROFILER_STRING("OcclusionReadbackGPUJob"); }
   virtual void doJob() override;
   void performJob();
 };
@@ -84,7 +84,7 @@ struct RendinstVisibilityPrepareJob final : public cpujobs::IJob
     bool shadow_,
     threadpool::JobPriority prio_);
 
-  const char *getJobName(bool &) const override { return "RendinstVisibilityPrepareJob"; }
+  const char *getJobName(bool &) const override { return DAPROFILER_STRING("RendinstVisibilityPrepareJob"); }
   void doJob() override;
 };
 
@@ -113,7 +113,7 @@ struct RendinstExtraVisibilityPrepareJob final : public cpujobs::IJob
     threadpool::JobPriority prio_,
     eastl::optional<IPoint2> target_ = {},
     bool is_main_job = false);
-  const char *getJobName(bool &) const override { return "RendinstExtraVisibilityPrepareJob"; }
+  const char *getJobName(bool &) const override { return DAPROFILER_STRING("RendinstExtraVisibilityPrepareJob"); }
   void doJob() override;
 };
 
@@ -141,7 +141,7 @@ struct VisibilityPrepareJob final : public cpujobs::IJob
     const IPoint2 &rendering_resolution,
     const ShadowVisibilityContext &shadow_ctx,
     OcclusionMaskApplier *occlusion_mask_applier);
-  const char *getJobName(bool &) const override { return "VisibilityPrepareJob"; }
+  const char *getJobName(bool &) const override { return DAPROFILER_STRING("VisibilityPrepareJob"); }
   void doJob() override;
   void prepareVisibility();
   void finalize();
@@ -153,7 +153,7 @@ struct LodsByDistanceJob final : public cpujobs::IJob
   Point3 cameraPos;
 
   void start(const Point3 &camera_pos);
-  const char *getJobName(bool &) const override { return "LodsByDistanceJob"; }
+  const char *getJobName(bool &) const override { return DAPROFILER_STRING("LodsByDistanceJob"); }
   void doJob() override;
 };
 
@@ -176,7 +176,7 @@ struct GroundCullingJob final : public cpujobs::IJob
     const int displacement_sub_div,
     const float displacement_radius,
     threadpool::JobPriority prio);
-  const char *getJobName(bool &) const override { return "GroundCullingJob"; }
+  const char *getJobName(bool &) const override { return DAPROFILER_STRING("GroundCullingJob"); }
   void doJob() override;
 };
 
@@ -194,7 +194,7 @@ struct GroundReflectionCullingJob final : public cpujobs::IJob
     const Point3 &viewPos_,
     const TMatrix4 &viewProj_,
     threadpool::JobPriority prio);
-  const char *getJobName(bool &) const override { return "GroundReflectionCullingJob"; }
+  const char *getJobName(bool &) const override { return DAPROFILER_STRING("GroundReflectionCullingJob"); }
   virtual void doJob() override;
 };
 
@@ -205,9 +205,10 @@ struct LightsCullingJob final : public cpujobs::IJob
   vec4f viewPos;
   float zn = 0.1;
   float zf = 10000.f;
+  float hk = 1.f;
 
   void start(Occlusion *occlusion, const CameraParams &cur_frame_camera, threadpool::JobPriority prio);
-  const char *getJobName(bool &) const override { return "LightsCullingJob"; }
+  const char *getJobName(bool &) const override { return DAPROFILER_STRING("LightsCullingJob"); }
   void doJob() override;
 };
 
@@ -217,6 +218,6 @@ struct LightProbeVisibilityJob final : public cpujobs::IJob
   Point3 viewPos;
 
   void start(const mat44f &globtm_, const Point3 &view_pos);
-  const char *getJobName(bool &) const override { return "LightProbeVisibilityJob"; }
+  const char *getJobName(bool &) const override { return DAPROFILER_STRING("LightProbeVisibilityJob"); }
   virtual void doJob() override;
 };

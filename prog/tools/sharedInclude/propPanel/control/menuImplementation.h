@@ -21,8 +21,11 @@ public:
   ~Menu() override;
 
   void addItem(unsigned menu_id, unsigned item_id, const char *title) override;
-  void addSeparator(unsigned menu_id, unsigned item_id) override;
+  void addItemWithComment(unsigned menu_id, unsigned item_id, const char *title, const char *comment) override;
+  void addSeparator(unsigned menu_id) override;
   void addSubMenu(unsigned menu_id, unsigned submenu_id, const char *title) override;
+  void addLabel(unsigned menu_id, const char *title) override;
+  void setStyle(const MenuStyle &style) override { menuStyle = style; }
 
   int getItemCount(unsigned menu_id) override;
   bool isEmpty() const override;
@@ -51,6 +54,7 @@ protected:
     RadioButton,
     Separator,
     SubMenu,
+    Label,
   };
 
   class MenuItem
@@ -80,14 +84,15 @@ protected:
 
     void setTitleAndShortcut(const char *title_with_shortcut);
 
-    virtual bool updateImguiButton(bool is_checked, bool is_bullet);
-    void updateImgui(MenuItem *&clicked_item);
+    virtual bool updateImguiButton(bool is_checked, bool is_bullet, const MenuStyle &style);
+    void updateImgui(MenuItem *&clicked_item, const MenuStyle &style);
 
   private:
     String title;
 
   public:
     String shortcut;
+    bool secondaryIsComment = false; // pins to the label column instead of the trailing edge
     const unsigned id;
     bool enabled = true;
     bool checked = false;
@@ -103,6 +108,7 @@ protected:
   MenuItem *getMenuItemById(unsigned id);
 
   MenuItem rootMenu;
+  MenuStyle menuStyle;
   IMenuEventHandler *eventHandler = nullptr;
 };
 

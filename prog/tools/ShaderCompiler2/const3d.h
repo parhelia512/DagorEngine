@@ -7,12 +7,14 @@
 
 inline constexpr uint32_t MAX_CBUFFER_VECTORS = 4096;
 
+inline constexpr int REGISTER_BYTE_SIZE = 16;
+
 inline constexpr const char *SHADER_STAGE_SHORT_NAMES[STAGE_MAX] = {"cs", "ps", "vs"};
 inline constexpr const char *SHADER_STAGE_NAMES[STAGE_MAX] = {"compute", "pixel", "vertex"};
 
 inline constexpr int MATERIAL_PARAMS_CONST_BUF_REGISTER = 1;
-inline constexpr int GLOBAL_CONST_BUF_REGISTER = 2;
 
+// A texture hardcoded at register tN takes sampler sN, so tN above MAX_S_REGISTERS cannot be sampled.
 #if _CROSS_TARGET_DX12
 #include <drv/shadersMetaData/dxil/compiled_shader_header.h>
 
@@ -37,45 +39,67 @@ static constexpr bool UAVS_CONTEND_WITH_RTVS = false;
 
 inline constexpr int IMMEDIATE_CB_REGISTER = -1; // Uses real push constants
 
-#else
+#elif _CROSS_TARGET_DX11
+#include <drv/shadersMetaData/dx11/register_limits.h>
 
-#if _CROSS_TARGET_METAL
-#include "buffBindPoints.h"
-#endif
+inline constexpr int MAX_T_REGISTERS = dx11::MAX_T_REGISTERS;
+inline constexpr int MAX_S_REGISTERS = dx11::MAX_S_REGISTERS;
+inline constexpr int MAX_U_REGISTERS = dx11::MAX_U_REGISTERS;
+inline constexpr int MAX_B_REGISTERS = dx11::MAX_B_REGISTERS;
 
-// @TODO: make per-platform limits for all platforms & drivers
+inline constexpr bool UAVS_CONTEND_WITH_RTVS = dx11::UAVS_CONTEND_WITH_RTVS;
 
+inline constexpr int IMMEDIATE_CB_REGISTER = dx11::IMMEDIATE_CB_REGISTER;
+
+#elif _CROSS_TARGET_METAL
+#include <drv/shadersMetaData/metal/register_limits.h>
+
+inline constexpr int MAX_T_REGISTERS = metal::MAX_T_REGISTERS;
+inline constexpr int MAX_S_REGISTERS = metal::MAX_S_REGISTERS;
+inline constexpr int MAX_U_REGISTERS = metal::MAX_U_REGISTERS;
+inline constexpr int MAX_B_REGISTERS = metal::MAX_B_REGISTERS;
+
+inline constexpr bool UAVS_CONTEND_WITH_RTVS = metal::UAVS_CONTEND_WITH_RTVS;
+
+inline constexpr int IMMEDIATE_CB_REGISTER = metal::IMMEDIATE_CB_REGISTER;
+
+#elif _CROSS_TARGET_C1
+
+
+
+
+
+
+
+
+
+
+
+#elif _CROSS_TARGET_C2
+
+
+
+
+
+
+
+
+
+
+
+#elif _CROSS_TARGET_EMPTY
+
+// The stub target has no driver to agree with, so these are arbitrary but must stay put: they shape
+// the register layout of the dumps it produces.
 inline constexpr int MAX_T_REGISTERS = 32;
-
-// Physical limits are 14 for dx11, 20 for PS4, 32 for PS5 (or even 256), putting at 12 to start unification
+inline constexpr int MAX_S_REGISTERS = 16;
+inline constexpr int MAX_U_REGISTERS = 13;
 inline constexpr int MAX_B_REGISTERS = 12;
 
-#if _CROSS_TARGET_DX11
-inline constexpr int MAX_U_REGISTERS = 8;
-#elif _CROSS_TARGET_METAL
-inline constexpr int MAX_U_REGISTERS = 10;
-#else
-inline constexpr int MAX_U_REGISTERS = 13;
-#endif
-
-#if _CROSS_TARGET_DX11
-inline constexpr bool UAVS_CONTEND_WITH_RTVS = true;
-#else
 inline constexpr bool UAVS_CONTEND_WITH_RTVS = false;
-#endif
 
-#if _CROSS_TARGET_C2
-
-#else
-inline constexpr int MAX_S_REGISTERS = 16;
-#endif
-
-#if _CROSS_TARGET_METAL
-inline constexpr int IMMEDIATE_CB_REGISTER = drv3d_metal::IMMEDIATE_BIND_POINT;
-#elif _CROSS_TARGET_C1 || _CROSS_TARGET_C2
-
-#else
 inline constexpr int IMMEDIATE_CB_REGISTER = 8;
-#endif
 
+#else
+#error No register limits for this cross target. Add a shadersMetaData/<target>/register_limits.h shared with its driver.
 #endif

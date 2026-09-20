@@ -1,0 +1,5 @@
+let DataBlock = require_optional("DataBlock")
+
+return {
+  set_loading_screen_config = @(cfg) assert(cfg == null || DataBlock == null || cfg instanceof DataBlock)
+}

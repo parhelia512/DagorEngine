@@ -217,7 +217,7 @@ static void writeIPoint4(BufferedWriter &cb, int p1, int p2, int p3, int p4)
 }
 
 template <bool print_with_limits>
-bool DataBlock::writeText(BufferedWriter &cb, int level, int *max_lines, int max_levels) const
+bool DataBlock::writeText(BufferedWriter &cb, int level, int *max_lines, int max_levels, bool write_arrays) const
 {
   const char *eol = (level >= 0 && !print_with_limits) ? "\r\n" : "\n";
   const char *compactEol = "\n";
@@ -232,6 +232,7 @@ bool DataBlock::writeText(BufferedWriter &cb, int level, int *max_lines, int max
   auto oldParams = getParamsImpl();
   int skipped_comments = 0;
   bool skip_next_indent = false;
+  uint32_t arrayEnd = 0;
   for (uint32_t i = 0, e = paramCount(); i < e; ++i, ++oldParams)
   {
     const Param &p = *oldParams;
@@ -251,7 +252,17 @@ bool DataBlock::writeText(BufferedWriter &cb, int level, int *max_lines, int max
       continue;
     }
 
-    if (level > 0)
+    const bool continueArray = i < arrayEnd;
+    if (write_arrays && !continueArray && keyName[0] != '@')
+    {
+      uint32_t end = i + 1;
+      while (end < e && oldParams[end - i].nameId == p.nameId && oldParams[end - i].type == p.type)
+        ++end;
+      if (end > i + 1)
+        arrayEnd = end;
+    }
+
+    if (level > 0 && !continueArray)
     {
       const bool isWriteOneLineBlock = DataBlock::writeOneParamBlockCompact && paramCount() == 1 && blockCount() == 0;
       if (!skip_next_indent)
@@ -261,7 +272,7 @@ bool DataBlock::writeText(BufferedWriter &cb, int level, int *max_lines, int max
     }
     if (p.type == TYPE_STRING && keyName[0] == '@')
     {
-      if (strcmp(keyName, "@include") == 0)
+      if (strcmp(keyName, "@include") == 0 && !shared->blkNoIncludes())
       {
         cb.write("include ", 8);
         writeStringValue(cb, getStr(i));
@@ -292,10 +303,16 @@ bool DataBlock::writeText(BufferedWriter &cb, int level, int *max_lines, int max
     int strLen = 0;
     const char *typeStr = dblk::resolve_short_type_len(p.type, strLen);
 
-    (isCIdent ? writeString : writeStringValue)(cb, keyName);
-    cb.write(":", 1);
-    cb.write(typeStr, strLen);
-    cb.write("=", 1);
+    if (!continueArray)
+    {
+      (isCIdent ? writeString : writeStringValue)(cb, keyName);
+      cb.write(":", 1);
+      cb.write(typeStr, strLen);
+      if (i < arrayEnd)
+        cb.write("[]=[", 4);
+      else
+        cb.write("=", 1);
+    }
     if (p.type == TYPE_STRING)
     {
       writeStringValue(cb, getStr(i)); // getParamString<string_t>(p.v)
@@ -339,6 +356,16 @@ bool DataBlock::writeText(BufferedWriter &cb, int level, int *max_lines, int max
 
       if (strLen)
         cb.write(buf, strLen);
+    }
+    if (i < arrayEnd)
+    {
+      cb.write(";", 1);
+      if (i + 1 < arrayEnd)
+      {
+        cb.write(" ", 1);
+        continue;
+      }
+      cb.write("]", 1);
     }
     if ((level < 0 || DataBlock::writeOneParamBlockCompact) && paramCount() == 1 && blockCount() == 0)
       cb.write(";", 1);
@@ -436,8 +463,8 @@ bool DataBlock::writeText(BufferedWriter &cb, int level, int *max_lines, int max
       CHECK_LINES_LIMIT();
     }
 
-    if (
-      !b.writeText<print_with_limits>(cb, level >= 0 ? level + 1 : level, max_lines, print_with_limits ? max_levels - 1 : max_levels))
+    if (!b.writeText<print_with_limits>(cb, level >= 0 ? level + 1 : level, max_lines, print_with_limits ? max_levels - 1 : max_levels,
+          write_arrays))
       return false;
     if (level > 0)
       writeIndent(cb, isWriteOneLineBlock ? 1 : level * 2);
@@ -470,12 +497,12 @@ bool DataBlock::saveToTextStreamCompact(IGenSave &cwr, int write_buf_sz) const
   return true;
 }
 
-bool DataBlock::saveToTextStream(IGenSave &cwr, int write_buf_sz) const
+bool DataBlock::saveToTextStream(IGenSave &cwr, int write_buf_sz, bool write_arrays) const
 {
   BufferedWriter buf_wr(cwr, write_buf_sz);
   DAGOR_TRY
   {
-    writeText<false>(buf_wr, 0, nullptr, 0);
+    writeText<false>(buf_wr, 0, nullptr, 0, write_arrays);
     buf_wr.flush();
   }
   DAGOR_CATCH(const IGenSave::SaveException &) { return false; }
@@ -1114,7 +1141,7 @@ struct OpenDataBlock : public DataBlock
     unsigned hint_size);
   friend bool save_to_text_file_ex(const DataBlock &blk, const char *filename, bool compact, int write_buf_sz);
   friend bool print_to_text_stream_limited(const DataBlock &blk, IGenSave &cwr, int max_ln, int max_lev, int init_lev,
-    int write_buf_sz);
+    int write_buf_sz, bool write_arrays);
 };
 } // namespace dblk
 
@@ -1162,14 +1189,15 @@ bool dblk::save_to_text_file_compact(const DataBlock &blk, const char *filename,
   return dblk::save_to_text_file_ex(blk, filename, true, write_buf_sz);
 }
 
-bool dblk::print_to_text_stream_limited(const DataBlock &blk, IGenSave &cwr, int max_ln, int max_lev, int init_lev, int write_buf_sz)
+bool dblk::print_to_text_stream_limited(const DataBlock &blk, IGenSave &cwr, int max_ln, int max_lev, int init_lev, int write_buf_sz,
+  bool write_arrays)
 {
   BufferedWriter buf_wr(cwr, write_buf_sz);
   DAGOR_TRY
   {
     if (max_ln < 0)
       max_ln = 0x7FFFFFFF;
-    if (!static_cast<const dblk::OpenDataBlock &>(blk).writeText<true>(buf_wr, init_lev, &max_ln, max_lev))
+    if (!static_cast<const dblk::OpenDataBlock &>(blk).writeText<true>(buf_wr, init_lev, &max_ln, max_lev, write_arrays))
     {
       buf_wr.write("...\n", 4);
       buf_wr.flush();
@@ -1196,19 +1224,27 @@ bool dblk::save_to_binary_file(const DataBlock &blk, const char *filename)
 #define PARSE_FLAGS_PROLOGUE()                                                     \
   auto *shared = static_cast<OpenDataBlock &>(blk).shared;                         \
   bool prev_robust = shared->blkRobustLoad(), prev_bin = shared->blkBinOnlyLoad(); \
+  bool prev_noinc = shared->blkNoIncludes();                                       \
   bool prev_allow_ss = DataBlock::allowSimpleString;                               \
   if (flg & ReadFlag::ROBUST)                                                      \
     shared->setBlkRobustLoad(1), shared->setBlkRobustOps(1);                       \
   if (flg & ReadFlag::BINARY_ONLY)                                                 \
     shared->setBlkBinOnlyLoad(1);                                                  \
+  if (flg & ReadFlag::NO_INCLUDES)                                                 \
+    shared->setBlkNoIncludes(1);                                                   \
   if (flg & ReadFlag::ALLOW_SS)                                                    \
   DataBlock::allowSimpleString = true
 
-#define RESTORE_FLAGS_EPILOGUE()                                                                                      \
-  shared = static_cast<OpenDataBlock &>(blk).shared;                                                                  \
-  if (flg & ReadFlag::RESTORE_FLAGS)                                                                                  \
-    shared->setBlkRobustLoad(prev_robust), shared->setBlkRobustOps(prev_robust), shared->setBlkBinOnlyLoad(prev_bin); \
-  if (flg & ReadFlag::ALLOW_SS)                                                                                       \
+#define RESTORE_FLAGS_EPILOGUE()                     \
+  shared = static_cast<OpenDataBlock &>(blk).shared; \
+  if (flg & ReadFlag::RESTORE_FLAGS)                 \
+  {                                                  \
+    shared->setBlkRobustLoad(prev_robust);           \
+    shared->setBlkRobustOps(prev_robust);            \
+    shared->setBlkBinOnlyLoad(prev_bin);             \
+    shared->setBlkNoIncludes(prev_noinc);            \
+  }                                                  \
+  if (flg & ReadFlag::ALLOW_SS)                      \
   DataBlock::allowSimpleString = prev_allow_ss
 
 bool dblk::load(DataBlock &blk, const char *fname, dblk::ReadFlags flg, DataBlock::IFileNotify *fnotify)
@@ -1247,6 +1283,8 @@ dblk::ReadFlags dblk::get_flags(const DataBlock &blk)
     f |= ReadFlag::ROBUST;
   if (shared.blkBinOnlyLoad())
     f |= ReadFlag::BINARY_ONLY;
+  if (shared.blkNoIncludes())
+    f |= ReadFlag::NO_INCLUDES;
   return f;
 }
 void dblk::set_flag(DataBlock &blk, dblk::ReadFlags flg_to_add)
@@ -1256,6 +1294,8 @@ void dblk::set_flag(DataBlock &blk, dblk::ReadFlags flg_to_add)
     shared.setBlkRobustLoad(true), shared.setBlkRobustOps(true);
   if (flg_to_add & ReadFlag::BINARY_ONLY)
     shared.setBlkBinOnlyLoad(true);
+  if (flg_to_add & ReadFlag::NO_INCLUDES)
+    shared.setBlkNoIncludes(true);
 }
 void dblk::clr_flag(DataBlock &blk, dblk::ReadFlags flg_to_clr)
 {
@@ -1264,6 +1304,8 @@ void dblk::clr_flag(DataBlock &blk, dblk::ReadFlags flg_to_clr)
     shared.setBlkRobustLoad(false), shared.setBlkRobustOps(false);
   if (flg_to_clr & ReadFlag::BINARY_ONLY)
     shared.setBlkBinOnlyLoad(false);
+  if (flg_to_clr & ReadFlag::NO_INCLUDES)
+    shared.setBlkNoIncludes(false);
 }
 DBNameMap *dblk::create_db_names() { return new DBNameMap; }
 void dblk::destroy_db_names(DBNameMap *nm) { delete nm; }

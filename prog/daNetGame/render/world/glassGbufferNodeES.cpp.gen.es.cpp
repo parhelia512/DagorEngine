@@ -83,7 +83,7 @@ static ecs::EntitySystemDesc glass_rttr_recreate_es_es_desc
   empty_span(),
   make_span(glass_rttr_recreate_es_comps+0, 4)/*rq*/,
   empty_span(),
-  ecs::EventSetBuilder<>::build(),
+  ecs::EventSetBuilder<OnRenderSettingsReady>::build(),
   0
 ,nullptr,"render_settings__antialiasing_mode,render_settings__bare_minimum,render_settings__enableRTTR,render_settings__rayReconstruction",nullptr,"bvh_render_settings_changed_es");
 static constexpr ecs::ComponentDesc animchar_render_trans_ecs_query_comps[] =

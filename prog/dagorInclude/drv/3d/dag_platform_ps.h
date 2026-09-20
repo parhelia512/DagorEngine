@@ -38,6 +38,7 @@ bool record_frame(int control);
 // to catch specific point of frame in debugger. id is an arbitrary value
 void debug_point(int id = 0);
 void set_verbose_mode(bool ena);          // enable verbose debug messages (auto-disabled on any submit)
+void set_fill_gpu_blocks(bool ena);       // fill freed/uninitialized gpu memory with a recognizable pattern
 void submit_and_stall(bool locked_state); // force gpu pipeline flush
 void submit_background();
 void freeze_frame(); // repeat current frame on present

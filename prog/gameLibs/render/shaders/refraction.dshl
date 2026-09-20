@@ -11,7 +11,6 @@ endmacro
 macro REFRACTION_INIT()
   INIT_BRUNETON_FOG(vs)
   FOG_PS_STCODE()
-  INIT_SUN_STCODE()
 
   if (in_editor_assume == no)
   {
@@ -51,7 +50,7 @@ hlsl(stage) {
     float4 ndcSamplePosition = mul(float4(cameraToPoint + worldRayDir*rayLen, 1.0), viewProjectionMatrixNoOfs);
     float2 refractUV = (ndcSamplePosition.xy/ndcSamplePosition.w);
     refractUV = refractUV*float2(0.5, -0.5) + 0.5;
-    return float4(unpack_hdr(tex2Dlod(prev_frame_tex, float4(frac(abs(floor(refractUV))%2 ? -refractUV : refractUV), 0, roughnessMip)).xyz), 1);//simulate mirror addressing
+    return float4(unpack_hdr(tex2Dlod(prev_frame_tex, float4(frac(select(bool2(abs(floor(refractUV))%2), -refractUV, refractUV)), 0, roughnessMip)).xyz), 1);//simulate mirror addressing
   }
 }
 endmacro

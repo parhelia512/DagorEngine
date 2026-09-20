@@ -232,7 +232,7 @@ static void collimator_moa_track_selected_image_es(const UpdateStageInfoBeforeRe
 
 ECS_TAG(render)
 ECS_NO_ORDER
-ECS_ON_EVENT(AfterDeviceReset)
+ECS_ON_EVENT(EventAfterDeviceReset)
 static void collimator_moa_on_device_reset_es_event_handler(const ecs::Event &, ecs::EntityId &collimator_moa_render__active_image_eid,
   int &collimator_moa_render__shapes_buf_reg_count, UniqueBufWithShaderVar &collimator_moa_render__current_shapes_buf)
 {

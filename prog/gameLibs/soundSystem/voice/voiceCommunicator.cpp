@@ -340,6 +340,7 @@ void VoiceCommunicatorImpl::process()
     fmodSys->isRecording(soundSettings.recordDeviceId, &isRealRecording);
     if (!isRealRecording)
     {
+      stopRecord();
       if (!startRecord())
       {
         // device not connected
@@ -401,7 +402,7 @@ void VoiceCommunicatorImpl::updateSoundSettings(SoundSettings const &settings)
   {
     stopRecord();
     soundSettings.recordDeviceId = settings.recordDeviceId;
-    if (settings.recordDeviceId != -1)
+    if (isRecording)
       startRecord();
   }
 }

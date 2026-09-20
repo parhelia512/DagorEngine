@@ -79,6 +79,10 @@ void GpuDeformObjectsManager::updateDeforms()
 
   activeDeformsCBIndex = (activeDeformsCBIndex + 1) % OBSTACLE_BUFFER_COUNT;
 
+  // Vegetation VS reads these unconditionally, and every path below can bail out early.
+  obstacle_indicesVarId.set_buffer(indices[activeDeformsCBIndex].getBufId());
+  obstaclesVarId.set_buffer(deformsCB[activeDeformsCBIndex].getBufId());
+
   G_STATIC_ASSERT(MAX_OBSTACLES <= (1 << (sizeof(uint8_t) * 8)));
   Tab<uint16_t> counters(framemem_ptr());
   int gridCounter = 0;
@@ -208,8 +212,8 @@ void GpuDeformObjectsManager::updateDeforms()
 
   indices[activeDeformsCBIndex].getBuf()->unlock();
 
+  // initIndicesBuffer() may have replaced the buffer bound above.
   obstacle_indicesVarId.set_buffer(indices[activeDeformsCBIndex].getBufId());
-  obstaclesVarId.set_buffer(deformsCB[activeDeformsCBIndex].getBufId());
 }
 
 void GpuDeformObjectsManager::close()

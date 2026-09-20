@@ -13,6 +13,7 @@ AddIncludes =
 
 Sources =
   collisionSwrtFeeder_bvh.cpp
+  collisionSwrtFeeder_splice.cpp
 ;
 
 UseProgLibs +=

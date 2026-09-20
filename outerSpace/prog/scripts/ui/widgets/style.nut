@@ -2,12 +2,12 @@ from "%scripts/ui/ui_library.nut" import *
 
 //let {BtnBgHover, BtnBgActive, ControlBgOpaque, TextHighlight, TextDefault, Active} = require("%ui/style/colors.nut")
 
-let buttonSound = {
+const buttonSound = {
   click  = "ui/button"
   hover  = "ui/timer_tick"
 }
 
-return freeze({
+return const {
   buttonSound
   MenuRowBgOdd   = Color(20, 20, 20, 20)
   MenuRowBgEven  = Color(0, 0, 0, 20)
@@ -24,4 +24,4 @@ return freeze({
   TextActive             = Color(0, 0, 0)
   TextHover              = Color(220, 220, 220, 160)
   ControlBgOpaque        = Color(28, 28, 28, 240)
-})
+}

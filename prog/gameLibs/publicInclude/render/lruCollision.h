@@ -80,7 +80,13 @@ protected:
 
   carray<uint16_t, COLLISION_BOX_INDICES_NUM> boxIndices;
 
+  // Per-node voxelization vb byte size, or false if the node contributes nothing.
+  // A BOX has no faces to filter, so its whole-node material test lives here; a mesh/convex node is judged material-independently, and
+  // the per-face filter can still empty it.
+  // Both passes then have to drop it: the sizing pass by its face count, the fill pass by re-checking that count itself.
+  static bool voxelization_node_verts(const CollisionResource *coll_res, int ni, const CollisionNode *node, uint32_t &vb_size);
   // Per-node voxelization ib/vb byte sizes, or false if the node contributes nothing.
+  // Counts faces, so it belongs to the sizing pass only.
   static bool voxelization_node_size(const CollisionResource *coll_res, int ni, const CollisionNode *node, uint32_t &ib_size,
     uint32_t &vb_size);
 

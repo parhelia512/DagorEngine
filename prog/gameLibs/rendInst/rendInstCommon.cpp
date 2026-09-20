@@ -121,7 +121,14 @@ void setDistMul(float distMul, float distOfs, bool force_impostors_and_mul, floa
   unitDistMul = distMul;
   unitDistOfs = distOfs;
 
-  // But for LOD selection we can use the settings from the graphics preset directly
+  // riExtra is culled past its last lod with the lod selection mul floored at the High preset value:
+  // lower presets may shorten lod switches but must not shorten draw distance.
+  constexpr float MIN_SETTINGS_DIST_MUL_FOR_LOD_CULL = 1.f;
+  rendinst::render::globalLodCullDistMul =
+    clamp(unitDistMul * max(MIN_SETTINGS_DIST_MUL_FOR_LOD_CULL, rendinst::render::settingsDistMul) + unitDistOfs,
+      MIN_EFFECTIVE_RENDINST_DIST_MUL, MAX_EFFECTIVE_RENDINST_DIST_MUL);
+
+  // For lod selection the graphics preset value applies directly
   rendinst::render::globalDistMul = clamp(unitDistMul * rendinst::render::settingsDistMul + unitDistOfs,
     MIN_EFFECTIVE_RENDINST_DIST_MUL, MAX_EFFECTIVE_RENDINST_DIST_MUL);
 

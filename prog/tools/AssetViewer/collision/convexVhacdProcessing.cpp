@@ -47,6 +47,9 @@ void ConvexVhacdProcessing::calcInterface(const ConvexVhacdSettings &settings)
   selectedInterface->Release();
   selectedInterface = VHACD::CreateVHACD_ASYNC();
   progressCallback.isComputed = false;
+  if (!collisionRes)
+    return;
+
   VHACD::IVHACD::Parameters p;
   dag::Vector<float> verts;
   dag::Vector<uint32_t> indices;
@@ -80,8 +83,11 @@ void ConvexVhacdProcessing::addSelectedInterface()
   selectedInterface = VHACD::CreateVHACD_ASYNC();
 }
 
+// Both delayed actions of a compute can land after the plugin ended and dropped the panel.
 void ConvexVhacdProcessing::printCalcProgress(const double progress)
 {
+  if (!panel)
+    return;
   panel->setText(PID_CONVEX_BUILD_INFO, String(100, "Progress %d%%", progress));
 }
 
@@ -103,6 +109,8 @@ void ConvexVhacdProcessing::updatePanelParams()
 
 void ConvexVhacdProcessing::checkComputedInterface()
 {
+  if (!panel)
+    return;
   for (int i = 0; i < selectedInterface->GetNConvexHulls(); ++i)
   {
     Tab<Point3> verts;

@@ -21,4 +21,4 @@ try {
     throw "no loadfile"
 } catch(e) profile_it = require("profile.nut")
 
-print("\"exp loop\", " + profile_it(20, function() {expLoop(1000000)}) + ", 20\n");
+print("\"exp loop\", " + profile_it(20, function() {expLoop(10000000)}) + ", 20\n");

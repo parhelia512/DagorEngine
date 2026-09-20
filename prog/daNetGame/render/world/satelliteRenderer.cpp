@@ -14,7 +14,7 @@
 //  - simple resolve (static shadows + regular PBR stuff)
 
 #include "satelliteRenderer.h"
-#include <render/world/cameraParams.h>
+#include <render/cameraParams.h>
 #include <util/dag_convar.h>
 #include <math/dag_mathUtils.h>
 #include "global_vars.h"

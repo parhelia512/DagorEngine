@@ -7,7 +7,7 @@
 #include <util/dag_convar.h>
 #include <render/daFrameGraph/daFG.h>
 #include <render/antialiasing.h>
-#include <render/world/cameraParams.h>
+#include <render/cameraParams.h>
 
 #include <EASTL/finally.h>
 
@@ -39,13 +39,12 @@ FSR::FSR(const IPoint2 &outputResolution) : AntiAliasing(outputResolution, outpu
 
     return [this, depthHndl, motionVecsHndl, opaqueFinalTargetHndl, antialiasedHndl, camera, cameraHistory] {
       render::antialiasing::ApplyContext ctx;
-      ctx.depthTexture = depthHndl.get();
       ctx.motionTexture = motionVecsHndl.get();
       ctx.jitterPixelOffset = camera.ref().jitterOffset;
       ctx.timeElapsed = deltaTimeMs;
       ctx.persp = camera.ref().noJitterPersp;
       ctx.resetHistory = is_teleporting(camera.ref(), cameraHistory.ref());
-      render::antialiasing::apply_fsr(opaqueFinalTargetHndl.get(), ctx, antialiasedHndl.get());
+      render::antialiasing::apply_fsr(opaqueFinalTargetHndl.get(), depthHndl.get(), ctx, antialiasedHndl.get());
     };
   });
 
@@ -95,7 +94,6 @@ FSR::FSR(const IPoint2 &outputResolution) : AntiAliasing(outputResolution, outpu
       registry.readTextureHistory("ui_tex").atStage(dafg::Stage::PS_OR_CS).useAs(dafg::Usage::SHADER_RESOURCE);
       registry.readTextureHistory("depth_for_postfx").atStage(dafg::Stage::PS_OR_CS).useAs(dafg::Usage::SHADER_RESOURCE);
       registry.readTextureHistory("motion_vecs_after_transparency").atStage(dafg::Stage::PS_OR_CS).useAs(dafg::Usage::SHADER_RESOURCE);
-      return [] {};
     });
   }
 

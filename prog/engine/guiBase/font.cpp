@@ -515,8 +515,8 @@ bool DagorFontBinDump::updateGen(int64_t reft, bool allow_raster_glyphs, bool al
             // flush ready rects
             erase_rects_but_last = true;
             for (int i = 0; i < (int)copy_rects.size() - 1; i++)
-              dynFontTex[copy_rects[i].dest_idx].tex->updateSubRegion(locked_sys_tex, 0, copy_rects[i].x0, copy_rects[i].y0, 0,
-                copy_rects[i].w, copy_rects[i].h, 1, 0, copy_rects[i].dest_x0, copy_rects[i].dest_y0, 0);
+              d3d::update_sub_region(locked_sys_tex, 0, copy_rects[i].x0, copy_rects[i].y0, 0, copy_rects[i].w, copy_rects[i].h, 1,
+                dynFontTex[copy_rects[i].dest_idx].tex, 0, copy_rects[i].dest_x0, copy_rects[i].dest_y0, 0);
           }
         }
         locked_sys_tex = sys_tex;
@@ -574,8 +574,8 @@ bool DagorFontBinDump::updateGen(int64_t reft, bool allow_raster_glyphs, bool al
     locked_sys_tex->unlockimg();
     // flush pending rects
     for (int i = 0; i < copy_rects.size(); i++)
-      dynFontTex[copy_rects[i].dest_idx].tex->updateSubRegion(locked_sys_tex, 0, copy_rects[i].x0, copy_rects[i].y0, 0,
-        copy_rects[i].w, copy_rects[i].h, 1, 0, copy_rects[i].dest_x0, copy_rects[i].dest_y0, 0);
+      d3d::update_sub_region(locked_sys_tex, 0, copy_rects[i].x0, copy_rects[i].y0, 0, copy_rects[i].w, copy_rects[i].h, 1,
+        dynFontTex[copy_rects[i].dest_idx].tex, 0, copy_rects[i].dest_x0, copy_rects[i].dest_y0, 0);
   }
 
   return added_glyph;
@@ -764,8 +764,8 @@ bool DagorFontBinDump::rasterize_str_u(const DagorFontBinDump::InscriptionData &
 
           int dest_x = cx + xbs + gd.x0 * scale, dest_y = cy + ybs + gd.y0 * scale;
           if (dest_x >= 0 && dest_y >= 0)
-            sys_tex->updateSubRegion(tex[gd.texIdx].tex, 0, int(gd.u0 * ftexinfo.w + 0.5), int(gd.v0 * ftexinfo.h + 0.5), 0,
-              gd.x1 - gd.x0, gd.y1 - gd.y0, 1, 0, dest_x, dest_y, 0);
+            d3d::update_sub_region(tex[gd.texIdx].tex, 0, int(gd.u0 * ftexinfo.w + 0.5), int(gd.v0 * ftexinfo.h + 0.5), 0,
+              gd.x1 - gd.x0, gd.y1 - gd.y0, 1, sys_tex, 0, dest_x, dest_y, 0);
           else
             logerr("rasterize_str_u: failed to copy pre-rendered glyph (u%04X) to %d,%d (cpos=%d,%d)", *str, dest_x, dest_y, cx, cy);
         }
@@ -836,7 +836,7 @@ bool DagorFontBinDump::rasterize_str_u(const DagorFontBinDump::InscriptionData &
   gen_sys_tex.clearData(margin_ofs, cr.h, dest, dest_stride, cr.x0 + cr.w - margin_ofs, cr.y0);
 
   sys_tex->unlockimg();
-  inscr_atlas.tex.first.getTex2D()->updateSubRegion(sys_tex, 0, cr.x0, cr.y0, 0, cr.w, cr.h, 1, 0, g.x0 - margin_ofs,
+  d3d::update_sub_region(sys_tex, 0, cr.x0, cr.y0, 0, cr.w, cr.h, 1, inscr_atlas.tex.first.getTex2D(), 0, g.x0 - margin_ofs,
     g.y0 - margin_ofs, 0);
   return true;
 }
@@ -1228,9 +1228,7 @@ void DagorFontBinDump::DynamicFontAtlas::prepareTex(int idx)
 {
   if (tex)
     return;
-  // use linear layout for Scarlett to workaround corrupted fonts bug
-  const int texcf = TEXFMT_R8 | TEXCF_UPDATE_DESTINATION | TEXCF_CLEAR_ON_CREATE |
-                    (d3d::get_driver_code().is(d3d::scarlett) ? TEXCF_LINEAR_LAYOUT : 0);
+  const int texcf = TEXFMT_R8 | TEXCF_UPDATE_DESTINATION | TEXCF_CLEAR_ON_CREATE;
   tex = (Texture *)d3d::create_tex(NULL, hist.size(), hist.size(), texcf, 1, "dynFontAtlas", RESTAG_GUI);
   texId = register_managed_tex(String(0, "dynFontAtlas%d", idx), tex);
 }
@@ -1809,13 +1807,13 @@ void DagorFontBinDump::loadFontsStream(IGenLoad &crd, FontArray &fonts, const ch
   {
     int total_dump_sz = 0;
     int ver = crd.readInt();
-    if (ver != _MAKE4C('DFB\5') && ver != _MAKE4C('DFB\6') && ver != _MAKE4C('DFz\7'))
+    if (ver != MAKE4C('D', 'F', 'B', 5) && ver != MAKE4C('D', 'F', 'B', 6) && ver != MAKE4C('D', 'F', 'z', 7))
       return;
 
     int first_index = fonts.size();
     int fonts_count = crd.readInt();
     int dynGrpCount = 0;
-    if (ver == _MAKE4C('DFz\7'))
+    if (ver == MAKE4C('D', 'F', 'z', 7))
       dynGrpCount = crd.readInt();
 
     for (int font_index = 0; font_index < fonts_count; font_index++)
@@ -1834,7 +1832,6 @@ void DagorFontBinDump::loadFontsStream(IGenLoad &crd, FontArray &fonts, const ch
     }
 
     // load and create textures
-    SmallTab<uint8_t, TmpmemAlloc> tmp;
 
     crd.beginBlock();
     fonts[first_index].texOwner = true;
@@ -1864,13 +1861,13 @@ void DagorFontBinDump::loadFontsStream(IGenLoad &crd, FontArray &fonts, const ch
     }
     crd.endBlock();
 
-    if (ver == _MAKE4C('DFB\6') || (ver == _MAKE4C('DFz\7') && dynGrpCount))
+    if (ver == MAKE4C('D', 'F', 'B', 6) || (ver == MAKE4C('D', 'F', 'z', 7) && dynGrpCount))
     {
       DagorFontBinDump &bin = fonts[first_index];
       String nm;
 
       crd.beginBlock();
-      if (ver == _MAKE4C('DFB\6'))
+      if (ver == MAKE4C('D', 'F', 'B', 6))
         dynGrpCount = crd.readIntP<2>();
       G_ASSERTF(dynGrpCount < 127, "dynGrpCount=%d", dynGrpCount);
       clear_and_resize(bin.dynGrp, dynGrpCount);
@@ -1961,7 +1958,7 @@ int DagorFontBinDump::loadDumpData(IGenLoad &crd)
   int dumpsize = 0;
 
   fontCapsHt = 1;
-  if (fileVer == _MAKE4C('DFz\7'))
+  if (fileVer == MAKE4C('D', 'F', 'z', 7))
   {
     crd.beginBlock();
     LzmaLoadCB zcrd(crd, crd.getBlockRest());

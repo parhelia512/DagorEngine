@@ -6,6 +6,10 @@ int clouds_disable_own_shadow = 0;
 interval clouds_disable_own_shadow: no < 1, yes;
 assume_if_not_assumed clouds_disable_own_shadow = no;
 
+int clouds_use_bsm = 1;
+interval clouds_use_bsm: no < 1, yes;
+assume_if_not_assumed clouds_use_bsm = yes;
+
 macro INIT_CLOUDS_SHADOW_BASE_COMMON(light_dir_x, light_dir_y, light_dir_z, code)
   (code) {
     world_pos_to_clouds_alt@f4 = (0.001/clouds_thickness2, -clouds_start_altitude2/clouds_thickness2,
@@ -42,6 +46,8 @@ endmacro
 macro CLOUDS_VOL_TRANSMITTANCE(code)
   USE_CLOUDS_HOLE_SHADOW_UV(code)
   hlsl(code) {
+    #ifndef CLOUDS_VOL_TRANSMITTANCE_DEFINED
+    #define CLOUDS_VOL_TRANSMITTANCE_DEFINED 1
     half base_clouds_transmittance_vol(float3 worldPos)
     {
       #if DISABLE_CLOUDS_SHADOW
@@ -54,6 +60,7 @@ macro CLOUDS_VOL_TRANSMITTANCE(code)
         return half(getCloudsShadows3d(float3(worldPos.xz*clouds_weather_inv_size__alt_scale.x + world_pos_to_clouds_alt.zw + CLOUDS_HOLE_SHADOW_UV, max(0, alt))).x);
       #endif
     }
+    #endif
   }
 endmacro
 
@@ -66,7 +73,14 @@ endmacro
 //reads zero, which decodes to unshadowed - so no on/off flag exists
 macro INIT_CLOUDS_SHADOW_BASE_REF(light_dir_x, light_dir_y, light_dir_z, code)
   INIT_CLOUDS_SHADOW_BASE_COMMON(light_dir_x, light_dir_y, light_dir_z, code)
-  INIT_CLOUDS_BSM(code)
+  if (clouds_use_bsm == yes)
+  {
+    INIT_CLOUDS_BSM(code)
+  }
+  else
+  {
+    INIT_CLOUDS_SHADOWS_VOLUME(code)
+  }
 endmacro
 
 macro USE_CLOUDS_SHADOW_BASE_REF(code)
@@ -80,18 +94,34 @@ macro USE_CLOUDS_SHADOW_BASE_REF(code)
       ##endif
     #endif
   }
-  USE_CLOUDS_BSM(code)
-  hlsl(code) {
-    half base_clouds_transmittance(float3 worldPos)
-    {
-      #if DISABLE_CLOUDS_SHADOW
-        return 1.0h;
-      #else
-        //outside the map window the lookup falls back to the statistical mean (never
-        //to the volume: its slant-displaced bottom slice wraps the tile at grazing
-        //sun and decorrelates from the clouds actually overhead)
-        return clouds_bsm_transmittance_soft(worldPos);
-      #endif
+  if (clouds_use_bsm == yes)
+  {
+    USE_CLOUDS_BSM(code)
+    hlsl(code) {
+      half base_clouds_transmittance(float3 worldPos)
+      {
+        #if DISABLE_CLOUDS_SHADOW
+          return 1.0h;
+        #else
+          //outside the map window the lookup falls back to the statistical mean (never
+          //to the volume: its slant-displaced bottom slice wraps the tile at grazing
+          //sun and decorrelates from the clouds actually overhead)
+          return clouds_bsm_transmittance_soft(worldPos);
+        #endif
+      }
+    }
+  }
+  else
+  {
+    USE_CLOUDS_SHADOWS_VOLUME(code)
+    CLOUDS_VOL_TRANSMITTANCE(code)
+    CLOUDS_SHADOW_MS_CURVE(code)
+    hlsl(code) {
+      //one wrap-volume fetch, faster than BSM
+      half base_clouds_transmittance(float3 worldPos)
+      {
+        return base_clouds_transmittance_vol(worldPos);
+      }
     }
   }
   hlsl(code) {
@@ -100,7 +130,7 @@ macro USE_CLOUDS_SHADOW_BASE_REF(code)
       #if DISABLE_CLOUDS_SHADOW
         return 1.0h;
       #else
-        return clouds_bsm_shadow_curve(extinction);
+        return clouds_shadow_ms_curve(extinction);
       #endif
     }
     half clouds_shadow(float3 worldPos)
@@ -121,33 +151,71 @@ endmacro
 //sampler is bound - the heavy receiver shaders that chose it (RT lighting) sit at
 //the SM5 sampler limit
 macro INIT_CLOUDS_SHADOW_BASE_2D(light_dir_x, light_dir_y, light_dir_z, code)
-  INIT_CLOUDS_BSM(code)
+  if (clouds_use_bsm == yes)
+  {
+    INIT_CLOUDS_BSM(code)
+  }
+  else
+  {
+    INIT_CLOUDS_SHADOW_BASE_COMMON(light_dir_x, light_dir_y, light_dir_z, code)
+    INIT_CLOUDS_SHADOWS_VOLUME(code)
+  }
 endmacro
 
 macro INIT_CLOUDS_SHADOW_BASE_2D_TEX(light_dir_x, light_dir_y, light_dir_z, code)
-  INIT_CLOUDS_BSM_TEX(code)
+  if (clouds_use_bsm == yes)
+  {
+    INIT_CLOUDS_BSM_TEX(code)
+  }
+  else
+  {
+    INIT_CLOUDS_SHADOW_BASE_COMMON(light_dir_x, light_dir_y, light_dir_z, code)
+    INIT_CLOUDS_SHADOWS_VOLUME_TEX(code)
+  }
 endmacro
 
 macro USE_CLOUDS_SHADOW_BASE_2D_SMP(code, smpl)
-  USE_CLOUDS_BSM_SMP(code, smpl)
   hlsl(code) {
     #ifndef DISABLE_CLOUDS_SHADOW
       #define DISABLE_CLOUDS_SHADOW 0
     #endif
+  }
+  if (clouds_use_bsm == yes)
+  {
+    USE_CLOUDS_BSM_SMP(code, smpl)
+  }
+  else
+  {
+    USE_CLOUDS_SHADOWS_VOLUME_SMP(code, smpl)
+    CLOUDS_VOL_TRANSMITTANCE(code)
+    CLOUDS_SHADOW_MS_CURVE(code)
+  }
+  hlsl(code) {
     half clouds_shadow(float3 worldPos)
     {
       #if DISABLE_CLOUDS_SHADOW
         return 1.0h;
       #else
         //the soft receiver footprint, same gate and ms curve as the ref path
-        return get_clouds_shadow_soft(worldPos);
+        ##if clouds_use_bsm == yes
+          return get_clouds_shadow_soft(worldPos);
+        ##else
+          return clouds_shadow_ms_curve(base_clouds_transmittance_vol(worldPos));
+        ##endif
       #endif
     }
   }
 endmacro
 
 macro USE_CLOUDS_SHADOW_BASE_2D(code)
-  USE_CLOUDS_SHADOW_BASE_2D_SMP(code, clouds_bsm_samplerstate)
+  if (clouds_use_bsm == yes)
+  {
+    USE_CLOUDS_SHADOW_BASE_2D_SMP(code, clouds_bsm_samplerstate)
+  }
+  else
+  {
+    USE_CLOUDS_SHADOW_BASE_2D_SMP(code, clouds_shadows_volume_samplerstate)
+  }
 endmacro
 
 //kept for source compatibility: both paths are the ref one now

@@ -19,10 +19,10 @@
 #include "namedConst.h"
 #include "nameMap.h"
 #include "hlslStage.h"
-#include "preshaderCompilation.h"
 #include "variablesMerger.h"
 #include "shErrorReporting.h"
 #include "fast_isalnum.h"
+#include "gatherVariantLocalVars.h"
 #include <dag/dag_vectorMap.h>
 #include <dag/dag_vectorSet.h>
 #include "defer.h"
@@ -42,7 +42,7 @@ namespace ShaderParser
  * class AssembleShaderEvalCB
  *
  *********************************/
-class AssembleShaderEvalCB : public ShaderEvalCB, public semantic::VariantBoolExprEvalCB
+class AssembleShaderEvalCB : public GatherVariantLocalVarsCB
 {
 public:
   struct HlslCompile
@@ -56,14 +56,9 @@ public:
     bool hasCompilation() const { return compile.has_value(); }
   };
 
-  shc::VariantContext &ctx;
-
   // Cached refs from ctx
-  ShaderClass &sclass; // @TODO: this should be const
-  ShaderSemCode &code;
   ShaderSemCode::PassTab *curvariant;
   SemanticShaderPass *curpass;
-  Parser &parser;
   const ExpressionParser exprParser; // Isn't a ref, but is actually a pair of refs to ctx and parser with behaviour
   const ShaderVariant::TypeTable &allRefStaticVars;
 
@@ -104,10 +99,6 @@ public:
   /************************************************************************/
   explicit AssembleShaderEvalCB(shc::VariantContext &ctx);
 
-  void eval_static(static_var_decl &s) override;
-  void eval_interval_decl(interval &interv) override {}
-  void eval_bool_decl(bool_decl &) override;
-  void eval_init_stat(SHTOK_ident *var, shader_init_value &v, bool is_referenced);
   void eval_channel_decl(channel_decl &s, int stream_id = 0) override;
 
   int get_blend_k(const Terminal &s);
@@ -121,11 +112,9 @@ public:
   void eval_zbias_state(zbias_state_stat &s) override;
   void eval_external_block(external_state_block &) override;
   void eval(immediate_const_block &) override {}
-  void eval_error_stat(error_stat &) override;
   void eval_render_stage(render_stage_stat &s) override;
   void eval_raytrace_pipeline(raytrace_pipeline_stat &s) override;
   void eval_assume_stat(assume_stat &s) override {}
-  void eval_assume_if_not_assumed_stat(assume_if_not_assumed_stat &s) override {}
   void eval_command(shader_directive &s) override;
   enum class BlendValueType
   {
@@ -136,8 +125,6 @@ public:
     SemanticShaderPass::BlendValues &blend_factors, const BlendValueType type);
 
   inline int eval_if(bool_expr &e) override;
-  void eval_else(bool_expr &) override {}
-  void eval_endif(bool_expr &) override {}
 
   ShVarBool eval_expr(bool_expr &e) override
   {
@@ -171,7 +158,6 @@ public:
 
   void eval_supports(supports_stat &s) override { preshaderSource.supportStats.emplace_back(&s); }
 
-  void decl_bool_alias(const char *name, const char *base_name) override;
   int is_debug_mode_enabled() override { return ctx.shCtx().isDebugModeEnabled(); }
 
 private:
@@ -191,11 +177,6 @@ private:
 }; // class AssembleShaderEvalCB
 
 inline int AssembleShaderEvalCB::eval_if(bool_expr &e) { return eval_expr(e).value ? IF_TRUE : IF_FALSE; }
-
-int appendVarToContext(shc::VariantContext &ctx, const char *name, ShaderVarType type, const int nameId, void *loc, bool dynamic,
-  bool noWarning, bool used = false, int slot = -1);
-void parseAttribs(shc::VariantContext &ctx, const eastl::vector<static_attrib_decl *> &attribs, const ShaderSemCode::Var &var,
-  uint32_t &flags, uint32_t &stubCol);
 
 // clear caches
 void clear_per_file_caches();

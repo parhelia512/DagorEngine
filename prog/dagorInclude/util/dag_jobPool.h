@@ -63,7 +63,7 @@ struct JobPool
         running = false;
       }
     }
-    virtual const char *getJobName(bool &) const override { return "JobPoolWorker"; }
+    virtual const char *getJobName(bool &) const override { return DAPROFILER_STRING("JobPoolWorker"); }
     virtual void releaseJob() override {}
   };
 
@@ -112,7 +112,7 @@ struct JobPool
       JobPoolJob(F &&f) : func(eastl::forward<F>(f)) {}
       virtual void doJob() override { func(); }
       virtual void releaseJob() override { delete this; }
-      virtual const char *getJobName(bool &) const override { return "JobPoolJob"; }
+      virtual const char *getJobName(bool &) const override { return DAPROFILER_STRING("JobPoolJob"); }
     };
 
     auto job = new JobPoolJob(eastl::forward<F>(func));

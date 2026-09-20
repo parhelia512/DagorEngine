@@ -69,6 +69,8 @@ public:
   void addAssetToFavorites(const DagorAsset &asset) override;
   void goToAsset(const DagorAsset &asset) override;
 
+  void removeAssetFromFavorites(const DagorAsset &asset);
+
   void setAssetMgr(DagorAssetMgr &asset_mgr);
 
   void addAssetToRecentlyUsed(const DagorAsset &asset);
@@ -82,6 +84,9 @@ public:
   void loadAssetBrowserSettings(DataBlock &blk);
 
   void updateImgui();
+
+  DagorAsset *getSelectedAsset() const;
+  DagorAssetFolder *getSelectedAssetFolder() const;
 
 private:
   enum class ActiveTab
@@ -107,6 +112,8 @@ private:
   IAssetBrowserHost &getAssetBrowserHost() override { return *this; }
   IAssetSelectorContextMenuHandler &getAssetSelectorContextMenuHandler() override { return *this; }
 
+  void refreshRecentlyUsedIfSafe();
+
   // IAssetBrowserHost
   void assetBrowserFill() override;
   bool assetBrowserIsOpen() const override;
@@ -119,8 +126,6 @@ private:
   void showTagManager(bool show) override;
 
   void setActiveTab(ActiveTab tab);
-
-  DagorAsset *getSelectedAsset() const;
 
   static bool tabPage(const char *title, bool selected);
 

@@ -29,9 +29,9 @@ static void event_start_internal_server_es(const EventHostedInternalServerToStar
 }
 
 ECS_ON_EVENT(EventHostedInternalServerToStop)
-static void event_stop_internal_server_es(const ecs::Event &)
+static void event_stop_internal_server_es(const EventHostedInternalServerToStop &e)
 {
-  debug("[LIFECYCLE] EventHostedInternalServerToStop ES -> kill_internal_server(wait=false)");
-  clear_hosted_server_start_pending();
-  kill_internal_server(false);
+  const ecs::string &uid = e.get<0>();
+  debug("[LIFECYCLE] EventHostedInternalServerToStop ES uid=%s -> kill_internal_server_uid(wait=false)", uid.c_str());
+  kill_internal_server_uid(uid.c_str(), false);
 }

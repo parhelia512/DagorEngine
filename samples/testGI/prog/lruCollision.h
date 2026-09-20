@@ -2,6 +2,7 @@
 #pragma once
 
 #include <gameRes/dag_collisionResource.h>
+#include <gameRes/collisionResourceBuilder.h>
 #include <debug/dag_log.h>
 #include <render/lruCollision.h>
 #include <daGI2/lruCollisionVoxelization.h>
@@ -29,10 +30,11 @@ struct LRUCollision
     alignas(16) BBox3 bBox;
     v_st(&bBox[0].x, bbox.bmin);
     v_stu_p3(&bBox[1].x, bbox.bmax);
-    BSphere3 sph;
-    sph += bBox;
-    eastl::unique_ptr<CollisionResource> coll(CollisionResource::createSingleMesh(vertices, indices, bBox, sph, 0));
-    collRes.push_back(eastl::move(coll));
+    CollisionResourceBuilder builder;
+    builder.addMeshNode("mesh", -1, TMatrix::IDENT, bBox, make_span_const(vertices), make_span_const(indices));
+    builder.recomputeBounds();
+    builder.collapse("mesh");
+    collRes.emplace_back(builder.build("mesh"));
     return collRes.size() - 1;
   }
   void load(IGenLoad &cb)
@@ -45,7 +47,7 @@ struct LRUCollision
       dag::Vector<uint32_t> indices;   // wide dest, or legacy widened in endMesh
       dag::Vector<uint16_t> indices16; // legacy read scratch
       dag::Vector<Point3> verts;       // raw read scratch
-      dag::Vector<Point3_vec4> verts4; // createSingleMesh input
+      dag::Vector<Point3_vec4> verts4; // the builder's mesh input
 
       bool wantMesh(int, bool) { return true; }
       void *indexBuffer(int count, bool wide)

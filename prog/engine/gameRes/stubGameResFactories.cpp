@@ -1,6 +1,7 @@
 // Copyright (C) Gaijin Games KFT.  All rights reserved.
 
 #include <osApiWrappers/dag_rwSpinLock.h>
+#include <osApiWrappers/dag_rwLock.h>
 #include <gameRes/dag_gameResSystem.h>
 #include <gameRes/dag_stdGameRes.h>
 #include <gameRes/dag_gameResHooks.h>
@@ -153,8 +154,9 @@ struct StubGameResFactory : public GameResourceFactory
 template <class T, unsigned CLS>
 struct StubGameResArrayFactory : public GameResourceFactory
 {
-  PtrTab<T> stubRes;
-  OAHashNameMap<false> nameMap;
+  SpinLockReadWriteLock resLock;
+  PtrTab<T> DAG_TS_GUARDED_BY(resLock) stubRes;
+  OAHashNameMap<false> DAG_TS_GUARDED_BY(resLock) nameMap;
   const DataBlock &desc;
   bool reportAsLoaded = false;
 
@@ -203,6 +205,7 @@ struct StubGameResArrayFactory : public GameResourceFactory
   void createGameResource(RRL, int, const int *, int) override {}
   virtual void reset()
   {
+    ScopedLockWriteTemplate<SpinLockReadWriteLock> lock(resLock);
     for (int i = 0; i < stubRes.size(); i++)
     {
       if (!stubRes[i].get())
@@ -218,6 +221,7 @@ struct StubGameResArrayFactory : public GameResourceFactory
 
   bool isStubRes(void *r)
   {
+    ScopedLockReadTemplate<SpinLockReadWriteLock> lock(resLock);
     for (int i = 0; i < stubRes.size(); i++)
       if (r == stubgameres::cast(stubRes[i]))
         return true;
@@ -227,22 +231,32 @@ struct StubGameResArrayFactory : public GameResourceFactory
   {
     res_id = stub_resolve_res_id(res_id);
     stubResLock.lockRead();
-    const char *res_name = resMap.getName(res_id - STUB_RESID_BASE);
+    String res_name(resMap.getName(res_id - STUB_RESID_BASE));
     stubResLock.unlockRead();
-    if (!res_name)
+    if (res_name.empty())
       return NULL;
-    const DataBlock *b = desc.getBlockByName(res_name);
-    int id = can_add && b ? nameMap.addNameId(res_name) : nameMap.getNameId(res_name);
+    // *Desc.bin block names are unique, so skip the singleBlockChecking scan over every block
+    const DataBlock *b = desc.getBlockByNameId(desc.getNameId(res_name));
+    {
+      ScopedLockReadTemplate<SpinLockReadWriteLock> lock(resLock);
+      int id = nameMap.getNameId(res_name);
+      if (!can_add || !b || id >= 0)
+        return id < 0 ? NULL : stubRes[id].get();
+    }
+    // build and complete the stub with no factory lock held: makeStubRes() may load other resources, and the gameres
+    // lock is taken before this factory is reached elsewhere, so holding resLock across it would invert the lock order
+    Ptr<T> fresh(stubgameres::makeStubRes<T>(b));
+    ScopedLockWriteTemplate<SpinLockReadWriteLock> lock(resLock);
+    int id = nameMap.addNameId(res_name);
     if (id < 0)
       return NULL;
     if (id >= stubRes.size())
     {
       G_ASSERT(id == stubRes.size());
-      stubRes.push_back(stubgameres::makeStubRes<T>(b));
+      stubRes.push_back(fresh.get());
       // debug("stubRes: %s:%08X created, ref=%d", res_name, CLS, stubRes[id]->getRefCount());
     }
-
-    return stubRes[id];
+    return stubRes[id]; // if a concurrent creator won the race, fresh is released on return
   }
 };
 
@@ -325,6 +339,8 @@ static bool stub_validate_game_res_id(int res_id, int &out_res_id)
   out_res_id = res_id;
   return true;
 }
+static bool stub_is_res_class_stubbed(unsigned class_id) { return stub_types.hasInt(class_id); }
+
 static bool stub_get_game_res_class_id(int res_id, unsigned &out_class_id)
 {
   res_id = stub_resolve_res_id(res_id);
@@ -415,6 +431,7 @@ void register_stub_gameres_factories(dag::ConstSpan<unsigned> stubbed_types, boo
   gamereshooks::resolve_res_handle = stub_resolve_res_handle;
   gamereshooks::on_validate_game_res_id = stub_validate_game_res_id;
   gamereshooks::on_get_game_res_class_id = stub_get_game_res_class_id;
+  gamereshooks::is_res_class_stubbed = stub_is_res_class_stubbed;
   gamereshooks::on_get_game_resource = stub_get_game_resource;
 }
 
@@ -423,6 +440,7 @@ void terminate_stub_gameres_factories()
   gamereshooks::resolve_res_handle = NULL;
   gamereshooks::on_validate_game_res_id = NULL;
   gamereshooks::on_get_game_res_class_id = NULL;
+  gamereshooks::is_res_class_stubbed = NULL;
   gamereshooks::on_get_game_resource = NULL;
   if (gamereshooks::on_load_res_packs_from_list_complete == &ri_stub_on_load_res_packs)
     gamereshooks::on_load_res_packs_from_list_complete = chained_on_load_res_packs_from_list_complete;

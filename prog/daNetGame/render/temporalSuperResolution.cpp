@@ -3,6 +3,7 @@
 #include "temporalSuperResolution.h"
 #include "render/antialiasing.h"
 
+#include <drv/3d/dag_texture.h>
 #include <perfMon/dag_cpuFreq.h>
 #include <perfMon/dag_statDrv.h>
 #include <util/dag_convar.h>
@@ -50,14 +51,25 @@ TemporalSuperResolution::TemporalSuperResolution(const IPoint2 &output_resolutio
     registry.readTexture("depth_after_transparency").atStage(dafg::Stage::PS_OR_CS).bindToShaderVar("depth_gbuf");
     registry.read("gbuf_sampler").blob<d3d::SamplerHandle>().bindToShaderVar("depth_gbuf_samplerstate");
 
-    auto antialiasedHndl = registry.createTexture2d("frame_after_aa", {TEXFMT_A16B16G16R16F | TEXCF_UNORDERED, output_resolution})
-                             .withHistory(dafg::History::ClearZeroOnFirstFrame)
+    const unsigned int antialiasedTexFlags = render::antialiasing::get_frame_after_aa_flags() | TEXCF_UNORDERED;
+    auto antialiasedHndl = registry.createTexture2d("frame_after_aa", {antialiasedTexFlags, output_resolution})
                              .atStage(dafg::Stage::PS_OR_CS)
                              .useAs(dafg::Usage::SHADER_RESOURCE)
                              .handle();
 
-    auto antialiasedHistHndl =
-      registry.readTextureHistory("frame_after_aa").atStage(dafg::Stage::PS_OR_CS).useAs(dafg::Usage::SHADER_RESOURCE).handle();
+    auto antialiasedHistHndl = registry.readTextureHistory("frame_after_neural_rendering")
+                                 .atStage(dafg::Stage::PS_OR_CS)
+                                 .useAs(dafg::Usage::SHADER_RESOURCE)
+                                 .handle();
+
+    auto depthHndl = registry.createTexture2d("tsr_depth", {TEXFMT_R16F | TEXCF_UNORDERED, output_resolution})
+                       .withHistory(dafg::History::ClearZeroOnFirstFrame)
+                       .atStage(dafg::Stage::PS_OR_CS)
+                       .useAs(dafg::Usage::SHADER_RESOURCE)
+                       .handle();
+
+    auto depthHistHndl =
+      registry.readTextureHistory("tsr_depth").atStage(dafg::Stage::PS_OR_CS).useAs(dafg::Usage::SHADER_RESOURCE).handle();
 
     auto confidenceHndl = registry.createTexture2d("tsr_confidence", {TEXFMT_R8 | TEXCF_UNORDERED, output_resolution})
                             .withHistory(dafg::History::ClearZeroOnFirstFrame)
@@ -81,18 +93,18 @@ TemporalSuperResolution::TemporalSuperResolution(const IPoint2 &output_resolutio
     // Run after the AA benchmark consumed target_for_transparency (no-op when the benchmark is off).
     (registry.root() / "aa_benchmark").readBlob("accumulate_ordering_token").optional();
 
-    auto resources = eastl::make_tuple(opaqueFinalTargetHndl, antialiasedHndl, antialiasedHistHndl, confidenceHndl, confidenceHistHndl,
-      reactiveMaskHndl, cameraHndl, cameraHistory);
+    auto resources = eastl::make_tuple(opaqueFinalTargetHndl, antialiasedHndl, antialiasedHistHndl, depthHndl, depthHistHndl,
+      confidenceHndl, confidenceHistHndl, reactiveMaskHndl, cameraHndl, cameraHistory);
 
     return [this, resources = eastl::make_unique<decltype(resources)>(resources)] {
-      auto [opaqueFinalTargetHndl, antialiasedHndl, antialiasedHistHndl, confidenceHndl, confidenceHistHndl, reactiveMaskHndl,
-        cameraHndl, cameraHistory] = *resources;
+      auto [opaqueFinalTargetHndl, antialiasedHndl, antialiasedHistHndl, depthHndl, depthHistHndl, confidenceHndl, confidenceHistHndl,
+        reactiveMaskHndl, cameraHndl, cameraHistory] = *resources;
       render::antialiasing::ApplyContext ctx;
       ctx.jitterPixelOffset = cameraHndl.ref().jitterOffset;
       ctx.inputResolution = inputResolution;
       ctx.resetHistory = is_teleporting(cameraHndl.ref(), cameraHistory.ref());
       render::antialiasing::apply_tsr(opaqueFinalTargetHndl.get(), ctx, antialiasedHndl.get(), antialiasedHistHndl.get(),
-        confidenceHndl.get(), confidenceHistHndl.get(), reactiveMaskHndl.get());
+        depthHndl.get(), depthHistHndl.get(), confidenceHndl.get(), confidenceHistHndl.get(), reactiveMaskHndl.get());
     };
   });
 

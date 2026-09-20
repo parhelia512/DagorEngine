@@ -115,7 +115,7 @@ def anim_replay_camera_update(info : UpdateStageInfoAct;
     if anim_replay_camera__centerAnimchar
       var skeletonBox : bbox3f
       assume nodeTree = *animchar.nodeTree
-      geomtree_calcWorldBox(nodeTree, skeletonBox)
+      geomtree_calcWorldBoxFromImportantNodes(nodeTree, skeletonBox)
       let bboxCenter = (skeletonBox.bmin.xyz + skeletonBox.bmax.xyz) * 0.5f
       anim_replay_camera__targetOffset = bboxCenter + (geomtree_getWtmOfs(nodeTree) - transform[3])
       let bboxSize = length(skeletonBox.bmax.xyz - skeletonBox.bmin.xyz)

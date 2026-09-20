@@ -13,6 +13,7 @@
 
 class RenderableInstanceLodsResource;
 class CollisionResource;
+class DynamicPhysObjectData;
 
 namespace rendinst
 {
@@ -28,9 +29,8 @@ struct RiExtraPool
   CollisionResource *collRes = nullptr;
   void *collHandle = nullptr;
   uint8_t hideMask = 0;
-  bool scaleDebris = false;
-  bool isDestroyedPhysResExist = false;
-  bool isDynamicRendinst = false;
+  uint8_t destrPhysResLodMask = 0;
+  uint8_t scaleDebris : 1, isDestroyedPhysResExist : 1, isDynamicRendinst : 1;
   int tsIndex = -1;
 
   vec4f bsphXYZR = v_make_vec4f(0, 0, 0, 1);
@@ -106,18 +106,11 @@ struct RiExtraPool
   float regenHpRate = 0;
   int destroyedRiIdx = -1;
   int destrDepth = 0;
-  class DynamicPhysObjectData *destroyedPhysRes = nullptr;
+  DynamicPhysObjectData *destroyedPhysRes = nullptr;
   float scaleForPrepasses = 1.0f;
   int destrFxType = -1;
   int destrCompositeFxId = -1;
   float destrFxScale = 0;
-  float destrTimeToLive = -1.f;
-  float destrDefaultTimeToLive = -1.f;
-  float destrTimeToKinematic = -1.f;
-  float destrTimeToSinkUnderground = -1.f;
-  float destrTimeToStartDisintegration = -1.0f;
-  float destrDisintegrationDuration = 0;
-  float destrDisintegrationScale = 1;
   int dmgFxType = -1;
   float dmgFxScale = 1.f;
   float damageThreshold = 0;
@@ -152,6 +145,9 @@ struct RiExtraPool
 
   // NOTE: bitfields can only be default-initialized in C++20
   RiExtraPool() :
+    scaleDebris(false),
+    isDestroyedPhysResExist(false),
+    isDynamicRendinst(false),
     riPoolRefLayer(0),
     useShadow(false),
     posInst(false),
@@ -219,6 +215,13 @@ struct RiExtraPool
       return false;
     return riHP[idx].isInvincible();
   }
+  void setupDestrPhysResLodMask(const char *res_nm_for_debug);
+  void updateDestrModelReqLod(unsigned ri_lod) const
+  {
+    if (unsigned destr_lod = ri_lod < 2 ? (destrPhysResLodMask >> (ri_lod * 4)) & 0xF : 0)
+      updateModelReqLod(destroyedPhysRes, destr_lod - 1);
+  }
+  static void updateModelReqLod(DynamicPhysObjectData *physRes, unsigned lod);
 
   struct NodeIdxAndTs
   {

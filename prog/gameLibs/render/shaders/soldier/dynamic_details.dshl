@@ -14,14 +14,19 @@ macro INIT_DYNAMIC_DETAILS()
     //todo: move me out to block!
     (ps){
       dynamic_details@f4 = dynamic_details;
-      dynamic_details_tex_d@smpArray = dynamic_details_diff_tex;
-      dynamic_details_tex_n@smpArray = dynamic_details_norm_tex;
+      dynamic_details_tex_d@texArray = dynamic_details_diff_tex;
+      dynamic_details_tex_n@texArray = dynamic_details_norm_tex;
       dynamic_details_transform@f44 = {
         (dynamic_details_transform_0.x, dynamic_details_transform_1.x, dynamic_details_transform_2.x, dynamic_details_transform_3.x),
         (dynamic_details_transform_0.y, dynamic_details_transform_1.y, dynamic_details_transform_2.y, dynamic_details_transform_3.y),
         (dynamic_details_transform_0.z, dynamic_details_transform_1.z, dynamic_details_transform_2.z, dynamic_details_transform_3.z),
         (dynamic_details_transform_0.w, dynamic_details_transform_1.w, dynamic_details_transform_2.w, dynamic_details_transform_3.w)
       };
+    }
+    INIT_GLOBAL_LINEAR_WRAP_SAMPLER(ps)
+    hlsl(ps) {
+      #define dynamic_details_tex_d_samplerstate global_linear_wrap_sampler
+      #define dynamic_details_tex_n_samplerstate global_linear_wrap_sampler
     }
   }
   hlsl(ps){

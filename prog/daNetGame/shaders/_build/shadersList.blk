@@ -1,7 +1,5 @@
   include shadersListCommon.blk
   file:t = "giHelpers/render_lru_collision.dshl"
-  file:t = "giHelpers/trees_above_process.dshl"
-  file:t = "giHelpers/trees_above_clear.dshl"
   file:t = "../computeGradedColorLUT.dshl"
   file:t = "ssr_compute.dshl"
   file:t = "gtao.dshl"
@@ -12,3 +10,4 @@
   file:t = "../dynamic_lights.dshl"
   file:t = "caustics_render.dshl"
   file:t = "aurora_borealis.dshl"
+  file:t = "../dng_gi_verify_capture.dshl"

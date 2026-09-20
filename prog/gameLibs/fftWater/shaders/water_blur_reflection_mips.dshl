@@ -22,12 +22,12 @@ hlsl(code)
     #include "fftWater/chop_water_reflections.hlsli"
 
     // see encoding in chop_water_reflections.hlsli
-    // a8 == 0       -> 0  (hole contributes nothing, stops propagation)
+    // a8 < 8        -> 0  (hole or glint tag contributes nothing)
     // a8 == 255     -> 1  (.a == 1, skies)
     // else (0<a<1)  -> w
     float AlphaWeight(uint a8, float w)
     {
-      if (a8 == 0u)   return 0.0;
+      if (a8 < (1u << REFL_SHADOW_BITS)) return 0.0;
       if (a8 == 255u) return 1.0;
       return w;
     }
@@ -112,7 +112,7 @@ macro VERTICAL_BLUR_CORE(code)
             float4 sampleColor = tex2Dlod(prev_mip_tex, float4(sampleCoord, 0, 0));
             ReflAlphaDecoded s = DecodeReflAlpha(sampleColor.a);
 
-            if (s.hole && !gatherAnyway)
+            if (s.hole && !s.glint && !gatherAnyway)
               break;
 
             if (!s.hole)

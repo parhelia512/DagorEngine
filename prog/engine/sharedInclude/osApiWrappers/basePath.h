@@ -32,12 +32,23 @@ static inline void resolve_named_mount_s(char *dest_buf, size_t dest_sz, const c
   snprintf(dest_buf, dest_sz, "%s%s", mnt_path, fpath);
 }
 
-
+static inline bool is_path_abs(const char *fn);
 template <typename Cb>
 static inline bool iterate_base_paths_l(const char *fname, Cb cb)
 {
   const char *mnt_path = "";
   fname = resolve_named_mount_in_path(fname, mnt_path);
+
+  if (*mnt_path && is_path_abs(mnt_path))
+  {
+    char fn[DAGOR_MAX_PATH];
+    snprintf(fn, sizeof(fn), "%s%s", mnt_path, fname);
+    dd_simplify_fname_c(fn);
+    if (cb(fn, 0))
+      return true;
+    return false;
+  }
+
   for (int i = 0; i < DF_MAX_BASE_PATH_NUM && df_base_path[i]; i++)
   {
     int base_len = (int)strlen(df_base_path[i]);
@@ -49,6 +60,7 @@ static inline bool iterate_base_paths_l(const char *fname, Cb cb)
   }
   return false;
 }
+
 template <typename Cb>
 static inline const char *iterate_base_paths_fast_s(const char *fname, char *fnbuf, int fnbuf_sz, bool force_root_iter,
   bool force_simplify, Cb cb)
@@ -56,6 +68,17 @@ static inline const char *iterate_base_paths_fast_s(const char *fname, char *fnb
   bool root_tested = false;
   const char *mnt_path = "";
   fname = resolve_named_mount_in_path(fname, mnt_path);
+
+  if (*mnt_path && is_path_abs(mnt_path))
+  {
+    snprintf(fnbuf, fnbuf_sz, "%s%s", mnt_path, fname);
+    if (PATH_DELIM != '/' || force_simplify)
+      dd_simplify_fname_c(fnbuf);
+    if (cb(fnbuf))
+      return fnbuf;
+    return nullptr;
+  }
+
   for (int i = 0; i < DF_MAX_BASE_PATH_NUM && df_base_path[i]; i++)
   {
     bool root_bpath = (*df_base_path[i] == '\0');

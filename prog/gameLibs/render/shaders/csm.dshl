@@ -4,6 +4,14 @@ include "hardware_defines.dshl"
 buffer shadow_cascade_data;
 
 texture shadow_cascade_depth_tex;
+sampler shadow_cascade_depth_tex_samplerstate
+{
+  comparison_func = less;
+  mipmap_mode = point;
+  address_u = clamp;
+  address_v = clamp;
+  address_w = clamp;
+};
 
 float4 shadow_cascade_camera_near_plane;
 float4 shadow_cascade_0_tm[3];
@@ -60,7 +68,8 @@ endmacro
 macro INIT_CSM_SHADOW_COMMON(stage)
   INIT_CSM_SHADOW_COMMON_NO_TEX(stage)
   (stage) {
-    shadow_cascade_depth_tex@shd = shadow_cascade_depth_tex;
+    shadow_cascade_depth_tex@tex2d = shadow_cascade_depth_tex;
+    shadow_cascade_depth_tex_cmpSampler@cmpSampler = shadow_cascade_depth_tex_samplerstate;
   }
 endmacro
 

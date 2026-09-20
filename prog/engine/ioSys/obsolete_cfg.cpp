@@ -582,15 +582,14 @@ int CfgReader::readtext(char *text, bool clr, bool read_comments)
   return 1;
 }
 
-static CfgDiv *_empty_div = NULL;
 CfgDiv &CfgReader::getcurdiv()
 {
   if (curdiv >= 0 && curdiv < div.size())
     return div[curdiv];
-  if (!_empty_div)
-    _empty_div = new (inimem) CfgDiv;
-  _empty_div->clear();
-  return *_empty_div;
+  // A reader with no current div answers from one shared empty div. Static storage, not a heap chunk nothing ever frees.
+  static CfgDiv emptyDiv;
+  emptyDiv.clear();
+  return emptyDiv;
 }
 
 const char *CfgReader::getstr(const char *var, const char *def) const { return getcurdiv().getstr(var, def); }

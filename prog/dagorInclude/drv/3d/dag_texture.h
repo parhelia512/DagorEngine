@@ -6,11 +6,12 @@
 
 #include <drv/3d/dag_consts.h>
 #include <drv/3d/dag_tex3d.h>
+#include <drv/3d/dag_multi_interface.h>
 #include <3d/dag_resourceTags.h>
 
 struct TexImage32;
 
-namespace d3d
+namespace d3d _MULTI_INTERFACE
 {
 /**
  * @brief Check whether the specified texture format is available.
@@ -242,6 +243,61 @@ BaseTexture *alias_cube_array_tex(BaseTexture *baseTexture, int side, int d, int
 bool stretch_rect(BaseTexture *src, BaseTexture *dst, const RectInt *rsrc = nullptr, const RectInt *rdst = nullptr);
 
 /**
+ * @brief Make a replacement for tex with fewer mips, migrating the mips both keep.
+ *
+ * Mip level_offset + n of tex becomes mip n of the replacement, for every n at or above
+ * start_src_level - level_offset. A migrated mip is copied without change: nothing is resampled.
+ * A mip of the replacement below the first migrated one keeps undefined content for the caller to
+ * fill. The caller owns the replacement and gives it to BaseTexture::replaceTexResObject.
+ *
+ * width, height and depth must be the extent of mip level_offset of tex, so that a migrated mip has
+ * the same extent in both textures. The extent and mips are independent arguments and no driver
+ * checks that they agree.
+ *
+ * Works without TEXCF_UPDATE_DESTINATION on tex, even where the generic implementation needs it.
+ *
+ * @param tex The texture to make a replacement for.
+ * @param width The width of mip 0 of the replacement.
+ * @param height The height of mip 0 of the replacement.
+ * @param depth The depth of mip 0 for a volume, the slice count for an array or a cube array, 1
+ *   for the other types.
+ * @param mips The mip count of the replacement.
+ * @param start_src_level The first mip of tex to migrate. Mips of tex below level_offset have no
+ *   mip in the replacement, so a smaller value acts as level_offset.
+ * @param level_offset The distance between the two mip chains.
+ * @return The replacement, or nullptr if it could not be allocated.
+ */
+[[nodiscard]] BaseTexture *down_size_tex(BaseTexture *tex, int width, int height, int depth, int mips, unsigned start_src_level,
+  unsigned level_offset);
+
+/**
+ * @brief Make a replacement for tex with more mips, migrating the mips both keep.
+ *
+ * Mip n of tex becomes mip level_offset + n of the replacement, for every n at or above
+ * start_src_level. A migrated mip is copied without change: nothing is resampled, and a mip of the
+ * replacement below level_offset + start_src_level keeps undefined content for the caller to fill.
+ * The caller owns the replacement and gives it to BaseTexture::replaceTexResObject.
+ *
+ * The extent of tex must be the extent of mip level_offset of the replacement, so that a migrated
+ * mip has the same extent in both textures. The extent and mips are independent arguments and no
+ * driver checks that they agree.
+ *
+ * Works without TEXCF_UPDATE_DESTINATION on tex, even where the generic implementation needs it.
+ *
+ * @param tex The texture to make a replacement for.
+ * @param width The width of mip 0 of the replacement.
+ * @param height The height of mip 0 of the replacement.
+ * @param depth The depth of mip 0 for a volume, the slice count for an array or a cube array, 1
+ *   for the other types.
+ * @param mips The mip count of the replacement.
+ * @param start_src_level The first mip of tex to migrate.
+ * @param level_offset The distance between the two mip chains.
+ * @return The replacement, or nullptr if it could not be allocated.
+ */
+[[nodiscard]] BaseTexture *up_size_tex(BaseTexture *tex, int width, int height, int depth, int mips, unsigned start_src_level,
+  unsigned level_offset);
+
+/**
  * @brief Get the texture statistics.
  * @param num_textures Pointer to store the number of textures.
  * @param total_mem Pointer to store the total memory used by textures.
@@ -275,13 +331,46 @@ inline bool settex(int slot, BaseTexture *tex) { return set_tex(STAGE_PS, slot, 
 inline bool settex_vs(int slot, BaseTexture *tex) { return set_tex(STAGE_VS, slot, tex); }
 
 /**
+ * @brief Copy a region of one texture subresource into another.
+ *
+ * The copy runs in the order it was recorded against the other recorded commands.
+ *
+ * Requires TEXCF_UPDATE_DESTINATION, TEXCF_RTARGET or TEXCF_UNORDERED usage on dst.
+ *
+ * @param src The source texture.
+ * @param src_subres_idx The source subresource index, see BaseTexture::calcSubResIdx.
+ * @param src_x The x origin of the copied region in the source subresource.
+ * @param src_y The y origin of the copied region in the source subresource.
+ * @param src_z The z origin of the copied region in the source subresource.
+ * @param src_w The width of the copied region.
+ * @param src_h The height of the copied region.
+ * @param src_d The depth of the copied region.
+ * @param dst The destination texture.
+ * @param dst_subres_idx The destination subresource index, see BaseTexture::calcSubResIdx.
+ * @param dst_x The x origin of the copied region in the destination subresource.
+ * @param dst_y The y origin of the copied region in the destination subresource.
+ * @param dst_z The z origin of the copied region in the destination subresource.
+ * @return Returns non-zero on success, 0 on error.
+ */
+int update_sub_region(BaseTexture *src, int src_subres_idx, int src_x, int src_y, int src_z, int src_w, int src_h, int src_d,
+  BaseTexture *dst, int dst_subres_idx, int dst_x, int dst_y, int dst_z);
+
+/**
+ * @brief Same as update_sub_region, but the driver can run the copy out of its recorded order.
+ *
+ * Use it only when no command near the copy depends on that order.
+ */
+int update_sub_region_no_order(BaseTexture *src, int src_subres_idx, int src_x, int src_y, int src_z, int src_w, int src_h, int src_d,
+  BaseTexture *dst, int dst_subres_idx, int dst_x, int dst_y, int dst_z);
+
+/**
  * @brief Discard the texture. It initializes the texture leaving the texels in an undefined state.
  * @param tex Texture to discard. Now usage is limited to UA and RT textures only.
  * @return true if the operation was successful, false otherwise.
  */
 bool discard_tex(BaseTexture *tex);
 
-} // namespace d3d
+} // namespace d3d _MULTI_INTERFACE
 
 
 #if _TARGET_D3D_MULTI
@@ -357,12 +446,38 @@ inline bool stretch_rect(BaseTexture *src, BaseTexture *dst, const RectInt *rsrc
   return d3di.stretch_rect(src, dst, rsrc, rdst);
 }
 
+inline BaseTexture *down_size_tex(BaseTexture *tex, int width, int height, int depth, int mips, unsigned start_src_level,
+  unsigned level_offset)
+{
+  return d3di.down_size_tex(tex, width, height, depth, mips, start_src_level, level_offset);
+}
+
+inline BaseTexture *up_size_tex(BaseTexture *tex, int width, int height, int depth, int mips, unsigned start_src_level,
+  unsigned level_offset)
+{
+  return d3di.up_size_tex(tex, width, height, depth, mips, start_src_level, level_offset);
+}
+
 inline void get_texture_statistics(uint32_t *num_textures, uint64_t *total_mem, String *out_dump)
 {
   d3di.get_texture_statistics(num_textures, total_mem, out_dump);
 }
 
 inline bool set_tex(unsigned shader_stage, unsigned slot, BaseTexture *tex) { return d3di.set_tex(shader_stage, slot, tex); }
+
+inline int update_sub_region(BaseTexture *src, int src_subres_idx, int src_x, int src_y, int src_z, int src_w, int src_h, int src_d,
+  BaseTexture *dst, int dst_subres_idx, int dst_x, int dst_y, int dst_z)
+{
+  return d3di.update_sub_region(src, src_subres_idx, src_x, src_y, src_z, src_w, src_h, src_d, dst, dst_subres_idx, dst_x, dst_y,
+    dst_z);
+}
+
+inline int update_sub_region_no_order(BaseTexture *src, int src_subres_idx, int src_x, int src_y, int src_z, int src_w, int src_h,
+  int src_d, BaseTexture *dst, int dst_subres_idx, int dst_x, int dst_y, int dst_z)
+{
+  return d3di.update_sub_region_no_order(src, src_subres_idx, src_x, src_y, src_z, src_w, src_h, src_d, dst, dst_subres_idx, dst_x,
+    dst_y, dst_z);
+}
 
 inline bool discard_tex(BaseTexture *tex) { return d3di.discard_tex(tex); }
 } // namespace d3d

@@ -1,6 +1,7 @@
 // Copyright (C) Gaijin Games KFT.  All rights reserved.
 
 #include "bvh_context.h"
+#include "bvh_omm.h"
 #include "bvh_tools.h"
 #include <3d/dag_lockSbuffer.h>
 #include <util/dag_convar.h>
@@ -18,7 +19,7 @@ struct DeathrowJob : public cpujobs::IJob
 {
   ContextId contextId;
 
-  const char *getJobName(bool &) const override { return "process_bvh_deathrow"; }
+  const char *getJobName(bool &) const override { return DAPROFILER_STRING("process_bvh_deathrow"); }
   void doJob() override
   {
     static constexpr uint32_t BUFFER_LIMIT = 512;
@@ -90,37 +91,33 @@ void Mesh::teardown(ContextId context_id)
 {
   TIME_PROFILE(bvh::Mesh::teardown);
 
-  if (context_id->ommEnabled)
-  {
-    for (OmmSlot &slot : ommSlots)
-    {
-      if (slot.state == OmmState::Baking)
-        render::omm::discard_bake(context_id->ommContext, slot.bakeHandle);
-      render::omm::clear_result(slot.bakeResult);
-      slot.omm.reset();
-      slot.bakeHandle = {};
-      slot.state = OmmState::None;
-    }
-  }
+  // Only the references go: a bake in flight is deliberately left running.
+  for (OmmEntryRef &entry : ommEntries)
+    entry.reset();
 
   context_id->releaseTexture(albedoTextureId);
   context_id->releaseTexture(alphaTextureId);
   context_id->releaseTexture(normalTextureId);
   context_id->releaseTexture(extraTextureId);
+  context_id->releaseTexture(secondaryMaskTextureId);
   context_id->releaseTexture(ppPositionTextureId);
   context_id->releaseTexture(ppDirectionTextureId);
   context_id->releaseTexture(clothNoiseCombinedTexTextureId);
+  context_id->releaseTexture(faceMorphAtlasTextureId);
 
   albedoTextureId = BAD_TEXTUREID;
   alphaTextureId = BAD_TEXTUREID;
   normalTextureId = BAD_TEXTUREID;
   extraTextureId = BAD_TEXTUREID;
+  secondaryMaskTextureId = BAD_TEXTUREID;
   ppPositionTextureId = BAD_TEXTUREID;
   ppDirectionTextureId = BAD_TEXTUREID;
   clothNoiseCombinedTexTextureId = BAD_TEXTUREID;
+  faceMorphAtlasTextureId = BAD_TEXTUREID;
   ppPositionBindless = MeshMeta::INVALID_TEXTURE;
   ppDirectionBindless = MeshMeta::INVALID_TEXTURE;
   clothNoiseCombinedTexBindless = MeshMeta::INVALID_TEXTURE;
+  faceMorphAtlasBindless = MeshMeta::INVALID_TEXTURE;
 
   if (geometry)
   {
@@ -144,6 +141,10 @@ void Context::teardown()
     for (auto &[object_id, object] : objects)
       object.teardown(this, object_id);
     objects.clear();
+    // Impostors own meshes with OMM references too, and those must go before ommCache below.
+    for (auto &[object_id, object] : impostors)
+      object.teardown(this, object_id);
+    impostors.clear();
   }
 
   meshMeta.close();
@@ -216,8 +217,38 @@ void Context::teardown()
   ommTextureWaitRefs.clear();
   ommTextureWaitsByObject.clear();
 
+  // Every OmmEntryRef must die before the cache it points into: a drop queues a raw entry pointer.
+  for (auto &lod : uniqueTreeBuffers)
+    lod.clear();
+  for (auto &lod : uniqueRiExtraTreeBuffers)
+    lod.clear();
+  for (auto &lod : uniqueRiExtraFlagBuffers)
+    lod.clear();
+  uniqueSkinBuffers.clear();
+  uniqueHeliRotorBuffers.clear();
+  uniqueDeformedBuffers.clear();
+  uniqueSplinegenBuffers.clear();
+  stationaryTreeBuffers.clear();
+  freeUniqueTreeBLASes.clear();
+  freeUniqueRiExtraTreeBLASes.clear();
+  freeUniqueRiExtraFlagBLASes.clear();
+  freeUniqueSkinBLASes.clear();
+
   if (ommEnabled)
+  {
+    for (OmmCacheEntry *entry : bakingOmmEntries)
+      render::omm::discard_bake(ommContext, entry->bakeHandle);
+    // Every OmmEntryRef is gone by now, thus no holder can outlive the entries dropped here.
+    for (auto &cached : ommCache)
+      render::omm::clear_result(cached.second.bakeResult);
     render::omm::shutdown(ommContext);
+  }
+  bakingOmmEntries.clear();
+  ommCache.clear();
+  {
+    OSSpinlockScopedLock lock(deferredOmmReleaseLock);
+    deferredOmmReleases.clear();
+  }
   ommEnabled = false;
 
 #if DAGOR_DBGLEVEL > 0
@@ -226,7 +257,7 @@ void Context::teardown()
 #endif
 }
 
-void Context::releaseAllBindlessTexHolders()
+void Context::releaseGameTextureHolds()
 {
   paint_details_texBindless.close(this);
   grass_land_color_maskBindless.close(this);
@@ -237,6 +268,11 @@ void Context::releaseAllBindlessTexHolders()
   cache_tex2Bindless.close(this);
   last_clip_texBindless.close(this);
   dynamic_decals_atlasBindless.close(this);
+}
+
+void Context::releaseAllBindlessTexHolders()
+{
+  releaseGameTextureHolds();
   if (gbufferBindlessRange >= 0)
     d3d::free_bindless_resource_range(D3DResourceType::TEX, gbufferBindlessRange, 5);
   gbufferBindlessRange = -1;
@@ -661,28 +697,6 @@ bool Context::RingBuffers::allocate(int struct_size, int elements, int type, con
   }
   logdbg("%s resized to %u", name, elements);
   return true;
-}
-
-} // namespace bvh
-
-#if _TARGET_SCARLETT
-#include <windows.h>
-#endif
-
-namespace bvh
-{
-
-void bvh_yield()
-{
-#if _TARGET_SCARLETT
-  // Sleep(0) is used explicitly. sleep_msec would call SwitchToThread with 0, which is not good here.
-  // SwitchToThread will always wait a scheduler slice, which would cause the job to be slower. Also it
-  // switch to lower prio threads which which we also don't want, they can run when the workers are idle
-  // later.
-  // Yielding itself is necessary as the BVH saturates all available threads with work, and as a result,
-  // when a high prio thread comes, the schedular can stop the main thread and cause stuttering.
-  Sleep(0);
-#endif
 }
 
 } // namespace bvh

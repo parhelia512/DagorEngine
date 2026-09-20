@@ -17,7 +17,6 @@ Sources =
 if $(NodeBasedManagerSupportCompiliation) = yes {
   Target = $(Target:S=-comp.lib) ;
   Sources += nodeBasedShaderManagerCompile.cpp ;
-  UseProgLibs += gameLibs/hlslCompiler ;
 } else {
   Target = $(Target:S=-nocomp.lib) ;
   Sources += stub/nodeBasedShaderManagerCompileStub.cpp ;

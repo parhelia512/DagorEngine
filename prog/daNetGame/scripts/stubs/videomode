@@ -13,7 +13,7 @@ return {
   get_settings_override_for_auto_resolution = @(...) DataBlock()
   get_auto_selected_antialiasing_method = @(...) null
   should_use_upscaling_method = @(...) false
-  get_current_window_resolution = @(...) false
+  get_current_window_resolution = @(...) [0, 0]
   is_inline_rt_supported = @() false
   is_gui_driver_select_enabled = @() false
   is_dx12 = @() false
@@ -30,6 +30,7 @@ return {
   set_frame_generation_suppressed = @(...) false
   is_hfr_supported = @() false
   is_rt_supported = @() false
+  is_rt_supported_on_disk = @() false
   rt_support_error_code = @() 5 // STUB
   get_antialiasing_options = @() ""
   get_antialiasing_upscaling_options = @(...) ""
@@ -37,5 +38,6 @@ return {
   is_dynamic_mfg_supported = @(...) false
   get_frame_generation_unsupported_reason = @(...) null
   is_dlss_rr_supported = @() false
+  is_dlss_nr_supported = @() false
   get_vsync_refresh_rate = @() 0
 }

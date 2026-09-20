@@ -178,7 +178,9 @@ public:
   virtual void enablePluginsRender() = 0;
 
   virtual void preparePluginsListmenu() = 0;
-  virtual void startWithWorkspace(const char *def_workspace_name) = 0;
+  // The workspace comes either by name, or by the path to its application.blk.
+  // refused_arguments: error message(s) for the command line argument(s) that were dropped. Empty when none were dropped.
+  virtual void startWithWorkspace(const char *def_workspace_name, const char *app_blk_path, const char *refused_arguments) = 0;
 
   virtual DagorEdPluginData *getPluginData(int idx) = 0;
 
@@ -214,18 +216,12 @@ public:
   // custom colliders
   virtual void registerCustomCollider(IDagorEdCustomCollider *coll) const = 0;
   virtual void unregisterCustomCollider(IDagorEdCustomCollider *coll) const = 0;
-  virtual void enableCustomShadow(const char *name) const = 0;
-  virtual void disableCustomShadow(const char *name) const = 0;
   virtual void enableCustomCollider(const char *name) const = 0;
   virtual void disableCustomCollider(const char *name) const = 0;
-  virtual bool isCustomShadowEnabled(const IDagorEdCustomCollider *collider) const = 0;
   virtual int getCustomCollidersCount() const = 0;
-  virtual bool fillCustomCollidersList(PropPanel::ContainerPropertyControl &params, const char *grp_caption, int grp_pid,
-    int collider_pid, bool shadow, bool open_grp = false) const = 0;
   virtual bool getUseOnlyVisibleColliders() const = 0;
   virtual void setUseOnlyVisibleColliders(bool use) = 0;
 
-  virtual bool onPPColliderCheck(int pid, const PropPanel::ContainerPropertyControl &panel, int collider_pid, bool shadow) const = 0;
   virtual IDagorEdCustomCollider *getCustomCollider(int idx) const = 0;
 
   //! returns highly temporary slice of colliders (allocated in static array), to be copied immediately on receive
@@ -257,8 +253,6 @@ public:
   }
 
   virtual void correctCursorInSurfMove(const Point3 &delta) = 0;
-
-  virtual bool shadowRayHitTest(const Point3 &src, const Point3 &dir, real dist) = 0;
 
   // unique Id per project
   virtual int getNextUniqueId() = 0;

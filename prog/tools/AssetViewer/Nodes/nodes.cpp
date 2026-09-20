@@ -161,12 +161,12 @@ bool NodesPlugin::begin(DagorAsset *asset)
     geomNodeTree->invalidateWtm();
     geomNodeTree->calcWtm();
     bbox.setempty();
-    geomNodeTree->calcWorldBox(bbox);
+    geomNodeTree->calcWorldBoxFromImportantNodes(bbox);
     radius = getMinP3(bbox.width(), 0.5) * 0.05;
 
     if (EDITORCORE->getCurrentViewport())
     {
-      geomNodeTree->calcWorldBox(bbox);
+      geomNodeTree->calcWorldBoxFromImportantNodes(bbox);
 
       EDITORCORE->getCurrentViewport()->zoomAndCenter(bbox);
     }

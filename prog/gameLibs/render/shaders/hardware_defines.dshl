@@ -38,6 +38,10 @@ hlsl {
     uint3 or(uint3 a, uint3 b) { return a || b; }
     uint4 or(uint4 a, uint4 b) { return a || b; }
 
+    bool2 select(bool2 a, bool2 b, bool2 c) { return a ? b : c; }
+    bool3 select(bool3 a, bool3 b, bool3 c) { return a ? b : c; }
+    bool4 select(bool4 a, bool4 b, bool4 c) { return a ? b : c; }
+
     ##if !hardware.ps4 && !hardware.ps5
       bool2 and(bool2 a, bool2 b) { return a && b; }
       bool3 and(bool3 a, bool3 b) { return a && b; }
@@ -377,6 +381,7 @@ hlsl {
   #define tex2DgradBindless(a, uv, dx, dy) (a).tex.SampleGradient((a).smp, (uv).xy, dx, dy)
   #define tex2DgradBindlessSampler(a, b, uv, dx, dy) (a).SampleGradient((b), (uv).xy, dx, dy)
   #define tex2DprojBindless(a, uv) tex2DBindless((a), (uv).xy/(uv).w)
+  #define tex2DbiasBindless(a, uv, bias) (a).tex.SampleBias((a).smp, (uv).xy, bias)
   #define texCUBEBindless(a, uv) (a).tex.Sample((a).smp, uv)
   #define texCUBELodBindless(a, uv) (a).tex.SampleLOD((a).smp, uv.xyz, uv.w)
 
@@ -449,6 +454,13 @@ hlsl {
       return tex2DBindless(a, uv.xy/uv.w);
     }
 
+    float4 tex2DbiasBindless(TextureSampler a, float2 uv, float bias)
+    {
+      Texture2D tex = a.tex;
+      SamplerState smp = a.smp;
+      return tex.SampleBias(smp, uv, bias);
+    }
+
   ##else
     #define tex2DBindless(a, uv) (a).tex.Sample((a).smp, uv)
     #define tex2DBindlessSampler(a, b, uv) (a).Sample((b), uv)
@@ -457,6 +469,7 @@ hlsl {
     #define tex2DgradBindless(a, uv, dx, dy) (a).tex.SampleGradient((a).smp, (uv).xy, dx, dy)
     #define tex2DgradBindlessSampler(a, b, uv, dx, dy) (a).SampleGradient((b), (uv).xy, dx, dy)
     #define tex2DprojBindless(a, uv) tex2DBindless((a), (uv).xy/(uv).w)
+    #define tex2DbiasBindless(a, uv, bias) (a).tex.SampleBias((a).smp, (uv).xy, bias)
     #define texCUBEBindless(a, uv) (a).tex.Sample((a).smp, uv)
     #define texCUBELodBindless(a, uv) (a).tex.SampleLevel((a).smp, uv.xyz, uv.w)
   ##endif

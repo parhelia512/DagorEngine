@@ -445,7 +445,7 @@ bool BinSceneViewPlugin::catchEvent(unsigned ev_huid, void *userData)
     }
   }
   else if (ev_huid == HUID_PostRenderObjects && isVisible && showFrt && PhysMat::physMatCount() && streamingScene &&
-           streamingScene->frtDump.isDataValid())
+           streamingScene->hasStaticScene())
   {
     float prev_rad = get_vcm_rad();
     bool prev_vis = is_vcm_visible();
@@ -456,7 +456,7 @@ bool BinSceneViewPlugin::catchEvent(unsigned ev_huid, void *userData)
     {
       TMatrix cameraTm;
       vp->getCameraTransform(cameraTm);
-      ::render_visclipmesh(streamingScene->frtDump, cameraTm.getcol(3));
+      streamingScene->drawStaticSceneClip(cameraTm.getcol(3), maxFrtVisDist);
     }
     set_vcm_rad(prev_rad);
     set_vcm_visible(prev_vis);
@@ -883,26 +883,17 @@ bool BinSceneViewPlugin::traceRay(const Point3 &p, const Point3 &dir, real &maxt
   bool _result = false;
   if (streamingScene->lmeshMgr)
     _result = streamingScene->lmeshMgr->traceray(p, dir, maxt, norm);
-  int pmid;
-  if (streamingScene->frtDump.isDataValid() && streamingScene->frtDump.traceray(p, dir, maxt, pmid) >= 0)
-    _result = true;
+  // the scene traces a unit direction; maxt is in units of dir here
+  if (const float len = length(dir))
+  {
+    float t = maxt * len;
+    if (streamingScene->tracerayNormalizedStaticScene(p, dir / len, t, nullptr, norm))
+    {
+      maxt = t / len;
+      _result = true;
+    }
+  }
   return _result;
-}
-
-
-bool BinSceneViewPlugin::shadowRayHitTest(const Point3 &p, const Point3 &dir, real maxt)
-{
-  if (!streamingScene)
-    return false;
-
-  Point3 tmp_dir = dir;
-  tmp_dir.normalize();
-
-  if (streamingScene->lmeshMgr && streamingScene->lmeshMgr->rayhitNormalized(p, tmp_dir, maxt))
-    return true;
-  if (streamingScene->frtDump.isDataValid() && streamingScene->frtDump.rayhitNormalized(p, tmp_dir, maxt))
-    return true;
-  return false;
 }
 
 

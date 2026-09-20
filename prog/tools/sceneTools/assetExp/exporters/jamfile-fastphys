@@ -14,7 +14,7 @@ AddIncludes =
   $(Root)/prog/tools/sharedInclude
 ;
 
-UseProgLibs =
+UseProgLibs +=
   engine/startup
   engine/math
   engine/perfMon

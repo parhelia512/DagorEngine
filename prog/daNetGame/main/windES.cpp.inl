@@ -59,7 +59,7 @@ static inline void wind_es_event_handler(const ecs::Event &,
 }
 
 ECS_TAG(render)
-ECS_ON_EVENT(AfterDeviceReset)
+ECS_ON_EVENT(EventAfterDeviceReset)
 static inline void wind_after_device_reset_es_event_handler(const ecs::Event &, AmbientWind &ambient_wind)
 {
   ambient_wind.afterDeviceReset();

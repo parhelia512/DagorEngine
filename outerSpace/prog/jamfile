@@ -25,6 +25,7 @@ NetPeerAuth = yes ;
 
 AotJamfile = $(Root)/prog/daNetGame-das-aot/jamfile ;
 AotCompilerBaseName = $(Root)/$(Location)/../tools/das-aot/outer_space-aot ;
+
 include $(Root)/prog/daNetGame/setup.jam ; # Note - $(Platform) is not defined before this line unless passed in command line
 DAS_AOT_COMPILER_OPT = -- --config outer_space_aot_config.blk -sConfig $(Config) ;
 
@@ -98,7 +99,7 @@ if $(Dedicated) = no {
 }
 AddGamePullsToSources ;
 
-AddIncludes += 
+AddIncludes +=
   $(Root)/prog/daNetGameLibs
   $(Root)/prog/gameLibs
 ;
@@ -137,6 +138,7 @@ if $(Dedicated) != yes {
       Manifest = $(Root)/$(Location)/platform/$(Platform)/outer_space.exe.manifest ;
     }
     include $(Root)/prog/engine/drv/drv3d_DX12/copy_bundles.jam ;
+    include $(Root)/prog/engine/drv/drv3d_commonCode/copy_bundles.jam ;
     if $(FmodStudio) != src && $(HaveSound) != no {
       AddLibs += $(FmodStaticLibs) ;
       for dll in $(FmodStudioSharedLibs) { BundleCopy += @$(dll) $(dll:D=) ; }

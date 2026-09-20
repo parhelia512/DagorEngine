@@ -160,9 +160,7 @@ void HeightmapRenderer::render(const LodGrid &lodGrid, const LodGridRingCullData
 
   const bool hwTesselationUsage = get_hw_tesselation_usage(hmap_tess_factorVarId, cull_data);
 
-  const int maxReqInstances = MAX_HW_INSTANCING;
-  const int buffer_size =
-    d3d::set_vs_constbuffer_register_count(maxReqInstances + heightmap_scale_offset_c) - heightmap_scale_offset_c;
+  const int buffer_size = min<int>(MAX_HW_INSTANCING, d3d::get_driver_desc().maxvpconsts - heightmap_scale_offset_c);
   int dim = vDataDim >= 0 ? vDataDim : getDim();
   LodGridVertexData *vdataPtr = vData ? vData : &lod_grid_vdata[vDataIndex];
   d3d::set_vs_const1(heightmap_scale_offset_c - 2, 0, bitwise_cast<float>(2 * get_log2i(dim)), bitwise_cast<float>(dim - 1), 0);
@@ -196,7 +194,6 @@ void HeightmapRenderer::render(const LodGrid &lodGrid, const LodGridRingCullData
     return;
   dag::ConstSpan<LodGridPatchParams> otherLodsPatches = make_span_const(cull_data.patches).last(cull_data.getCount() - renderedQuads);
   renderPatchesByBatches(otherLodsPatches, buffer_size, vDataIndex, cull_data.startFlipped - renderedQuads, false, quadsInPatch << 1);
-  d3d::set_vs_constbuffer_register_count(0);
 }
 
 struct GridCullingContext
@@ -328,6 +325,8 @@ void cull_lod_grid(const LodGrid &lodGrid, int maxLod, float originPosX, float o
   int lod0SubDiv = !get_hw_tesselation_usage(hmap_tess_factorVarId, cull_data) ? lodGrid.lod0SubDiv : 0;
   int flipLod = ((patchesX + patchesY) & 1) ? get_log2w(dim) : 100000;
   cull_data.startFlipped = 1000000;
+  if (frustum)
+    cull_data.frustum = *frustum;
   out_lod0_area_radius = 0.f;
   alignas(16) struct Area
   {

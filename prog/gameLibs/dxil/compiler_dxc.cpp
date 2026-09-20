@@ -201,11 +201,11 @@ CompileResult compile(IDxcCompiler3 *compiler, UINT32 major, UINT32 minor, Wrapp
     compilerParams.emplace_back(L"-Zs");
   }
 
-  if (settings.saveHlslToBlob)
+  if (settings.blobDebugParts == BlobDebugParts::EMBED)
   {
     compilerParams.emplace_back(L"-Qembed_debug");
   }
-  else
+  else if (settings.blobDebugParts == BlobDebugParts::STRIP)
   {
     // strip everything from DXIL blob, only thing we need is reflection and debug, but for
     // those we use dedicated blob

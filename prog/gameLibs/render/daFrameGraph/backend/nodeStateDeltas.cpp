@@ -70,7 +70,8 @@ void DeltaCalculator::invalidateCachesForAutoResType(AutoResTypeNameId id)
 
 IdIndexedFlags<intermediate::ResourceIndex, framemem_allocator> DeltaCalculator::precomputeResourceState(
   const BarrierScheduler::EventsCollection &events,
-  const IdIndexedFlags<intermediate::ResourceIndex, framemem_allocator> &resources_changed)
+  const IdIndexedFlags<intermediate::ResourceIndex, framemem_allocator> &resources_changed,
+  const IdIndexedFlags<intermediate::ResourceIndex, framemem_allocator> &resource_requests_changed)
 {
   using ResourceIndex = intermediate::ResourceIndex;
   const auto totalResources = graph.resources.totalKeys();
@@ -79,6 +80,8 @@ IdIndexedFlags<intermediate::ResourceIndex, framemem_allocator> DeltaCalculator:
   // snapshots below must be freed (at function exit) while the output is still alive
   // and returned to the caller -- which only works LIFO if prev* sit ABOVE the output.
   IdIndexedFlags<ResourceIndex, framemem_allocator> dirtyResources(resources_changed);
+  for (auto resIdx : resource_requests_changed.trueKeys())
+    dirtyResources.set(resIdx, true);
 
   // Snapshot the previous values before we overwrite the class members. New slots
   // (resources that didn't exist on the previous compile) get default "unseen" values
@@ -321,7 +324,7 @@ RenderPassDelta DeltaCalculator::delta(const eastl::optional<intermediate::Rende
         if (cacheIterator == rpCache.end())
         {
           newRP = d3d::create_render_pass(
-            {nodeName, rpDescKey.targets.size(), rpDescKey.binds.size(), rpDescKey.targets.data(), rpDescKey.binds.data(), 0});
+            {nodeName, rpDescKey.targets.size(), rpDescKey.binds.size(), rpDescKey.targets.data(), rpDescKey.binds.data()});
           rpCache.emplace(rpDescKey, eastl::unique_ptr<d3d::RenderPass, RpDestroyer>(newRP));
           for (auto typeId : usedAutoResTypes)
             rpCacheKeysByAutoResType.get(typeId).insert(rpDescKey);
@@ -519,7 +522,8 @@ void DeltaCalculator::recalculateUsedRenderPasses(const NodeStateDeltas &result)
 
 void DeltaCalculator::calculatePerNodeStateDeltas(NodeStateDeltas &result, const BarrierScheduler::EventsCollection &events,
   const IdIndexedFlags<intermediate::NodeIndex, framemem_allocator> &nodes_changed,
-  const IdIndexedFlags<intermediate::ResourceIndex, framemem_allocator> &resources_changed)
+  const IdIndexedFlags<intermediate::ResourceIndex, framemem_allocator> &resources_changed,
+  const IdIndexedFlags<intermediate::ResourceIndex, framemem_allocator> &resource_requests_changed)
 {
   if (graph.nodeStates.empty())
   {
@@ -529,7 +533,7 @@ void DeltaCalculator::calculatePerNodeStateDeltas(NodeStateDeltas &result, const
     return;
   }
 
-  auto dirtyResources = precomputeResourceState(events, resources_changed);
+  auto dirtyResources = precomputeResourceState(events, resources_changed, resource_requests_changed);
   auto dirtyDeltas = computeDirtyDeltas(result, events, nodes_changed, dirtyResources);
 
   // Erase entries for removed nodes and dirty deltas (will be recomputed below).

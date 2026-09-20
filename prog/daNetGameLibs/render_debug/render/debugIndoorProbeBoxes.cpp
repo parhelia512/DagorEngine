@@ -1,7 +1,7 @@
 // Copyright (C) Gaijin Games KFT.  All rights reserved.
 
 #include <render/daFrameGraph/ecs/frameGraphNode.h>
-#include <render/world/cameraParams.h>
+#include <render/cameraParams.h>
 #include <render/lightProbeSpecularCubesContainer.h>
 #include <util/dag_console.h>
 #include <render/world/wrDispatcher.h>

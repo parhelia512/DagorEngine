@@ -6,6 +6,7 @@
 #include <render/daFrameGraph/daFG.h>
 #include <render/world/global_vars.h>
 #include <rendInst/rendInstGenRender.h>
+#include <drv/3d/dag_matricesAndPerspective.h>
 
 
 dafg::NodeHandle create_dynamic_mirror_render_static_node(DynamicMirrorRenderer &mirror_renderer)
@@ -23,6 +24,7 @@ dafg::NodeHandle create_dynamic_mirror_render_static_node(DynamicMirrorRenderer 
     return [&mirror_renderer, mirrorResolution, mirrorActiveHndl, mirrorCameraHndl, shaderVarsHndl]() {
       if (!mirrorActiveHndl.ref())
         return;
+      SCOPE_VIEW_PROJ_MATRIX;
       const auto cameraData = mirrorCameraHndl.get();
       const auto resolution = mirrorResolution.get();
       auto scopedVars = shaderVarsHndl.ref().getScopedVars();

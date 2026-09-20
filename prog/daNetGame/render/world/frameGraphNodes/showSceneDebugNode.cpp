@@ -1,7 +1,7 @@
 // Copyright (C) Gaijin Games KFT.  All rights reserved.
 
 #include <render/daFrameGraph/daFG.h>
-#include <render/world/cameraParams.h>
+#include <render/cameraParams.h>
 #include "frameGraphNodes.h"
 
 dafg::NodeHandle makeShowSceneDebugNode()

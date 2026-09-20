@@ -34,15 +34,16 @@
 
 static void na_func() { DAG_FATAL("D3DI function not implemented"); }
 
-#define FILL_ENTRY(X)     d3dit.X = d3d::X
-#define FILL_ENTRY2(X, Y) d3dit.X = d3d::Y
+#define FILL_ENTRY(X)     d3dit.X = d3d _ADD_MULTI_NAMESPACE::X
+#define FILL_ENTRY2(X, Y) d3dit.X = d3d _ADD_MULTI_NAMESPACE::Y
 #if _TARGET_PC_WIN | _TARGET_PC_MACOSX
-#define FILL_ENTRY_PC(X) d3dit.X = d3d::pcwin::X
+#define FILL_ENTRY_PC(X) d3dit.X = d3d::pcwin _ADD_MULTI_NAMESPACE::X
 #else
 #define FILL_ENTRY_PC(X)
 #endif
-#define FILL_NAMESPACE_ENTRY(nspace, name)                        d3dit.nspace.name = d3d::nspace::name
-#define FILL_NAMESPACE_ENTRY2(nspace, internal_name, public_name) d3dit.nspace.internal_name = d3d::nspace::public_name
+#define FILL_NAMESPACE_ENTRY(nspace, name) d3dit.nspace.name = d3d::nspace _ADD_MULTI_NAMESPACE::name
+#define FILL_NAMESPACE_ENTRY2(nspace, internal_name, public_name) \
+  d3dit.nspace.internal_name = d3d::nspace _ADD_MULTI_NAMESPACE::public_name
 
 bool d3d::fill_interface_table(D3dInterfaceTable &d3dit)
 {
@@ -90,6 +91,9 @@ bool d3d::fill_interface_table(D3dInterfaceTable &d3dit)
   FILL_ENTRY2(stretch_rect_0, stretch_rect);
   FILL_ENTRY(copy_from_current_render_target);
 
+  FILL_ENTRY(down_size_tex);
+  FILL_ENTRY(up_size_tex);
+
   FILL_ENTRY(get_texture_statistics);
 
   FILL_ENTRY(settex);
@@ -107,9 +111,6 @@ bool d3d::fill_interface_table(D3dInterfaceTable &d3dit)
   FILL_ENTRY(set_vertex_shader);
   FILL_ENTRY(set_const);
   FILL_ENTRY(set_immediate_const);
-
-  FILL_ENTRY(set_vs_constbuffer_register_count);
-  FILL_ENTRY(set_cs_constbuffer_register_count);
 
   FILL_ENTRY(create_pixel_shader);
   FILL_ENTRY(delete_pixel_shader);
@@ -137,6 +138,9 @@ bool d3d::fill_interface_table(D3dInterfaceTable &d3dit)
   FILL_ENTRY(clear_rt);
 
   FILL_ENTRY(discard_tex);
+
+  FILL_ENTRY(update_sub_region);
+  FILL_ENTRY(update_sub_region_no_order);
 
   FILL_ENTRY(set_buffer);
   FILL_ENTRY(set_rwbuffer);

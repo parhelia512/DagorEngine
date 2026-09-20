@@ -28,6 +28,7 @@ local function dict(tab, src)
   return max
 end
 
+local PASSES = 10
 local tab = {}
 local src = {}
 local n = 500000
@@ -39,4 +40,4 @@ for i = 1, n do
 end
 
 loadfile("profile.lua")()
-io.write(string.format("\"dictionary\", %.8f, 20\n", profile_it(20, function () clear(tab); dict(tab, src); end)))
+io.write(string.format("\"dictionary\", %.8f, 20\n", profile_it(20, function () for r = 1, PASSES do clear(tab); dict(tab, src) end end)))

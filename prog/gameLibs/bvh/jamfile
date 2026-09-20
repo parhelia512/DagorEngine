@@ -28,9 +28,11 @@ BVHProfiling ?= no ;
 
 AddIncludes =
   $(Root)/prog/gameLibs/publicInclude
+  $(Root)/prog/1stPartyLibs/jsoncpp/include
 ;
 UseProgLibs +=
   gameLibs/userSystemInfo
+  gameLibs/eventLog
 ;
 
 
@@ -42,7 +44,8 @@ if $(BVHSupport) = yes {
     Target = $(Target:S=~p.lib) ;
   }
 
-  Sources = bvh.cpp bvh_context.cpp bvh_debug.cpp bvh_tlas_debug.cpp bvh_omm.cpp bvh_processors.cpp bvh_particles.cpp ;
+  Sources = bvh.cpp bvh_context.cpp bvh_debug.cpp bvh_tlas_debug.cpp bvh_omm.cpp bvh_processors.cpp bvh_particles.cpp
+    bvh_voxel_activity.cpp ;
 
   if $(BVHTerrain) = yes {
     Sources += bvh_terrain.cpp ;

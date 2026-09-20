@@ -69,6 +69,7 @@ public:
   int getActivePortalCubeSlot(int portal_index) const;
   int getRenderedPortalCubeSlot(int portal_index, TMatrix &portal_tm, float &life, bool &is_bidirectional) const;
   void afterDeviceReset();
+  static void waitVisibilityJob();
 
 private:
   static constexpr int MAX_RENDERED_CUBES = 4;
@@ -91,6 +92,7 @@ private:
   };
 
   void renderCube(int portal_cube_index, CameraParams &camera_params);
+  void setTransparentRt();
   void copyFrame(int cube_index, int cube_face);
   void copyFrameImpl(int cube_index, int face_start, int face_count, int from_mip, int mips_count);
 

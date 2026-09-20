@@ -1,8 +1,9 @@
 import "%dngscripts/ecs.nut" as ecs
-let {get_arg_value_by_name, dgs_get_settings} = require("dagor.system")
+from "dagor.system" import get_arg_value_by_name, dgs_get_settings
+from "gameevents" import EventOnGameAppStarted
+from "app" import connect_to_session, switch_scene
+
 let dedicated = require_optional("dedicated")
-let {EventOnGameAppStarted} = require("gameevents")
-let {connect_to_session, switch_scene} = require("app")
 
 let is_offline_mode_forced = @() dgs_get_settings()?.disableMenu
 const empty = "gamedata/scenes/menu.blk"

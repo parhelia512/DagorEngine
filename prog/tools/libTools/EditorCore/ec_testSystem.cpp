@@ -2,6 +2,8 @@
 
 #include <EditorCore/ec_testSystem.h>
 #include <EditorCore/ec_interface.h>
+#include <EditorCore/ec_wndPublic.h>
+#include <EditorCore/ec_wndGlobal.h>
 #include <propPanel/imguiHelper.h>
 #include <propPanel/propPanel.h>
 
@@ -16,12 +18,15 @@
 #include <bindQuirrelEx/bindQuirrelEx.h>
 #include <bindQuirrelEx/sqModulesDagor.h>
 #include <memory/dag_framemem.h>
+#include <osApiWrappers/dag_basePath.h>
 #include <osApiWrappers/dag_direct.h>
 #include <osApiWrappers/dag_localConv.h>
 #include <osApiWrappers/dag_miscApi.h>
 #include <perfMon/dag_cpuFreq.h>
 #include <workCycle/dag_workCycle.h>
 #include <util/dag_strUtil.h>
+#include <winGuiWrapper/wgw_dialogs.h>
+#include <winGuiWrapper/wgw_input.h>
 
 #include <EASTL/algorithm.h>
 #include <EASTL/string_view.h>
@@ -122,6 +127,15 @@ void TestInput::mouseClick(int button)
   addMouseButtonEvent(button, true);
   runtime.yieldFrame();
   addMouseButtonEvent(button, false);
+  runtime.yieldFrame();
+}
+
+void TestInput::mouseClickModifier(int button, int modifier)
+{
+  addKeyEvent(modifier, true);
+  runtime.yieldFrame();
+  mouseClick(button);
+  addKeyEvent(modifier, false);
   runtime.yieldFrame();
 }
 
@@ -253,6 +267,7 @@ void TestInput::register_script_class(HSQUIRRELVM vm)
   Sqrat::Class<TestInput, Sqrat::NoConstructor<TestInput>> sqTestInput(vm, "TestInput");
   sqTestInput //
     .Func("mouseClick", &TestInput::mouseClick)
+    .Func("mouseClickModifier", &TestInput::mouseClickModifier)
     .Func("mousePosition", &TestInput::mousePosition)
     .Func("mouseMove", &TestInput::mouseMove)
     .Func("keyPress", &TestInput::keyPress)
@@ -299,8 +314,21 @@ static TestState aggregate_state(const Tab<TestRuntime::TestInfo> &infos)
   return anyPassed ? TestState::PASSED : TestState::IDLE;
 }
 
+static bool iconsCached = false;
+static PropPanel::IconId folderIconId = PropPanel::IconId::Invalid;
+static PropPanel::IconId deleteIconId = PropPanel::IconId::Invalid;
+static PropPanel::IconId reloadIconId = PropPanel::IconId::Invalid;
+
 void TestWindow::updateImgui()
 {
+  if (!iconsCached)
+  {
+    folderIconId = PropPanel::load_icon("folder");
+    deleteIconId = PropPanel::load_icon("delete");
+    reloadIconId = PropPanel::load_icon("reset");
+    iconsCached = true;
+  }
+
   if (ImGui::BeginTabBar("##tabs"))
   {
     if (ImGui::BeginTabItem("Tests"))
@@ -352,14 +380,17 @@ void TestWindow::updateImgui()
 
       ImGui::Separator();
 
+      auto deleteRef = PropPanel::get_im_texture_id_from_icon_id(deleteIconId);
       constexpr ImGuiTableFlags tableFlags = ImGuiTableFlags_BordersInnerV | ImGuiTableFlags_RowBg | ImGuiTableFlags_SizingFixedFit;
-      if (ImGui::BeginTable("test_table", 2, tableFlags))
+      if (ImGui::BeginTable("test_table", 3, tableFlags))
       {
         ImGui::TableSetupColumn("State", ImGuiTableColumnFlags_WidthFixed);
         ImGui::TableSetupColumn("Test", ImGuiTableColumnFlags_WidthStretch);
+        ImGui::TableSetupColumn("Delete", ImGuiTableColumnFlags_NoHeaderLabel);
         ImGui::TableHeadersRow();
 
         eastl::string_view filter = to_string_view(filterText);
+        ImGuiStyle &style = ImGui::GetStyle();
         for (const auto &info : infos)
         {
           if (!filterText.empty() && !dd_stristr(to_string_view(info.name), filter))
@@ -384,14 +415,66 @@ void TestWindow::updateImgui()
           // Test column: name
           ImGui::TableSetColumnIndex(1);
           ImGui::TextUnformatted(info.name.c_str());
+
+          // Delete column
+          ImGui::TableSetColumnIndex(2);
+          String deleteId;
+          deleteId.setStrCat("##Delete_", info.name.c_str());
+          float backupPaddingY = style.FramePadding.y;
+          style.FramePadding.y = 0.0f;
+          ImGui::BeginDisabled(runtime.testsRunning());
+          if (ImGui::ImageButton(deleteId.c_str(), deleteRef, indicatorSize))
+            runtime.deleteTest(info.name);
+          ImGui::EndDisabled();
+          style.FramePadding.y = backupPaddingY;
         }
 
         ImGui::EndTable();
       }
 
-      ImGui::EndDisabled();
+      if (runtime.testCount() > 0)
+      {
+        ImGui::BeginDisabled(runtime.testsRunning());
+        if (ImGui::ImageButton("Delete all", deleteRef, indicatorSize))
+          runtime.deleteAllTests();
+        ImGui::SameLine();
+        ImGui::TextUnformatted("Delete all tests");
+        ImGui::EndDisabled();
+      }
+
+      if (runtime.testsRunning())
+      {
+        TestCase *running = runtime.currentlyRunningTest();
+        const int remaining = runtime.getRemainingCount();
+        const int total = runtime.getTotalEnqueued();
+        const int done = max(0, total - remaining);
+        runStatusText.printf(0, "Running test(s): \"%s\" %d/%d", running ? running->name().c_str() : "...", done, total);
+      }
+      else
+        runStatusText = "Running test(s): 0";
+      ImGui::TextUnformatted(runStatusText.c_str());
+
+#if _TARGET_PC_WIN
+      ImGui::BeginDisabled(!runtime.testsRunning());
+
+      // ImGui input is blocked during test execution. Falling back to OS-level click detection.
+      bool stopClicked = ImGui::Button("Stop");
+      const ImRect stopBtnRect(ImGui::GetItemRectMin(), ImGui::GetItemRectMax());
+      if (wingw::is_key_pressed(wingw::V_LBUTTON))
+      {
+        int osX = 0, osY = 0;
+        wingw::get_mouse_pos(osX, osY);
+        stopClicked = stopBtnRect.Contains(ImVec2(osX, osY));
+      }
+      if (stopClicked)
+        runtime.clearQueue();
 
       ImGui::EndDisabled();
+#endif
+
+      ImGui::EndDisabled(); // !running
+
+      ImGui::EndDisabled(); // !enabled
 
       ImGui::EndTabItem();
     }
@@ -423,13 +506,61 @@ void TestWindow::updateImgui()
     {
       ImGui::BeginDisabled(runtime.testsRunning());
 
+      auto folderRef = PropPanel::get_im_texture_id_from_icon_id(folderIconId);
+      const ImVec2 fontSizedIconSize = PropPanel::ImguiHelper::getFontSizedIconSize();
+      if (ImGui::ImageButton("##scriptOpenFile", folderRef, fontSizedIconSize))
+      {
+        auto wndManager = EDITORCORE->getWndManager();
+        void *hwnd = wndManager ? wndManager->getMainWindow() : nullptr;
+        const char *mount = EDITORCORE->getTestScriptMount();
+        const char *mountPath = (mount && *mount == '%') ? dd_get_named_mount_path(mount + 1) : nullptr;
+        String path = wingw::file_open_dlg(hwnd, "Load script...",
+          "Quirrel (*.nut)|*.nut|"
+          "All files(*.*)|*.*",
+          "nut", mountPath ? mountPath : sgg::get_exe_path_full(), scriptFilenameText.c_str());
+        if (path.length() > 0)
+          scriptFilenameText = path;
+      }
+
       const bool scriptInputWasFocused = scriptInputFocused;
       PropPanel::ImguiHelper::inputTextWithEnterWorkaround("##scriptFilename", "Script filename", &scriptFilenameText,
         scriptInputWasFocused);
       scriptInputFocused = ImGui::IsItemFocused();
 
+      TestScriptModule &scripts = runtime.testScripts();
       if (ImGui::Button("Load script"))
-        runtime.testScripts().bindScript(scriptFilenameText.c_str());
+      {
+        if (scriptFilenameText != scripts.getScriptFilename())
+        {
+          runtime.deleteAllTests();
+          scripts.bindScript(scriptFilenameText.c_str());
+          currentScriptText.clear();
+        }
+      }
+
+      const bool noScript = scripts.getScriptFilename().empty();
+      ImGui::BeginDisabled(noScript);
+
+      auto reloadRef = PropPanel::get_im_texture_id_from_icon_id(reloadIconId);
+      if (ImGui::ImageButton("Reload script", reloadRef, fontSizedIconSize))
+      {
+        runtime.deleteAllTests();
+        scripts.reloadScript();
+        currentScriptText.clear();
+      }
+      PropPanel::set_previous_imgui_control_tooltip(ImGui::GetItemID(), "Reload script");
+
+      if (currentScriptText.empty())
+      {
+        currentScriptText.append("Current script: ");
+        if (!scripts.getScriptFilename().empty())
+          currentScriptText.append(scripts.getScriptFilename());
+        else
+          currentScriptText.append("--");
+      }
+      ImGui::TextUnformatted(currentScriptText.c_str());
+
+      ImGui::EndDisabled(); // noScript
 
       ImGui::EndDisabled();
 
@@ -538,16 +669,33 @@ bool TestScriptModule::bindScript(const char *script_filename)
   if (!::dd_file_exist(script_filename))
     return false;
 
-  scriptFilename = script_filename;
-
   Sqrat::Object exports;
   Sqrat::string errMsg;
-  if (!moduleMgr->requireModule(scriptFilename, true, scriptFilename, exports, errMsg))
+  if (!moduleMgr->requireModule(script_filename, true, script_filename, exports, errMsg))
   {
     logerr("TestScriptModule script error: %s [in %s]", errMsg.c_str(), script_filename);
     return false;
   }
 
+  scriptFilename = script_filename;
+
+  return true;
+}
+
+bool TestScriptModule::reloadScript()
+{
+  String oldFilename = scriptFilename;
+  scriptFilename.clear();
+
+  Sqrat::Object exports;
+  Sqrat::string errMsg;
+  if (!moduleMgr->reloadModule(oldFilename, true, oldFilename, exports, errMsg))
+  {
+    logerr("TestScriptModule script error: %s [in %s]", errMsg.c_str(), oldFilename);
+    return false;
+  }
+
+  scriptFilename = oldFilename;
   return true;
 }
 
@@ -572,6 +720,10 @@ void TestRuntime::stop()
 
   WinAutoLock lock(queueMutex);
   testQueue.clear();
+
+  interlocked_release_store(anyTestRunning, false);
+  interlocked_release_store(totalEnqueued, 0);
+  interlocked_release_store_ptr(runningTest, (TestCase *)nullptr);
 }
 
 //==================================================================================================
@@ -590,6 +742,23 @@ TestCase &TestRuntime::registerTestEx(const char *name, const eastl::shared_ptr<
   return *registry.back();
 }
 
+bool TestRuntime::deleteTest(const char *name)
+{
+  G_ASSERT_RETURN(!testsRunning(), false);
+  auto it =
+    eastl::find_if(registry.begin(), registry.end(), [&](const eastl::unique_ptr<TestCase> &tc) { return tc->name() == name; });
+  if (it == registry.end())
+    return false;
+  registry.erase(it);
+  return true;
+}
+
+void TestRuntime::deleteAllTests()
+{
+  G_ASSERT_RETURN(!testsRunning(), );
+  registry.clear();
+}
+
 //==================================================================================================
 
 bool TestRuntime::enqueue(const char *name)
@@ -601,6 +770,7 @@ bool TestRuntime::enqueue(const char *name)
     WinAutoLock lock(queueMutex);
     testQueue.push_back(it->get());
     interlocked_release_store(anyTestRunning, true);
+    interlocked_increment(totalEnqueued);
     return true;
   }
   G_ASSERT_FAIL("TestRuntime::enqueue: name not found in registry!");
@@ -629,7 +799,30 @@ void TestRuntime::enqueueAll(TestFilter state, const char *name)
     count++;
   }
   if (count > 0)
+  {
     interlocked_release_store(anyTestRunning, true);
+    interlocked_add(totalEnqueued, count);
+  }
+}
+
+void TestRuntime::clearQueue()
+{
+  WinAutoLock lock(queueMutex);
+  testQueue.clear();
+  // No test will start after this; if nothing is running right now, mark done immediately.
+  if (!currentlyRunningTest())
+  {
+    interlocked_release_store(anyTestRunning, false);
+    interlocked_release_store(totalEnqueued, 0);
+  }
+  else
+    interlocked_release_store(totalEnqueued, 1); // only the currently running test remains
+}
+
+int TestRuntime::getRemainingCount()
+{
+  WinAutoLock lock(queueMutex);
+  return (int)testQueue.size() + (currentlyRunningTest() ? 1 : 0);
 }
 
 Tab<TestRuntime::TestInfo> TestRuntime::testInfos() const
@@ -720,6 +913,21 @@ static SQInteger test_runtime_register_test(HSQUIRRELVM vm)
   return 1;
 }
 
+static void test_item_info_to_sq_table(HSQUIRRELVM vm, Sqrat::Table &sqItemInfo, const char *label, uint32_t id, const ImRect &bb,
+  uint32_t parent_id, const ImGuiTestItemExternalInfo &ext)
+{
+  sqItemInfo.SetValue("label", label);
+  sqItemInfo.SetValue("displayName", ext.displayName);
+  sqItemInfo.SetValue("controlType", ext.controlType);
+  sqItemInfo.SetValue("controlId", ext.controlId);
+  sqItemInfo.SetValue("id", id);
+  Sqrat::Table sqBoundingBox(vm);
+  sqBoundingBox.SetValue("Max", Point2(bb.Max.x, bb.Max.y));
+  sqBoundingBox.SetValue("Min", Point2(bb.Min.x, bb.Min.y));
+  sqItemInfo.SetValue("bb", sqBoundingBox);
+  sqItemInfo.SetValue("parentId", parent_id);
+}
+
 static SQInteger test_runtime_query_item(HSQUIRRELVM vm)
 {
   if (!Sqrat::check_signature<TestRuntime *>(vm))
@@ -728,22 +936,43 @@ static SQInteger test_runtime_query_item(HSQUIRRELVM vm)
   // Sqrat::Var<TestRuntime *> self(vm, 1);
   Sqrat::Var<const char *> path(vm, 2);
 
+  const char *label;
   uint32_t id;
   ImRect bb;
   uint32_t parentId;
-  if (imgui_test_runtime_query_item(path.value, id, bb, parentId))
+  ImGuiTestItemExternalInfo ext;
+  if (imgui_test_runtime_query_item(path.value, id, bb, parentId, &label, &ext))
   {
     Sqrat::Table sqItemInfo(vm);
-    sqItemInfo.SetValue("id", id);
-    Sqrat::Table sqBoundingBox(vm);
-    sqBoundingBox.SetValue("Max", Point2(bb.Max.x, bb.Max.y));
-    sqBoundingBox.SetValue("Min", Point2(bb.Min.x, bb.Min.y));
-    sqItemInfo.SetValue("bb", sqBoundingBox);
-    sqItemInfo.SetValue("parentId", parentId);
+    test_item_info_to_sq_table(vm, sqItemInfo, label, id, bb, parentId, ext);
     Sqrat::Var<Sqrat::Table>::push(vm, sqItemInfo);
     return 1;
   }
   sq_pushnull(vm);
+  return 1;
+}
+
+static SQInteger test_runtime_query_children(HSQUIRRELVM vm)
+{
+  if (!Sqrat::check_signature<TestRuntime *>(vm))
+    return SQ_ERROR;
+
+  // Sqrat::Var<TestRuntime *> self(vm, 1);
+  Sqrat::Var<const char *> path(vm, 2);
+
+  Sqrat::Array res(vm);
+  OnTestChildItemInfoFoundFunc func = [&](const char *label, uint32_t id, ImRect bb, uint32_t parentId,
+                                        const ImGuiTestItemExternalInfo &ext) {
+    Sqrat::Table sqItemInfo(vm);
+    test_item_info_to_sq_table(vm, sqItemInfo, label, id, bb, parentId, ext);
+    res.Append(sqItemInfo);
+  };
+  int count = imgui_test_runtime_query_children(path.value, func);
+
+  if (count >= 0)
+    Sqrat::Var<Sqrat::Array>::push(vm, res);
+  else
+    sq_pushnull(vm);
   return 1;
 }
 
@@ -759,6 +988,7 @@ void TestRuntime::register_script_class(HSQUIRRELVM vm)
     .Func("yieldTime", &TestRuntime::yieldTime)
     .Func("lastFrameDelta", &TestRuntime::lastFrameDelta)
     .SquirrelFunc("queryItem", &test_runtime_query_item, 2, "xs")
+    .SquirrelFunc("queryChildren", &test_runtime_query_children, 2, "xs")
     .Func("markFailed", &TestRuntime::markFailed)
     .Func("testsRunning", &TestRuntime::testsRunning)
     .Func("currentlyRunningTest", &TestRuntime::currentlyRunningTest)
@@ -781,6 +1011,7 @@ void TestRuntime::threadLoop()
 
     TestCase *test = testQueue.front();
     testQueue.erase(testQueue.begin());
+    interlocked_release_store_ptr(runningTest, test);
 
     lock.unlock();
 
@@ -793,7 +1024,6 @@ void TestRuntime::threadLoop()
       }
     }
 
-    interlocked_release_store_ptr(runningTest, test);
     try
     {
       ImGui::GetIO().SetAppAcceptingEvents(false);
@@ -811,7 +1041,10 @@ void TestRuntime::threadLoop()
     {
       WinAutoLock doneCheck(queueMutex);
       if (testQueue.empty())
+      {
         interlocked_release_store(anyTestRunning, false);
+        interlocked_release_store(totalEnqueued, 0);
+      }
     }
     yieldFrame();
 
@@ -842,15 +1075,26 @@ public:
     CONSOLE_CHECK_NAME("test_runtime", "stop", 1, 1) { ec_tr.stop(); }
     CONSOLE_CHECK_NAME("test_runtime", "run", 2, 2)
     {
-      const char *name = params[0];
-      if (!ec_tr.enqueue(name))
+      if (ec_tr.isRunning())
       {
-        String msg;
-        msg.printf(0, "enqueue: no such test registered (%s)", name);
-        EDITORCORE->getConsole().addMessage((ILogWriter::MessageType)2, msg.c_str());
+        const char *name = params[0];
+        if (!ec_tr.enqueue(name))
+        {
+          String msg;
+          msg.printf(0, "enqueue: no such test registered (%s)", name);
+          EDITORCORE->getConsole().addMessage((ILogWriter::MessageType)2, msg.c_str());
+        }
       }
+      else
+        EDITORCORE->getConsole().addMessage((ILogWriter::MessageType)2, "run: test runtime is not started");
     }
-    CONSOLE_CHECK_NAME("test_runtime", "run_all", 1, 1) { ec_tr.enqueueAll(TestFilter::ALL, ""); }
+    CONSOLE_CHECK_NAME("test_runtime", "run_all", 1, 1)
+    {
+      if (ec_tr.isRunning())
+        ec_tr.enqueueAll(TestFilter::ALL, "");
+      else
+        EDITORCORE->getConsole().addMessage((ILogWriter::MessageType)2, "run_all: test runtime is not started");
+    }
 
     return found;
   }

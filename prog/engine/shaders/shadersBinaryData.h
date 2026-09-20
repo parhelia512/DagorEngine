@@ -13,6 +13,7 @@
 #include <util/dag_stdint.h>
 #include <shaders/shInternalTypes.h>
 #include <shaders/shader_layout.h>
+#include <shaders/shader_name_format_types.h>
 #include <ioSys/dag_fileIo.h>
 #include <ioSys/dag_memIo.h>
 
@@ -110,6 +111,8 @@ struct ScriptedShadersBinDumpOwner
   eastl::vector_map<uint32_t, uint32_t> intervalInverseLinkMap{};
   eastl::vector_map<shader_layout::blk_word_t, shader_layout::blk_word_t> blockInverseLinkMap{};
 
+  shader_name_format::VariantNameCompilationSettings shaderNameFormatSettings = {};
+
   stcode::Context stcodeCtx;
 
   shader_assert::AssertionContext assertionCtx;
@@ -125,8 +128,8 @@ struct ScriptedShadersBinDumpOwner
   size_t getDumpSize() const { return mSelfData.size(); }
   HashVal<64> getDumpHash() const { return mInitialDataHash; }
 
-  ShaderSource getCode(uint32_t id, ShaderCodeType type) const;
-  ShaderSource getCodeById(uint32_t id) const;
+  ShaderSourceExt getCode(uint32_t id, ShaderCodeType type) const;
+  ShaderSourceExt getCodeById(uint32_t id) const;
 
   ScriptedShadersBinDump *operator->() { return mShaderDump; }
   ScriptedShadersBinDump *getDump() { return mShaderDump; }
@@ -312,6 +315,10 @@ struct DumpDetails
 
   bool assembly = false;
   bool stcode = false;
+  bool renderStates = false;
+
+  bool variantAttributions = false;
+  bool samplers = false;
 
 public:
   enum class Preset
@@ -327,20 +334,20 @@ public:
   // clang-format off
   /*
   --- DUMP OUTPUT PRESETS ---
-  *---------**-------*-----------*---------*---------*-----*---------**---------*-----------*-------*---------*---------*-------------*-------*---------*-----------*-------------*
-  |   \ OPT || GLOB  | NAMED     | MAXREG  |         |     |         ||         | VARIANTS  | LOCAL | STATIC  | VARIANT | ST VARIANT  |       | ST VAR  | VERTEX    | DYN VARIANT |
-  | PRE \   || VARS  | STBLOCKS  | CNT     | SHADERS | ASM | STCODE  || HEADER  |           | VARS  | INIT    | SUMMARY | TABLE       | CODES | MAP     | CHANNELS  | TABLE       |
-  *---------**-------*-----------*---------*---------*-----*---------**---------*-----------*-------*---------*---------*-------------*-------*---------*-----------*-------------*
-  | MINIMAL ||       |           |         |    +    |     |         ||    +    |           |       |         |         |             |       |         |           |             |
-  *---------**-------*-----------*---------*---------*-----*---------**---------*-----------*-------*---------*---------*-------------*-------*---------*-----------*-------------*
-  | BRIEF   ||       |           |    +    |    +    |     |         ||         |           |   +   |    +    |    +    |             |       |         |           |             |
-  *---------**-------*-----------*---------*---------*-----*---------**---------*-----------*-------*---------*---------*-------------*-------*---------*-----------*-------------*
-  | TABLES  ||       |     +     |    +    |    +    |     |         ||         |           |   +   |    +    |    +    |      +      |   +   |         |           |      +      |
-  *---------**-------*-----------*---------*---------*-----*---------**---------*-----------*-------*---------*---------*-------------*-------*---------*-----------*-------------*
-  | DETAIL  ||   +   |     +     |    +    |    +    |     |         ||         |           |   +   |    +    |    +    |      +      |   +   |    +    |     +     |      +      |
-  *---------**-------*-----------*---------*---------*-----*---------**---------*-----------*-------*---------*---------*-------------*-------*---------*-----------*-------------*
-  | FULL    ||   +   |     +     |    +    |    +    |  +  |    +    ||         |     +     |   +   |    +    |    +    |      +      |   +   |    +    |     +     |      +      |
-  *---------**-------*-----------*---------*---------*-----*---------**---------*-----------*-------*---------*---------*-------------*-------*---------*-----------*-------------*
+  *---------**-------*-----------*---------*---------*-----*---------*---------**---------*-----------*-------*---------*---------*-------------*-------*---------*-----------*-------------*
+  |   \ OPT || GLOB  | NAMED     | MAXREG  |         |     |         |         ||         | VARIANTS  | LOCAL | STATIC  | VARIANT | ST VARIANT  |       | ST VAR  | VERTEX    | DYN VARIANT |
+  | PRE \   || VARS  | STBLOCKS  | CNT     | SHADERS | ASM | STCODE  | SAMPLERS|| HEADER  |           | VARS  | INIT    | SUMMARY | TABLE       | CODES | MAP     | CHANNELS  | TABLE       |
+  *---------**-------*-----------*---------*---------*-----*---------*---------**---------*-----------*-------*---------*---------*-------------*-------*---------*-----------*-------------*
+  | MINIMAL ||       |           |         |    +    |     |         |         ||    +    |           |       |         |         |             |       |         |           |             |
+  *---------**-------*-----------*---------*---------*-----*---------*---------**---------*-----------*-------*---------*---------*-------------*-------*---------*-----------*-------------*
+  | BRIEF   ||       |           |    +    |    +    |     |         |         ||         |           |   +   |    +    |    +    |             |       |         |           |             |
+  *---------**-------*-----------*---------*---------*-----*---------*---------**---------*-----------*-------*---------*---------*-------------*-------*---------*-----------*-------------*
+  | TABLES  ||       |     +     |    +    |    +    |     |         |         ||         |           |   +   |    +    |    +    |      +      |   +   |         |           |      +      |
+  *---------**-------*-----------*---------*---------*-----*---------*---------**---------*-----------*-------*---------*---------*-------------*-------*---------*-----------*-------------*
+  | DETAIL  ||   +   |     +     |    +    |    +    |     |         |         ||         |           |   +   |    +    |    +    |      +      |   +   |    +    |     +     |      +      |
+  *---------**-------*-----------*---------*---------*-----*---------*---------**---------*-----------*-------*---------*---------*-------------*-------*---------*-----------*-------------*
+  | FULL    ||   +   |     +     |    +    |    +    |  +  |    +    |    +    ||         |     +     |   +   |    +    |    +    |      +      |   +   |    +    |     +     |      +      |
+  *---------**-------*-----------*---------*---------*-----*---------*---------**---------*-----------*-------*---------*---------*-------------*-------*---------*-----------*-------------*
   */
   // clang-format on
 
@@ -357,6 +364,7 @@ public:
       case Preset::FULL:
         assembly = true;
         stcode = true;
+        samplers = true;
         shaderDetails.dumpVariants = true;
         [[fallthrough]];
       case Preset::DETAIL:

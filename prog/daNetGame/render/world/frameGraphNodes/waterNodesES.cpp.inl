@@ -34,30 +34,18 @@ static ShaderVariableInfo water_rt_enabled("water_rt_enabled", true);
 static ShaderVariableInfo source_depth_for_copy_const_no("source_depth_for_copy_const_no");
 } // namespace var
 
+// Only 1 water node exists, ordering is kept through depth renaming
 const eastl::array<char const *, eastl::to_underlying(WaterRenderMode::COUNT_WITH_RENAMES)> WATER_SSR_DEPTH_TEX = {"downsampled_depth",
   "downsampled_depth_with_early_before_envi_water", "downsampled_depth_with_early_after_envi_water",
   "downsampled_depth_with_late_water"};
 
-const eastl::array<char const *, eastl::to_underlying(WaterRenderMode::COUNT_WITH_RENAMES)> WATER_SSR_COLOR_TEX = {"water_ssr_color",
-  "water_ssr_color_early_before_envi_water", "water_ssr_color_early_after_envi_water", "water_ssr_color_late_water"};
+static const eastl::array<char const *, eastl::to_underlying(WaterRenderMode::COUNT)> WATER_DEPTH_RENAME_NODE_NAMES = {
+  "water_depth_rename_early_before_envi_node", "water_depth_rename_early_after_envi_node", "water_depth_rename_late_node"};
 
-const eastl::array<char const *, eastl::to_underlying(WaterRenderMode::COUNT)> WATER_SSR_COLOR_TOKEN = {
-  "water_ssr_color_token_early_before_envi_water", "water_ssr_color_token_early_after_envi_water", "water_ssr_color_token_late_water"};
-
-const eastl::array<char const *, eastl::to_underlying(WaterRenderMode::COUNT_WITH_RENAMES)> WATER_SSR_STRENGTH_TEX = {
-  "water_ssr_strength", "water_ssr_strength_early_before_envi_water", "water_ssr_strength_early_after_envi_water",
-  "water_ssr_strength_with_late_water"};
-
-const eastl::array<char const *, eastl::to_underlying(WaterRenderMode::COUNT)> WATER_NORMAL_DIR_TEX = {
-  "water_normal_dir_early_before_envi_water", "water_normal_dir_early_after_envi_water", "water_normal_dir_late_water"};
-
-const eastl::array<char const *, eastl::to_underlying(WaterRenderMode::COUNT)> WATER_RT_DEPTH_TEX = {
-  "water_rt_depth_early_before_envi_water", "water_rt_depth_early_after_envi_water", "water_rt_depth_late_water"};
-
-const eastl::array<char const *, eastl::to_underlying(WaterRenderMode::COUNT)> WATER_DEPTH_TEX = {
+static const eastl::array<char const *, eastl::to_underlying(WaterRenderMode::COUNT)> WATER_DEPTH_TEX = {
   "opaque_depth_with_water_before_clouds", "opaque_depth_with_water", "depth_for_transparency"};
 
-const eastl::array<char const *, eastl::to_underlying(WaterRenderMode::COUNT)> WATER_DEPTH_COPY_SOURCE_TEX = {
+static const eastl::array<char const *, eastl::to_underlying(WaterRenderMode::COUNT)> WATER_DEPTH_COPY_SOURCE_TEX = {
   "gbuf_depth_after_resolve", "opaque_depth_with_water_before_clouds", "depth_before_water_late"};
 
 static bool is_water_reflection_full_res() { return is_rr_enabled() && is_rt_water_enabled(); }
@@ -78,16 +66,22 @@ dafg::NodeHandle makePrepareWaterNode()
     auto enableWaterSsrHndl = registry.create("enable_water_ssr").blob<bool>().withHistory().handle();
 
     const bool fullRes = is_water_reflection_full_res();
+    const auto history = fullRes ? dafg::History::No : dafg::History::ClearZeroOnFirstFrame;
 
-    registry.create(WATER_SSR_COLOR_TEX[0])
+    registry.create("water_ssr_color")
       .texture({TEXFMT_R11G11B10F | TEXCF_RTARGET | TEXCF_UNORDERED, registry.getResolution<2>("main_view", fullRes ? 1.0f : 0.5f), 1})
+      .withHistory(history)
       .atStage(dafg::Stage::PS)
       .useAs(dafg::Usage::COLOR_ATTACHMENT);
     uint32_t strengthFormat = is_rt_water_enabled() ? TEXFMT_A8R8G8B8 : TEXFMT_R8G8;
-    registry.create(WATER_SSR_STRENGTH_TEX[0])
+    registry.create("water_ssr_strength")
       .texture({strengthFormat | TEXCF_RTARGET | TEXCF_UNORDERED, registry.getResolution<2>("main_view", fullRes ? 1.0f : 0.5f), 1})
+      .withHistory(history)
       .atStage(dafg::Stage::PS)
       .useAs(dafg::Usage::COLOR_ATTACHMENT);
+
+    registry.createTexture2d("water_normal_dir",
+      {TEXFMT_A2B10G10R10 | TEXCF_RTARGET | TEXCF_UNORDERED, registry.getResolution<2>("main_view", fullRes ? 1.0f : 0.5f), 1});
 
     {
       d3d::SamplerInfo smpInfo;
@@ -139,21 +133,6 @@ dafg::NodeHandle makePrepareWaterNode()
   });
 }
 
-const eastl::array<char const *, eastl::to_underlying(WaterRenderMode::COUNT)> WATER_SSR_CAM_RES_PROVIDER_NODE_NAMES = {
-  "water_ssr_cam_res_provider_early_before_envi_node", "water_ssr_cam_res_provider_early_after_envi_node",
-  "water_ssr_cam_res_provider_late_node"};
-const eastl::array<char const *, eastl::to_underlying(WaterRenderMode::COUNT)> WATER_NORMAL_NODE_NAMES = {
-  "water_normal_early_before_envi_node", "water_normal_early_after_envi_node", "water_normal_late_node"};
-const eastl::array<char const *, eastl::to_underlying(WaterRenderMode::COUNT)> WATER_SSR_NODE_NAMES = {
-  "water_ssr_early_before_envi_node", "water_ssr_early_after_envi_node", "water_ssr_late_node"};
-const eastl::array<char const *, eastl::to_underlying(WaterRenderMode::COUNT)> WATER_RT_DEPTH_COPY_NODE_NAMES = {
-  "water_rt_depth_copy_early_before_envi_node", "water_rt_depth_copy_early_after_envi_node", "water_rt_depth_copy_late_node"};
-const eastl::array<char const *, eastl::to_underlying(WaterRenderMode::COUNT)> WATER_RT_DEPTH_DOWNSAMPLE_NODE_NAMES = {
-  "water_rt_depth_downsample_early_before_envi_node", "water_rt_depth_downsample_early_after_envi_node",
-  "water_rt_depth_downsample_late_node"};
-const eastl::array<char const *, eastl::to_underlying(WaterRenderMode::COUNT)> WATER_NODE_NAMES = {
-  "water_early_before_envi_node", "water_early_after_envi_node", "water_late_node"};
-
 const eastl::array<char const *, eastl::to_underlying(WaterRenderMode::COUNT)> DOWNSAMPLED_FRAME_TEX_NAMES = {
   "prev_frame_tex_for_water_early", "prev_frame_tex", "prev_frame_tex"};
 
@@ -162,8 +141,6 @@ const eastl::array<char const *, eastl::to_underlying(WaterRenderMode::COUNT)> D
 // or reprojects history with the wrong view.
 static auto request_water_ssr_camera_state(dafg::Registry registry)
 {
-  auto waterModeHndl = registry.readBlob<WaterRenderMode>("water_render_mode").handle();
-
   registry.multiplex(dafg::multiplexing::Mode::FullMultiplex);
   auto camera = use_camera_in_camera(registry);
   auto cameraHndl = CameraViewShvars{camera}.bindViewVecs().toHandle();
@@ -172,52 +149,38 @@ static auto request_water_ssr_camera_state(dafg::Registry registry)
   registry.readBlobHistory<bool>("enable_water_ssr").bindToShaderVar("water_ssr_enabled_prev_frame");
   auto enableWaterSsrHndl = registry.readBlob<bool>("enable_water_ssr").handle();
 
-  return eastl::make_tuple(waterModeHndl, cameraHndl, prevCameraHndl, enableWaterSsrHndl);
+  return eastl::make_tuple(cameraHndl, prevCameraHndl, enableWaterSsrHndl);
 }
 
-eastl::fixed_vector<dafg::NodeHandle, 4, false> makeWaterSSRNode(WaterRenderMode mode)
+eastl::fixed_vector<dafg::NodeHandle, 3, false> makeWaterDepthRenameNodes()
 {
-  const char *camResNodeName = WATER_SSR_CAM_RES_PROVIDER_NODE_NAMES[eastl::to_underlying(mode)];
-  eastl::fixed_vector<dafg::NodeHandle, 4, false> nodes;
-  nodes.push_back(dafg::register_node(camResNodeName, DAFG_PP_NODE_SRC, [mode](dafg::Registry registry) {
-    const auto history =
-      mode == WaterRenderMode::LATE && !is_water_reflection_full_res() ? dafg::History::ClearZeroOnFirstFrame : dafg::History::No;
-    const uint32_t modeIdx = eastl::to_underlying(mode);
+  eastl::fixed_vector<dafg::NodeHandle, 3, false> nodes;
+  for (uint32_t modeIdx = 0; modeIdx < WATER_DEPTH_RENAME_NODE_NAMES.size(); ++modeIdx)
+    nodes.push_back(dafg::register_node(WATER_DEPTH_RENAME_NODE_NAMES[modeIdx], DAFG_PP_NODE_SRC,
+      [modeIdx](dafg::Registry registry) { registry.renameTexture(WATER_SSR_DEPTH_TEX[modeIdx], WATER_SSR_DEPTH_TEX[modeIdx + 1]); }));
+  return nodes;
+}
 
-    registry.renameTexture(WATER_SSR_DEPTH_TEX[modeIdx], WATER_SSR_DEPTH_TEX[modeIdx + 1]);
-    registry.renameTexture(WATER_SSR_COLOR_TEX[modeIdx], WATER_SSR_COLOR_TEX[modeIdx + 1]).withHistory(history);
-    registry.renameTexture(WATER_SSR_STRENGTH_TEX[modeIdx], WATER_SSR_STRENGTH_TEX[modeIdx + 1]).withHistory(history);
-
-    registry.createBlob<OrderingToken>(WATER_SSR_COLOR_TOKEN[modeIdx]);
-
-    const float waterNormalDirScale = is_water_reflection_full_res() ? 1.0f : 0.5f;
-    registry.createTexture2d(WATER_NORMAL_DIR_TEX[modeIdx],
-      {TEXFMT_A2B10G10R10 | TEXCF_RTARGET | TEXCF_UNORDERED, registry.getResolution<2>("main_view", waterNormalDirScale), 1});
-  }));
+eastl::fixed_vector<dafg::NodeHandle, 3, false> makeWaterSSRNode(WaterRenderMode mode)
+{
+  const uint32_t modeIdx = eastl::to_underlying(mode);
+  eastl::fixed_vector<dafg::NodeHandle, 3, false> nodes;
 
   if (is_water_reflection_full_res())
   {
-    const char *copyNodeName = WATER_RT_DEPTH_COPY_NODE_NAMES[eastl::to_underlying(mode)];
-    nodes.push_back(dafg::register_node(copyNodeName, DAFG_PP_NODE_SRC, [mode](dafg::Registry registry) {
+    nodes.push_back(dafg::register_node("water_rt_depth_copy_node", DAFG_PP_NODE_SRC, [modeIdx](dafg::Registry registry) {
       const bool hasStencil = renderer_has_feature(CAMERA_IN_CAMERA);
-      const uint32_t modeIdx = eastl::to_underlying(mode);
       const uint32_t depthFormat = get_gbuffer_depth_format(hasStencil);
 
-      registry.requestRenderPass().depth(registry.create(WATER_RT_DEPTH_TEX[modeIdx])
-                                           .texture({depthFormat | TEXCF_RTARGET, registry.getResolution<2>("main_view", 1.0f)}));
-
-      auto waterModeHndl = registry.readBlob<WaterRenderMode>("water_render_mode").handle();
+      registry.requestRenderPass().depth(
+        registry.create("water_rt_depth").texture({depthFormat | TEXCF_RTARGET, registry.getResolution<2>("main_view", 1.0f)}));
 
       auto depthHndl = registry.read(WATER_DEPTH_COPY_SOURCE_TEX[modeIdx])
                          .texture()
                          .atStage(dafg::Stage::PS)
                          .useAs(dafg::Usage::SHADER_RESOURCE)
                          .handle();
-      return [depthHndl, mode, waterModeHndl, renderer = PostFxRenderer("copy_depth")] {
-        if (mode != waterModeHndl.ref())
-          return;
-
-        d3d::resource_barrier({depthHndl.get(), RB_RO_SRV | RB_STAGE_PIXEL, 0, 0});
+      return [depthHndl, renderer = PostFxRenderer("copy_depth")] {
         d3d::settex(var::source_depth_for_copy_const_no.get_int(), depthHndl.get());
         d3d::set_sampler(STAGE_PS, var::source_depth_for_copy_const_no.get_int(), d3d::request_sampler({}));
         renderer.render();
@@ -226,41 +189,37 @@ eastl::fixed_vector<dafg::NodeHandle, 4, false> makeWaterSSRNode(WaterRenderMode
     }));
   }
 
-  const char *ssrNodeName = WATER_NORMAL_NODE_NAMES[eastl::to_underlying(mode)];
-  nodes.push_back(dafg::register_node(ssrNodeName, DAFG_PP_NODE_SRC, [mode](dafg::Registry registry) {
-    const uint32_t modeIdx = eastl::to_underlying(mode);
+  nodes.push_back(dafg::register_node("water_normal_node", DAFG_PP_NODE_SRC, [modeIdx](dafg::Registry registry) {
     registry.allowAsyncPipelines();
     registry.requestState().setFrameBlock("global_frame");
 
     registry.read("wfx_hmap").texture().atStage(dafg::Stage::VS | dafg::Stage::PS).bindToShaderVar().optional();
     registry.read("wfx_normals").texture().atStage(dafg::Stage::PS).bindToShaderVar().optional();
 
-    registry.modifyBlob<OrderingToken>(WATER_SSR_COLOR_TOKEN[modeIdx]);
-
     auto downsampledDepthHndl =
-      registry.modifyTexture(is_water_reflection_full_res() ? WATER_RT_DEPTH_TEX[modeIdx] : WATER_SSR_DEPTH_TEX[modeIdx + 1])
+      registry.modifyTexture(is_water_reflection_full_res() ? "water_rt_depth" : WATER_SSR_DEPTH_TEX[modeIdx + 1])
         .atStage(dafg::Stage::PS)
         .useAs(dafg::Usage::DEPTH_ATTACHMENT)
         .handle();
     auto normalDirHndl =
-      registry.modifyTexture(WATER_NORMAL_DIR_TEX[modeIdx]).atStage(dafg::Stage::PS).useAs(dafg::Usage::COLOR_ATTACHMENT).handle();
+      registry.modifyTexture("water_normal_dir").atStage(dafg::Stage::PS).useAs(dafg::Usage::COLOR_ATTACHMENT).handle();
 
-    auto [waterModeHndl, cameraHndl, prevCameraHndl, enableWaterSsrHndl] = request_water_ssr_camera_state(registry);
+    auto [cameraHndl, prevCameraHndl, enableWaterSsrHndl] = request_water_ssr_camera_state(registry);
     G_UNUSED(prevCameraHndl); // the prepass has no temporal inputs, only the resolve does
 
     const int wfxEffectsTexEnabledVarId = get_shader_glob_var_id("wfx_effects_tex_enabled");
 
-    return [mode, waterModeHndl = waterModeHndl, cameraHndl = cameraHndl, enableWaterSsrHndl = enableWaterSsrHndl,
-             downsampledDepthHndl, normalDirHndl, wfxEffectsTexEnabledVarId](const dafg::multiplexing::Index &multiplexing_index) {
-      if (mode != waterModeHndl.ref() || !enableWaterSsrHndl.ref())
+    return [cameraHndl = cameraHndl, enableWaterSsrHndl = enableWaterSsrHndl, downsampledDepthHndl, normalDirHndl,
+             wfxEffectsTexEnabledVarId](const dafg::multiplexing::Index &multiplexing_index) {
+      if (!enableWaterSsrHndl.ref())
         return;
+
+      d3d::set_render_target({downsampledDepthHndl.get(), 0}, DepthAccess::RW, {{normalDirHndl.get(), 0}});
 
       // This is a mesh pass: it must WRITE the water surface depth the SSR
       // resolve reconstructs its ray origins from, so it takes the opaque-pass
       // camcam state. ApplyPostfxState's stencil override would disable z-write.
       const camera_in_camera::ApplyMasterState camcam{multiplexing_index};
-
-      d3d::set_render_target({downsampledDepthHndl.get(), 0}, DepthAccess::RW, {{normalDirHndl.get(), 0}});
       // water_normal_dir is shared by camcam sub-views and each sub-view's render is
       // stencil-masked to its own region, so clear once on the main view only.
       if (camera_in_camera::is_main_view(multiplexing_index))
@@ -271,106 +230,82 @@ eastl::fixed_vector<dafg::NodeHandle, 4, false> makeWaterSSRNode(WaterRenderMode
 
       ShaderGlobal::set_int(wfxEffectsTexEnabledVarId, int(use_wfx_textures()));
 
-      wr.renderWaterNormals(camera.viewItm, camera.jitterPersp);
+      wr.renderWaterNormals(camera, multiplexing_index.subCamera);
     };
   }));
 
   if (!is_rt_water_enabled())
   {
-    nodes.push_back(
-      dafg::register_node(WATER_SSR_NODE_NAMES[eastl::to_underlying(mode)], DAFG_PP_NODE_SRC, [mode](dafg::Registry registry) {
-        const uint32_t modeIdx = eastl::to_underlying(mode);
-        registry.allowAsyncPipelines();
-        registry.requestState().setFrameBlock("water3d_block");
+    nodes.push_back(dafg::register_node("water_ssr_node", DAFG_PP_NODE_SRC, [modeIdx](dafg::Registry registry) {
+      registry.allowAsyncPipelines();
+      registry.requestState().setFrameBlock("water3d_block");
 
-        registry.readBlob<OrderingToken>(WATER_SSR_COLOR_TOKEN[modeIdx]);
+      auto colorHndl =
+        registry.modifyTexture("water_ssr_color").atStage(dafg::Stage::PS).useAs(dafg::Usage::COLOR_ATTACHMENT).handle();
+      auto strengthHndl =
+        registry.modifyTexture("water_ssr_strength").atStage(dafg::Stage::PS).useAs(dafg::Usage::COLOR_ATTACHMENT).handle();
 
-        auto colorHndl = registry.modifyTexture(WATER_SSR_COLOR_TEX[modeIdx + 1])
-                           .atStage(dafg::Stage::PS)
-                           .useAs(dafg::Usage::COLOR_ATTACHMENT)
-                           .handle();
-        auto strengthHndl = registry.modifyTexture(WATER_SSR_STRENGTH_TEX[modeIdx + 1])
-                              .atStage(dafg::Stage::PS)
-                              .useAs(dafg::Usage::COLOR_ATTACHMENT)
-                              .handle();
+      registry.read("water_normal_dir").texture().atStage(dafg::Stage::PS).bindToShaderVar("water_normal_dir");
+      registry.read(WATER_SSR_DEPTH_TEX[modeIdx + 1]).texture().atStage(dafg::Stage::PS).bindToShaderVar("downsampled_depth");
 
-        registry.read(WATER_NORMAL_DIR_TEX[modeIdx]).texture().atStage(dafg::Stage::PS).bindToShaderVar("water_normal_dir");
-        registry.read(WATER_SSR_DEPTH_TEX[modeIdx + 1]).texture().atStage(dafg::Stage::PS).bindToShaderVar("downsampled_depth");
+      registry.read("water_ssr_point_clamp_sampler").blob<d3d::SamplerHandle>().bindToShaderVar("water_ssr_point_clamp_samplerstate");
+      registry.read("close_depth").texture().atStage(dafg::Stage::PS).bindToShaderVar("downsampled_close_depth_tex");
+      registry.read("far_downsampled_depth").texture().atStage(dafg::Stage::PS).bindToShaderVar("downsampled_far_depth_tex");
+      registry.historyFor("water_ssr_color").texture().atStage(dafg::Stage::PS).bindToShaderVar("water_reflection_tex");
+      registry.historyFor("water_ssr_strength").texture().atStage(dafg::Stage::PS).bindToShaderVar("water_reflection_strength_tex");
+      registry.readTexture("water_planar_reflection_terrain").atStage(dafg::Stage::PS).bindToShaderVar().optional();
+      registry.readTexture("water_planar_reflection_terrain_depth").atStage(dafg::Stage::PS).bindToShaderVar().optional();
+      if (renderer_has_feature(FeatureRenderFlags::PREV_OPAQUE_TEX))
+      {
+        registry.read("prev_frame_sampler").blob<d3d::SamplerHandle>().bindToShaderVar("prev_frame_tex_samplerstate");
+        registry.read(DOWNSAMPLED_FRAME_TEX_NAMES[modeIdx]).texture().atStage(dafg::Stage::PS).bindToShaderVar("prev_frame_tex");
+      }
+      // SSR uses probes, if they are present
+      (registry.root() / "indoor_probes").read("probes_ready_token").blob<OrderingToken>().optional();
 
-        registry.read("water_ssr_point_clamp_sampler")
-          .blob<d3d::SamplerHandle>()
-          .bindToShaderVar("water_ssr_point_clamp_samplerstate");
-        registry.read("close_depth").texture().atStage(dafg::Stage::PS).bindToShaderVar("downsampled_close_depth_tex");
-        registry.read("far_downsampled_depth").texture().atStage(dafg::Stage::PS).bindToShaderVar("downsampled_far_depth_tex");
-        registry.historyFor(WATER_SSR_COLOR_TEX[eastl::to_underlying(WaterRenderMode::COUNT)])
-          .texture()
-          .atStage(dafg::Stage::PS)
-          .bindToShaderVar("water_reflection_tex");
-        registry.historyFor(WATER_SSR_STRENGTH_TEX[eastl::to_underlying(WaterRenderMode::COUNT)])
-          .texture()
-          .atStage(dafg::Stage::PS)
-          .bindToShaderVar("water_reflection_strength_tex");
-        registry.readTexture("water_planar_reflection_terrain").atStage(dafg::Stage::PS).bindToShaderVar().optional();
-        registry.readTexture("water_planar_reflection_terrain_depth").atStage(dafg::Stage::PS).bindToShaderVar().optional();
-        if (renderer_has_feature(FeatureRenderFlags::PREV_OPAQUE_TEX))
+      auto [cameraHndl, prevCameraHndl, enableWaterSsrHndl] = request_water_ssr_camera_state(registry);
+
+      return [cameraHndl = cameraHndl, prevCameraHndl = prevCameraHndl, enableWaterSsrHndl = enableWaterSsrHndl, colorHndl,
+               strengthHndl, renderer = PostFxRenderer("water_ssr")](const dafg::multiplexing::Index &multiplexing_index) {
+        if (!enableWaterSsrHndl.ref())
+          return;
+
+        // No depth target is bound, so no USE_STENCIL here;
+        // view separation is done by DISCARD_IF_INVALID_VIEW_AREA_PS in the shader.
+        camera_in_camera::ApplyPostfxState camcam{multiplexing_index, cameraHndl.ref(), prevCameraHndl.ref()};
+
+        d3d::set_render_target({nullptr, 0}, DepthAccess::RW, {{colorHndl.get(), 0}, {strengthHndl.get(), 0}});
+        // the targets are shared by camcam sub-views, so clear once on the main view only
+        if (camera_in_camera::is_main_view(multiplexing_index))
         {
-          registry.read("prev_frame_sampler").blob<d3d::SamplerHandle>().bindToShaderVar("prev_frame_tex_samplerstate");
-          registry.read(DOWNSAMPLED_FRAME_TEX_NAMES[modeIdx]).texture().atStage(dafg::Stage::PS).bindToShaderVar("prev_frame_tex");
+          d3d::clear_rt({colorHndl.get(), 0}, make_clear_value(0.0f, 0.0f, 0.0f, 0.0f));
+          d3d::clear_rt({strengthHndl.get(), 0}, make_clear_value(1.0f, 0.0f, 0.0f, 0.0f));
         }
-        // SSR uses probes, if they are present
-        (registry.root() / "indoor_probes").read("probes_ready_token").blob<OrderingToken>().optional();
 
-        auto [waterModeHndl, cameraHndl, prevCameraHndl, enableWaterSsrHndl] = request_water_ssr_camera_state(registry);
+        auto &wr = *static_cast<WorldRenderer *>(get_world_renderer());
+        if (wr.hasWaterSSRAlternateReflections())
+          wr.setGILightsToShader(false /*allow_frustum_lights*/);
 
-        return [mode, waterModeHndl = waterModeHndl, cameraHndl = cameraHndl, prevCameraHndl = prevCameraHndl,
-                 enableWaterSsrHndl = enableWaterSsrHndl, colorHndl, strengthHndl,
-                 renderer = PostFxRenderer("water_ssr")](const dafg::multiplexing::Index &multiplexing_index) {
-          if (mode != waterModeHndl.ref() || !enableWaterSsrHndl.ref())
-            return;
-
-          // No depth target is bound, so no USE_STENCIL here;
-          // view separation is done by DISCARD_IF_INVALID_VIEW_AREA_PS in the shader.
-          camera_in_camera::ApplyPostfxState camcam{multiplexing_index, cameraHndl.ref(), prevCameraHndl.ref()};
-
-          d3d::set_render_target({nullptr, 0}, DepthAccess::RW, {{colorHndl.get(), 0}, {strengthHndl.get(), 0}});
-          // the targets are shared by camcam sub-views, so clear once on the main view only
-          if (camera_in_camera::is_main_view(multiplexing_index))
-          {
-            d3d::clear_rt({colorHndl.get(), 0}, make_clear_value(0.0f, 0.0f, 0.0f, 0.0f));
-            d3d::clear_rt({strengthHndl.get(), 0}, make_clear_value(1.0f, 0.0f, 0.0f, 0.0f));
-          }
-
-          auto &wr = *static_cast<WorldRenderer *>(get_world_renderer());
-          if (wr.hasWaterSSRAlternateReflections())
-            wr.setGILightsToShader(false /*allow_frustum_lights*/);
-
-          renderer.render();
-        };
-      }));
+        renderer.render();
+      };
+    }));
   }
 
   if (is_water_reflection_full_res())
   {
-    const char *downsampleNodeName = WATER_RT_DEPTH_DOWNSAMPLE_NODE_NAMES[eastl::to_underlying(mode)];
-    nodes.push_back(dafg::register_node(downsampleNodeName, DAFG_PP_NODE_SRC, [mode](dafg::Registry registry) {
-      const uint32_t modeIdx = eastl::to_underlying(mode);
-
+    nodes.push_back(dafg::register_node("water_rt_depth_downsample_node", DAFG_PP_NODE_SRC, [modeIdx](dafg::Registry registry) {
       auto rtDepthHndl =
-        registry.read(WATER_RT_DEPTH_TEX[modeIdx]).texture().atStage(dafg::Stage::PS).useAs(dafg::Usage::SHADER_RESOURCE).handle();
+        registry.read("water_rt_depth").texture().atStage(dafg::Stage::PS).useAs(dafg::Usage::SHADER_RESOURCE).handle();
       auto downsampledDepthHndl = registry.modifyTexture(WATER_SSR_DEPTH_TEX[modeIdx + 1])
                                     .atStage(dafg::Stage::PS)
                                     .useAs(dafg::Usage::DEPTH_ATTACHMENT)
                                     .handle();
-      auto waterModeHndl = registry.readBlob<WaterRenderMode>("water_render_mode").handle();
       auto mainViewResolutionHndl = registry.getResolution<2>("main_view");
 
-      return [mode, rtDepthHndl, downsampledDepthHndl, waterModeHndl, mainViewResolutionHndl](const dafg::multiplexing::Index &) {
-        if (waterModeHndl.ref() != mode)
-          return;
-
+      return [rtDepthHndl, downsampledDepthHndl, mainViewResolutionHndl](const dafg::multiplexing::Index &) {
         auto [renderingWidth, renderingHeight] = mainViewResolutionHndl.get();
         downsample_depth::downsamplePS(rtDepthHndl.get(), renderingWidth, renderingHeight, downsampledDepthHndl.get(),
-          nullptr /*close_depth*/, nullptr /*normals*/);
+          nullptr /*close_depth*/, nullptr /*far_normals*/);
       };
     }));
   }
@@ -391,7 +326,7 @@ static void create_water_refraction_stub(UniqueTexWithShaderVar &water_refractio
 
 dafg::NodeHandle makeWaterNode(WaterRenderMode mode)
 {
-  return dafg::register_node(WATER_NODE_NAMES[eastl::to_underlying(mode)], DAFG_PP_NODE_SRC, [mode](dafg::Registry registry) {
+  return dafg::register_node("water_node", DAFG_PP_NODE_SRC, [mode](dafg::Registry registry) {
     const eastl::array<char const *, eastl::to_underlying(WaterRenderMode::COUNT)> COLOR_NAMES = {
       "opaque_with_water_before_clouds", "opaque_with_envi_and_water", "target_for_transparency"};
     const eastl::array<char const *, eastl::to_underlying(WaterRenderMode::COUNT)> FOLLOW_NODE_NAMES = {
@@ -421,19 +356,14 @@ dafg::NodeHandle makeWaterNode(WaterRenderMode mode)
     registry.read("wfx_hmap").texture().atStage(dafg::Stage::VS | dafg::Stage::PS).bindToShaderVar().optional();
     registry.read("wfx_normals").texture().atStage(dafg::Stage::PS).bindToShaderVar().optional();
 
-    registry.read(WATER_SSR_COLOR_TEX[modeIdx + 1]).texture().atStage(dafg::Stage::PS).bindToShaderVar("water_reflection_tex");
-    registry.read(WATER_SSR_STRENGTH_TEX[modeIdx + 1])
-      .texture()
-      .atStage(dafg::Stage::PS)
-      .bindToShaderVar("water_reflection_strength_tex");
+    registry.read("water_ssr_color").texture().atStage(dafg::Stage::PS).bindToShaderVar("water_reflection_tex");
+    registry.read("water_ssr_strength").texture().atStage(dafg::Stage::PS).bindToShaderVar("water_reflection_strength_tex");
 
     registry.readTexture("water_planar_reflection_clouds").atStage(dafg::Stage::PS).bindToShaderVar().optional();
     registry.read("water_planar_reflection_clouds_sampler")
       .blob<d3d::SamplerHandle>()
       .bindToShaderVar("water_planar_reflection_clouds_samplerstate")
       .optional();
-
-    auto waterModeHndl = registry.readBlob<WaterRenderMode>("water_render_mode").handle();
 
     auto camera = use_camera_in_camera(registry);
     auto cameraHndl = CameraViewShvars{camera}.bindViewVecs().toHandle();
@@ -444,23 +374,19 @@ dafg::NodeHandle makeWaterNode(WaterRenderMode mode)
     auto reactiveMaskHndl =
       registry.modifyTexture("reactive_mask").atStage(dafg::Stage::PS).useAs(dafg::Usage::COLOR_ATTACHMENT).optional().handle();
 
-    return [isWaterRtEnabledHndl, mode, waterModeHndl, cameraHndl, enableWaterSsrHndl, finalTargetHndl, depthHndl, reactiveMaskHndl,
+    return [isWaterRtEnabledHndl, mode, cameraHndl, enableWaterSsrHndl, finalTargetHndl, depthHndl, reactiveMaskHndl,
              wfxEffectsTexEnabledVarId = get_shader_glob_var_id("wfx_effects_tex_enabled")](
              const dafg::multiplexing::Index &multiplexing_index) {
-      if (mode != waterModeHndl.ref())
-        return;
-
       const bool isWaterRtEnabled = isWaterRtEnabledHndl.get() ? *isWaterRtEnabledHndl.get() : 0;
       ShaderGlobal::set_int(var::water_rt_enabled, isWaterRtEnabled);
 
-      const camera_in_camera::ApplyMasterState camcam{multiplexing_index};
-
       d3d::set_render_target({depthHndl.get(), 0}, DepthAccess::RW, {{finalTargetHndl.get(), 0}, {reactiveMaskHndl.get(), 0}});
+      const camera_in_camera::ApplyMasterState camcam{multiplexing_index};
 
       auto &wr = *static_cast<WorldRenderer *>(get_world_renderer());
       ShaderGlobal::set_int(wfxEffectsTexEnabledVarId, int(use_wfx_textures()));
       wr.renderWater(cameraHndl.ref(), WorldRenderer::DistantWater{mode != WaterRenderMode::LATE && distantWater},
-        enableWaterSsrHndl.ref());
+        enableWaterSsrHndl.ref(), multiplexing_index.subCamera);
     };
   });
 }
@@ -491,15 +417,9 @@ void bind_water_refraction_stub_if_unset()
 
 ECS_TAG(render)
 ECS_ON_EVENT(OnCameraNodeConstruction)
-static void create_water_nodes_es(const OnCameraNodeConstruction &evt)
+static void create_water_nodes_es(const OnCameraNodeConstruction &)
 {
-  evt.nodes->push_back(makePrepareWaterNode());
-  for (auto i : {WaterRenderMode::EARLY_BEFORE_ENVI, WaterRenderMode::EARLY_AFTER_ENVI, WaterRenderMode::LATE})
-  {
-    evt.nodes->push_back(makeWaterNode(i));
-    for (auto &&n : makeWaterSSRNode(i))
-      evt.nodes->push_back(eastl::move(n));
-  }
+  static_cast<WorldRenderer *>(get_world_renderer())->recreateWaterNodes();
 }
 
 ECS_TAG(render)
@@ -519,7 +439,7 @@ static void destroy_water_refraction_stub_es(const ecs::Event &, ecs::EntityMana
 }
 
 ECS_TAG(render)
-ECS_ON_EVENT(AfterDeviceReset)
+ECS_ON_EVENT(EventAfterDeviceReset)
 static void recreate_water_refraction_stub_es(const ecs::Event &, UniqueTexWithShaderVar &water_refraction_stub)
 {
   create_water_refraction_stub(water_refraction_stub);

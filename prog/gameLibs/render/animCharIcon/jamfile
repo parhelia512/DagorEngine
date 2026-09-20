@@ -13,6 +13,7 @@ AddIncludes =
 
 Sources =
   renderAnimCharIconBase.cpp
+  animCharIconAdditionalData.cpp
 ;
 
 include $(Root)/prog/_jBuild/build.jam ;

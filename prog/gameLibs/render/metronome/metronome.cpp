@@ -2,11 +2,12 @@
 
 #include "metronome_detail.h"
 
+#include <EASTL/sort.h>
 #include <EASTL/utility.h>
 #include <debug/dag_log.h>
 #include <debug/dag_assert.h>
 #include <generic/dag_expected.h>
-#include <generic/dag_fixedVectorSet.h>
+#include <generic/dag_relocatableFixedVector.h>
 
 
 namespace dafg::metronome
@@ -139,79 +140,60 @@ void update()
   Scheduler &sched = scheduler();
   ++sched.tick;
 
-  // Find next subgraphs to run
-  SubgraphId bestId;
-  uint32_t bestSlack = eastl::numeric_limits<uint32_t>::max();
-  dag::FixedVectorSet<SubgraphId, 4> forced = {};
+  struct PendingRequest
+  {
+    uint32_t deadline;         // last tick the request may be activated on
+    uint32_t pendingSinceTick; // older request wins deadline ties
+    uint32_t slot;             // creation order, final tie-break
+    SubgraphId id;
+  };
+  constexpr uint32_t pendingInitialCapacity = 16;
+  dag::RelocatableFixedVector<PendingRequest, pendingInitialCapacity> pending;
   for (uint32_t i = 0; i < sched.subgraphs.totalSize(); ++i)
   {
     SubgraphState *sg = sched.subgraphs.getByIdx(i);
-    if (!sg || sg->state != UpdateStatus::Pending)
-      continue;
+    if (sg && sg->state == UpdateStatus::Pending)
+      pending.push_back({sg->pendingSinceTick + sg->maxDelayFrames, sg->pendingSinceTick, i, sched.subgraphs.getRefByIdx(i)});
+  }
+  eastl::sort(pending.begin(), pending.end(), [](const PendingRequest &a, const PendingRequest &b) {
+    if (a.deadline != b.deadline)
+      return a.deadline < b.deadline;
+    if (a.pendingSinceTick != b.pendingSinceTick)
+      return a.pendingSinceTick < b.pendingSinceTick;
+    return a.slot < b.slot;
+  });
 
-    const uint32_t age = sched.tick - sg->pendingSinceTick;
-    if (DAGOR_LIKELY(age < sg->maxDelayFrames))
-    {
-      const uint32_t slack = sg->maxDelayFrames - age;
-      if (slack < bestSlack)
-      {
-        bestId = sched.subgraphs.getRefByIdx(i);
-        bestSlack = slack;
-      }
-    }
-    else
-    {
-      forced.insert(sched.subgraphs.getRefByIdx(i));
-    }
+  if (DAGOR_UNLIKELY(pending.size() > pendingInitialCapacity))
+    LOGERR_ONCE("dafg::metronome: too many pending subgraph updates, increase pendingInitialCapacity");
+
+  // Even spread: the request at rank j (1-based, by deadline) has framesLeft
+  // frames to run, so at least ceil(j / framesLeft) requests must run per
+  // frame. 10 requests with a 5-frame deadline run 2 per frame.
+  uint32_t runCount = 0;
+  for (uint32_t j = 0; j < pending.size(); ++j)
+  {
+    const uint32_t framesLeft = pending[j].deadline - sched.tick + 1;
+    runCount = eastl::max(runCount, (j + framesLeft) / framesLeft); // ceil((j + 1) / framesLeft)
   }
 
-  // More than one subgraph will cause spike and should be avoided
-  if (forced.size() > 1)
-    for (auto &id : forced)
-    {
-      logerr("dafg::metronome: subgraph '%s' forced to run (%d forced this frame); "
-             "reconsider its update cadence",
-        sched.subgraphs.get(id)->name.c_str(), (int)forced.size());
-    }
-
-  // Finish any alive subgraphs that are not selected to run this frame
+  // Subgraphs that ran in the previous frame and were not scheduled again
+  // complete now.
   for (uint32_t i = 0; i < sched.subgraphs.totalSize(); ++i)
   {
     SubgraphState *sg = sched.subgraphs.getByIdx(i);
-    if (!sg)
+    if (!sg || sg->state != UpdateStatus::Running)
       continue;
-
-    SubgraphId id = sched.subgraphs.getRefByIdx(i);
-
-    if (bestId == id)
-      continue;
-
-    if (forced.contains(id))
-      continue;
-
     sg->liveHandles.clear();
-
-    if (sg->state == UpdateStatus::Running)
-      sg->state = UpdateStatus::Complete;
+    sg->state = UpdateStatus::Complete;
   }
 
-  // Activate newly selected subgraphs
-  if (DAGOR_LIKELY(forced.empty()))
-  {
-    if (bestId)
-      activate(*sched.subgraphs.get(bestId));
-  }
-  else
-  {
-    if (bestId)
-      sched.subgraphs.get(bestId)->liveHandles.clear();
-    for (auto &id : forced)
-    {
-      SubgraphState *sg = sched.subgraphs.get(id);
-      if (sg)
-        activate(*sg);
-    }
-  }
+  // Deferred requests give up their nodes until selected; a re-scheduled
+  // request that does not run this frame stays pending.
+  for (uint32_t j = runCount; j < pending.size(); ++j)
+    sched.subgraphs.get(pending[j].id)->liveHandles.clear();
+
+  for (uint32_t j = 0; j < runCount; ++j)
+    activate(*sched.subgraphs.get(pending[j].id));
 }
 
 } // namespace dafg::metronome

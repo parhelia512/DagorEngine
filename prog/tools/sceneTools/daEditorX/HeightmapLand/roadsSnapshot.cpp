@@ -41,6 +41,7 @@ RoadsSnapshot::RoadsSnapshot(HmapLandObjectEditor &objEd) : rspl(midmem), rc(mid
     SplineObject *p = RTTI_cast<SplineObject>(objEd.getObject(i));
     if (!p || !isRoadSpline(*p))
       continue;
+    p->getSpline(); // reconciles fillets and can insert points, so every count below has to be taken after it
     rs_num++;
     rpt_num += p->points.size();
   }
@@ -63,7 +64,6 @@ RoadsSnapshot::RoadsSnapshot(HmapLandObjectEditor &objEd) : rspl(midmem), rc(mid
     if (!p || !isRoadSpline(*p))
       continue;
 
-    p->getSpline();
     usedSpl.push_back(p);
 
     IRoadsProvider::RoadSpline &rs = rspl.push_back();
@@ -78,9 +78,10 @@ RoadsSnapshot::RoadsSnapshot(HmapLandObjectEditor &objEd) : rspl(midmem), rc(mid
     {
       asset = getRoad(p->points[j], false) ? p->points[j]->getSplineClass() : NULL;
 
-      rpt[ptidx + j].pt = p->points[j]->getPt();
-      rpt[ptidx + j].relIn = p->points[j]->getPtEffRelBezierIn();
-      rpt[ptidx + j].relOut = p->points[j]->getPtEffRelBezierOut();
+      Point3 kp = p->points[j]->getKnotPos();
+      rpt[ptidx + j].pt = kp;
+      rpt[ptidx + j].relIn = p->points[j]->getKnotBezierIn() - kp;
+      rpt[ptidx + j].relOut = p->points[j]->getKnotBezierOut() - kp;
       // rpt[ptidx+j].upDir = p->points[j]->getUpDir();
       rpt[ptidx + j].asset = asset;
     }

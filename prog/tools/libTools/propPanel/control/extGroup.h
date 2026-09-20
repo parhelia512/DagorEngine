@@ -38,6 +38,8 @@ public:
 
   void setValueHighlight(ColorOverride::ColorIndex color) override { valueHighlightColor = color; }
 
+  const char *getImguiTypeName() const override { return "ExtGroup"; }
+
   void updateImgui() override
   {
     // NOTE: if you modify this then you might have to modify the code in GroupPropertyControl too!
@@ -57,6 +59,7 @@ public:
 
     ImGui::SetNextItemOpen(!wasMinimized);
     setMinimized(!ImGui::CollapsingHeader(getStringCaption(), ImGuiTreeNodeFlags_AllowOverlap));
+    setImguiTestItemInfo();
     setFocusToPreviousImGuiControlAndScrollToItsTopIfRequested();
     setPreviousImguiControlTooltip();
     showJumpToGroupContextMenuOnRightClick();
@@ -112,6 +115,7 @@ private:
       const ImTextureID icon = image_helper.getImTextureIdFromIconId(iconId);
       buttonClicked = ImGui::ImageButton("ib", icon, menu_button_size);
     }
+    setImguiTestItemInfo("menu");
 
     ImGui::PopStyleVar();
 

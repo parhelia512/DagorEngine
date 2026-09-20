@@ -31,9 +31,12 @@ inline bool platform_has_mesh_support(Platform p) { return Platform::XBOX_ONE !=
 
 inline bool use_two_phase_compilation(Platform p) { return is_xbox_platform(p); }
 
+// DXC takes an optimization level from 0 (no optimization) to 3 (best).
+constexpr int MAX_OPTIMIZE_LEVEL = 3;
+
 struct CompilationOptions
 {
-  bool optimize = true;
+  uint32_t optimizeLevel = MAX_OPTIMIZE_LEVEL;
   bool skipValidation = false;
   bool debugInfo = false;
   bool scarlettW32 = false;
@@ -58,10 +61,10 @@ struct CompileInputs
   const char *entry;
   dag::ConstSpan<char> source;
   bool needDisasm;
-  int maxConstantsNo;
+  int implicitCbufRegCount;
   Platform platform;
   bool warningsAsErrors;
-  bool embedSource;
+  DebugParts debugParts;
   DebugLevel debugLevel;
   CompilationOptions compilationOptions;
   wchar_t *PDBDir;
@@ -119,9 +122,9 @@ CombinedShaderStorage combinePhaseOnePixelShader(const ShaderStageData &ps, cons
   bool has_gs, bool has_ts, CompilationOptions options);
 
 eastl::optional<CombinedShaderStorage> recompileVertexProgram(dag::ConstSpan<uint8_t> source, Platform platform, wchar_t *pdb_dir,
-  wchar_t *pdb_name, DebugLevel debug_level, bool embed_source);
+  wchar_t *pdb_name, DebugLevel debug_level, DebugParts debug_parts);
 
 eastl::optional<CombinedShaderStorage> recompilePixelShader(dag::ConstSpan<uint8_t> source, Platform platform, wchar_t *pdb_dir,
-  wchar_t *pdb_name, DebugLevel debug_level, bool embed_source);
+  wchar_t *pdb_name, DebugLevel debug_level, DebugParts debug_parts);
 } // namespace dxil
 } // namespace dx12

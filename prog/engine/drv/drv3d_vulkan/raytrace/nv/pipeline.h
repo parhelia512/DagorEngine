@@ -83,6 +83,8 @@ public:
   int64_t dumpCompilationTime() const { return compilationTime; }
   size_t dumpVariantCount() const { return 1; }
 
+  ProgramID getProgram() const { return program; }
+
 private:
   dag::Vector<ShaderDebugInfo> debugInfo;
   int64_t compilationTime;

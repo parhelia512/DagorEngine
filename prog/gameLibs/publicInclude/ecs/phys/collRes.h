@@ -19,4 +19,6 @@ class Array;
 } // namespace ecs
 
 bool apply_collres_node_flag_rules(ecs::EntityManager &mgr, ecs::EntityId eid, const ecs::Array &rules);
+// Gives the entity its own collres shell (a sharing deepCopy). Returns true only when a fresh
+// owned copy was made and tracked; false = already owned (no-op) or no collres.
 bool clone_collres(ecs::EntityManager &mgr, ecs::EntityId eid);

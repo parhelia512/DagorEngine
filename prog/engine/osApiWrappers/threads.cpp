@@ -457,10 +457,25 @@ bool DaThread::start()
   return err == 0;
 }
 
+#if _TARGET_PC_WIN | _TARGET_XBOX
+static bool is_calling_thread(uintptr_t id) { return GetThreadId((HANDLE)id) == GetCurrentThreadId(); }
+#elif defined(HAVE_PTHREAD)
+static bool is_calling_thread(pthread_t id) { return pthread_equal(id, pthread_self()) != 0; }
+#endif
+
 void DaThread::terminate(bool wait, int timeout_ms, os_event_t *wake_event)
 {
   if (interlocked_acquire_load(threadState) == DEAD)
     return;
+
+  if (wait && is_calling_thread(id))
+  {
+    // the thread is inside this call (a fatal in its own code ends in exit(),
+    // which runs the teardown that terminates it): it can never reach its end,
+    // so a wait for it never returns
+    debug("thread <%s> terminates itself, not waiting for its end", name);
+    wait = false;
+  }
 
 #if defined(HAVE_PTHREAD)
   if (timeout_ms >= 0 || !wait)

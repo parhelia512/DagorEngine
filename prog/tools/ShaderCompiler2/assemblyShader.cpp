@@ -80,364 +80,20 @@ static bool is_hlsl_debug() { return shc::config().hlslDebugLevel != DebugLevel:
 #include <D3Dcompiler.h>
 #endif
 
-int ShaderParser::appendVarToContext(shc::VariantContext &ctx, const char *name, ShaderVarType type, const int nameId, void *loc,
-  bool dynamic, bool noWarning, bool used, int slot)
-{
-  ShaderSemCode &code = ctx.parsedSemCode();
-
-  int vi = append_items(code.vars, 1);
-  code.vars[vi].type = type;
-  code.vars[vi].nameId = nameId;
-  code.vars[vi].terminal = loc;
-  code.vars[vi].dynamic = dynamic;
-  code.vars[vi].used = used;
-  code.vars[vi].slot = slot;
-  code.vars[vi].noWarnings = noWarning;
-
-  code.staticStcodeVars.add(name, vi);
-
-  return vi;
-}
-
-void ShaderParser::parseAttribs(shc::VariantContext &ctx, const eastl::vector<static_attrib_decl *> &attribs,
-  const ShaderSemCode::Var &var, uint32_t &flags, uint32_t &stubCol)
-{
-  ExpressionParser exprParser{ctx};
-  auto &parser = ctx.tgtCtx().sourceParseState().parser;
-  for (auto *attrib : attribs)
-  {
-    if (streq(attrib->name->text, "stub"))
-    {
-      if (var.dynamic)
-      {
-        report_error(parser, attrib->name, "'%s' attribute is not supported for dynamic vars", attrib->name->text);
-        return;
-      }
-      if (var.type != SHVT_TEXTURE)
-      {
-        report_error(parser, attrib->name, "'%s' attribute is only supported for texture vars", attrib->name->text);
-        return;
-      }
-      if (attrib->value)
-      {
-        report_error(parser, attrib->name, "'%s' attribute takes a color expression", attrib->name->text);
-        return;
-      }
-
-      Color4 val{};
-      if (!exprParser.parseConstExpression(*attrib->expr, val, ExpressionParser::Context{shexpr::VT_COLOR4, false, attrib->name}))
-      {
-        report_error(parser, attrib->name, "Wrong expression for '%s' color", attrib->name->text);
-        return;
-      }
-
-      val = clamp(val, Color4(0.f, 0.f, 0.f, 0.f), Color4(1.f, 1.f, 1.f, 1.f));
-      flags |= ShaderClass::VF_HAS_STUB_COLOR;
-      stubCol =
-        (uint32_t(255.f * val.r)) | (uint32_t(255.f * val.g) << 8) | (uint32_t(255.f * val.b) << 16) | (uint32_t(255.f * val.a) << 24);
-    }
-    else
-    {
-      report_warning(parser, *attrib->name, "Unknown static attribute '%s'", attrib->name->text);
-    }
-  }
-}
-
 /*********************************
  *
  * class AssembleShaderEvalCB
  *
  *********************************/
 AssembleShaderEvalCB::AssembleShaderEvalCB(shc::VariantContext &ctx) :
-  semantic::VariantBoolExprEvalCB{ctx},
-  ctx{ctx},
-  sclass{ctx.shCtx().compiledShader()},
-  code{ctx.parsedSemCode()},
+  GatherVariantLocalVarsCB{ctx, &preshaderSource},
   curvariant{&ctx.parsedPass()},
   curpass{ctx.hasParsedPass() ? &ctx.parsedPass().pass.value() : nullptr},
-  parser{ctx.tgtCtx().sourceParseState().parser},
   exprParser{ctx},
   allRefStaticVars{ctx.shCtx().typeTables().referencedTypes},
   dont_render(false),
   variant(ctx.variant())
 {}
-
-eastl::optional<ShaderVarType> shtok_to_shvt(int shtok)
-{
-  switch (shtok)
-  {
-    case SHADER_TOKENS::SHTOK_int: return SHVT_INT;
-    case SHADER_TOKENS::SHTOK_int4: return SHVT_INT4;
-    case SHADER_TOKENS::SHTOK_float: return SHVT_REAL;
-    case SHADER_TOKENS::SHTOK_float4x4: return SHVT_FLOAT4X4;
-    case SHADER_TOKENS::SHTOK_float4x3: return SHVT_FLOAT4x3;
-    case SHADER_TOKENS::SHTOK_float4: return SHVT_COLOR4;
-    case SHADER_TOKENS::SHTOK_texture: return SHVT_TEXTURE;
-    default: return eastl::nullopt;
-  }
-}
-
-void AssembleShaderEvalCB::eval_static(static_var_decl &s)
-{
-  auto shvt = shtok_to_shvt(s.type->type->num);
-  if (!shvt)
-  {
-    report_error(parser, s.type->type, "Unsupported shadervar type %s to declare as static/dynamic variable", s.type->type->text);
-    return;
-  }
-  ShaderVarType t = *shvt;
-
-  int varNameId = ctx.tgtCtx().varNameMap().addVarId(s.name->text);
-
-  int v = code.find_var(varNameId);
-  if (v >= 0)
-  {
-    eastl::string message(eastl::string::CtorSprintf{}, "static variable '%s' already declared in ", s.name->text);
-    message += parser.get_lexer().get_symbol_location(varNameId, SymbolType::STATIC_VARIABLE);
-    report_error(parser, s.name, message.c_str());
-    return;
-  }
-  parser.get_lexer().register_symbol(varNameId, SymbolType::STATIC_VARIABLE, s.name);
-
-  v = appendVarToContext(ctx, s.name->text, t, varNameId, s.name, s.mode && s.mode->mode->num == SHADER_TOKENS::SHTOK_dynamic,
-    s.no_warnings);
-
-  bool inited = (!s.mode && s.init) || code.vars[v].dynamic || (t != SHVT_TEXTURE) || s.init;
-  if (!inited)
-    report_error(parser, s.name, "Variable '%s' must be inited", s.name->text);
-
-  uint32_t flags = 0;
-  uint32_t stubCol = 0;
-  parseAttribs(ctx, s.attrib, code.vars[v], flags, stubCol);
-
-  const bool hasStubColor = flags & ShaderClass::VF_HAS_STUB_COLOR;
-
-  bool varReferenced = true;
-
-  if (!s.mode && !hasStubColor)
-  {
-    int intervalNameId = ctx.tgtCtx().intervalNameMap().getNameId(s.name->text);
-    ShaderVariant::ExtType intervalIndex = allRefStaticVars.getIntervals()->getIntervalIndex(intervalNameId);
-    const Interval *interv = allRefStaticVars.getIntervals()->getInterval(intervalIndex);
-    varReferenced = interv ? allRefStaticVars.findType(interv->getVarType(), intervalIndex) != -1 : false;
-    code.vars[v].used = varReferenced;
-  }
-
-  int sv = sclass.find_static_var(varNameId);
-  if (sv < 0 && varReferenced)
-  {
-    sv = append_items(sclass.stvar, 1);
-    sclass.stvar[sv].type = t;
-    sclass.stvar[sv].nameId = varNameId;
-    sclass.stvar[sv].additionalFlags = flags;
-    sclass.stvar[sv].stubColor = stubCol;
-
-    if (sclass.stvarsAreDynamic.size() <= sv)
-      sclass.stvarsAreDynamic.resize(sv + 1);
-    sclass.stvarsAreDynamic[sv] = code.vars[v].dynamic;
-
-    const bool expectingInt = t == SHVT_INT || t == SHVT_INT4;
-    Color4 val = expectingInt ? Color4{bitwise_cast<float>(0), bitwise_cast<float>(0), bitwise_cast<float>(0), bitwise_cast<float>(1)}
-                              : Color4{0, 0, 0, 1};
-    if (s.init && s.init->expr)
-    {
-      shexpr::ValueType expectedValType = shexpr::VT_UNDEFINED;
-      if (t == SHVT_REAL || t == SHVT_INT || t == SHVT_TEXTURE)
-        expectedValType = shexpr::VT_REAL;
-      else if (t == SHVT_COLOR4 || t == SHVT_INT4)
-        expectedValType = shexpr::VT_COLOR4;
-      else if (t == SHVT_FLOAT4X4 || t == SHVT_FLOAT4x3)
-      {
-        report_error(parser, s.name, "float4x4/float4x3 default value is not supported");
-        return;
-      }
-
-      if (!exprParser.parseConstExpression(*s.init->expr, val, ExpressionParser::Context{expectedValType, expectingInt, s.name}))
-      {
-        report_error(parser, s.name, "Wrong expression");
-        return;
-      }
-    }
-
-    switch (t)
-    {
-      case SHVT_COLOR4: sclass.stvar[sv].defval.c4.set(val); break;
-      case SHVT_REAL: sclass.stvar[sv].defval.r = val[0]; break;
-      case SHVT_INT: sclass.stvar[sv].defval.i = bitwise_cast<int>(val[0]); break;
-      case SHVT_INT4:
-        sclass.stvar[sv].defval.i4.set(bitwise_cast<int>(val[0]), bitwise_cast<int>(val[1]), bitwise_cast<int>(val[2]),
-          bitwise_cast<int>(val[3]));
-        break;
-      case SHVT_FLOAT4X4:
-      case SHVT_FLOAT4x3:
-        // default value is not supported
-        break;
-      case SHVT_TEXTURE:
-        if (real2int(val[0]) != 0)
-        {
-          report_error(parser, s.name, "texture may be inited only with 0");
-          return;
-        }
-        sclass.stvar[sv].defval.texId = unsigned(BAD_TEXTUREID);
-        break;
-      default: G_ASSERT(0);
-    }
-  }
-  else if (sv >= 0)
-  {
-    if (sclass.stvar[sv].type != t)
-    {
-      report_error(parser, s.name, "static var '%s' defined with different type", s.name->text);
-      return;
-    }
-    if (sclass.stvar[sv].additionalFlags != flags)
-    {
-      report_error(parser, s.name, "static var '%s' defined with different attributes", s.name->text);
-      return;
-    }
-    if ((flags & ShaderClass::VF_HAS_STUB_COLOR) && (sclass.stvar[sv].stubColor != stubCol))
-    {
-      report_error(parser, s.name, "static var '%s' defined with different stub colors", s.name->text);
-      return;
-    }
-  }
-
-  if (varReferenced)
-  {
-    int i = append_items(code.stvarmap, 1);
-    code.stvarmap[i].v = v;
-    code.stvarmap[i].sv = sv;
-  }
-
-  preshaderSource.staticVarDecls.push_back(&s);
-
-  if (s.init && !s.init->expr)
-    eval_init_stat(s.name, *s.init, varReferenced);
-
-  if (hasStubColor)
-  {
-    int opcode = shaderopcode::makeOp2(SHCOD_TEXTURE_STUBCOL, 0, sv);
-    for (int i = 0; i < sclass.shInitCode.size(); i += 2)
-      if (sclass.shInitCode[i + 1] == opcode)
-      {
-        if (sclass.shInitCode[i] != stubCol)
-          report_error(parser, s.name, "ambiguous stub color for static texture <%s> used in branching", s.name->text);
-        return;
-      }
-
-    sclass.shInitCode.push_back(stubCol);
-    sclass.shInitCode.push_back(opcode);
-  }
-}
-
-void AssembleShaderEvalCB::eval_bool_decl(bool_decl &decl)
-{
-  if (ctx.shCtx().blockLevel() == ShaderBlockLevel::SHADER)
-  {
-    G_ASSERT(decl.resolvedNid >= 0);
-    G_ASSERT(decl.expr->compiled);
-  }
-  else
-  {
-    if (decl.resolvedNid < 0)
-      decl.resolvedNid = ctx.tgtCtx().boolVarNameMap().addVarId(decl.name->text);
-    compile_bool_expr_cached(*decl.expr, ctx.tgtCtx());
-  }
-  ctx.localBoolVars().add(decl.resolvedNid, decl.expr, parser, decl.name);
-}
-
-void AssembleShaderEvalCB::decl_bool_alias(const char *name, const char *base_name)
-{
-  ctx.localBoolVars().addAlias(name, base_name, parser);
-}
-
-void AssembleShaderEvalCB::eval_init_stat(SHTOK_ident *var, shader_init_value &v, bool is_referenced)
-{
-  if (ctx.tgtCtx().isPreshaderOnly())
-    return;
-
-  int varNameId = ctx.tgtCtx().varNameMap().getVarId(var->text);
-
-  int vi = code.find_var(varNameId);
-  if (vi < 0)
-  {
-    report_error(parser, var, "unknown variable '%s'", var->text);
-    return;
-  }
-
-  if (v.color)
-  {
-    if (code.vars[vi].type != SHVT_COLOR4)
-    {
-      report_error(parser, v.color->color, "can't assign color to %s", ShUtils::shader_var_type_name(code.vars[vi].type));
-      return;
-    }
-    int c;
-    switch (v.color->color->num)
-    {
-      case SHADER_TOKENS::SHTOK_diffuse: c = SHCOD_DIFFUSE; break;
-      case SHADER_TOKENS::SHTOK_emissive: c = SHCOD_EMISSIVE; break;
-      case SHADER_TOKENS::SHTOK_specular: c = SHCOD_SPECULAR; break;
-      case SHADER_TOKENS::SHTOK_ambient: c = SHCOD_AMBIENT; break;
-      default: G_ASSERT(0);
-    }
-    if (is_referenced && !code.vars[vi].dynamic)
-    {
-      int stVarId = sclass.find_static_var(varNameId);
-      if (stVarId < 0)
-      {
-        report_error(parser, var, "variable <%s> is not static var", var->text);
-        return;
-      }
-
-      sclass.shInitCode.push_back(stVarId);
-      sclass.shInitCode.push_back(shaderopcode::makeOp0(c));
-      return;
-    }
-
-    code.initcode.push_back(vi);
-    code.initcode.push_back(shaderopcode::makeOp0(c));
-  }
-  else if (v.tex)
-  {
-    if (code.vars[vi].type != SHVT_TEXTURE)
-    {
-      report_error(parser, v.tex->tex, "can't assign texture to %s", ShUtils::shader_var_type_name(code.vars[vi].type));
-      return;
-    }
-    int ind;
-    if (v.tex->tex_num)
-      ind = semutils::int_number(v.tex->tex_num->text);
-    else if (v.tex->tex_name && v.tex->tex_name->num == SHADER_TOKENS::SHTOK_diffuse)
-      ind = 0;
-    else
-      G_ASSERT(0);
-
-    code.vars[vi].slot = ind;
-
-    int stVarId = is_referenced ? sclass.find_static_var(varNameId) : -1;
-    if (stVarId >= 0 && !code.vars[vi].dynamic)
-    {
-      int opcode = shaderopcode::makeOp2(SHCOD_TEXTURE, ind, 0);
-      for (int i = 0; i < sclass.shInitCode.size(); i += 2)
-        if (sclass.shInitCode[i] == stVarId)
-        {
-          if (sclass.shInitCode[i + 1] != opcode)
-            report_error(parser, v.tex->tex, "ambiguous init for static texture <%s> used in branching", var->text);
-          return;
-        }
-
-      sclass.shInitCode.push_back(stVarId);
-      sclass.shInitCode.push_back(opcode);
-      return;
-    }
-
-    code.initcode.push_back(vi);
-    code.initcode.push_back(shaderopcode::makeOp2(SHCOD_TEXTURE, ind, 0));
-  }
-  else
-    G_ASSERT(0);
-}
 
 static inline int channel_type(int token)
 {
@@ -1364,14 +1020,6 @@ void AssembleShaderEvalCB::eval_command(shader_directive &s)
   }
 }
 
-// clang-format off
-// clang-format linearizes this function
-void AssembleShaderEvalCB::eval_error_stat(error_stat &s)
-{
-  report_error(parser, s.message, s.message->text);
-}
-// clang-format on
-
 bool AssembleShaderEvalCB::end_pass()
 {
   Terminal *terminal = ctx.shCtx().declTerm();
@@ -1751,14 +1399,11 @@ void AssembleShaderEvalCB::addBlockType(const char *name, const Terminal *t)
 
   declaredBlockTypes[type] = true;
 
-  if (ctx.shCtx().blockLevel() != ShaderBlockLevel::GLOBAL_CONST)
-  {
-    // Check for conflicting block types
-    if (declaredBlockTypes[BLOCK_COMPUTE] && hasDeclaredGraphicsBlocks())
-      report_error(parser, t, "It is illegal to declare both (cs) and (ps/vs/hs/ds/gs/ms/as) blocks in one shader");
-    if (declaredBlockTypes[BLOCK_GRAPHICS_VERTEX] && declaredBlockTypes[BLOCK_GRAPHICS_MESH])
-      report_error(parser, t, "It is illegal to declare both (vs/hs/ds/gs) and (ms/as) blocks in one shader");
-  }
+  // Check for conflicting block types
+  if (declaredBlockTypes[BLOCK_COMPUTE] && hasDeclaredGraphicsBlocks())
+    report_error(parser, t, "It is illegal to declare both (cs) and (ps/vs/hs/ds/gs/ms/as) blocks in one shader");
+  if (declaredBlockTypes[BLOCK_GRAPHICS_VERTEX] && declaredBlockTypes[BLOCK_GRAPHICS_MESH])
+    report_error(parser, t, "It is illegal to declare both (vs/hs/ds/gs) and (ms/as) blocks in one shader");
 }
 
 bool AssembleShaderEvalCB::hasDeclaredGraphicsBlocks()
@@ -1842,7 +1487,7 @@ public:
 #endif
 
     ascb->curpass->preshader->namedConstTable.patchHlsl(source, HLSL_STAGE_TO_SHADER_STAGE[stage], *ascb->curpass->preshader, *lexer,
-      max_constants_no, eastl::string_view{src_predefines}, curpass->dual_source_blending);
+      implicitCbufRegCount, eastl::string_view{src_predefines}, curpass->dual_source_blending);
     int base = append_items(source, 16);
     memset(&source[base], 0, 16);
 
@@ -1878,7 +1523,7 @@ protected:
   String compileCtx;
   const char **cgArgs;
   CompileResult compile_result;
-  int max_constants_no;
+  int implicitCbufRegCount;
   bool enableFp16;
 
   const char *shaderName;
@@ -2172,9 +1817,6 @@ void CompileShaderJob::doJobBody()
     // HASH_UPDATE( &sha1, (const unsigned char*)source.c_str(), (uint32_t)sourceLen );
     calc_sha1_stripped(sha1, source.c_str(), (uint32_t)sourceLen, isDebugModeEnabledVar);
     HASH_UPDATE(&sha1, (const unsigned char *)profile.c_str(), (uint32_t)strlen(profile));
-#if _CROSS_TARGET_SPIRV
-    HASH_UPDATE(&sha1, (const unsigned char *)shaderName, (uint32_t)strlen(shaderName));
-#endif
     HASH_UPDATE(&sha1, (const unsigned char *)entry.c_str(), (uint32_t)strlen(entry));
     // optimization level is a part of output dir, but still
     HASH_UPDATE(&sha1, (const unsigned char *)&hlslOptimizationLevelVar, (uint32_t)sizeof(hlslOptimizationLevelVar));
@@ -2286,7 +1928,7 @@ void CompileShaderJob::doJobBody()
   bool optimizationLevelHasBeenOverriden = false;
   auto lastOptimizationLevel = localHlslOptimizationLevel;
   bool forceDisableWarnings = false;
-  bool embed_source = shc::config().hlslEmbedSource;
+  DebugParts debugParts = shc::config().hlslDebugParts;
   bool useWave32 = useScarlettWave32;
   int waveSpecification = 0;
   bool useHlsl2021 = shc::config().hlsl2021;
@@ -2306,7 +1948,7 @@ void CompileShaderJob::doJobBody()
     }
     else if (PRAGMA("embed_source"))
     {
-      embed_source = true;
+      debugParts = DebugParts::EMBED_SOURCE;
     }
     else if (PRAGMA("force_disable_warnings"))
     {
@@ -2319,13 +1961,24 @@ void CompileShaderJob::doJobBody()
     else if (PRAGMA("force_min_opt_level "))
     {
       pragma += strlen("force_min_opt_level ");
-      localHlslOptimizationLevel = max(atoi(pragma), shc::config().hlslOptimizationLevel);
+      const int pragmaOptLevel = atoi(pragma);
+      lastOptimizationLevel = eastl::exchange(localHlslOptimizationLevel, max(pragmaOptLevel, shc::config().hlslOptimizationLevel));
       if (eastl::exchange(optimizationLevelHasBeenOverriden, true) && localHlslOptimizationLevel != lastOptimizationLevel)
       {
-        compile_result.errors.append_sprintf("#pragma force_min_opt_level redefined with value %d (previous=%d)",
-          lastOptimizationLevel, localHlslOptimizationLevel);
+        compile_result.errors.append_sprintf("override conflict: force_min_opt_level=%d (previous level=%d, current level=%d)",
+          pragmaOptLevel, lastOptimizationLevel, localHlslOptimizationLevel);
       }
-      lastOptimizationLevel = localHlslOptimizationLevel;
+    }
+    else if (PRAGMA("force_max_opt_level "))
+    {
+      pragma += strlen("force_max_opt_level ");
+      const int pragmaOptLevel = atoi(pragma);
+      lastOptimizationLevel = eastl::exchange(localHlslOptimizationLevel, min(pragmaOptLevel, localHlslOptimizationLevel));
+      if (eastl::exchange(optimizationLevelHasBeenOverriden, true) && localHlslOptimizationLevel != lastOptimizationLevel)
+      {
+        compile_result.errors.append_sprintf("override conflict: force_max_opt_level=%d (previous level=%d, current level=%d)",
+          pragmaOptLevel, lastOptimizationLevel, localHlslOptimizationLevel);
+      }
     }
 #if _CROSS_TARGET_C1 || _CROSS_TARGET_C2
 
@@ -2415,7 +2068,7 @@ void CompileShaderJob::doJobBody()
   if (shc::config().dxcContext)
   {
     compile_result = compileShaderMetal(shc::config().dxcContext, source, profile, entry, !shc::config().hlslNoDisassembly,
-      useHlsl2021, enableFp16, shc::config().hlslSkipValidation, localHlslOptimizationLevel ? true : false, max_constants_no,
+      useHlsl2021, enableFp16, shc::config().hlslSkipValidation, localHlslOptimizationLevel ? true : false, implicitCbufRegCount,
       shaderName, shc::config().useIosToken, shc::config().useBinaryMsl, shader_variant_hash, shc::config().enableBindless);
   }
   else
@@ -2431,7 +2084,7 @@ void CompileShaderJob::doJobBody()
       .entry = entry,
       .shaderName = shaderName,
       .shaderVariantHash = shader_variant_hash,
-      .maxConstantsNo = max_constants_no,
+      .implicitCbufRegCount = implicitCbufRegCount,
       .needDisasm = !shc::config().hlslNoDisassembly,
       .hlsl2021 = useHlsl2021,
       .enableFp16 = enableFp16,
@@ -2459,14 +2112,14 @@ void CompileShaderJob::doJobBody()
     .entry = entry,
     .source = make_span_const(source).first(sourceLen),
     .needDisasm = !shc::config().hlslNoDisassembly,
-    .maxConstantsNo = max_constants_no,
+    .implicitCbufRegCount = implicitCbufRegCount,
     .platform = shc::config().targetPlatform,
     .warningsAsErrors = !forceDisableWarnings && shc::config().hlslWarningsAsErrors,
-    .embedSource = embed_source,
+    .debugParts = debugParts,
     .debugLevel = full_debug ? DebugLevel::FULL_DEBUG_INFO : shc::config().hlslDebugLevel,
     .compilationOptions =
       {
-        .optimize = localHlslOptimizationLevel ? true : false,
+        .optimizeLevel = (uint32_t)eastl::min(localHlslOptimizationLevel, dx12::dxil::MAX_OPTIMIZE_LEVEL),
         .skipValidation = shc::config().hlslSkipValidation,
         .debugInfo = is_hlsl_debug(),
         .scarlettW32 = useWave32,
@@ -2492,8 +2145,8 @@ void CompileShaderJob::doJobBody()
                          : (localHlslOptimizationLevel >= 1 ? D3DCOMPILE_OPTIMIZATION_LEVEL0 : D3DCOMPILE_SKIP_OPTIMIZATION)));
   flags |= shc::config().hlslWarningsAsErrors ? D3DCOMPILE_WARNINGS_ARE_ERRORS : 0;
   compile_result = compileShaderDX11(shaderName, source, NULL, profile, entry, !shc::config().hlslNoDisassembly,
-    full_debug ? DebugLevel::FULL_DEBUG_INFO : shc::config().hlslDebugLevel, shc::config().hlslSkipValidation, embed_source, flags,
-    max_constants_no);
+    full_debug ? DebugLevel::FULL_DEBUG_INFO : shc::config().hlslDebugLevel, shc::config().hlslSkipValidation, debugParts, flags,
+    implicitCbufRegCount);
 #endif
 
   if (shc::config().hlslDumpCodeAlways)

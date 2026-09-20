@@ -1,4 +1,4 @@
-let {gui_scene} = require("daRg")
+from "daRg" import gui_scene
 
 gui_scene.setConfigProps({
   //defaultFont = sub_txt.font

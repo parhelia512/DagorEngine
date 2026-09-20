@@ -4,7 +4,9 @@
 //
 #pragma once
 
-#include <EASTL/functional.h>
+#include <EASTL/vector.h>
+#include <generic/dag_functionRef.h>
+#include <memory/dag_framemem.h>
 
 class ShaderMaterial;
 namespace AnimV20
@@ -12,16 +14,17 @@ namespace AnimV20
 class AnimcharRendComponent;
 }
 
+// the callables are only invoked during the call, never stored
 bool recreate_material_with_new_params(AnimV20::AnimcharRendComponent &animchar_render,
-  const eastl::function<bool(const ShaderMaterial *)> &material_filter,
-  const eastl::function<void(ShaderMaterial *)> &shader_var_setter);
+  dag::FunctionRef<bool(const ShaderMaterial *) const> material_filter,
+  dag::FunctionRef<void(ShaderMaterial *) const> shader_var_setter);
 
 bool recreate_material_with_new_params(AnimV20::AnimcharRendComponent &animchar_render,
-  eastl::function<void(ShaderMaterial *)> &&shader_var_setter);
+  dag::FunctionRef<void(ShaderMaterial *) const> shader_var_setter);
 
 bool recreate_material_with_new_params(AnimV20::AnimcharRendComponent &animchar_render, const char *shader_name,
-  eastl::function<void(ShaderMaterial *)> &&shader_var_setter);
+  dag::FunctionRef<void(ShaderMaterial *) const> shader_var_setter);
 
 bool recreate_material_with_new_params(AnimV20::AnimcharRendComponent &animchar_render,
   const eastl::vector<const char *, framemem_allocator> &shader_names_filter,
-  eastl::function<void(ShaderMaterial *)> &&shader_var_setter);
+  dag::FunctionRef<void(ShaderMaterial *) const> shader_var_setter);

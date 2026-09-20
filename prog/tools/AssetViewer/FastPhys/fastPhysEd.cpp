@@ -334,7 +334,7 @@ bool FastPhysEditor::loadCharacter(DagorAssetMgr &mgr, SimpleString sa_name, ILo
 
     if (animchar->load(cp, modelRes, skeletonRes, nullptr, nullptr))
     {
-      nodeTree = *skeletonRes;
+      nodeTree.replaceContentFrom(*skeletonRes);
       // animchar->reset();
       // animchar->recalcWtm();
       animchar->beforeRender();

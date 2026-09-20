@@ -361,8 +361,8 @@ static void batch_reload_res(void *)
     COPY_STAT(reloadDataCount);
 #undef COPY_STAT
     String status_str(framemem_ptr());
-    dmUnitedVdata.buildStatusStr(status_str, false);
-    debug("unitedVdata<%s>: reloaded %u models (%uK for %u msec) during last %u msec [total reloaded %uK of %u models]\n\n%s\n",
+    dmUnitedVdata.buildStatusStrThrottled(status_str, 30 * 1000000);
+    debug("unitedVdata<%s>: reloaded %u models (%uK for %u msec) during last %u msec [total reloaded %uK of %u models]%s",
       DynamicRenderableSceneLodsResource::getStaticClassName(), diff_mls.reloadDataCount, diff_mls.reloadDataSizeKb,
       diff_mls.reloadTimeMsec, profile_time_usec(last_reported_mls_reft) / 1000, last_reported_mls.reloadDataSizeKb,
       last_reported_mls.reloadDataCount, status_str);

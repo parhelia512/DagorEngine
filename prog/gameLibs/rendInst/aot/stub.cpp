@@ -8,6 +8,8 @@
 #include <rendInst/debugCollisionVisualization.h>
 #include <rendInst/rendInstCollision.h>
 #include <rendInst/gpuObjects.h>
+#include <rendInst/rendInstAccess.h>
+#include <rendInst/riexSync.h>
 
 
 ecs::EntityId find_ri_extra_eid(rendinst::riex_handle_t) { G_ASSERT_RETURN(false, ecs::INVALID_ENTITY_ID); }
@@ -19,7 +21,11 @@ struct CollisionContactData;
 }
 namespace rendinst
 {
-uint32_t getRiGenExtraResCount() { G_ASSERT_RETURN(false, 0); }
+AutoLockReadPrimary::AutoLockReadPrimary() {}
+AutoLockReadPrimary::~AutoLockReadPrimary() {}
+AutoLockReadPrimaryAndExtra::AutoLockReadPrimaryAndExtra() {}
+AutoLockReadPrimaryAndExtra::~AutoLockReadPrimaryAndExtra() {}
+int getRiGenExtraResCount() { G_ASSERT_RETURN(false, 0); }
 bool isRiGenExtraResIdValid(int) { G_ASSERT_RETURN(false, false); }
 bbox3f riex_get_lbb(int) { G_ASSERT_RETURN(false, bbox3f()); }
 int getRIGenExtraResIdx(const char *) { G_ASSERT_RETURN(false, 0); }
@@ -31,9 +37,12 @@ void gatherRIGenExtraCollidable(riex_collidable_t &, const BBox3 &, bool) { G_AS
 void gatherRIGenExtraCollidable(riex_collidable_t &, const TMatrix &, const BBox3 &, bool) { G_ASSERT(0); }
 void gatherRIGenExtraCollidableMax(riex_collidable_t &, const BSphere3 &, float) { G_ASSERT(0); }
 void drawDebugCollisions(DrawCollisionsFlags, mat44f_cref, const Point3 &, bool, float, float) { G_ASSERT(0); }
-void doRIGenDamage(const BSphere3 &, unsigned, const Point3 &, bool) { G_ASSERT(0); }
+void doRIGenDamage(const BSphere3 &, unsigned, const Point3 &, bool, RIGenPoolSkipCbType) { G_ASSERT(0); }
 bool isRIGenDestr(const RendInstDesc &) { G_ASSERT_RETURN(false, false); }
 bool isRIGenPosInst(const RendInstDesc &) { G_ASSERT_RETURN(false, false); }
+int getRIGenLayersCount() { G_ASSERT_RETURN(false, 0); }
+int getRIGenPoolsCount(int) { G_ASSERT_RETURN(false, 0); }
+const char *getRIGenResNameByPool(int, int) { G_ASSERT_RETURN(false, nullptr); }
 bool isRIExtraGenPosInst(uint32_t) { G_ASSERT_RETURN(false, false); }
 bool updateRiExtraReqLod(uint32_t, unsigned) { G_ASSERT_RETURN(false, false); }
 bool isDestroyedRIExtraFromNextRes(const RendInstDesc &) { G_ASSERT_RETURN(false, false); }
@@ -127,6 +136,9 @@ bool restoreRIGenExtraInGrid(riex_handle_t) { G_ASSERT_RETURN(false, false); }
 const DataBlock *registerRIGenExtraConfig(const DataBlock *) { G_ASSERT_RETURN(false, nullptr); }
 
 bool RendInstDesc::isDynamicRiExtra() const { G_ASSERT_RETURN(false, false); }
+RendInstDesc get_restorable_desc(const RendInstDesc &) { G_ASSERT_RETURN(false, RendInstDesc()); }
+int find_restorable_data_index(const RendInstDesc &) { G_ASSERT_RETURN(false, -1); }
+bool resolve_rigen_desc_subcell(RendInstDesc &) { G_ASSERT_RETURN(false, false); }
 
 void gpuobjects::erase_inside_sphere(const Point3 &, const float) { G_ASSERT(0); }
 
@@ -142,3 +154,6 @@ bool test_collision_ri(const CollisionObject &, const BSphere3 &, Tab<gamephys::
 }
 
 } // namespace rendinst
+
+int riexsync::get_server_ri_pool_id(int, int def) { G_ASSERT_RETURN(false, def); }
+int riexsync::get_client_ri_pool_id(int, int def) { G_ASSERT_RETURN(false, def); }

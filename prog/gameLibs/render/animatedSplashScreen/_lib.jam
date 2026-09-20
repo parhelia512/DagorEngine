@@ -1,0 +1,6 @@
+if $(HaveRenderer) = yes {
+  UseProgLibs += gameLibs/render/animatedSplashScreen ;
+} else {
+  UseProgLibs += gameLibs/render/animatedSplashScreen/stub ;
+}
+AddIncludes += $(Root)/prog/gameLibs/render/animatedSplashScreen/public_api ;

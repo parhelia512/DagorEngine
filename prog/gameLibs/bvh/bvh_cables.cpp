@@ -11,18 +11,12 @@
 
 #include "bvh_context.h"
 
-namespace bvh
-{
-Sbuffer *alloc_scratch_buffer(uint32_t size, uint32_t &offset);
-}
-
 namespace bvh::cables
 {
 
 static const auto blas_flags = RaytraceBuildFlags::FAST_TRACE | RaytraceBuildFlags::LOW_MEMORY;
 
 static constexpr int vertex_stride = sizeof(float) * 3 + sizeof(uint32_t);
-static constexpr int index_stride = sizeof(uint32_t);
 
 static MeshMetaAllocator::AllocId metaAllocId = MeshMetaAllocator::INVALID_ALLOC_ID;
 
@@ -39,7 +33,7 @@ void init(ContextId context_id)
   auto &meta = lockedMeta[0];
 
   meta.markInitialized();
-  meta.setIndexBit(4);
+  meta.setIndexBit(2);
   meta.materialType |= MeshMeta::bvhMaterialCable;
   meta.texcoordOffset = 0xFF;
   meta.normalOffset = 0xFF;
@@ -117,13 +111,14 @@ void on_cables_changed(Cables *cables, ContextId context_id)
   auto triangleCount = triPerCable * maxCables;
   auto vertexCount = (triPerCable + 2) * maxCables;
   auto indexCount = triangleCount * 3;
+  auto indexDwords = indexCount / 2;
 
   if (context_id->cableVertices && context_id->cableVertices->getNumElements() < vertexCount)
   {
     context_id->releaseBuffer(context_id->cableVertices.getBuf());
     context_id->cableVertices.close();
   }
-  if (context_id->cableIndices && context_id->cableIndices->getNumElements() < indexCount)
+  if (context_id->cableIndices && context_id->cableIndices->getNumElements() < indexDwords)
   {
     context_id->releaseBuffer(context_id->cableIndices.getBuf());
     context_id->cableIndices.close();
@@ -145,7 +140,7 @@ void on_cables_changed(Cables *cables, ContextId context_id)
   if (!context_id->cableIndices)
   {
     context_id->cableIndices =
-      dag::create_sbuffer(index_stride, indexCount, SBCF_UA_SR_STRUCTURED | SBCF_INDEX32, 0, "bvh_cable_indices", RESTAG_BVH);
+      dag::buffers::create_ua_sr_byte_address(indexDwords, "bvh_cable_indices", d3d::buffers::Init::No, RESTAG_BVH);
     HANDLE_LOST_DEVICE_STATE(context_id->cableIndices, );
 
     uint32_t bindlessIndex;

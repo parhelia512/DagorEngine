@@ -24,7 +24,6 @@ struct CollisionNodeAnnotation : das::ManagedStructureAnnotation<CollisionNode, 
     cppName = " ::CollisionNode";
     // tm: use collres_get_node_tm() accessor
     // modelBBox, boundingSphere, capsule: use collres_get_node_bbox/bsphere/capsule() accessors
-    addField<DAS_BIND_MANAGED_FIELD(physMatId)>("physMatId");
     addProperty<DAS_BIND_MANAGED_PROP(getNodeIdAsInt)>("geomNodeId", "getNodeIdAsInt");
     addField<DAS_BIND_MANAGED_FIELD(flags)>("flags");
     addField<DAS_BIND_MANAGED_FIELD(insideOfNode)>("insideOfNode");
@@ -40,7 +39,7 @@ struct CollisionResourceAnnotation : das::ManagedStructureAnnotation<CollisionRe
   {
     cppName = " ::CollisionResource";
     addField<DAS_BIND_MANAGED_FIELD(vFullBBox)>("vFullBBox");
-    addField<DAS_BIND_MANAGED_FIELD(boundingSphereRad)>("boundingSphereRad");
+    addProperty<DAS_BIND_MANAGED_PROP(getBoundingSphereRad)>("boundingSphereRad", "getBoundingSphereRad");
     addFieldEx("boundingSphereCenter", "vBoundingSphere", offsetof(CollisionResource, vBoundingSphere),
       das::makeType<das::float3>(ml));
     addField<DAS_BIND_MANAGED_FIELD(boundingBox)>("boundingBox");
@@ -110,9 +109,17 @@ public:
 
     das::addExtern<DAS_BIND_FUN(collres_get_node)>(*this, lib, "collres_get_node", das::SideEffects::none,
       "bind_dascript::collres_get_node");
+    das::addExtern<DAS_BIND_FUN(collres_get_node_behavior_flags)>(*this, lib, "collres_get_node_behavior_flags",
+      das::SideEffects::none, "bind_dascript::collres_get_node_behavior_flags");
 
     das::addExtern<DAS_BIND_FUN(collres_get_nodesCount)>(*this, lib, "collres_get_nodesCount", das::SideEffects::none,
       "bind_dascript::collres_get_nodesCount");
+
+    das::addExtern<DAS_BIND_FUN(collres_get_node_phys_mat_count)>(*this, lib, "collres_get_node_phys_mat_count",
+      das::SideEffects::none, "bind_dascript::collres_get_node_phys_mat_count");
+
+    das::addExtern<DAS_BIND_FUN(collres_get_node_phys_mat_index)>(*this, lib, "collres_get_node_phys_mat_index",
+      das::SideEffects::none, "bind_dascript::collres_get_node_phys_mat_index");
 
     das::addExtern<DAS_BIND_FUN(rendinst::getRIGenExtraCollRes)>(*this, lib, "get_rigen_extra_coll_res",
       das::SideEffects::accessExternal, "rendinst::getRIGenExtraCollRes");
@@ -132,6 +139,9 @@ public:
       das::SideEffects::none, "bind_dascript::collres_get_node_bbox");
     das::addExtern<DAS_BIND_FUN(collres_get_node_capsule)>(*this, lib, "collres_get_node_capsule", das::SideEffects::modifyArgument,
       "bind_dascript::collres_get_node_capsule");
+    das::addExtern<DAS_BIND_FUN(collres_get_node_phys_mat)>(*this, lib, "collres_get_node_phys_mat", das::SideEffects::none,
+      "bind_dascript::collres_get_node_phys_mat");
+
     das::addExtern<DAS_BIND_FUN(collres_get_node_name)>(*this, lib, "collres_get_node_name", das::SideEffects::none,
       "bind_dascript::collres_get_node_name");
     das::addExtern<DAS_BIND_FUN(collres_get_node_tm), das::SimNode_ExtFuncCallAndCopyOrMove>(*this, lib, "collres_get_node_tm",
@@ -156,16 +166,11 @@ public:
       "bind_dascript::collres_node_iterate_verts_T")
       ->setAotTemplate();
 
-    das::addExtern<DAS_BIND_FUN(collres_check_grid_available)>(*this, lib, "collres_check_grid_available",
-      das::SideEffects::accessExternal, "bind_dascript::collres_check_grid_available");
 
     using method_setBsphereCenterNode = DAS_CALL_MEMBER(CollisionResource::setBsphereCenterNode);
     das::addExtern<DAS_CALL_METHOD(method_setBsphereCenterNode)>(*this, lib, "collres_setBsphereCenterNode",
       das::SideEffects::modifyArgument, DAS_CALL_MEMBER_CPP(CollisionResource::setBsphereCenterNode));
 
-    using method_getGridSize = DAS_CALL_MEMBER(CollisionResource::getGridSize);
-    das::addExtern<DAS_CALL_METHOD(method_getGridSize)>(*this, lib, "collres_getGridSize", das::SideEffects::modifyArgument,
-      DAS_CALL_MEMBER_CPP(CollisionResource::getGridSize));
 
     das::addExtern<DAS_BIND_FUN(apply_collres_node_flag_rules)>(*this, lib, "apply_collres_node_flag_rules",
       das::SideEffects::modifyExternal, "bind_dascript::apply_collres_node_flag_rules");

@@ -36,14 +36,14 @@ static SamplerKey makeKey(const d3d::SamplerInfo &sampler_info)
   key.addrV = uint32_t(sampler_info.address_mode_v);
   key.addrW = uint32_t(sampler_info.address_mode_w);
 
-  key.anisotropyLevel = uint32_t(sampler_info.anisotropic_max);
+  key.anisotropyLevel = clamp<uint32_t>(uint32_t(sampler_info.anisotropic_max), 1u, 16u);
   key.texFilter = uint32_t(sampler_info.filter_mode);
   key.mipFilter = uint32_t(sampler_info.mip_map_mode);
 
   return key;
 }
 
-NO_UBSAN d3d::SamplerHandle d3d::request_sampler(const d3d::SamplerInfo &sampler_info)
+d3d::SamplerHandle d3d::request_sampler(const d3d::SamplerInfo &sampler_info)
 {
   SamplerKey samplerKey = makeKey(sampler_info);
 

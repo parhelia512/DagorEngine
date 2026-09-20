@@ -11,6 +11,7 @@ struct AdaptationManager
 {
   AdaptationManager();
 
+  bool isExposureValid() const { return exposure.isValid(); }
   bool isFixedExposure() const { return settings.isFixedExposure(); }
   bool getExposure(float &exp) const;
   void updateExposure();
@@ -32,6 +33,7 @@ struct AdaptationManager
   const ExposureBuffer &getLastExposureBuffer() const { return exposure.getLastExposureBuffer(); }
   void updateHistogramReadback(Sbuffer *histogram) { exposure.updateHistogramReadback(histogram); }
   const AdaptationHistogram &getLastHistogram() const { return exposure.getLastHistogram(); }
+  ManagedTexView getNormalizationFactor() { return exposure.getNormalizationFactor(); }
 
   using DispatchInfo = ExposureCompute::DispatchInfo;
 
@@ -40,7 +42,6 @@ private:
 
   ExposureCompute exposure;
   UniqueBuf g_NoExposureBuffer;
-  dafg::NodeHandle registerExposureNodeHandle;
   AdaptationSettings settings;
   float lastFixedExposure = -1;
   bool exposureWritten = false;

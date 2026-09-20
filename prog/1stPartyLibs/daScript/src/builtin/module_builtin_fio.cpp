@@ -216,8 +216,8 @@ namespace das {
     bool builtin_spawn_argv ( const Array & args_arr, Context * context, LineInfoArg * at ) GENERATE_IO_STUB
     int builtin_system ( const char * cmd, Context * context, LineInfoArg * at ) GENERATE_IO_STUB
     char * get_full_file_name ( const char * path, Context * context, LineInfoArg * at ) GENERATE_IO_STUB
-    bool has_env_variable ( const char * var, Context * context, LineInfoArg * at ) GENERATE_IO_STUB
-    char * get_env_variable ( const char * var, Context * context, LineInfoArg * at ) GENERATE_IO_STUB
+    bool has_env_variable ( const char *, Context *, LineInfoArg * ) { return false; }
+    char * get_env_variable ( const char *, Context *, LineInfoArg * ) { return nullptr; }
     void set_env_variable ( const char * var, const char * value, Context * context, LineInfoArg * at ) GENERATE_IO_STUB
     char * sanitize_command_line ( const char * cmd, Context * context, LineInfoArg * at ) GENERATE_IO_STUB
     // filesystem stubs
@@ -331,7 +331,7 @@ namespace das {
     }
 
     static bool is_valid_fopen_mode(const char *mode) {
-        return mode && strchr("rwa", mode[0]) && mode[1 + strspn(mode + 1, "+btx")] == '\0';
+        return mode && *mode && strchr("rwa", mode[0]) && mode[1 + strspn(mode + 1, "+btx")] == '\0';
     }
 
 #if defined(_WIN32)

@@ -40,6 +40,7 @@
 #include <userSystemInfo/systemInfo.h>
 #include <util/dag_convar.h>
 #include <gameRes/dag_resourceNameResolve.h>
+#include <eventLog/errorLog.h>
 
 #include "bvh_context.h"
 #include "bvh_debug.h"
@@ -107,6 +108,7 @@ AssetNameRef make_asset_name_ref(const DynamicRenderableSceneLodsResource *resou
 
 namespace terrain
 {
+bool is_dirty(ContextId context_id);
 dag::Vector<eastl::tuple<uint64_t, MeshMetaAllocator::AllocId, Point2>> get_blases(ContextId context_id);
 
 void init();
@@ -131,8 +133,8 @@ void update_ri_extra_instances(ContextId context_id, const Point3 &view_position
   const Frustum &bvh_frustum, const Frustum &view_frustum, const Point3 &light_direction, threadpool::JobPriority prio);
 void wait_ri_gen_instances_update(ContextId context_id);
 void wait_ri_extra_instances_update(ContextId context_id);
-void tidy_up_trees(ContextId context_id);
-void wait_tidy_up_trees();
+void tidy_up_rendinsts(ContextId context_id);
+void wait_tidy_up_rendinsts();
 void set_dist_mul(float mul);
 void override_out_of_camera_ri_dist_mul(float dist_sq_mul_ooc);
 void readdRendinst(ContextId context_id, const RenderableInstanceLodsResource *resource);
@@ -157,6 +159,8 @@ void debug_update();
 void set_up_dynrend_context_for_processing(dynrend::ContextId dynrend_context_id);
 void tidy_up_skins(ContextId context_id);
 void wait_tidy_up_skins();
+void tell_active_dynamic_resources(ContextId context_id,
+  const eastl::vector_set<const DynamicRenderableSceneLodsResource *> &resources);
 } // namespace dyn
 
 namespace gobj
@@ -183,7 +187,7 @@ void get_instances(ContextId context_id, Sbuffer *&instances, Sbuffer *&instance
 
 namespace fx
 {
-void init();
+void init(const AdditionalSettings &settings);
 void teardown();
 void init(ContextId context_id);
 void teardown(ContextId context_id);
@@ -287,6 +291,17 @@ const dag::Vector<NativeInstance> &get_instances(ContextId context_id, const Poi
 void bind_resources(ContextId context_id);
 } // namespace lru_collision
 
+namespace voxel_activity
+{
+void init();
+void teardown();
+void update(ContextId context_id, const Point3 &camera_pos);
+void bind(ContextId context_id);
+void begin_dynrend_placement(ContextId context_id);
+void on_unload_scene(ContextId context_id);
+void remove(ContextId context_id);
+} // namespace voxel_activity
+
 bool use_batched_skinned_vertex_processor = false;
 bool is_in_lost_device_state = false;
 bool bvh_use_hair = true;
@@ -367,6 +382,9 @@ static BufferProcessor::ProcessArgs build_args(uint64_t object_id, const Mesh &m
   args.tree.ppPositionBindless = mesh.ppPositionBindless;
   args.tree.ppDirectionBindless = mesh.ppDirectionBindless;
   args.skin.clothWind.clothNoiseCombinedTexBindless = mesh.clothNoiseCombinedTexBindless;
+  args.skin.faceMorph.atlasTexBindless = mesh.faceMorphAtlasBindless;
+  args.skin.faceMorph.uvOffset = mesh.faceMorphUvOffset;
+  args.skin.faceMorph.uvSize = mesh.faceMorphUvSize;
   return args;
 }
 
@@ -468,6 +486,7 @@ static void process_meta(ContextId context_id, MeshMeta &meta, const Mesh &mesh,
       meta.albedoTextureIndex = baseMeta.albedoTextureIndex;
       meta.normalTextureIndex = baseMeta.normalTextureIndex;
       meta.extraTextureIndex = baseMeta.extraTextureIndex;
+      meta.secondaryMaskTextureIndex = baseMeta.secondaryMaskTextureIndex;
     }
     meta.ahsVertexBufferIndex = baseMeta.ahsVertexBufferIndex;
     // Copy the index buffer index only, the vertex buffer is part of the instance
@@ -529,7 +548,7 @@ static class PrebuildMetaJob : public cpujobs::IJob
     const auto baseMetaRegion = contextId->meshMetaAllocator.get(object.metaAllocId);
     auto metaRegion = contextId->meshMetaAllocator.get(metaAllocId);
 
-    auto animatedVertices = UniqueOrReferencedBVHBuffer(*instance.uniqueTransformedBuffer); //-V595
+    auto animatedVertices = UniqueOrReferencedBVHBuffer(instance.uniqueData->buffer); //-V595
     const bool needsProcessing = [&]() {
       for (auto [mesh, meta, baseMeta] : zip(object.meshes, metaRegion, baseMetaRegion))
       {
@@ -537,7 +556,7 @@ static class PrebuildMetaJob : public cpujobs::IJob
           continue;
         if (!ProcessorInstances::isVertexProcessorBatched(*mesh.vertexProcessor))
           return false;
-        G_ASSERT(!mesh.vertexProcessor->isOneTimeOnly() && instance.uniqueTransformedBuffer);
+        G_ASSERT(!mesh.vertexProcessor->isOneTimeOnly() && instance.uniqueData);
         if (animatedVertices.needAllocation())
           return false;
       }
@@ -566,7 +585,7 @@ static class PrebuildMetaJob : public cpujobs::IJob
   }
 
 public:
-  const char *getJobName(bool &) const override { return "PrebuildMetaJob"; }
+  const char *getJobName(bool &) const override { return DAPROFILER_STRING("PrebuildMetaJob"); }
 
   void doJob() override
   {
@@ -912,7 +931,7 @@ struct CreateCompactedBLASJob : public cpujobs::IJob
     threadpool::add(job, threadpool::PRIO_NORMAL);
   }
 
-  const char *getJobName(bool &) const override { return "CreateCompactedBLASJob"; }
+  const char *getJobName(bool &) const override { return DAPROFILER_STRING("CreateCompactedBLASJob"); }
   void doJob() override
   {
     for (auto compaction : compactions)
@@ -967,7 +986,7 @@ static struct BVHUploadMetaJob : public cpujobs::IJob
       }
     }
   }
-  const char *getJobName(bool &) const override { return "BVHUploadMetaJob"; }
+  const char *getJobName(bool &) const override { return DAPROFILER_STRING("BVHUploadMetaJob"); }
   void wait()
   {
     TIME_PROFILE(wait_bvh_upload_meta_job)
@@ -1054,16 +1073,16 @@ static bool has_enough_vram_for_rt_initial_check()
   return ret;
 }
 
-inline bool logonce(const char *msg)
-{
-  static bool logged = false;
-  if (!logged)
-  {
-    logdbg(msg);
-    logged = true;
-  }
-  return false;
-}
+#define logonce(msg)            \
+  do                            \
+  {                             \
+    static bool logged = false; \
+    if (!logged)                \
+    {                           \
+      logdbg(msg);              \
+      logged = true;            \
+    }                           \
+  } while (0)
 
 namespace var
 {
@@ -1153,13 +1172,14 @@ void init(elem_rules_fn elem_rules_init, screenshot_fn screenshot, AdditionalSet
   dyn::init(settings);
   gobj::init();
   grass::init();
-  fx::init();
+  fx::init(settings);
   smoke_tracers::init();
   particles::init();
   cables::init();
   binscene::init();
   fftwater::init();
   gpugrass::init();
+  voxel_activity::init();
 }
 
 static void wait_all_jobs();
@@ -1179,6 +1199,7 @@ void teardown(bool device_reset, bool zero_bvh_ids)
   binscene::teardown();
   fftwater::teardown();
   gpugrass::teardown();
+  voxel_activity::teardown();
   debug::teardown();
 #if DAGOR_DBGLEVEL > 0
   debug::tlas_debug_teardown();
@@ -1264,6 +1285,7 @@ void teardown(ContextId &context_id)
   dagdp::teardown(context_id);
   splinegen::teardown(context_id);
   lru_collision::teardown(context_id);
+  voxel_activity::remove(context_id);
   debug::teardown(context_id);
 
   fftwater::on_unload_scene(context_id);
@@ -1431,6 +1453,7 @@ void update_instances_impl(ContextId bvh_context_id, const Point3 &view_position
   if (bvh_context_id->hasAny(Features::AnyDynrend))
   {
     dyn::wait_tidy_up_skins();
+    voxel_activity::begin_dynrend_placement(bvh_context_id);
     if (dynrend_iterate)
       dyn::update_animchar_instances(bvh_context_id, *dynrend_context_id, *dynrend_no_shadow_context_id, view_position,
         dynrend_iterate);
@@ -1441,7 +1464,7 @@ void update_instances_impl(ContextId bvh_context_id, const Point3 &view_position
 
   if (bvh_context_id->hasAny(Features::AnyRI))
   {
-    ri::wait_tidy_up_trees();
+    ri::wait_tidy_up_rendinsts();
     parallel_instance_processing::prebuild_meta_job.prepare(bvh_context_id, view_position, light_direction, itm, projTm);
     parallel_instance_processing::start_frame(bvh_context_id);
     ri::update_ri_gen_instances(bvh_context_id, ri_gen_visibilities, view_position, light_direction, view_frustum, prio);
@@ -1477,13 +1500,6 @@ void wait_dynamic_instances_jobs()
   dyn::wait_animchar_instances();
 }
 
-static __forceinline bool need_winding_flip(Mesh &mesh, const Context::Instance &instance)
-{
-  if (!mesh.needWindingFlip.has_value())
-    mesh.needWindingFlip = need_winding_flip(instance.transform);
-  return mesh.needWindingFlip.value();
-}
-
 static void process_mesh_vertices(ContextId context_id, uint64_t object_id, Mesh &mesh,
   UniqueOrReferencedBVHBuffer &transformed_vertices, bool &need_blas_build, MeshMeta &meta)
 {
@@ -1497,12 +1513,9 @@ static void process_mesh_vertices(ContextId context_id, uint64_t object_id, Mesh
     // mesh again and again for no reason.
     if (canProcess && transformed_vertices.needAllocation())
     {
-      bool needProcessing = transformed_vertices.needAllocation();
-      bool hadProcessedVertices = transformed_vertices.isAllocated();
-
       uint32_t bindlessIndex;
       if (process(context_id, mesh.geometry.getVertexBuffer(context_id), mesh.geometry.vbOffset, mesh.pvBindlessIndex,
-            transformed_vertices, bindlessIndex, mesh.vertexProcessor, args, !needProcessing, need_blas_build))
+            transformed_vertices, bindlessIndex, mesh.vertexProcessor, args, false, need_blas_build))
       {
         d3d::resource_barrier(ResourceBarrierDesc(transformed_vertices.get(), bindlessSRVBarrier));
 
@@ -1517,7 +1530,7 @@ static void process_mesh_vertices(ContextId context_id, uint64_t object_id, Mesh
         meta.vertexStride = args.vertexStride;
       }
 
-      if (!hadProcessedVertices && transformed_vertices.isAllocated())
+      if (transformed_vertices.isAllocated())
         mesh.pvBindlessIndex = bindlessIndex;
 
       meta.setVertexBufferIndex(mesh.pvBindlessIndex);
@@ -1563,11 +1576,6 @@ static void process_ahs_vertices(ContextId context_id, Mesh &mesh, MeshMeta &met
       logerr("BVH vertex buffer bindless index out of range: %u", bindlessIndex);
     if (mesh.indexCount > 0xFFFFU)
       logerr("BVH vertex buffer index count out of range: %u", mesh.indexCount);
-
-    // If the alpha comes from the alpha texture, we set a bit on the uppermost bit, signaling that the shader
-    // should use the R channel from the alpha texture. Otherwise it will use the A channel.
-    if (mesh.alphaTextureId != BAD_TEXTUREID)
-      meta.materialType |= MeshMeta::bvhMaterialAlphaInRed;
   }
 }
 
@@ -1612,6 +1620,7 @@ static DoAddObjectResult do_add_object(ContextId context_id, uint64_t object_id,
   }
 
   auto &object = (iter != objectMap.end()) ? iter->second : objectMap[object_id];
+  object.buildInputsGeneration = context_id->nextBuildInputsGeneration++;
   object.tag = object_info.tag;
   object.assetName = object_info.assetName;
   object.meshes = decltype(object.meshes)(object_info.meshes.size());
@@ -1624,15 +1633,21 @@ static DoAddObjectResult do_add_object(ContextId context_id, uint64_t object_id,
     LockedMetaAccess lockedMeta(*context_id, object.metaAllocId);
     auto metaRegion = lockedMeta.span();
     uint32_t geometryIndex = 0;
+    uint32_t meshIndex = 0;
     for (auto [info, mesh, meta] : zip(object_info.meshes, object.meshes, metaRegion))
     {
+      const uint32_t meshOrdinal = meshIndex++;
       mesh.albedoTextureId = info.albedoTextureId;
       mesh.alphaTextureId = info.alphaTextureId;
       mesh.normalTextureId = info.normalTextureId;
       mesh.extraTextureId = info.extraTextureId;
+      mesh.secondaryMaskTextureId = info.secondaryMaskTextureId;
       mesh.ppPositionTextureId = info.ppPositionTextureId;
       mesh.ppDirectionTextureId = info.ppDirectionTextureId;
       mesh.clothNoiseCombinedTexTextureId = info.clothNoiseCombinedTexTextureId;
+      mesh.faceMorphAtlasTextureId = info.faceMorphAtlasTextureId;
+      mesh.faceMorphUvOffset = info.faceMorphUvOffset;
+      mesh.faceMorphUvSize = info.faceMorphUvSize;
       mesh.indexCount = info.indexCount;
       mesh.indexFormat = info.indices->getFlags() & SBCF_INDEX32 ? 4 : 2;
       mesh.vertexCount = info.vertexCount;
@@ -1649,9 +1664,11 @@ static DoAddObjectResult do_add_object(ContextId context_id, uint64_t object_id,
       mesh.indicesOffset = info.indicesOffset;
       mesh.weightsOffset = info.weightsOffset;
       mesh.vertexProcessor = info.vertexProcessor;
-      mesh.hasSecondaryGeometry = info.vertexProcessor && info.vertexProcessor->isGeneratingSecondaryVertices();
+      mesh.hasSecondaryGeometry = has_secondary_geometry(info);
       const uint32_t meshGeometryIndex = geometryIndex;
       geometryIndex += mesh.hasSecondaryGeometry ? 2 : 1;
+      mesh.firstGeometryIndex = meshGeometryIndex;
+      mesh.ommLayoutHash = omm_mesh_layout_hash(info, meshOrdinal);
       mesh.startIndex = info.startIndex;
       mesh.baseVertex = info.baseVertex;
       mesh.startVertex = info.startVertex;
@@ -1665,6 +1682,7 @@ static DoAddObjectResult do_add_object(ContextId context_id, uint64_t object_id,
       mesh.impostorSliceClippingLines1 = info.impostorSliceClippingLines1;
       mesh.impostorSliceClippingLines2 = info.impostorSliceClippingLines2;
       mesh.isHeliRotor = info.isHeliRotor;
+      mesh.isGunBarrel = info.isGunBarrel;
       mesh.isCamoNet = info.isCamoNet;
       mesh.hasColorMod = info.hasColorMod;
       memcpy(mesh.impostorOffsets, info.impostorOffsets, sizeof(mesh.impostorOffsets));
@@ -1686,7 +1704,13 @@ static DoAddObjectResult do_add_object(ContextId context_id, uint64_t object_id,
         mesh.materialType |= MeshMeta::bvhMaterialImpostor;
 
       if (info.alphaTest)
+      {
         mesh.materialType |= MeshMeta::bvhMaterialAlphaTest;
+        // Both the any-hit shader and the OMM bake take the cutout channel from this flag, thus it is set
+        // whether or not OMM is enabled.
+        if (info.alphaTextureId != BAD_TEXTUREID)
+          mesh.materialType |= MeshMeta::bvhMaterialAlphaInRed;
+      }
 
       if (info.painted)
       {
@@ -1716,6 +1740,9 @@ static DoAddObjectResult do_add_object(ContextId context_id, uint64_t object_id,
       if (info.isEye)
         mesh.materialType |= MeshMeta::bvhMaterialEye;
 
+      if (info.isPaintedByMask)
+        mesh.materialType |= MeshMeta::bvhMaterialPaintedByMask;
+
       if (info.hasAnimcharDecals)
         mesh.materialType |= MeshMeta::bvhMaterialAnimcharDecals;
 
@@ -1724,15 +1751,17 @@ static DoAddObjectResult do_add_object(ContextId context_id, uint64_t object_id,
 
       // After the materialType flags: the publication reads them. The give-up precedes any bake, thus
       // the published entry is empty and dispatches nothing, and needs no delayed-sync handling.
-      if (ommTextureWait == OmmTextureWait::GaveUp)
+      if (ommTextureWait == OmmTextureWait::GaveUp && mesh_wants_omm(context_id, mesh))
       {
-        for (Mesh::OmmSlot &slot : mesh.ommSlots)
-          fail_omm_slot(slot, Mesh::OmmFailure::AlphaTextureNeverLoaded);
-        if (mesh_wants_omm(context_id, mesh))
+        const int slotCount = mesh.hasSecondaryGeometry ? 2 : 1;
+        for (int slotId = 0; slotId < slotCount; ++slotId)
         {
-          publish_omm_debug_result(mesh, mesh.ommSlots[OMM_PRIMARY_SLOT], object_id, meshGeometryIndex, OMM_PRIMARY_SLOT, false);
-          if (mesh.hasSecondaryGeometry)
-            publish_omm_debug_result(mesh, mesh.ommSlots[OMM_SECONDARY_SLOT], object_id, meshGeometryIndex, OMM_SECONDARY_SLOT, false);
+          OmmCacheEntry &entry = *acquire_mesh_omm_entry(context_id, object_id, mesh, slotId);
+          // An entry past None was not part of this wait, thus the give-up says nothing about it.
+          if (entry.state != OmmState::None)
+            continue;
+          fail_omm_entry(context_id, entry, OmmFailure::AlphaTextureNeverLoaded);
+          publish_omm_debug_result(mesh, entry, object_id, meshGeometryIndex, slotId, false);
         }
       }
 
@@ -1755,6 +1784,7 @@ static DoAddObjectResult do_add_object(ContextId context_id, uint64_t object_id,
       meta.holdAlphaTex(context_id, mesh.alphaTextureId);
       meta.holdNormalTex(context_id, mesh.normalTextureId);
       meta.holdExtraTex(context_id, mesh.extraTextureId);
+      meta.holdSecondaryMaskTex(context_id, mesh.secondaryMaskTextureId);
       meta.holdAlbedoTex(context_id, mesh.albedoTextureId);
 
       if (info.albedoTextureId != BAD_TEXTUREID)
@@ -1769,6 +1799,8 @@ static DoAddObjectResult do_add_object(ContextId context_id, uint64_t object_id,
         context_id->holdTexture(info.ppDirectionTextureId, mesh.ppDirectionBindless);
       if (info.clothNoiseCombinedTexTextureId != BAD_TEXTUREID)
         context_id->holdTexture(info.clothNoiseCombinedTexTextureId, mesh.clothNoiseCombinedTexBindless);
+      if (info.faceMorphAtlasTextureId != BAD_TEXTUREID)
+        context_id->holdTexture(info.faceMorphAtlasTextureId, mesh.faceMorphAtlasBindless, true);
 
       if (mesh.materialType & MeshMeta::bvhMaterialAlphaTest && info.alphaTextureId == BAD_TEXTUREID)
       {
@@ -1914,7 +1946,7 @@ static DoAddObjectResult do_add_object(ContextId context_id, uint64_t object_id,
 void add_object(ContextId context_id, uint64_t object_id, const ObjectInfo &info)
 {
 #if DAGOR_DBGLEVEL > 0
-  for (const auto mesh : info.meshes)
+  for (const auto &mesh : info.meshes)
   {
     G_ASSERT(mesh.vertices);
     G_ASSERT(!mesh.indices || mesh.indexCount % 3 == 0);
@@ -2049,8 +2081,6 @@ static void handle_pending_mesh_actions(ContextId context_id, BuildBudget budget
   context_id->hasPendingObjectAddActions.store(!context_id->pendingObjectAddActions.empty(), dag::memory_order_relaxed);
 }
 
-static constexpr uint32_t MAX_GEOMETRIES_PER_BLAS = 32;
-
 Object *find_half_baked_object(ContextId context_id, uint64_t object_id)
 {
   auto it = context_id->objects.find(object_id);
@@ -2067,6 +2097,8 @@ Object *find_half_baked_object(ContextId context_id, uint64_t object_id)
 // it may have wasted an OMM bake whose slot then hangs unconsumed. Rejecting up front avoids that.
 static void drop_oversized_half_baked_objects(ContextId context_id) DAG_TS_REQUIRES(context_id->objectsLock)
 {
+  TIME_PROFILE(drop_oversized_half_baked_objects);
+
   for (auto iter = context_id->halfBakedObjects.begin(); iter != context_id->halfBakedObjects.end();)
   {
     const uint64_t objectId = *iter;
@@ -2080,11 +2112,12 @@ static void drop_oversized_half_baked_objects(ContextId context_id) DAG_TS_REQUI
 
     size_t descCount = eastl::accumulate(object.meshes.begin(), object.meshes.end(), size_t(0),
       [](size_t count, const auto &mesh) { return count + (mesh.hasSecondaryGeometry ? 2 : 1); });
-    if (descCount > MAX_GEOMETRIES_PER_BLAS)
+    if (descCount > Context::MAX_GEOMS_PER_OBJ)
     {
       logerr("BVH object <%s> (id %llX, %u meshes) has too many geometries for BLAS build: %u, max: %u; "
              "reduce the geometry/material count of this asset to fix it",
-        object.tag ? object.tag : "?", objectId, uint32_t(object.meshes.size()), uint32_t(descCount), MAX_GEOMETRIES_PER_BLAS);
+        object.tag ? object.tag : "?", objectId, uint32_t(object.meshes.size()), uint32_t(descCount),
+        uint32_t(Context::MAX_GEOMS_PER_OBJ));
       // The mesh set can never fit, so this object will never get a BLAS. Remove it entirely instead of
       // only dropping the queue entry: leaving the Object in `objects` would let add_instances pick it
       // up (it skips only ids still in halfBakedObjects) and emit a TLAS instance with a null BLAS
@@ -2117,6 +2150,8 @@ struct BlasBuildBatch
 
 static void process_half_baked_meshes(ContextId context_id, int &budget) DAG_TS_REQUIRES(context_id->objectsLock)
 {
+  TIME_PROFILE(process_half_baked_meshes);
+
   for (uint64_t objectId : context_id->halfBakedObjects)
   {
     if (budget <= 0 || is_in_lost_device_state)
@@ -2141,10 +2176,9 @@ static void process_half_baked_meshes(ContextId context_id, int &budget) DAG_TS_
     TIME_PROFILE(half_baked_process);
     OSSpinlockScopedLock metaGuard(context_id->meshMetaAllocatorLock); // for safety, it should never block
     auto metaRegion = context_id->meshMetaAllocator.get(object.metaAllocId);
-    for (int i = 0; auto &mesh : object.meshes)
+    for (auto &mesh : object.meshes)
     {
-      auto &meta = metaRegion[i];
-      i += mesh.hasSecondaryGeometry ? 2 : 1;
+      auto &meta = metaRegion[mesh.firstGeometryIndex];
 
       if (mesh.buildStage != Mesh::BuildStage::NeedsProcessing)
         continue;
@@ -2179,6 +2213,9 @@ static void process_half_baked_meshes(ContextId context_id, int &budget) DAG_TS_
 static void resolve_half_baked_omms(ContextId context_id, int &budget) DAG_TS_REQUIRES(context_id->objectsLock)
 {
   if (context_id->ommEnabled)
+  {
+    TIME_PROFILE(resolve_half_baked_omms);
+
     for (uint64_t objectId : context_id->halfBakedObjects)
     {
       if (budget <= 0 || is_in_lost_device_state)
@@ -2203,29 +2240,46 @@ static void resolve_half_baked_omms(ContextId context_id, int &budget) DAG_TS_RE
       TIME_PROFILE(half_baked_omm);
       OSSpinlockScopedLock metaGuard(context_id->meshMetaAllocatorLock);
       auto metaRegion = context_id->meshMetaAllocator.get(object.metaAllocId);
-      for (int i = 0; auto &mesh : object.meshes)
+      for (auto &mesh : object.meshes)
       {
-        const uint32_t geometryIndex = i;
-        auto &meta = metaRegion[i];
-        i += mesh.hasSecondaryGeometry ? 2 : 1;
-
         if (mesh.buildStage != Mesh::BuildStage::ResolvingOmm)
           continue;
 
-        OmmBakeSource ommSource = make_omm_bake_source(context_id, mesh, meta);
+        OmmBakeSource ommSource = make_omm_bake_source(context_id, mesh, metaRegion[mesh.firstGeometryIndex]);
         // resolve_half_baked_omms runs outside any delayed-sync window
-        if (start_new_omm_bakes(context_id, objectId, mesh, geometryIndex, ommSource, false))
+        if (start_new_omm_bakes(context_id, objectId, mesh, ommSource, false))
           mesh.buildStage = Mesh::BuildStage::NeedsBlasBuild;
       }
 
       --budget;
     }
+  }
+}
+
+static void report_omm_asset_problem(const Object &object, uint64_t object_id, const char *what, const String &reason)
+{
+  const String assetName = object.assetName.resolve();
+  const char *tag = object.tag ? object.tag : "?";
+  const String message(0, "BVH: %s <%s> (%s, id %llX) from the BVH -- %s", what, assetName.c_str(), tag, object_id, reason.c_str());
+#if DAGOR_DBGLEVEL > 0
+  logerr("%s", message.c_str());
+#else
+  event_log::ErrorLogSendParams params;
+  params.collection = "incorrect_omm_asset";
+  params.dump_call_stack = false;
+  params.severity = event_log::LogSeverity::Low;
+  params.meta["asset_name"] = assetName.c_str();
+  params.meta["object_id"] = String(0, "%llX", object_id).c_str();
+  params.meta["tag"] = tag;
+  params.meta["action"] = what;
+  event_log::send_error_log(message.c_str(), params);
+#endif
 }
 
 static BlasBuildBatch build_half_baked_blases(ContextId context_id, int &budget) DAG_TS_REQUIRES(context_id->objectsLock)
 {
   BlasBuildBatch batch;
-  batch.geomDescriptors.resize(MAX_GEOMETRIES_PER_BLAS * budget);
+  batch.geomDescriptors.resize(Context::MAX_GEOMS_PER_OBJ * budget);
   // Each built object appends exactly one build and the loop is bounded by budget, so reserve up front
   // to avoid per-frame growth reallocations.
   batch.blasBuildInfos.reserve(budget);
@@ -2287,8 +2341,7 @@ static BlasBuildBatch build_half_baked_blases(ContextId context_id, int &budget)
       }
       if (missingOmm)
       {
-        logerr("BVH: dropping alpha-tested object <%s> (%s, id %llX) from the BVH -- %s", object.assetName.resolve().c_str(),
-          object.tag ? object.tag : "?", objectId, describe_missing_omm(context_id, *missingOmm).c_str());
+        report_omm_asset_problem(object, objectId, "dropping alpha-tested object", describe_missing_omm(context_id, *missingOmm));
         iter = context_id->halfBakedObjects.erase(iter);
         batch.objectsToDestroy.push_back(objectId);
         continue;
@@ -2301,9 +2354,9 @@ static BlasBuildBatch build_half_baked_blases(ContextId context_id, int &budget)
       [](size_t count, const auto &mesh) { return count + (mesh.hasSecondaryGeometry ? 2 : 1); });
     // Oversized objects are dropped up front by drop_oversized_half_baked_objects, before any baking
     // stage, so by the time an object reaches here the fit is guaranteed.
-    G_ASSERT(descCount <= MAX_GEOMETRIES_PER_BLAS);
+    G_ASSERT(descCount <= Context::MAX_GEOMS_PER_OBJ);
 
-    RaytraceGeometryDescription *desc = &batch.geomDescriptors[MAX_GEOMETRIES_PER_BLAS * batch.blasCount];
+    RaytraceGeometryDescription *desc = &batch.geomDescriptors[Context::MAX_GEOMS_PER_OBJ * batch.blasCount];
     memset(desc, 0, sizeof(RaytraceGeometryDescription) * descCount);
 
     {
@@ -2390,12 +2443,8 @@ static BlasBuildBatch build_half_baked_blases(ContextId context_id, int &budget)
           desc[i + 1].data.triangles.indexOffset = meta.startIndex;
           desc[i + 1].data.triangles.flags =
             (hasAlphaTest) ? RaytraceGeometryDescription::Flags::NONE : RaytraceGeometryDescription::Flags::IS_OPAQUE;
-          if (context_id->ommEnabled)
-          {
-            desc[i + 1].extraDataAvailableMask.hasOpacityMicroMapLinkage = false;
-            if (!skipped)
-              set_omm_linkage(desc[i + 1], mesh, OMM_SECONDARY_SLOT);
-          }
+          if (context_id->ommEnabled && !skipped)
+            set_omm_linkage(desc[i + 1], mesh, OMM_SECONDARY_SLOT);
         }
 
         batch.triangleCount += skipped ? 0 : mesh.indexCount / 3;
@@ -2461,6 +2510,8 @@ void process_meshes(ContextId context_id, BuildBudget budget)
 
   handle_pending_mesh_actions(context_id, budget);
 
+  evict_idle_omm_entries(context_id);
+
   const bool isCompactionCheap = is_blas_compaction_cheap();
 
   // Each baking step gets its own per-frame model budget so an early step (mesh preprocessing) can not
@@ -2521,7 +2572,7 @@ void process_meshes(ContextId context_id, BuildBudget budget)
         .flushAfterBottomBuild = true,
       });
     }
-    release_omm_bake_build_inputs(ommBatch.results);
+    release_omm_bake_build_inputs(context_id->ommContext, ommBatch.results);
 
     // The two grass paths bake and build here, in the same GPU-dispatch context as the mesh builds above.
     // Their geometry is static, thus this runs one time.
@@ -2778,44 +2829,6 @@ void process_meshes(ContextId context_id, BuildBudget budget)
     //  (int)context_id->blasCompactionsAccel.size(), context_id->numCompactionBlasesInFlight);
   }
 
-  auto regGameTex = [&](int var_id, bvh::Context::BindlessTexHolder &holder, uint32_t *size = nullptr) {
-    TEXTUREID texId = ShaderGlobal::get_tex(var_id);
-    if (holder.texId != texId)
-    {
-      holder.close(context_id);
-      holder.texId = texId;
-      if (auto texture = context_id->holdTexture(texId, holder.bindlessTexture); texture && size)
-      {
-        TextureInfo info;
-        texture->getinfo(info);
-        *size = info.w;
-      }
-    }
-  };
-
-  static int paint_details_texVarId = get_shader_variable_id("paint_details_tex", true);
-  static int grass_land_color_maskVarId = get_shader_variable_id("grass_land_color_mask", true);
-  static int dynamic_mfd_texVarId = get_shader_variable_id("dynamic_mfd_tex", true);
-  static int cache_tex0VarId = get_shader_variable_id("cache_tex0", true);
-  static int indirection_texVarId = get_shader_variable_id("indirection_tex", true);
-  static int cache_tex1VarId = get_shader_variable_id("cache_tex1", true);
-  static int cache_tex2VarId = get_shader_variable_id("cache_tex2", true);
-  static int last_clip_texVarId = get_shader_variable_id("last_clip_tex", true);
-  static int dynamic_decals_atlasVarId = get_shader_variable_id("dynamic_decals_atlas", true);
-
-  {
-    TIME_PROFILE(regGameTex);
-    regGameTex(dynamic_mfd_texVarId, context_id->dynamic_mfd_texBindless);
-    regGameTex(paint_details_texVarId, context_id->paint_details_texBindless, &context_id->paintTexSize);
-    regGameTex(grass_land_color_maskVarId, context_id->grass_land_color_maskBindless);
-    regGameTex(cache_tex0VarId, context_id->cache_tex0Bindless);
-    regGameTex(indirection_texVarId, context_id->indirection_texBindless);
-    regGameTex(cache_tex1VarId, context_id->cache_tex1Bindless);
-    regGameTex(cache_tex2VarId, context_id->cache_tex2Bindless);
-    regGameTex(last_clip_texVarId, context_id->last_clip_texBindless);
-    regGameTex(dynamic_decals_atlasVarId, context_id->dynamic_decals_atlasBindless);
-  }
-
   {
     TIME_PROFILE(camo_texture_cleanup);
     for (auto iter = context_id->camoTextures.begin(); iter != context_id->camoTextures.end();)
@@ -2889,7 +2902,7 @@ public:
       perInstanceDataUploadDone =
         parallel_instance_processing::upload_per_instance_data(contextId, parallel_instance_processing::TargetFrame::Current);
   }
-  const char *getJobName(bool &) const override { return "BVHFallbackUploadHeavyDataJob"; }
+  const char *getJobName(bool &) const override { return DAPROFILER_STRING("BVHFallbackUploadHeavyDataJob"); }
   // Results are valid after wait()
   bool isMainUploadDone() const { return mainUploadDone; }
   bool isPerInstanceDataUploadDone() const { return perInstanceDataUploadDone; }
@@ -2914,8 +2927,7 @@ static void report_withheld_dynamic_omm(bool &already_logged, const Object &obje
   if (already_logged)
     return;
   already_logged = true;
-  logerr("BVH: withholding alpha-tested dynamic object <%s> (%s, id %llX) from the BVH -- %s", object.assetName.resolve().c_str(),
-    object.tag ? object.tag : "?", object_id, get_reason().c_str());
+  report_omm_asset_problem(object, object_id, "withholding alpha-tested dynamic object", get_reason());
 }
 
 static void add_instances(ContextId context_id, const Context::InstanceMap &instances, dag::Vector<NativeInstance> &outInstances,
@@ -2951,7 +2963,7 @@ static void add_instances(ContextId context_id, const Context::InstanceMap &inst
       continue;
 
     auto &object = iter->second;
-    auto &blas = instance.uniqueBlas ? *instance.uniqueBlas : object.blas;
+    auto &blas = instance.uniqueData ? instance.uniqueData->blas : object.blas;
     auto metaAllocId = MeshMetaAllocator::is_valid(instance.metaAllocId) ? instance.metaAllocId : object.metaAllocId;
     auto metaRegion = context_id->meshMetaAllocator.get(metaAllocId);
     auto baseMetaRegion = context_id->meshMetaAllocator.get(object.metaAllocId);
@@ -2961,43 +2973,72 @@ static void add_instances(ContextId context_id, const Context::InstanceMap &inst
       const bool stationary = instance.uniqueIsStationary;
       bool needBlasBuild = instance.needsBlasBuild;
 
+      // Per mesh, the override entry this instance resolved; null where the mesh-shared entry applies.
+      eastl::fixed_vector<OmmCacheEntry *, Context::MAX_GEOMS_PER_OBJ, true> overrideOmms;
+      // The blas template pins no OMM references and is copied into instances, thus only the mesh-shared
+      // linkage, which the mesh pins, may go through it.
+      bool hasOverrideLinkage = false;
       if (context_id->ommEnabled)
       {
+        overrideOmms.assign(object.meshes.size(), nullptr);
         bool withholdInstance = false;
-        // The OMM slot is shared per mesh across this object's instances, so this re-polls once per
-        // instance. That is cheap: after the bake completes each poll is just a state check, and while
-        // baking it is a light readback-readiness probe, so a per-frame dedup is not worth the state.
+        // Re-polling the shared entry once per instance is deliberate: a per-frame dedup is not worth the state.
         for (uint32_t meshIndex = 0; meshIndex < object.meshes.size(); ++meshIndex)
         {
           Mesh &mesh = object.meshes[meshIndex];
           auto &meta = metaRegion[meshIndex];
           if (!mesh.vertexProcessor)
             continue;
-          if (!(mesh.materialType & MeshMeta::bvhMaterialAlphaTest))
+          const bool alphaTested = mesh.materialType & MeshMeta::bvhMaterialAlphaTest;
+          const bool overridesAlpha = !instance_can_use_mesh_omm(mesh, meta, baseMetaRegion[meshIndex]);
+          // The opaque conversion judged the mesh's own alpha source only, thus an override instance of a
+          // converted mesh must still reach its resolve.
+          if (!alphaTested && !(overridesAlpha && mesh_should_be_opaque(mesh)))
             continue;
-          if (!mesh_wants_omm(context_id, mesh))
+          // The mesh may carry no alpha source of its own while the override instance does; a bad
+          // override id is reported by the resolve below.
+          if (alphaTested && !overridesAlpha && !mesh_wants_omm(context_id, mesh))
           {
             withholdInstance = true;
-            report_withheld_dynamic_omm(mesh.ommSlots[OMM_PRIMARY_SLOT].failureLogged, object, instance.objectId,
-              [] { return String(omm_failure_text(Mesh::OmmFailure::NoAlphaSource)); });
+            report_withheld_dynamic_omm(mesh.noAlphaSourceLogged, object, instance.objectId,
+              [] { return String(omm_failure_text(OmmFailure::NoAlphaSource)); });
             break;
           }
-          // Do not fail the slot: it stays correct for each instance that the mesh-shared OMM covers.
-          // TODO: bake for each (mesh, override texture) pair into a small cache, in place of the one
-          // shared slot of the mesh. Only the cache and its eviction are missing: the BLAS of the
-          // instance already links an OMM at its first build.
-          if (!instance_can_use_mesh_omm(mesh, meta, baseMetaRegion[meshIndex]))
+          OmmBakeSource ommSource = make_omm_bake_source(context_id, mesh);
+          // Do not fail the mesh-shared entry: it stays correct for each instance it covers.
+          if (overridesAlpha)
           {
+            OmmCacheEntry *overrideEntry = nullptr;
+            TEXTUREID overrideTexId = BAD_TEXTUREID;
+            const OverrideOmmResult overrideResult = resolve_override_omm_entry(context_id, instance.objectId, mesh, meta, ommSource,
+              delay_sync, overrideEntry, overrideTexId);
+            if (overrideResult == OverrideOmmResult::UseEntry)
+            {
+              // A changed or dropped override changes the key, and a changed desired linkage rebuilds the blas.
+              overrideOmms[meshIndex] = overrideEntry;
+              hasOverrideLinkage = true;
+              continue;
+            }
             withholdInstance = true;
-            report_withheld_dynamic_omm(mesh.ommSlots[OMM_PRIMARY_SLOT].alphaSourceOverrideLogged, object, instance.objectId,
-              [] { return String(omm_failure_text(Mesh::OmmFailure::InstanceAlphaSourceOverride)); });
+            if (overrideResult == OverrideOmmResult::WithholdAndReportFailure)
+              report_withheld_dynamic_omm(overrideEntry->failureLogged, object, instance.objectId, [&] {
+                // The shared failure text sends the reader to the mesh material, but the alpha source of
+                // this bake is the instance's own override texture.
+                return String(0, "its override alpha texture <%s> is the alpha source: %s", get_managed_texture_name(overrideTexId),
+                  omm_failure_text(overrideEntry->failure));
+              });
+            else if (overrideResult == OverrideOmmResult::WithholdAndReportOverride)
+              report_withheld_dynamic_omm(mesh.alphaSourceOverrideLogged, object, instance.objectId,
+                [] { return String(omm_failure_text(OmmFailure::InstanceAlphaSourceOverride)); });
+            else if (overrideResult == OverrideOmmResult::WithholdAndReportBakeSource)
+              report_withheld_dynamic_omm(mesh.notOmmCandidateLogged, object, instance.objectId,
+                [&] { return describe_missing_omm(context_id, mesh); });
             break;
           }
 
-          OmmBakeSource ommSource = make_omm_bake_source(context_id, mesh);
           // add_instances runs inside build's delayed-sync window when delay_sync is set
-          consume_mesh_omm_bakes(context_id, instance.objectId, mesh, meshIndex, ommBuildInfos, ommBuildResults, delay_sync);
-          if (!start_new_omm_bakes(context_id, instance.objectId, mesh, meshIndex, ommSource, delay_sync))
+          consume_mesh_omm_bakes(context_id, mesh, ommBuildInfos, ommBuildResults, delay_sync);
+          if (!start_new_omm_bakes(context_id, instance.objectId, mesh, ommSource, delay_sync))
           {
             withholdInstance = true; // the bake continues, or no bake slot is free: this is temporary
             break;
@@ -3013,8 +3054,10 @@ static void add_instances(ContextId context_id, const Context::InstanceMap &inst
             if (mesh_should_be_skipped(mesh))
               continue;
             withholdInstance = true;
-            report_withheld_dynamic_omm(mesh.ommSlots[OMM_PRIMARY_SLOT].failureLogged, object, instance.objectId,
-              [&] { return describe_missing_omm(context_id, mesh); });
+            // Only reads: a diagnostic must not create a cache entry or re-arm a failed bake.
+            OmmCacheEntry *primaryEntry = mesh.ommEntries[OMM_PRIMARY_SLOT].get();
+            report_withheld_dynamic_omm(primaryEntry ? primaryEntry->failureLogged : mesh.notOmmCandidateLogged, object,
+              instance.objectId, [&] { return describe_missing_omm(context_id, mesh); });
             break;
           }
         }
@@ -3033,21 +3076,59 @@ static void add_instances(ContextId context_id, const Context::InstanceMap &inst
         {
           if (!mesh.vertexProcessor)
             continue;
-          G_ASSERT(!mesh.vertexProcessor->isOneTimeOnly() && instance.uniqueTransformedBuffer);
+          G_ASSERT(!mesh.vertexProcessor->isOneTimeOnly() && instance.uniqueData);
 
-          auto animatedVertices = UniqueOrReferencedBVHBuffer(*instance.uniqueTransformedBuffer); //-V595
+          auto animatedVertices = UniqueOrReferencedBVHBuffer(instance.uniqueData->buffer); //-V595
           process_meta(context_id, meta, mesh, needBlasBuild, instance, *frustum, cameraPos, lightDirection, animatedVertices,
             stationary, skipUpdate, baseMeta);
         }
       }
 
-      for (auto [mesh, meta, baseMeta] : zip(object.meshes, metaRegion, baseMetaRegion))
+      // Built last: the OMM resolve and the meta processing can both change what the descs link.
+      eastl::fixed_vector<OmmCacheEntry *, Context::MAX_GEOMS_PER_OBJ, true> desiredOmms;
+      if (context_id->ommEnabled)
+        for (uint32_t meshIndex = 0; auto [mesh, meta, baseMeta] : zip(object.meshes, metaRegion, baseMetaRegion))
+        {
+          const uint32_t meshOrdinal = meshIndex++;
+          if (OmmCacheEntry *overrideEntry = overrideOmms[meshOrdinal])
+          {
+            // The raw entry, linkable or not: its identity drives the staleness rebuild; the linkage itself
+            // takes only a built one.
+            desiredOmms.push_back(overrideEntry);
+            continue;
+          }
+          const bool linkable =
+            mesh.vertexProcessor && !mesh_should_be_skipped(mesh) && instance_can_use_mesh_omm(mesh, meta, baseMeta);
+          desiredOmms.push_back(linkable ? linkable_omm_entry(mesh) : nullptr);
+        }
+
+      // A refit must not change geometry sources, opacity flags or OMM linkage: a blas whose generation or
+      // desired linkage differs must be rebuilt.
+      if (instance.uniqueData && instance.uniqueData->blas &&
+          (instance.uniqueData->builtGeneration != object.buildInputsGeneration || instance.uniqueData->linkedOmms != desiredOmms))
       {
+        if (is_tree_instance(instance))
+        {
+          if (object.type == BvhType::RI)
+            unitedvdata::riUnitedVdata.adjustBlasSize(-int64_t(instance.uniqueData->blas.getASSize()));
+          else if (object.type == BvhType::Dyn)
+            unitedvdata::dmUnitedVdata.adjustBlasSize(-int64_t(instance.uniqueData->blas.getASSize()));
+        }
+        instance.uniqueData->linkedOmms.reset();
+        instance.uniqueData->blas.reset();
+      }
+
+      // A null blas must never reach the TLAS, even when the animation logic reports no vertex update.
+      needBlasBuild |= instance.uniqueData && !instance.uniqueData->blas;
+
+      for (uint32_t meshOrdinal = 0; auto [mesh, meta, baseMeta] : zip(object.meshes, metaRegion, baseMetaRegion))
+      {
+        const uint32_t meshIndex = meshOrdinal++;
         if (!mesh.vertexProcessor)
           continue;
-        G_ASSERT(!mesh.vertexProcessor->isOneTimeOnly() && instance.uniqueTransformedBuffer);
+        G_ASSERT(!mesh.vertexProcessor->isOneTimeOnly() && instance.uniqueData);
 
-        auto animatedVertices = UniqueOrReferencedBVHBuffer(*instance.uniqueTransformedBuffer); //-V595
+        auto animatedVertices = UniqueOrReferencedBVHBuffer(instance.uniqueData->buffer); //-V595 //-V1004
 
 #if DAGOR_DBGLEVEL > 0
         static bool check_alpha = true;
@@ -3068,8 +3149,13 @@ static void add_instances(ContextId context_id, const Context::InstanceMap &inst
 
         CHECK_LOST_DEVICE_STATE();
 
-        bool hasAlphaTest = mesh.materialType & MeshMeta::bvhMaterialAlphaTest;
-        const bool skipped = context_id->ommEnabled && mesh_should_be_skipped(mesh);
+        // The override entry alone decides for its instance: the mesh-shared conversion must not push a
+        // built override OMM to opaque or to zero triangles.
+        const OmmCacheEntry *overrideEntry = context_id->ommEnabled ? overrideOmms[meshIndex] : nullptr;
+        const bool hasAlphaTest =
+          overrideEntry ? !omm_entry_should_be_opaque(overrideEntry) : (mesh.materialType & MeshMeta::bvhMaterialAlphaTest) != 0;
+        const bool skipped =
+          context_id->ommEnabled && (overrideEntry ? omm_entry_should_be_skipped(overrideEntry) : mesh_should_be_skipped(mesh));
         auto &geom = *(RaytraceGeometryDescription *)geoms.push_back_uninitialized();
 
         geom.type = RaytraceGeometryDescription::Type::TRIANGLES;
@@ -3090,12 +3176,15 @@ static void add_instances(ContextId context_id, const Context::InstanceMap &inst
         geom.data.triangles.flags =
           (hasAlphaTest) ? RaytraceGeometryDescription::Flags::NONE : RaytraceGeometryDescription::Flags::IS_OPAQUE;
         geom.extraDataAvailableMask.hasOpacityMicroMapLinkage = false;
-        if (context_id->ommEnabled && !skipped && instance_can_use_mesh_omm(mesh, meta, baseMeta))
-          set_omm_linkage(geom, mesh);
+        if (context_id->ommEnabled)
+        {
+          G_ASSERT(meshIndex < desiredOmms.size());
+          set_omm_linkage(geom, desiredOmms[meshIndex]);
+        }
       }
 
       // If the BLAS is not unique, then only build it when it has not been built at all.
-      if (needBlasBuild && (!blas || instance.uniqueBlas))
+      if (needBlasBuild && (!blas || instance.uniqueData))
       {
         RaytraceBuildFlags flags =
           (object.isAnimated && !stationary)
@@ -3109,13 +3198,18 @@ static void add_instances(ContextId context_id, const Context::InstanceMap &inst
           isNew = true;
 
           HANDLE_LOST_DEVICE_STATE(blas, );
+          if (instance.uniqueData)
+          {
+            instance.uniqueData->builtGeneration = object.buildInputsGeneration;
+            instance.uniqueData->linkedOmms.assign(context_id, desiredOmms);
+          }
           // this is how we distinguish tree which are later deleted via stationaryTreeBuffers
           if (object.type == BvhType::RI && is_tree_instance(instance) && blas)
             unitedvdata::riUnitedVdata.adjustBlasSize(blas.getASSize());
           else if (object.type == BvhType::Dyn && is_tree_instance(instance) && blas)
             unitedvdata::dmUnitedVdata.adjustBlasSize(blas.getASSize());
 
-          if (object.blas && object.blas != blas && !stationary)
+          if (object.blas && object.blas != blas && !stationary && !hasOverrideLinkage)
           {
             d3d::copy_raytrace_acceleration_structure(blas.get(), object.blas.get());
             isNew = false;
@@ -3147,7 +3241,7 @@ static void add_instances(ContextId context_id, const Context::InstanceMap &inst
         // there is no need to build the BLAS topology, only an update, which is about 50
         // times faster.
         // If the template is being created, we build immediately.
-        if (!object.blas)
+        if (!object.blas && !hasOverrideLinkage)
         {
           if (assumed_buffer_processor)
             assumed_buffer_processor->end(true);
@@ -3157,7 +3251,7 @@ static void add_instances(ContextId context_id, const Context::InstanceMap &inst
             d3d::driver_command(Drv3dCommand::CONTINUE_SYNC);
 
           if (context_id->ommEnabled)
-            build_pending_omm_arrays(ommBuildInfos, ommBuildResults);
+            build_pending_omm_arrays(context_id->ommContext, ommBuildInfos, ommBuildResults);
 
 #if _TARGET_C2
 
@@ -3202,17 +3296,24 @@ static void add_instances(ContextId context_id, const Context::InstanceMap &inst
       }
     }
 
-    bool flipWinding = need_winding_flip(object.meshes[0], instance);
-
     perInstanceData.emplace_back(instance.perInstanceData.value_or(PerInstanceData::ZERO));
+
+    uint32_t mask;
+    if (instance.noShadow)
+      mask = bvhGroupNoShadow;
+    else if (object.meshes[0].isCamoNet)
+      mask = bvhGroupCamoNet;
+    else if (object.meshes[0].isGunBarrel)
+      mask = bvhGroupGunBarrel;
+    else
+      mask = group_mask;
 
     HWInstance desc;
     desc.transform = instance.transform;
     desc.instanceID = MeshMetaAllocator::decode(metaAllocId);
-    desc.instanceMask = instance.noShadow ? bvhGroupNoShadow : object.meshes[0].isCamoNet ? bvhGroupCamoNet : group_mask;
+    desc.instanceMask = mask;
     desc.instanceContributionToHitGroupIndex = 0;
-    desc.flags = instance.forceEnableBackfaceCulling ? (flipWinding ? RaytraceGeometryInstanceDescription::TRIANGLE_CULL_FLIP_WINDING
-                                                                    : RaytraceGeometryInstanceDescription::NONE)
+    desc.flags = instance.forceEnableBackfaceCulling ? RaytraceGeometryInstanceDescription::NONE
                                                      : RaytraceGeometryInstanceDescription::TRIANGLE_CULL_DISABLE;
     desc.blasGpuAddress = blas.getGPUAddress();
 
@@ -3354,6 +3455,8 @@ void build(ContextId context_id, const TMatrix &itm, const TMatrix4 &projTm, con
 
   int cableCount = cableBlases ? cableBlases->size() : 0; //-V547
 
+  bool terrainDirty = terrain::is_dirty(context_id);
+
   auto terrainBlases = terrain::get_blases(context_id);
   int terrainCount = terrainBlases.size();
 
@@ -3377,8 +3480,8 @@ void build(ContextId context_id, const TMatrix &itm, const TMatrix4 &projTm, con
   context_id->tlasLruCollisionValid = false;
 
   // Discard OMM bakes whose objects went inactive. Must run before the no-instance early return below:
-  // a dynamic bake started in add_instances lives only in objectsWithBakingOmm, so if its last instance
-  // disappears and build() keeps returning early, the bake and its buffers would never be freed.
+  // a dynamic bake has no half-baked object to keep it alive, so if its last instance disappears while
+  // the build keeps returning early, the bake and its buffers would never be freed.
   {
     Context::BvhObjectReadLock objectsGuard(context_id->objectsLock);
     discard_inactive_omm_bakes(context_id);
@@ -3388,7 +3491,11 @@ void build(ContextId context_id, const TMatrix &itm, const TMatrix4 &projTm, con
       !gpuGrassInstances && !lruCollisionCount)
     return;
 
-  Context::RingBuffers::step();
+  context_id->tlasUploadMain.step();
+  context_id->tlasUploadTerrain.step();
+  context_id->tlasUploadLruCollision.step();
+  context_id->meshMeta.step();
+  context_id->perInstanceData.step();
 
   // PS5 and Metal has different instance size, but PS5 bvh_hwinstance_copy version supports transform from HWInstance to it
 #if !_TARGET_C2 && !_TARGET_APPLE
@@ -3439,11 +3546,13 @@ void build(ContextId context_id, const TMatrix &itm, const TMatrix4 &projTm, con
   bool reallocateLruCollisionTlas = context_id->lruCollision && !context_id->tlasUploadLruCollision;
   bool reallocatePerInstanceData = !context_id->perInstanceData;
 
+  const bool buildTerrainTlas = terrainDirty || reallocateTerrainTlas;
+
   if (reallocateMainTlas)
   {
     TIME_PROFILE(allocate_main_tlas_upload);
-    HANDLE_LOST_DEVICE_STATE(context_id->tlasUploadMain.allocate(HW_INSTANCE_SIZE, uploadSizeMain, SBCF_UA_SR_STRUCTURED,
-                               "bvh_tlas_upload_main", context_id), );
+    HANDLE_LOST_DEVICE_STATE(context_id->tlasUploadMain.allocate(HW_INSTANCE_SIZE, uploadSizeMain,
+                               SBCF_UA_SR_STRUCTURED | SBCF_PERSISTENT_STAGING, "bvh_tlas_upload_main", context_id), );
   }
   if (reallocateTerrainTlas)
   {
@@ -3470,8 +3579,9 @@ void build(ContextId context_id, const TMatrix &itm, const TMatrix4 &projTm, con
 
   if (reallocatePerInstanceData)
   {
-    HANDLE_LOST_DEVICE_STATE(context_id->perInstanceData.allocate(sizeof(PerInstanceData), uploadSizePerInstanceData,
-                               SBCF_BIND_SHADER_RES | SBCF_MISC_STRUCTURED, "bvh_per_instance_data", context_id), );
+    HANDLE_LOST_DEVICE_STATE(
+      context_id->perInstanceData.allocate(sizeof(PerInstanceData), uploadSizePerInstanceData,
+        SBCF_BIND_SHADER_RES | SBCF_MISC_STRUCTURED | SBCF_PERSISTENT_STAGING, "bvh_per_instance_data", context_id), );
   }
 
   const bool needFallbackMain = !parallelFinishResult.MainUploadDone || reallocateMainTlas;
@@ -3536,8 +3646,6 @@ void build(ContextId context_id, const TMatrix &itm, const TMatrix4 &projTm, con
     }
 
     {
-      context_id->riGenStartIndexType = (context_id->riGenStartIndexType + 1) % Context::MaxTreeAnimIndices;
-
       ProcessorInstances::getTreeVertexProcessor().begin();
 
       auto startRef = profile_ref_ticks();
@@ -3608,8 +3716,6 @@ void build(ContextId context_id, const TMatrix &itm, const TMatrix4 &projTm, con
 
   bvh_upload_meta_job.start(context_id);
 
-  int terrainDescIndex = instanceDescs.size();
-
   {
     TIME_D3D_PROFILE(procedural_blas_builds);
     DA_PROFILE_TAG(procedural_blas_builds, "blas count: %d", context_id->blasUpdates.size());
@@ -3632,7 +3738,7 @@ void build(ContextId context_id, const TMatrix &itm, const TMatrix4 &projTm, con
         .flushAfterBottomBuild = true,
       });
       ommBuildInfos.clear();
-      release_omm_bake_build_inputs(ommBuildResults);
+      release_omm_bake_build_inputs(context_id->ommContext, ommBuildResults);
     }
     else
     {
@@ -3640,9 +3746,17 @@ void build(ContextId context_id, const TMatrix &itm, const TMatrix4 &projTm, con
     }
   }
 
+  dag::Vector<NativeInstance, framemem_allocator> terrainTlasDescs;
+
   if (terrainCount > 0) //-v1051
   {
     TIME_D3D_PROFILE(terrain);
+
+    if (buildTerrainTlas)
+    {
+      context_id->terrainAnchorPoint = context_id->terrainMiddlePoint;
+      terrainTlasDescs.reserve(terrainBlases.size());
+    }
 
     for (auto [blasIx, blas] : enumerate(terrainBlases))
     {
@@ -3660,6 +3774,15 @@ void build(ContextId context_id, const TMatrix &itm, const TMatrix4 &projTm, con
       desc.blasGpuAddress = eastl::get<0>(blas);
 
       instanceDescs.push_back(convert_instance(desc));
+
+      if (buildTerrainTlas)
+      {
+        // The terrain TLAS is anchored to terrainAnchorPoint, not the camera.
+        desc.transform.row0 = v_make_vec4f(1, 0, 0, origin.x - context_id->terrainAnchorPoint.x);
+        desc.transform.row1 = v_make_vec4f(0, 1, 0, 0);
+        desc.transform.row2 = v_make_vec4f(0, 0, 1, origin.y - context_id->terrainAnchorPoint.y);
+        terrainTlasDescs.push_back(convert_instance(desc));
+      }
     }
   }
 
@@ -3800,10 +3923,11 @@ void build(ContextId context_id, const TMatrix &itm, const TMatrix4 &projTm, con
     }
   }
 
+  if (buildTerrainTlas)
   {
     TIME_D3D_PROFILE(copy_to_tlas_terrain_upload);
     if (auto upload = lock_sbuffer<uint8_t>(context_id->tlasUploadTerrain.getBuf(), 0, 0, VBLOCK_WRITEONLY | VBLOCK_NOOVERWRITE))
-      copyHwInstancesCpu(upload.get(), instanceDescs.data() + terrainDescIndex, terrainBlases.size());
+      copyHwInstancesCpu(upload.get(), terrainTlasDescs.data(), terrainTlasDescs.size());
   }
 
   {
@@ -3898,6 +4022,7 @@ void build(ContextId context_id, const TMatrix &itm, const TMatrix4 &projTm, con
       .dagdpCount = uint32_t(dagdpBufferSize),
       .gpuGrassCount = uint32_t(gpuGrassBufferSize),
       .terrainCount = uint32_t(terrainBlases.size()),
+      .terrainBuilt = buildTerrainTlas,
       .fxCount = uint32_t(fxParticleRegion),
       .smokeTracerCount = uint32_t(smokeTracerBufferSize),
       .grassCounter = grassInstanceCount,
@@ -3937,10 +4062,11 @@ void build(ContextId context_id, const TMatrix &itm, const TMatrix4 &projTm, con
       CHECK_LOST_DEVICE_STATE();
     }
 
-    if (context_id->tlasTerrainValid)
+    if (context_id->tlasTerrainValid && buildTerrainTlas)
     {
       DA_PROFILE_TAG(build_tlas, "terrain: %d instances", (int)terrainBlases.size());
       fillTlas(context_id->tlasTerrain, context_id->tlasUploadTerrain.getBuf(), terrainBlases.size());
+      context_id->terrainDirty = false;
       CHECK_LOST_DEVICE_STATE();
     }
 
@@ -3963,6 +4089,10 @@ void build(ContextId context_id, const TMatrix &itm, const TMatrix4 &projTm, con
     debug::validate_tlas_instances(context_id, debugTlasSizes);
 #endif
 
+    // vk + NV 30xx crashes if voxel activity update
+    // is overlapped with tlas build so must happen before TLAS build
+    voxel_activity::update(context_id, camera_pos);
+
     d3d::build_top_acceleration_structures(tlasUpdate, tlasCount);
 
 #if DAGOR_DBGLEVEL > 0
@@ -3978,6 +4108,12 @@ void build(ContextId context_id, const TMatrix &itm, const TMatrix4 &projTm, con
   static int bvh_originVarId = get_shader_variable_id("bvh_origin");
   ShaderGlobal::set_float4(bvh_originVarId, camera_pos);
 
+  static int bvh_terrain_offsetVarId = get_shader_variable_id("bvh_terrain_offset");
+  ShaderGlobal::set_float4(bvh_terrain_offsetVarId, camera_pos.x - context_id->terrainAnchorPoint.x, camera_pos.y,
+    camera_pos.z - context_id->terrainAnchorPoint.y, 0);
+
+  // after the TLAS build: the grid origin var must match the bvh_origin just set above
+
   {
     static int bvh_impostor_start_offsetVarId = get_shader_variable_id("bvh_impostor_start_offset");
     static int bvh_impostor_end_offsetVarId = get_shader_variable_id("bvh_impostor_end_offset");
@@ -3991,31 +4127,14 @@ void build(ContextId context_id, const TMatrix &itm, const TMatrix4 &projTm, con
 
   debug::render_debug_context(context_id, debug_min_t);
 
-  ri::tidy_up_trees(context_id);
+  ri::tidy_up_rendinsts(context_id);
   dyn::tidy_up_skins(context_id);
 
   context_id->processDeathrow();
 
   static bool dumpRtStatsSetting = dgs_get_settings()->getBlockByNameEx("graphics")->getBool("bvhDumpMemoryStats", false);
   if (dumpRtStatsSetting || bvh_mem_log)
-  {
-    auto mb = [](int64_t v) { return int(v == 0 ? 0 : eastl::max((v + 1024 * 1024 - 1) / (1024 * 1024), (int64_t)1)); };
-    auto overhead = bvh::get_rt_memory_overhead(context_id);
-    logdbg("BVH RT memory overhead (real, RT-only)");
-    overhead.forEachCategory([](const eastl::string &) {},
-      [&](const RtMemoryOverhead::Item &it) {
-        if (it.note.empty())
-          logdbg("    %s / %s: %d MB", it.category.c_str(), it.sub.c_str(), mb(it.bytes));
-        else
-          logdbg("    %s / %s: %d MB  [%s]", it.category.c_str(), it.sub.c_str(), mb(it.bytes), it.note.c_str());
-      },
-      [&](const eastl::string &cat, int64_t sum) { logdbg("  = %s: %d MB", cat.c_str(), mb(sum)); });
-    logdbg("-------------------------");
-    logdbg("RT overhead total: %d MB", mb(overhead.total));
-    logdbg("BLAS total: %d MB  (x%d)", mb(overhead.blasTotalBytes), overhead.blasCount);
-    logdbg("Last-LOD BLAS (streaming floor): %d MB  (x%d)", mb(overhead.lastLodBlasBytes), overhead.lastLodBlasCount);
-    logdbg("-------------------------");
-  }
+    log_rt_memory_overhead(context_id);
 }
 
 void set_rigen_cpu_budget(int budget_us) { bvh_riGen_budget_us = budget_us; }
@@ -4052,7 +4171,7 @@ static struct BVHUpdateAtmosphereJob : public cpujobs::IJob
       }
     }
   }
-  const char *getJobName(bool &) const override { return "BVHUpdateAtmosphereJob"; }
+  const char *getJobName(bool &) const override { return DAPROFILER_STRING("BVHUpdateAtmosphereJob"); }
 } bvh_update_atmosphere_job;
 
 static void upload_atmosphere(ContextId context_id)
@@ -4138,9 +4257,52 @@ void bind_fom_textures(ContextId context_id, Texture *fom_sin, Texture *fom_cos,
     d3d::register_bindless_sampler(*fom_sampler), 0);
 }
 
+static void reg_game_textures(ContextId context_id)
+{
+  TIME_PROFILE(regGameTex);
+
+  auto regGameTex = [context_id](int var_id, bvh::Context::BindlessTexHolder &holder, uint32_t *size = nullptr) {
+    TEXTUREID texId = ShaderGlobal::get_tex(var_id);
+    if (holder.texId != texId)
+    {
+      holder.close(context_id);
+      holder.texId = texId;
+      if (auto texture = context_id->holdTexture(texId, holder.bindlessTexture); texture && size)
+      {
+        TextureInfo info;
+        texture->getinfo(info);
+        *size = info.w;
+      }
+    }
+  };
+
+  static int paint_details_texVarId = get_shader_variable_id("paint_details_tex", true);
+  static int grass_land_color_maskVarId = get_shader_variable_id("grass_land_color_mask", true);
+  static int dynamic_mfd_texVarId = get_shader_variable_id("dynamic_mfd_tex", true);
+  static int cache_tex0VarId = get_shader_variable_id("cache_tex0", true);
+  static int indirection_texVarId = get_shader_variable_id("indirection_tex", true);
+  static int cache_tex1VarId = get_shader_variable_id("cache_tex1", true);
+  static int cache_tex2VarId = get_shader_variable_id("cache_tex2", true);
+  static int last_clip_texVarId = get_shader_variable_id("last_clip_tex", true);
+  static int dynamic_decals_atlasVarId = get_shader_variable_id("dynamic_decals_atlas", true);
+
+  regGameTex(dynamic_mfd_texVarId, context_id->dynamic_mfd_texBindless);
+  regGameTex(paint_details_texVarId, context_id->paint_details_texBindless, &context_id->paintTexSize);
+  regGameTex(grass_land_color_maskVarId, context_id->grass_land_color_maskBindless);
+  regGameTex(cache_tex0VarId, context_id->cache_tex0Bindless);
+  regGameTex(indirection_texVarId, context_id->indirection_texBindless);
+  regGameTex(cache_tex1VarId, context_id->cache_tex1Bindless);
+  regGameTex(cache_tex2VarId, context_id->cache_tex2Bindless);
+  regGameTex(last_clip_texVarId, context_id->last_clip_texBindless);
+  regGameTex(dynamic_decals_atlasVarId, context_id->dynamic_decals_atlasBindless);
+}
+
 void bind_resources(ContextId context_id, int render_width)
 {
   G_ASSERT(context_id);
+
+  reg_game_textures(context_id);
+
   static int bvh_meta_countVarId = get_shader_variable_id("bvh_meta_count");
   static int bvh_metaVarId = get_shader_variable_id("bvh_meta");
   static int bvh_per_instance_dataVarId = get_shader_variable_id("bvh_per_instance_data");
@@ -4202,6 +4364,7 @@ void bind_resources(ContextId context_id, int render_width)
   ShaderGlobal::set_int(bvh_particles_validVarId, context_id->tlasParticlesValid ? 1 : 0);
   ShaderGlobal::set_int(bvh_lru_collision_validVarId, context_id->tlasLruCollisionValid ? 1 : 0);
   lru_collision::bind_resources(context_id);
+  voxel_activity::bind(context_id);
 
   {
     OSSpinlockScopedLock metaGuard(context_id->meshMetaAllocatorLock);
@@ -4286,6 +4449,8 @@ void on_before_unload_scene(ContextId context_id) { context_id->releaseAllBindle
 
 void on_before_settings_changed(ContextId context_id) { context_id->releaseAllBindlessTexHolders(); }
 
+void release_game_texture_holds(ContextId context_id) { context_id->releaseGameTextureHolds(); }
+
 void on_load_scene(ContextId context_id) { context_id->clearDeathrow(); }
 
 void on_scene_loaded(ContextId context_id)
@@ -4339,6 +4504,7 @@ void on_unload_scene(ContextId context_id)
   release_process_buffers(context_id);
 
   context_id->atmosphereDirty = true;
+  voxel_activity::on_unload_scene(context_id);
 
   context_id->instanceDescsCpu.clear();
   context_id->instanceDescsCpu.shrink_to_fit();
@@ -4407,11 +4573,10 @@ void on_cables_changed(Cables *cables, ContextId context_id) { cables::on_cables
 bool is_building(ContextId context_id)
 {
   Context::BvhObjectReadLock objectsGuard(context_id->objectsLock);
-  // objectsWithBakingOmm covers instances whose TLAS entry add_instances withholds while their OMM
-  // bakes -- they are not in halfBakedObjects, so without this a consumer could treat the BVH as ready
-  // with those instances missing.
+  // Active bakes cover instances withheld from the TLAS while their OMM bakes; those are not half-baked
+  // objects.
   return !context_id->halfBakedObjects.empty() || context_id->hasPendingObjectAddActions.load(dag::memory_order_relaxed) ||
-         !context_id->objectsWithBakingOmm.empty();
+         has_active_omm_bakes(context_id);
 }
 
 void set_grass_range(ContextId context_id, float range) { context_id->grassRange = range; }
@@ -4425,12 +4590,6 @@ void start_async_atmosphere_update(ContextId context_id, const Point3 &view_pos,
     context_id->atmosphereTexture =
       dag::create_array_tex(Context::atmTexWidth, Context::atmTexHeight, 2, TEXCF_DYNAMIC, 1, "bvh_atmosphere_tex", RESTAG_BVH);
     HANDLE_LOST_DEVICE_STATE(context_id->atmosphereTexture, );
-    {
-      d3d::SamplerInfo smpInfo;
-      smpInfo.address_mode_u = d3d::AddressMode::Wrap;
-      smpInfo.address_mode_v = d3d::AddressMode::Clamp;
-      ShaderGlobal::set_sampler(get_shader_variable_id("bvh_atmosphere_texture_samplerstate"), d3d::request_sampler(smpInfo));
-    }
     context_id->atmosphereDirty = true;
   }
 
@@ -4473,6 +4632,12 @@ void connect_dagdp(ContextId context_id, dagdp_connect_callback callback) { call
 void gpu_grass_make_meta(ContextId context_id, const GPUGrassBase &grass) { gpugrass::make_meta(context_id, grass); }
 
 void generate_gpu_grass_instances(ContextId context_id, bool has_grass) { gpugrass::generate_instances(context_id, has_grass); }
+
+void tell_active_dynamic_resources(ContextId context_id,
+  const eastl::vector_set<const DynamicRenderableSceneLodsResource *> &resources)
+{
+  dyn::tell_active_dynamic_resources(context_id, resources);
+}
 
 void gather_splinegen_instances(ContextId context_id, Sbuffer *vertex_buffer, eastl::vector<eastl::pair<uint32_t, MeshInfo>> &meshes,
   uint32_t instance_vertex_count, uint32_t &bvh_id)

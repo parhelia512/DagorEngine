@@ -6,7 +6,9 @@
 
 #include <graphEditor/graph_data.h>
 
-class GraphEditorPlg;
+#include "graph_edit_types.h"
+
+class GraphDocument;
 
 // Undo entry for a single node creation (drag-drop spawn). Holds a full Node snapshot so redo
 // re-inserts it with the same id and spawn position; the editor's global UndoSystem owns and
@@ -19,7 +21,7 @@ class UndoCreateNode : public UndoRedoObject
 public:
   DAG_DECLARE_NEW(midmem)
 
-  UndoCreateNode(GraphEditorPlg &plg, GraphData::Node node_snapshot);
+  UndoCreateNode(GraphDocument &doc, GraphData::Node node_snapshot);
 
   void restore(bool save_redo_data) override;
   void redo() override;
@@ -28,7 +30,7 @@ public:
   void get_description(String &s) override;
 
 private:
-  GraphEditorPlg &plugin;
+  GraphDocument &doc;
   GraphData::Node node;
 };
 
@@ -41,7 +43,7 @@ class UndoDeleteNodes : public UndoRedoObject
 public:
   DAG_DECLARE_NEW(midmem)
 
-  UndoDeleteNodes(GraphEditorPlg &plg, eastl::vector<GraphData::Node> removed_nodes, eastl::vector<GraphData::Edge> removed_edges);
+  UndoDeleteNodes(GraphDocument &doc, eastl::vector<GraphData::Node> removed_nodes, eastl::vector<GraphData::Edge> removed_edges);
 
   void restore(bool save_redo_data) override;
   void redo() override;
@@ -50,18 +52,9 @@ public:
   void get_description(String &s) override;
 
 private:
-  GraphEditorPlg &plugin;
+  GraphDocument &doc;
   eastl::vector<GraphData::Node> nodes;
   eastl::vector<GraphData::Edge> edges;
-};
-
-// A node id paired with a canvas position. Used by the move-undo entry and the plugin's position
-// helpers (commitNodeMoves / applyNodePositions).
-struct NodePos
-{
-  int nodeId;
-  float x;
-  float y;
 };
 
 // Undo entry for moving (dragging) one or more nodes. Records each moved node's old and new canvas
@@ -73,7 +66,7 @@ class UndoMoveNodes : public UndoRedoObject
 public:
   DAG_DECLARE_NEW(midmem)
 
-  UndoMoveNodes(GraphEditorPlg &plg, eastl::vector<NodePos> old_positions, eastl::vector<NodePos> new_positions);
+  UndoMoveNodes(GraphDocument &doc, eastl::vector<NodePos> old_positions, eastl::vector<NodePos> new_positions);
 
   void restore(bool save_redo_data) override;
   void redo() override;
@@ -82,7 +75,7 @@ public:
   void get_description(String &s) override;
 
 private:
-  GraphEditorPlg &plugin;
+  GraphDocument &doc;
   eastl::vector<NodePos> oldPositions;
   eastl::vector<NodePos> newPositions;
 };
@@ -93,7 +86,7 @@ class UndoCreateEdge : public UndoRedoObject
 public:
   DAG_DECLARE_NEW(midmem)
 
-  UndoCreateEdge(GraphEditorPlg &plg, const GraphData::Edge &created_edge);
+  UndoCreateEdge(GraphDocument &doc, const GraphData::Edge &created_edge);
 
   void restore(bool save_redo_data) override;
   void redo() override;
@@ -102,7 +95,7 @@ public:
   void get_description(String &s) override;
 
 private:
-  GraphEditorPlg &plugin;
+  GraphDocument &doc;
   GraphData::Edge edge;
 };
 
@@ -113,7 +106,7 @@ class UndoDeleteEdges : public UndoRedoObject
 public:
   DAG_DECLARE_NEW(midmem)
 
-  UndoDeleteEdges(GraphEditorPlg &plg, eastl::vector<GraphData::Edge> removed_edges);
+  UndoDeleteEdges(GraphDocument &doc, eastl::vector<GraphData::Edge> removed_edges);
 
   void restore(bool save_redo_data) override;
   void redo() override;
@@ -122,7 +115,7 @@ public:
   void get_description(String &s) override;
 
 private:
-  GraphEditorPlg &plugin;
+  GraphDocument &doc;
   eastl::vector<GraphData::Edge> edges;
 };
 
@@ -133,7 +126,7 @@ class UndoToggleEdgeMuted : public UndoRedoObject
 public:
   DAG_DECLARE_NEW(midmem)
 
-  UndoToggleEdgeMuted(GraphEditorPlg &plg, int edge_id, bool old_muted);
+  UndoToggleEdgeMuted(GraphDocument &doc, int edge_id, bool old_muted);
 
   void restore(bool save_redo_data) override;
   void redo() override;
@@ -142,25 +135,15 @@ public:
   void get_description(String &s) override;
 
 private:
-  GraphEditorPlg &plugin;
+  GraphDocument &doc;
   int edgeId;
   bool oldMuted;
-};
-
-// A canvas selection: the selected node ids and link (edge) ids, each kept sorted so two selections
-// compare as sets. imgui-node-editor owns one mixed selection, so nodes and links are undone together.
-struct GraphSelection
-{
-  eastl::vector<int> nodes;
-  eastl::vector<int> links;
-
-  bool operator==(const GraphSelection &) const = default;
 };
 
 // Undo entry for a selection change (nodes and/or links). Records the selection before and after the
 // change; restore reapplies the old set, redo the new. Selection lives in imgui-node-editor and its
 // select calls are valid only in-frame, so applying is deferred: the entry hands the target set to
-// plugin.applySelection, which the GraphPanel pushes to ne on its next render pass -- so a set
+// doc.applySelection, which the GraphPanel pushes to ne on its next render pass -- so a set
 // restored alongside re-added nodes or edges (same undo entry) reselects them once they exist again.
 // Deliberate selection changes record one of these alone; a change caused by an edit rides that
 // edit's entry.
@@ -169,7 +152,7 @@ class UndoSelection : public UndoRedoObject
 public:
   DAG_DECLARE_NEW(midmem)
 
-  UndoSelection(GraphEditorPlg &plg, GraphSelection old_selection, GraphSelection new_selection);
+  UndoSelection(GraphDocument &doc, GraphSelection old_selection, GraphSelection new_selection);
 
   void restore(bool save_redo_data) override;
   void redo() override;
@@ -178,7 +161,7 @@ public:
   void get_description(String &s) override;
 
 private:
-  GraphEditorPlg &plugin;
+  GraphDocument &doc;
   GraphSelection oldSelection;
   GraphSelection newSelection;
 };
@@ -187,13 +170,13 @@ private:
 // pattern (HeightmapLand/hmlEntity.h): snapshot the node's whole propertyValues vector -- old in the
 // ctor (before the edit applies), redo lazily on the first restore. Restoring the whole vector keeps
 // originally-absent properties absent, so a freshly-set value undoes back to its descriptor default.
-// The PropertiesPanel brackets each edit gesture with begin()/put/accept, so one gesture is one entry.
+// GraphDocument::setNodeProperty brackets each edit gesture, so one gesture is one entry.
 class UndoNodeProps : public UndoRedoObject
 {
 public:
   DAG_DECLARE_NEW(midmem)
 
-  UndoNodeProps(GraphEditorPlg &plg, int node_id);
+  UndoNodeProps(GraphDocument &doc, int node_id);
 
   void restore(bool save_redo_data) override;
   void redo() override;
@@ -202,41 +185,22 @@ public:
   void get_description(String &s) override;
 
 private:
-  GraphEditorPlg &plugin;
+  GraphDocument &doc;
   int nodeId;
   eastl::vector<eastl::pair<eastl::string, eastl::string>> oldProps;
   eastl::vector<eastl::pair<eastl::string, eastl::string>> redoProps;
 };
 
-// Snapshot of the graph-level settings edited in the PropertiesPanel with no node selected: output
-// directories, heightmap metadata, and the graph-default texture format. Compared as a whole for the
-// changed-guard.
-struct GraphSettings
-{
-  eastl::string renderDir;
-  eastl::string entityDir;
-  float heightmapScale = 0.0f;
-  float heightmapMin = 0.0f;
-  float heightmapCellSize = 0.0f;
-  int graphTextureWidth = 0;
-  int graphTextureHeight = 0;
-  int graphTextureDepth = 0;
-  eastl::string graphTextureType;
-  eastl::string graphTextureWrap;
-
-  bool operator==(const GraphSettings &) const = default;
-};
-
 // Undo entry for a graph-level settings change. Follows the UndoNodeProps pattern, snapshotting the
 // GraphData scalar fields rather than a node: old held explicitly (snapshotted before the edit), redo
-// captured lazily on the first restore. setGraphSettings re-pushes heightmap params and regenerates,
+// captured lazily on the first restore. applyGraphSettings re-pushes heightmap params and regenerates,
 // so the landscape preview and texgen follow the restored values.
 class UndoGraphSettings : public UndoRedoObject
 {
 public:
   DAG_DECLARE_NEW(midmem)
 
-  UndoGraphSettings(GraphEditorPlg &plg, GraphSettings old_settings);
+  UndoGraphSettings(GraphDocument &doc, GraphSettings old_settings);
 
   void restore(bool save_redo_data) override;
   void redo() override;
@@ -245,7 +209,7 @@ public:
   void get_description(String &s) override;
 
 private:
-  GraphEditorPlg &plugin;
+  GraphDocument &doc;
   GraphSettings oldSettings;
   GraphSettings redoSettings;
 };
@@ -258,7 +222,7 @@ class UndoPinComment : public UndoRedoObject
 public:
   DAG_DECLARE_NEW(midmem)
 
-  UndoPinComment(GraphEditorPlg &plg, int node_id, int pin_index, eastl::string old_comment, eastl::string new_comment);
+  UndoPinComment(GraphDocument &doc, int node_id, int pin_index, eastl::string old_comment, eastl::string new_comment);
 
   void restore(bool save_redo_data) override;
   void redo() override;
@@ -267,32 +231,22 @@ public:
   void get_description(String &s) override;
 
 private:
-  GraphEditorPlg &plugin;
+  GraphDocument &doc;
   int nodeId;
   int pinIndex;
   eastl::string oldComment;
   eastl::string newComment;
 };
 
-// A block (group) node's id paired with its width/height. Used by the block-resize undo and the
-// plugin's applyBlockSizes / recordBlockResizes.
-struct BlockSize
-{
-  int nodeId;
-  float width;
-  float height;
-};
-
 // Undo entry for resizing one or more block (group) nodes by dragging a border. Records each block's
-// old and new size; one entry per resize drag. restore/redo write the sizes into graphData -- drawBlockNode
-// supplies them to ne each frame, so the block re-sizes without an explicit ne push. Block size is
+// old and new size; one entry per resize drag. restore/redo go through applyBlockSizes. Block size is
 // display-only, so applying a resize does not regenerate.
 class UndoBlockResize : public UndoRedoObject
 {
 public:
   DAG_DECLARE_NEW(midmem)
 
-  UndoBlockResize(GraphEditorPlg &plg, eastl::vector<BlockSize> old_sizes, eastl::vector<BlockSize> new_sizes);
+  UndoBlockResize(GraphDocument &doc, eastl::vector<BlockSize> old_sizes, eastl::vector<BlockSize> new_sizes);
 
   void restore(bool save_redo_data) override;
   void redo() override;
@@ -301,7 +255,7 @@ public:
   void get_description(String &s) override;
 
 private:
-  GraphEditorPlg &plugin;
+  GraphDocument &doc;
   eastl::vector<BlockSize> oldSizes;
   eastl::vector<BlockSize> newSizes;
 };

@@ -12,6 +12,8 @@
 #include <scene/dag_objsToPlace.h>
 #include <scene/dag_physMat.h>
 #include <sceneRay/dag_sceneRay.h>
+#include <gameRes/dag_collisionResource.h>
+#include <perfMon/dag_visClipMesh.h>
 #include <osApiWrappers/dag_progGlobals.h>
 #include <osApiWrappers/dag_direct.h>
 #include <landMesh/lmeshManager.h>
@@ -25,6 +27,11 @@
 #include <de3_entityFilter.h>
 #include <oldEditor/de_workspace.h>
 #include <EditorCore/ec_wndGlobal.h>
+#include <EditorCore/ec_IEditorCore.h>
+#include <shaders/dag_DebugPrimitivesVbuffer.h>
+#include <math/dag_color.h>
+
+using editorcore_extapi::dagRender;
 
 #include <gameRes/dag_gameResSystem.h>
 #include <shaders/dag_rendInstRes.h>
@@ -99,7 +106,6 @@ static String levelFileName;
 static int inEditorGvId = -1;
 
 static int frameBlkId = -1;
-static int globalConstBlkId = -1;
 
 static FastNameMap req_res_list;
 static void add_resource_cb(const char *resname) { req_res_list.addNameId(resname); }
@@ -187,7 +193,6 @@ AcesScene::AcesScene() :
 
   inEditorGvId = ::get_shader_glob_var_id("in_editor");
   frameBlkId = ShaderGlobal::getBlockId("global_frame");
-  globalConstBlkId = ShaderGlobal::getBlockId("global_const_block");
 
   generic_rendinstgen_service_set_callbacks(&custom_get_height, NULL, &custom_update_pregen_pos_y);
 
@@ -479,9 +484,8 @@ void AcesScene::loadLevel(const char *bindump)
 
   setupMirroring();
 
-  // Make sure FRT is not missing and loaded properly
-  if (!frtDump.isDataValid())
-    DAEDITOR3.conWarning("Static collision (FRT) is absent!");
+  if (!hasStaticScene())
+    DAEDITOR3.conWarning("Static collision (FRT or SCol) is absent!");
 
   // Make sure there is no lmesh in static scene collision.
 
@@ -575,7 +579,7 @@ void AcesScene::clear()
   release_managed_tex(levelMapTexId);
   levelMapTexId = BAD_TEXTUREID;
 
-  frtDump.unloadData();
+  clearStaticScene();
   lrtCollision.clear();
 
   rendinst::clearRIGen();
@@ -586,6 +590,7 @@ void AcesScene::clear()
   closeFixedClip();
   hasWater = false;
 
+  dagRender->deleteDebugPrimitivesVbuffer(splinesVbuf);
   clear_and_shrink(splines);
 }
 
@@ -651,6 +656,28 @@ bool AcesScene::bdlCustomLoad(unsigned bindump_id, int tag, IGenLoad &crd, dag::
     return res;
   }
 
+  if (tag == _MAKE4C('SCol'))
+  {
+    debug("[load]static collision");
+    try
+    {
+      staticColl = new CollisionResource(crd, -1, crd.getTargetName());
+    }
+    catch (...)
+    {
+      DEBUG_CTX("failed to load the static collision");
+      staticColl = nullptr;
+      return false;
+    }
+    if (staticColl->getAllNodes().empty())
+    {
+      DEBUG_CTX("failed to load the static collision");
+      staticColl = nullptr;
+      return false;
+    }
+    return true;
+  }
+
   if (tag == _MAKE4C('tm24'))
   {
     rendinst::tmInst12x32bit = true;
@@ -683,6 +710,7 @@ bool AcesScene::bdlCustomLoad(unsigned bindump_id, int tag, IGenLoad &crd, dag::
   }
   if (tag == _MAKE4C('hspl'))
   {
+    dagRender->deleteDebugPrimitivesVbuffer(splinesVbuf);
     splines.resize(crd.readInt());
     SmallTab<Point3, TmpmemAlloc> pts;
 
@@ -762,7 +790,6 @@ void AcesScene::beforeRender()
 
   setupShaderVars();
   ShaderGlobal::setBlock(frameBlkId, ShaderGlobal::LAYER_FRAME);
-  ShaderGlobal::setBlock(globalConstBlkId, ShaderGlobal::LAYER_GLOBAL_CONST);
 
   if (lmeshRenderer)
   {
@@ -1014,7 +1041,6 @@ void AcesScene::render(bool render_rs)
   static int water_level_gvid = get_shader_variable_id("water_level", true);
   ShaderGlobal::set_float(water_level_gvid, waterLevel);
   ShaderGlobal::setBlock(frameBlkId, ShaderGlobal::LAYER_FRAME);
-  ShaderGlobal::setBlock(globalConstBlkId, ShaderGlobal::LAYER_GLOBAL_CONST);
 
   clipmap->startUAVFeedback();
   ShaderGlobal::set_int_fast(inEditorGvId, 0);
@@ -1123,34 +1149,49 @@ void AcesScene::renderShadowsVsm()
   ShaderGlobal::set_int_fast(inEditorGvId, 1);
 }
 
-void AcesScene::renderSplineCurve(const BezierSpline3d &spl, bool opaque_pass)
+void AcesScene::rebuildSplineVbuf()
 {
   static const int RENDER_SPLINE_POINTS = 1000;
-  real splineLen = spl.getLength();
-  E3DCOLOR col(70, 170, 255, 255);
-  int i = 0;
-  if (!opaque_pass)
-    col = E3DCOLOR(col.r * 3 / 5, col.g * 3 / 5, col.b * 4 / 5, 144);
+  static const int RENDER_SPLINE_POINTS_MIN = 10;
+  static const real RENDER_SPLINE_POINTS_LENGTH_COEFF = 5.f;
 
-  Tab<Point3> splinePoly(tmpmem);
-  splinePoly.resize(RENDER_SPLINE_POINTS + 1);
-  for (real t = 0.0; t < splineLen; t += splineLen / RENDER_SPLINE_POINTS, ++i)
-    splinePoly[i] = spl.get_pt(t);
+  splinesVbuf = dagRender->newDebugPrimitivesVbuffer("bin_scene_splines");
 
-  draw_cached_debug_line(splinePoly.data(), i, col);
+  const E3DCOLOR col(70, 170, 255, 255);
+
+  dagRender->beginDebugLinesCacheToVbuffer(*splinesVbuf);
+  for (int i = 0; i < splines.size(); ++i)
+  {
+    const BezierSpline3d &spl = splines[i].spl;
+    const real splineLen = spl.getLength();
+
+    int renderSplinePoints = int(splineLen * RENDER_SPLINE_POINTS_LENGTH_COEFF);
+    if (renderSplinePoints > RENDER_SPLINE_POINTS)
+      renderSplinePoints = RENDER_SPLINE_POINTS;
+    else if (renderSplinePoints < RENDER_SPLINE_POINTS_MIN)
+      renderSplinePoints = RENDER_SPLINE_POINTS_MIN;
+
+    const real step = splineLen / renderSplinePoints;
+    Point3 prevPt = spl.get_pt(0.f);
+    for (real t = step; t < splineLen; t += step)
+    {
+      const Point3 curPt = spl.get_pt(t);
+      dagRender->addLineToVbuffer(*splinesVbuf, prevPt, curPt, col);
+      prevPt = curPt;
+    }
+  }
+  dagRender->endDebugLinesCacheToVbuffer(*splinesVbuf);
 }
 void AcesScene::renderSplines()
 {
-  ::begin_draw_cached_debug_lines(true, false, true);
-  ::set_cached_debug_lines_wtm(TMatrix::IDENT);
-  for (int i = 0; i < splines.size(); ++i)
-    renderSplineCurve(splines[i].spl, false);
-  ::end_draw_cached_debug_lines();
+  if (splines.empty())
+    return;
+  if (!splinesVbuf)
+    rebuildSplineVbuf();
 
-  ::begin_draw_cached_debug_lines();
-  for (int i = 0; i < splines.size(); ++i)
-    renderSplineCurve(splines[i].spl, true);
-  ::end_draw_cached_debug_lines();
+  dagRender->renderLinesFromVbuffer(*splinesVbuf, /*z_test*/ true, /*z_write*/ false, /*z_func_less*/ true,
+    Color4(3.f / 5, 3.f / 5, 4.f / 5, 144.f / 255));
+  dagRender->renderLinesFromVbuffer(*splinesVbuf, /*z_test*/ true, /*z_write*/ false, /*z_func_less*/ false, Color4(1, 1, 1, 1));
 }
 void AcesScene::renderSplinePoints(float max_dist)
 {
@@ -1230,6 +1271,7 @@ void AcesScene::beforeD3DReset()
   if (clipmap)
     clipmap->beforeReset();
   lod_grid_vdata_before_reset_device();
+  dagRender->deleteDebugPrimitivesVbuffer(splinesVbuf);
 }
 
 void AcesScene::afterD3DReset(bool full_reset)
@@ -1272,11 +1314,39 @@ bool AcesScene::tracerayNormalizedHeightmap(const Point3 &p0, const Point3 &dir,
 }
 
 
+bool AcesScene::hasStaticScene() const { return staticColl || frtDump.isDataValid(); }
+
+void AcesScene::clearStaticScene()
+{
+  frtDump.unloadData();
+  staticColl = nullptr;
+}
+
+void AcesScene::drawStaticSceneClip(const Point3 &view_pos, float max_dist) const
+{
+  if (const CollisionResource *coll = staticColl.get())
+  {
+    // the stream draws what it is handed, so max_dist bounds the walk
+    bbox3f box;
+    v_bbox3_init_by_bsph(box, v_ldu(&view_pos.x), v_splats(max_dist));
+    ::render_visclipmesh_stream([coll, &box](const VisClipMeshEmit &emit) {
+      coll->visitTrianglesInBox(box, CollisionNode::PHYS_COLLIDABLE, [&emit](vec3f a, vec3f b, vec3f c, int mat, int) {
+        emit(a, b, c, mat);
+        return false; //-V657 draw everything the box holds
+      });
+    });
+  }
+  else
+    ::render_visclipmesh(frtDump, view_pos);
+}
+
 bool AcesScene::tracerayNormalizedStaticScene(const Point3 &p, const Point3 &dir, real &t, int *out_pmid, Point3 *out_norm)
 {
+  int pmid = -1, &dest_pmid = out_pmid ? *out_pmid : pmid;
+  if (staticColl)
+    return staticColl->traceRay(TMatrix::IDENT, p, dir, t, out_norm, dest_pmid);
   if (!frtDump.isDataValid())
     return false;
-  int pmid = -1, &dest_pmid = out_pmid ? *out_pmid : pmid;
   return (out_norm ? frtDump.tracerayNormalized(p, dir, t, dest_pmid, *out_norm) : frtDump.tracerayNormalized(p, dir, t, dest_pmid)) >=
          0;
 }

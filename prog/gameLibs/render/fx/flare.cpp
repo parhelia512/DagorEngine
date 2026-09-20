@@ -97,7 +97,7 @@ void Flare::apply(Texture *src_tex)
   {
     d3d::resource_barrier({src_tex, RB_RO_SRV | RB_STAGE_PIXEL, 0, 0});
     d3d::set_render_target({}, DepthAccess::RW, {{tmpFlareTex->getTex2D(), 0, 0}});
-    d3d::clearview(CLEAR_DISCARD_TARGET, 0, 0.f, 0);
+    d3d::clearview(DISCARD_TARGET, 0, 0.f, 0);
 
     // compute texel offset
     d3d::get_target_size(targetWidth, targetHeight);
@@ -116,7 +116,7 @@ void Flare::apply(Texture *src_tex)
   {
     TIME_D3D_PROFILE(feature);
     d3d::set_render_target({}, DepthAccess::RW, {{flareTex->getTex2D(), 0, 0}});
-    d3d::clearview(CLEAR_DISCARD_TARGET, 0, 0.f, 0);
+    d3d::clearview(DISCARD_TARGET, 0, 0.f, 0);
     flareFeature->getMat()->set_color4_param(texelOffsetVarId, texelOffset);
     flareFeature->getMat()->set_texture_param(flareSrcVarId, tmpFlareTex->getTexId());
     flareFeature->getMat()->set_sampler_param(flareSrc_samplerstateVarId, flareTexSampler);
@@ -132,7 +132,7 @@ void Flare::apply(Texture *src_tex)
 
     // Phase 1. horizontal. flareTex_1 -> flareTex_0
     d3d::set_render_target({}, DepthAccess::RW, {{tmpFlareTex->getTex2D(), 0, 0}});
-    d3d::clearview(CLEAR_DISCARD_TARGET, 0, 0.f, 0);
+    d3d::clearview(DISCARD_TARGET, 0, 0.f, 0);
     du = 1.0f / targetWidth;
     dv = 0.0f;
     flareBlur->getMat()->set_color4_param(duv1duv2VarId, Color4(du * 1.0f, dv * 1.0f, du * 2.0f, dv * 2.0f));
@@ -145,7 +145,7 @@ void Flare::apply(Texture *src_tex)
 
     // Phase 2. vertical. flareTex_0 -> flareTex_1
     d3d::set_render_target({}, DepthAccess::RW, {{flareTex->getTex2D(), 0, 0}});
-    d3d::clearview(CLEAR_DISCARD_TARGET, 0, 0.f, 0);
+    d3d::clearview(DISCARD_TARGET, 0, 0.f, 0);
     du = 0.0f;
     dv = 1.0f / targetHeight;
     flareBlur->getMat()->set_color4_param(duv1duv2VarId, Color4(du * 1.0f, dv * 1.0f, du * 2.0f, dv * 2.0f));

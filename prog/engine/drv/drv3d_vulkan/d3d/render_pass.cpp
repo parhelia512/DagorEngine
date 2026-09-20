@@ -20,6 +20,7 @@
 #include "backend/cmd/renderpass.h"
 #include "backend/cmd/resources.h"
 #include "validation.h"
+#include <renderPassValidation.h>
 
 using namespace drv3d_vulkan;
 
@@ -49,8 +50,11 @@ struct LocalAccessorWithoutState
 };
 } // namespace
 
-NO_UBSAN d3d::RenderPass *d3d::create_render_pass(const RenderPassDesc &rp_desc)
+d3d::RenderPass *d3d::create_render_pass(const RenderPassDesc &rp_desc)
 {
+  if (!validate_render_pass_desc(rp_desc))
+    return nullptr;
+
   LocalAccessorWithoutState la;
   WinAutoLock lk(Globals::Mem::mutex);
 
@@ -59,7 +63,7 @@ NO_UBSAN d3d::RenderPass *d3d::create_render_pass(const RenderPassDesc &rp_desc)
   return (d3d::RenderPass *)ret;
 }
 
-NO_UBSAN void d3d::delete_render_pass(d3d::RenderPass *rp)
+void d3d::delete_render_pass(d3d::RenderPass *rp)
 {
   // can happen from external thread by overall deletion rules, so must be processed in backend
   LocalAccessorWithoutState la;
@@ -67,7 +71,7 @@ NO_UBSAN void d3d::delete_render_pass(d3d::RenderPass *rp)
   la.ctx.dispatchCmd<CmdDestroyRenderPassResource>({(RenderPassResource *)rp});
 }
 
-NO_UBSAN void d3d::begin_render_pass(d3d::RenderPass *drv_rp, const RenderPassArea area, dag::ConstSpan<RenderPassTarget> targets)
+void d3d::begin_render_pass(d3d::RenderPass *drv_rp, const RenderPassArea area, dag::ConstSpan<RenderPassTarget> targets)
 {
   D3D_CONTRACT_ASSERTF(drv_rp, "vulkan: can't start null render pass");
   using Bind = StateFieldRenderPassTarget;

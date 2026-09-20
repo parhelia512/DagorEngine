@@ -9,6 +9,7 @@ return {
   showAppReview = function() {}
   isDownloadedFromGooglePlay = function() {return false}
   getStartDeepLinkParams = function() {return ""}
+  getStartDeepLinkUrl = function() {return ""}
   getPackageName = function() {return ""}
   getPackageVersion = function() {return ""}
   getApiVersion = function() {return -1}

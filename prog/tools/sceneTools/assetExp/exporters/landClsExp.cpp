@@ -68,16 +68,17 @@ public:
     for (int i = 0; i < a.props.blockCount(); i++)
       if (a.props.getBlock(i)->getBlockNameId() == nid_obj_plant_generate)
       {
-        const char *densMap = a.props.getBlock(i)->getStr("densityMap", NULL);
-        if (!densMap)
-          continue;
-
-        DagorAsset *tm_a = get_asset_by_name(a.getMgr(), densMap, tifmask_atype);
-        if (!tm_a)
-          continue;
-        SimpleString fn(tm_a->getTargetFilePath());
-        if (find_value_idx(files, fn) < 0)
-          files.push_back(fn);
+        // a block may list several densityMap params and processAssetBlk() fans them out into one generation each,
+        // so all of them are build inputs while getStr() sees only the first
+        const DataBlock &b = *a.props.getBlock(i);
+        dblk::iterate_params_by_name_and_type(b, "densityMap", DataBlock::TYPE_STRING, [&](int param_idx) {
+          DagorAsset *tm_a = get_asset_by_name(a.getMgr(), b.getStr(param_idx), tifmask_atype);
+          if (!tm_a)
+            return;
+          SimpleString fn(tm_a->getTargetFilePath());
+          if (find_value_idx(files, fn) < 0)
+            files.push_back(fn);
+        });
       }
   }
 
@@ -470,7 +471,11 @@ public:
 
   void __stdcall getAssetRefs(DagorAsset &a, Tab<Ref> &refs) override
   {
-    LandClassExporter::processAssetBlk(a.props, a.getMgr(), refs, false, a.getName(), nullptr);
+    // processAssetBlk() rewrites the blk it is handed, so it gets a copy like exportAsset() gives it:
+    // the props are the asset's own, and whoever reads them next must not see them depend on refs having been gathered
+    DataBlock blk;
+    blk = a.props;
+    LandClassExporter::processAssetBlk(blk, a.getMgr(), refs, false, a.getName(), nullptr);
   }
 };
 

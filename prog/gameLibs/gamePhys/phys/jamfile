@@ -13,8 +13,13 @@ AddIncludes =
   $(Root)/prog/gameLibs/publicInclude
 ;
 
+AllSrcFolder =
+  .
+  rendInstDestr
+;
+
 Sources = ;
-AutoscanBuildLists . : *.cpp : Sources ;
+AutoscanBuildLists $(AllSrcFolder) : *.cpp : Sources ;
 
 if $(UseApex) = yes {
   CPPopt += -DENABLE_APEX ;

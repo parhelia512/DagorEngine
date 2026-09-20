@@ -1,0 +1,14 @@
+// daNetGame wrapper over the giVerifier replay capture shaders
+// as they must read gbuffer properly
+hlsl {
+  #define GI_VERIFY_METALNESS(g) ((g).metalness)
+  #define GI_VERIFY_REFLECTANCE(g) ((g).reflectance)
+}
+
+// the DNG gbuffer unpack reads emission_decode_color_map and
+// packed_gbuf_normals from the global_frame block;
+macro PROJECT_GI_VERIFY_GBUFFER_SUPPORT()
+  supports global_frame;
+endmacro
+
+include "gi_verify_capture.dshl"

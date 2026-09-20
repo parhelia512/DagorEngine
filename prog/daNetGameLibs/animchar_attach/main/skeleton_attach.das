@@ -57,6 +57,12 @@ def skeleton_attach_destroy_attach_es(evt : Event;
     remove_skeleton_attach(eid, animchar)
 
 
+[es(tag=gameClient, on_appear, REQUIRE=attachedToParent, REQUIRE=animchar__usePrecalculatedData)]
+def reset_use_of_precalculated_data_on_attach_es(evt : Event;
+                                                 var animchar__usePrecalculatedData : bool&)
+  animchar__usePrecalculatedData = false
+
+
 //  Client: item's es - remap after entity will be replicated
 
 def skeleton_attach_remap_impl(attach_animchar : AnimcharBaseComponent;

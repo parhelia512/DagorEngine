@@ -148,6 +148,21 @@ protected:
     static constexpr uint32_t group_count = max_value + 1;
     static constexpr uint32_t bits = 3;
 
+    const char *typeName() const
+    {
+      switch (type)
+      {
+        case MemoryTypes::DeviceBuffer: return "DeviceBuffer";
+        case MemoryTypes::DeviceRenderTarget: return "DeviceRenderTarget";
+        case MemoryTypes::DeviceTexture: return "DeviceTexture";
+        case MemoryTypes::DeviceTextureMSAA: return "DeviceTextureMSAA";
+        case MemoryTypes::DeviceBufferHostWriteCombine: return "DeviceBufferHostWriteCombine";
+        case MemoryTypes::HostWriteBack: return "HostWriteBack";
+        case MemoryTypes::HostWriteCombine: return "HostWriteCombine";
+      }
+      return "Unknown";
+    }
+
     void setAnyWriteCombinedGPUMemory(const FeatureSet &fs)
     {
       if (fs.isCacheCoherentUMA)
@@ -505,6 +520,8 @@ public:
 
   uint64_t getDeviceLocalAvailablePoolBudget() const { return getAvailablePoolBudget(device_local_memory_pool); }
 
+  uint64_t getDeviceLocalCurrentUsage() const { return poolStates[device_local_memory_pool].CurrentUsage; }
+
   uint64_t getDeviceLocalPhysicalLimit() const { return getPhysicalLimit(device_local_memory_pool); }
 
 protected:
@@ -526,6 +543,8 @@ public:
 
   uint64_t getHostLocalAvailablePoolBudget() const { return getAvailablePoolBudget(host_local_memory_pool); }
 
+  uint64_t getHostLocalCurrentUsage() const { return poolStates[host_local_memory_pool].CurrentUsage; }
+
   uint64_t getHostLocalPhysicalLimit() const { return getPhysicalLimit(host_local_memory_pool); }
 
 protected:
@@ -535,8 +554,6 @@ protected:
   {
     return poolBudgetLevels[host_local_memory_pool][as_uint(level)];
   }
-
-  auto getDeviceLocalCurrentUsage() const { return poolStates[device_local_memory_pool].CurrentUsage; }
 
   void recordCommittedResourceAllocated(uint32_t size, bool is_gpu)
   {

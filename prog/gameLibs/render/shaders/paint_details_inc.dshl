@@ -93,6 +93,9 @@ macro GET_PAINT_COLOR(stage)
 
     half3 get_paint_color(uint seed, float3 painting_palette_row)
     {
+    #if RENDINST_IMPOSTOR_VOXEL
+      return float3((uint)painting_palette_row.x, (uint)painting_palette_row.z, 0);
+    #else
       uint2 dim;
       paint_details_tex.GetDimensions(dim.x, dim.y);
       dim.x /= 2;
@@ -109,6 +112,7 @@ macro GET_PAINT_COLOR(stage)
         paintColor = params_validation_debug_color.rgb * params_validation_debug_color.a;
 
       return paintColor;
+    #endif
     }
   }
 endmacro
@@ -141,15 +145,25 @@ macro USE_RANDOM_PAINTING_COLOR()
   {
     half3 get_paint_color(float3 center_world_pos)
     {
+    #if RENDINST_IMPOSTOR_VOXEL
+      float3 paint_palette_row = get_painting_palette_row();
+      return float3((uint)paint_palette_row.x, (uint)paint_palette_row.z, 0);
+    #else
       float2 paintUV = painting_color_uv(center_world_pos, get_painting_palette_row(), paint_details_tex_inv_h);
       return get_paint_color(paintUV);
+    #endif
     }
 
     half3 get_paint_color(float3 center_world_pos, uint seed)
     {
+    #if RENDINST_IMPOSTOR_VOXEL
+      float3 paint_palette_row = get_painting_palette_row();
+      return float3((uint)paint_palette_row.x, (uint)paint_palette_row.z, 0);
+    #else
       if (!seed)
         return get_paint_color(center_world_pos);
       return get_paint_color(seed, get_painting_palette_row());
+    #endif
     }
   }
 
@@ -157,11 +171,24 @@ macro USE_RANDOM_PAINTING_COLOR()
   {
     hlsl(ps)
     {
+    #if RENDINST_IMPOSTOR_VOXEL
+      void modify_paint_color(float3 paint_color, half weight, inout half3 diffuse_color, out uint pal_row, out uint pal_index, out half3 coloring)
+      {
+        pal_row = uint(paint_color.x);
+        pal_index = uint(paint_color.y);
+        float paintWeight = get_painting_color_influence();
+        half t = half(weight * (paintWeight > 1.0f ? paintWeight - 1.0f : paintWeight));
+        coloring = luminance(diffuse_color) * t;
+        const half AVERAGE_PAINT_COLOR = 0.25;
+        diffuse_color = diffuse_color * (1 - t) + (diffuse_color - luminance(diffuse_color)) * t * AVERAGE_PAINT_COLOR;
+      }
+    #else
       half3 modify_paint_color(float3 paint_color, half weight)
       {
         float paintWeight = get_painting_color_influence();
         return lerp(half3(1.0, 1.0, 1.0), paint_color, half(weight * (paintWeight > 1.0f ? paintWeight - 1.0f : paintWeight)));
       }
+    #endif
     }
   }
 endmacro

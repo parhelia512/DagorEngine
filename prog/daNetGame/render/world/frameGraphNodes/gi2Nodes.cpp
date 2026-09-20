@@ -14,6 +14,61 @@
 #include <render/world/frameGraphHelpers.h>
 #include <drv/3d/dag_renderTarget.h>
 
+// giVerifier replay capture (render/giVerifierCapture.h) impl
+#if DAGOR_DBGLEVEL > 0
+#include <render/giVerifierCapture.h>
+#include <util/dag_console.h>
+#include <util/dag_string.h>
+#include <generic/dag_tab.h>
+#include <shaders/dag_shaders.h>
+#include <ioSys/dag_dataBlock.h>
+#include <osApiWrappers/dag_direct.h>
+#include <daECS/core/entityManager.h>
+#include "main/level.h"
+
+static struct
+{
+  bool pending = false;
+  String dir, riDump, levelBin;
+} gi_verify_request;
+
+static void gi_verify_perform_capture(const CameraParams &cam, int w, int h)
+{
+  gi_verify_request.pending = false;
+  String levelBin = gi_verify_request.levelBin;
+  if (levelBin.empty())
+  {
+    const char *blkPath = g_entity_mgr->getOr(get_current_level_eid(), ECS_HASH("level__blk"), "");
+    DataBlock lblk;
+    if (*blkPath && dblk::load(lblk, blkPath, dblk::ReadFlag::ROBUST))
+      levelBin = lblk.getStr("levelBin", "");
+  }
+  Color4 fromSun = ShaderGlobal::get_float4(get_shader_variable_id("from_sun_direction", true));
+  Point3 dirToSun(-fromSun.r, -fromSun.g, -fromSun.b);
+  bool ok = gi_verify::save_capture(gi_verify_request.dir.str(), cam.viewItm, cam.noJitterPersp, w, h, dirToSun,
+    gi_verify_request.riDump.str(), levelBin.str(), &gi_verify::write_env_exr);
+  console::print_d("gi_save_verify_capture: %s -> %s (ri dump: %s, level bin: %s)", ok ? "saved" : "FAILED",
+    gi_verify_request.dir.str(), gi_verify_request.riDump.str(), levelBin.str());
+}
+
+static bool gi_verify_console_handler(const char *argv[], int argc)
+{
+  int found = 0;
+  CONSOLE_CHECK_NAME("render", "gi_save_verify_capture", 1, 4)
+  {
+    gi_verify_request.dir = argc > 1 ? argv[1] : "gi_verify_capture";
+    gi_verify_request.riDump = argc > 2 ? argv[2] : "ri_collisions.bin";
+    gi_verify_request.levelBin = argc > 3 ? argv[3] : "";
+    if (!dd_file_exists(gi_verify_request.riDump.str()))
+      console::print_d("note: ri dump '%s' does not exist - run 'ri.dump_coll %s' first, the capture fails without it",
+        gi_verify_request.riDump.str(), gi_verify_request.riDump.str());
+    gi_verify_request.pending = true;
+  }
+  return found;
+}
+REGISTER_CONSOLE_HANDLER(gi_verify_console_handler);
+#endif
+
 dafg::NodeHandle makeGiCalcNode()
 {
   return dafg::register_node("gi_before_frame_lit", DAFG_PP_NODE_SRC, [](dafg::Registry registry) {
@@ -115,7 +170,6 @@ dafg::NodeHandle makeGiFeedbackNode()
         registry.read("combined_shadows_sampler").blob<d3d::SamplerHandle>().bindToShaderVar("combined_shadows_samplerstate");
       }
 
-      eastl::optional<dafg::VirtualResourceHandle<BaseTexture, true, false>> currentAmbientHndl;
       if (wr.hasFeature(FeatureRenderFlags::DEFERRED_LIGHT) && shader_exists("deferredLight"))
       {
         registry.readTexture("current_ambient").atStage(dafg::Stage::PS_OR_CS).bindToShaderVar("current_ambient");
@@ -160,6 +214,11 @@ dafg::NodeHandle makeGiFeedbackNode()
 
       const bool allowUpdateFromGbuf = !camera_in_camera::is_lens_render_active();
       wr.daGI2->afterFrameRendered(flags, allowUpdateFromGbuf);
+
+#if DAGOR_DBGLEVEL > 0
+      if (gi_verify_request.pending && wr.hasFeature(FeatureRenderFlags::FULL_DEFERRED))
+        gi_verify_perform_capture(currentCameraHndl.ref(), resolution.get().x, resolution.get().y);
+#endif
 
       bvh_unbind_resources();
     };

@@ -48,6 +48,7 @@ public:
     int call_depth, int &out_flags);
   int deleteElement(Element *elem);
   int detachElement(Element *elem);
+  void releaseXmb(Element *elem);
 
   void clear();
 
@@ -94,8 +95,6 @@ private:
   void matchStatefulChildren(dag::Vector<Element *> &elem_children, dag::Vector<ChildSlot, framemem_allocator> &slots);
   void collectChildrenToReuse(dag::Vector<Element *> &elem_children, dag::Vector<ChildSlot, framemem_allocator> &slots);
   bool removeExpiredFadeOutChildren(Element *elem);
-
-  void releaseXmbOnDetach(Element *elem);
 
 public:
   Element *root = nullptr;

@@ -398,9 +398,9 @@ shader dagi_irradiance_grid_spatial_filter_gather_cs
       for (uint i = 0; i < 6; ++i)
       {
         //int3 ofs = int3(uint3(i,i/3,i/9)%3) - 1;
-        int3 ofs = i/2 == uint3(0,1,2) ? int(i&1)*2-1 : 0;
+        int3 ofs = select(i/2 == uint3(0,1,2), int(i&1)*2-1, 0);
         int3 absCoord1 = ofs + absCoord;
-        absCoord1 = uint3(absCoord1 - dagi_irrad_grid_abs_coord_lt(clip)) < dagi_irrad_grid_get_clip_size().xxy ? absCoord1 : absCoord;
+        absCoord1 = select(uint3(absCoord1 - dagi_irrad_grid_abs_coord_lt(clip)) < dagi_irrad_grid_get_clip_size().xxy, absCoord1, absCoord);
         if (any(absCoord1 != absCoord))
         {
           uint3 c = dagi_irrad_grid_wrapped_coord_from_abs_coord(absCoord1) + uint3(0,0,1+clip*dagi_irrad_grid_get_clip_size_with_border());

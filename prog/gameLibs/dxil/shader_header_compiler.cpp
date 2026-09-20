@@ -344,30 +344,41 @@ ExtensionOpCheckResult check_amd_extension_meta_slot(const D3D12_SHADER_INPUT_BI
                                                               : ExtensionOpCheckResult::ValidExtension;
 }
 
-void extract_implicit_cb_size_from_reflection(ShaderHeaderCompileResult &result, const ComPtr<ID3D12ShaderReflection> &shaderInfo,
+void validate_implicit_cb_size_from_reflection(ShaderHeaderCompileResult &result, const ComPtr<ID3D12ShaderReflection> &shaderInfo,
   const D3D12_SHADER_DESC &desc)
 {
-  result.header.maxConstantCount = 0;
-  for (UINT cbi = 0; cbi < desc.ConstantBuffers; ++cbi)
+  for (UINT bri = 0; bri < desc.BoundResources; ++bri)
   {
-    auto constBufferInfo = shaderInfo->GetConstantBufferByIndex(cbi);
-    if (!constBufferInfo)
-      continue;
-    D3D12_SHADER_BUFFER_DESC constBufferDesc = {};
-    constBufferInfo->GetDesc(&constBufferDesc);
-    if (strcmp(constBufferDesc.Name, "$Globals") != 0)
-      continue;
-    const auto numRegisters = (constBufferDesc.Size + 15) / 16;
-    static constexpr uint32_t maxRegisters = 4096;
-    if (numRegisters > maxRegisters)
+    D3D12_SHADER_INPUT_BIND_DESC bindDesc{};
+    shaderInfo->GetResourceBindingDesc(bri, &bindDesc);
+    if (bindDesc.Type == D3D_SIT_CBUFFER && bindDesc.BindPoint == 0)
     {
-      result.isOk = false;
-      String msg(256, "dxil::compileHeaderFromShader: $Globals constant buffer size (%u regs) is too big (max: %d regs)\n",
-        numRegisters, maxRegisters);
-      result.logMessage += msg;
+      auto *constBufferInfo = shaderInfo->GetConstantBufferByName(bindDesc.Name);
+      G_ASSERTF(constBufferInfo, "dxil::compileHeaderFromShader: b0 constant buffer found in bindings, but not by name");
+      D3D12_SHADER_BUFFER_DESC constBufferDesc = {};
+      [[maybe_unused]] auto hr = constBufferInfo->GetDesc(&constBufferDesc);
+      G_ASSERTF(SUCCEEDED(hr), "Unable to reflect the constbuffer desc");
+      const auto numRegisters = (constBufferDesc.Size + 15) / 16;
+      static constexpr uint32_t maxRegisters = 4096;
+      if (numRegisters > maxRegisters)
+      {
+        result.isOk = false;
+        String msg(256, "dxil::compileHeaderFromShader: b0 constant buffer size (%u regs) is too big (max: %d regs)\n", numRegisters,
+          maxRegisters);
+        result.logMessage += msg;
+      }
+      if (numRegisters > result.header.implicitCbufRegCount)
+      {
+        result.isOk = false;
+        String msg(256,
+          "dxil::compileHeaderFromShader: b0 constant buffer size (%u regs) is bigger than expected allocation of %d regs. If "
+          "you "
+          "use hlsl-hardcoded register arrays, specify sentinel registers.\n",
+          numRegisters, result.header.implicitCbufRegCount);
+        result.logMessage += msg;
+      }
+      break;
     }
-    result.header.maxConstantCount = numRegisters;
-    break;
   }
 }
 } // namespace
@@ -391,7 +402,7 @@ ShaderHeaderCompileResult dxil::compileHeaderFromReflectionData(ShaderStage stag
   }
 
   result.header.shaderType = static_cast<uint16_t>(stage);
-  result.header.maxConstantCount = max_const_count;
+  result.header.implicitCbufRegCount = max_const_count;
   result.header.bonesConstantsUsed = -1; // @TODO: remove
 
   result.isOk = true;
@@ -745,7 +756,7 @@ ShaderHeaderCompileResult dxil::compileHeaderFromReflectionData(ShaderStage stag
     debug("PS output mask %08x", result.header.inOutSemanticMask);
   }
 
-  extract_implicit_cb_size_from_reflection(result, shaderInfo, desc);
+  validate_implicit_cb_size_from_reflection(result, shaderInfo, desc);
 
   if ((ShaderStage::COMPUTE == stage) || (ShaderStage::MESH == stage) || (ShaderStage::AMPLIFICATION == stage))
   {

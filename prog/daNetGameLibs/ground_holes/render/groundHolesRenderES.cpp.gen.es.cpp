@@ -221,7 +221,7 @@ static ecs::EntitySystemDesc ground_holes_render_when_event_es_es_desc
   empty_span(),
   empty_span(),
   empty_span(),
-  ecs::EventSetBuilder<AfterDeviceReset,
+  ecs::EventSetBuilder<EventAfterDeviceReset,
                        EventLevelLoaded>::build(),
   0
 ,"render");

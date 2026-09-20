@@ -362,6 +362,16 @@ static SQInteger is_dlss_rr_supported(HSQUIRRELVM vm)
   return 1;
 }
 
+static SQInteger is_dlss_nr_supported(HSQUIRRELVM vm)
+{
+  nv::Streamline *streamline = nullptr;
+  d3d::driver_command(Drv3dCommand::GET_STREAMLINE, &streamline);
+  bool supported = streamline && streamline->isDlssNRSupported() == nv::SupportState::Supported;
+
+  sq_pushbool(vm, supported);
+  return 1;
+}
+
 static SQInteger get_low_latency_modes(HSQUIRRELVM vm)
 {
   int m = lowlatency::get_supported_latency_modes();
@@ -497,6 +507,12 @@ static SQInteger rt_support_error_code_sq(HSQUIRRELVM vm)
   return 1;
 }
 
+static SQInteger is_rt_supported_on_disk_sq(HSQUIRRELVM vm)
+{
+  sq_pushbool(vm, is_rt_supported_on_disk());
+  return 1;
+}
+
 static SQInteger is_nvidia_gpu(HSQUIRRELVM vm)
 {
   bool isNvidia = d3d::get_driver_desc().info.vendor == GpuVendor::NVIDIA;
@@ -569,7 +585,9 @@ void bind_script(SqModules *moduleMgr)
     .SquirrelFunc("is_hfr_supported", is_hfr_supported, 1)
     .SquirrelFunc("is_rt_supported", is_rt_supported_sq, 1)
     .SquirrelFunc("rt_support_error_code", rt_support_error_code_sq, 1)
+    .SquirrelFunc("is_rt_supported_on_disk", is_rt_supported_on_disk_sq, 1)
     .SquirrelFunc("is_dlss_rr_supported", is_dlss_rr_supported, 1)
+    .SquirrelFunc("is_dlss_nr_supported", is_dlss_nr_supported, 1)
     /**/;
   moduleMgr->addNativeModule("videomode", aTable);
 }

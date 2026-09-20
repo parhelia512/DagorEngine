@@ -14,7 +14,7 @@
 
 #include <cstdio>
 
-CONSOLE_BOOL_VAL("gpu_profiler", gpu_pipeline_stats, DAGOR_DBGLEVEL > 0,
+CONSOLE_BOOL_VAL("gpu_profiler", gpu_pipeline_stats, false,
   "Enable GPU pipeline statistics queries to get number of triangles for indirect draw calls.");
 
 namespace gpu_profiler
@@ -76,9 +76,13 @@ bool init()
 
   gpuStorage = eastl::make_unique<QueriesStorage>();
   gpuStorage->gpuFreq = gpuFreq;
+
+  // not all drivers require obj preallocate for profiling queries
+  const bool preFillQueries = !d3d::get_driver_code().is(d3d::vulkan);
   for (uint32_t i = 0; i < GPU_MAX_QUERIES; ++i)
   {
-    d3d::driver_command(Drv3dCommand::TIMESTAMPISSUE, &gpuStorage->queries[i]);
+    if (preFillQueries)
+      d3d::driver_command(Drv3dCommand::TIMESTAMPISSUE, &gpuStorage->queries[i]);
     gpuStorage->queryResultsInternal[i] = ~0ULL;
     gpuStorage->queryResults[i] = &gpuStorage->queryResultsInternal[i];
   }

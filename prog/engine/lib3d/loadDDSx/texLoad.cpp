@@ -248,8 +248,7 @@ static TexLoadRes load_ddsx_faces_3d(BaseTexture *tex, const ddsx::Header &hdr, 
 {
   DDSX_LD_ITERATE_MIPS_START(crd, hdr, skip_lev, start_lev, rd_lev, hdr.depth, 1)
   {
-    const bool update_directly =
-      d3d::get_driver_code().is(d3d::metal) || (d3d::is_in_device_reset_now() && !d3d::get_driver_code().is(d3d::vulkan));
+    const bool update_directly = d3d::is_in_device_reset_now() && !d3d::get_driver_code().is(d3d::vulkan);
 
     d3d::ResUpdateBuffer *rub_slice = !update_directly ? nullptr : d3d::allocate_update_buffer_for_tex(tex, tex_level, 0);
     char *rub_data = rub_slice ? d3d::get_update_buffer_addr_for_write(rub_slice) : nullptr;

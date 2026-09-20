@@ -53,7 +53,6 @@ bbox3f getRIGenExtraOverallInstancesWorldBbox(int res_idx);
 
 const char *getRIGenExtraName(uint32_t res_idx);
 void iterateRIExtraMap(const eastl::fixed_function<sizeof(void *) * 4, void(int, const char *)> &cb);
-int getRIExtraMapSize();
 
 int getRIGenExtraInstancesCount();
 
@@ -230,11 +229,18 @@ void before_clear();
 struct RiGenCollidableData;
 using riex_collidable_t = dag::RelocatableFixedVector<riex_handle_t, 64, true, framemem_allocator>;
 void gatherRIGenExtraCollidable(riex_collidable_t &out_handles, const BBox3 &box, bool read_lock);
+// same walk, but a pool set rejects objects inside the grid query: gathering everything and
+// filtering after pays for handles nobody wants. bit (pool - first_pool) set = pool passes
+void gatherRIGenExtraCollidable(riex_collidable_t &out_handles, const BBox3 &box, uint32_t first_pool,
+  dag::ConstSpan<uint32_t> pool_bits, bool read_lock);
 void gatherRIGenExtraCollidable(riex_collidable_t &out_handles, const BSphere3 &sphere, bool read_lock);
 void gatherRIGenExtraCollidable(riex_collidable_t &out_handles, const Capsule &capsule, bool read_lock);
 void gatherRIGenExtraCollidable(riex_collidable_t &out_handles, const TMatrix &tm, const BBox3 &box, bool read_lock);
 void gatherRIGenExtraCollidable(riex_collidable_t &out_handles, const Point3 &p0, const Point3 &dir, float len, bool read_lock);
+// Both overloads append; several boxes can accumulate into one container.
 void gatherRIGenExtraCollidableMin(riex_collidable_t &out_handles, bbox3f_cref box, float min_bsph_rad);
+// Heap-backed variant for results that cross threads (riex_collidable_t is framemem).
+void gatherRIGenExtraCollidableMin(Tab<riex_handle_t> &out_handles, bbox3f_cref box, float min_bsph_rad);
 void gatherRIGenExtraCollidableMax(riex_collidable_t &out_handles, const BSphere3 &sphere, float max_bsph_rad);
 void gatherRIGenExtraCollidable(dag::RelocatableFixedVector<RiGenCollidableData, 64, true, framemem_allocator> &out_data,
   const Point3 &pos, float radius, bool read_lock);
@@ -266,7 +272,7 @@ void gatherRIGenExtraRenderableNotCollidable(bbox3f_cref box, bool fast, SceneSe
 bool gatherRIGenExtraBboxes(const RiGenVisibility *main_visibility, mat44f_cref volume_box,
   eastl::function<void(mat44f_cref, const BBox3 &, const char *)> callback);
 
-uint32_t getRiGenExtraResCount();
+int getRiGenExtraResCount();
 bool isRiGenExtraResIdValid(int id);
 
 template <class CB>

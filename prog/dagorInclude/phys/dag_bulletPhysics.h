@@ -345,7 +345,7 @@ public:
   bool fetchSimRes(bool wait, PhysBody *destroying_body = nullptr);
   void clear();
 
-  const char *getJobName(bool &) const override { return "bullet_phys_simulate"; }
+  const char *getJobName(bool &) const override { return DAPROFILER_STRING("bullet_phys_simulate"); }
 
   virtual void doJob();
 

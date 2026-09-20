@@ -194,7 +194,7 @@ AnimationGraph::~AnimationGraph()
 void AnimationGraph::setInitState(const DataBlock &b)
 {
   del_it(initState);
-  if (b.paramCount() + b.blockCount())
+  if (b.paramCount() + b.blockCount() != 0)
   {
     initState = new DataBlock;
     *initState = b;
@@ -3347,7 +3347,7 @@ void AnimBlendCtrl_Hub::checkHasLoop(AnimationGraph &graph,
     return;
 
   visited_nodes[id] = true;
-  for (const Ptr<IAnimBlendNode> child : nodes)
+  for (const Ptr<IAnimBlendNode> &child : nodes)
   {
     int childId = child->getAnimNodeId();
     if (childId == -1)
@@ -3418,7 +3418,7 @@ void AnimBlendCtrl_Blender::checkHasLoop(AnimationGraph &graph,
     return;
 
   visited_nodes[id] = true;
-  for (const Ptr<IAnimBlendNode> child : node)
+  for (const Ptr<IAnimBlendNode> &child : node)
   {
     int childId = child->getAnimNodeId();
     if (childId == -1)
@@ -3528,7 +3528,7 @@ void AnimBlendCtrl_BinaryIndirectSwitch::checkHasLoop(AnimationGraph &graph,
     return;
 
   visited_nodes[id] = true;
-  for (const Ptr<IAnimBlendNode> child : node)
+  for (const Ptr<IAnimBlendNode> &child : node)
   {
     int childId = child->getAnimNodeId();
     if (childId == -1)

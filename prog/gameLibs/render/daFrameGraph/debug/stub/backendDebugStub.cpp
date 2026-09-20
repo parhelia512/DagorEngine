@@ -24,7 +24,6 @@ void validation_remove_resource(const D3dResource *) {}
 void validation_of_external_resources_duplication(const IdSparseIndexedMapping<intermediate::ResourceIndex, ExternalResource> &,
   const IdSparseIndexedMapping<intermediate::ResourceIndex, intermediate::DebugResourceName> &)
 {}
-void validate_global_state(const InternalRegistry &, NodeNameId) {}
 
 } // namespace dafg
 

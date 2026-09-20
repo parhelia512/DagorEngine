@@ -511,16 +511,19 @@ inline void gpu_objects::gpu_object_placer_visibility_ecs_query(ecs::EntityManag
 }
 static constexpr ecs::ComponentDesc gpu_object_placer_invalidate_ecs_query_comps[] =
 {
-//start of 4 rw components at [0]
+//start of 7 rw components at [0]
   {ECS_HASH("gpu_object_placer__filled"), ecs::ComponentTypeInfo<bool>()},
   {ECS_HASH("gpu_object_placer__buffer_offset"), ecs::ComponentTypeInfo<int>()},
   {ECS_HASH("gpu_object_placer__distance_emitter_buffer_size"), ecs::ComponentTypeInfo<int>()},
-  {ECS_HASH("gpu_object_placer__decal_buffer_size"), ecs::ComponentTypeInfo<int>()}
+  {ECS_HASH("gpu_object_placer__decal_buffer_size"), ecs::ComponentTypeInfo<int>()},
+  {ECS_HASH("gpu_object_placer__buffer_size"), ecs::ComponentTypeInfo<int>()},
+  {ECS_HASH("gpu_object_placer__on_rendinst_geometry_count"), ecs::ComponentTypeInfo<int>()},
+  {ECS_HASH("gpu_object_placer__on_terrain_geometry_count"), ecs::ComponentTypeInfo<int>()}
 };
 static ecs::CompileTimeQueryDesc gpu_object_placer_invalidate_ecs_query_desc
 (
   "gpu_objects::gpu_object_placer_invalidate_ecs_query",
-  make_span(gpu_object_placer_invalidate_ecs_query_comps+0, 4)/*rw*/,
+  make_span(gpu_object_placer_invalidate_ecs_query_comps+0, 7)/*rw*/,
   empty_span(),
   empty_span(),
   empty_span());
@@ -537,6 +540,9 @@ inline void gpu_objects::gpu_object_placer_invalidate_ecs_query(ecs::EntityManag
             , ECS_RW_COMP(gpu_object_placer_invalidate_ecs_query_comps, "gpu_object_placer__buffer_offset", int)
             , ECS_RW_COMP(gpu_object_placer_invalidate_ecs_query_comps, "gpu_object_placer__distance_emitter_buffer_size", int)
             , ECS_RW_COMP(gpu_object_placer_invalidate_ecs_query_comps, "gpu_object_placer__decal_buffer_size", int)
+            , ECS_RW_COMP(gpu_object_placer_invalidate_ecs_query_comps, "gpu_object_placer__buffer_size", int)
+            , ECS_RW_COMP(gpu_object_placer_invalidate_ecs_query_comps, "gpu_object_placer__on_rendinst_geometry_count", int)
+            , ECS_RW_COMP(gpu_object_placer_invalidate_ecs_query_comps, "gpu_object_placer__on_terrain_geometry_count", int)
             );
 
         }while (++comp != compE);

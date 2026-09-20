@@ -30,7 +30,7 @@ static ecs::EntitySystemDesc init_ri_color_override_es_es_desc
   make_span(init_ri_color_override_es_comps+0, 3)/*ro*/,
   empty_span(),
   empty_span(),
-  ecs::EventSetBuilder<OnLevelLoaded,
+  ecs::EventSetBuilder<EventRenderSceneLoaded,
                        ecs::EventEntityCreated,
                        ecs::EventComponentsAppear>::build(),
   0

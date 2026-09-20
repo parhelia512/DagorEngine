@@ -6,6 +6,7 @@
 
 #include <drv/3d/dag_resId.h>
 #include <3d/dag_ringCPUTextureLock.h>
+#include <3d/dag_resPtr.h>
 #include <3d/dag_textureIDHolder.h>
 #include <shaders/dag_postFxRenderer.h>
 #include <generic/dag_tab.h>
@@ -72,7 +73,7 @@ protected:
   Point3 physDetailsCurOrigin;
   RingCPUTextureLock ringTextures;
   TextureIDHolder groundPhysDetailsTex;
-  TextureIDHolderWithVar GPUgroundPhysDetailsTex;
+  UniqueTexWithShaderVar GPUgroundPhysDetailsTex;
   Tab<float> loadedDisplacement;
   int forceUpdateCounter = 0;
 };
@@ -147,7 +148,7 @@ protected:
   Point3 physDetailsCurOrigin;
   RingCPUTextureLock ringTextures;
   TextureIDHolder groundPhysDetailsTex;
-  TextureIDHolderWithVar GPUgroundPhysDetailsTex;
+  UniqueTexWithShaderVar GPUgroundPhysDetailsTex;
   Tab<float> loadedPuddles;
   int forceUpdateCounter = 0;
 };

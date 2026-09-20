@@ -331,11 +331,6 @@ void HeightmapShadows::init(int w_, int cascades_cnt, float dist0_, float scale_
   {
     heightmap_shadow.close();
     heightmap_shadow = dag::create_array_tex(w_, w_, cascades_cnt, TEXCF_UNORDERED | texFmt, 1, "heightmap_shadow", RESTAG_SHADOW);
-    {
-      d3d::SamplerInfo smpInfo;
-      smpInfo.address_mode_u = smpInfo.address_mode_v = smpInfo.address_mode_w = d3d::AddressMode::Wrap;
-      ShaderGlobal::set_sampler(get_shader_variable_id("heightmap_shadow_samplerstate", true), d3d::request_sampler(smpInfo));
-    }
   }
   if (w_ != w)
   {

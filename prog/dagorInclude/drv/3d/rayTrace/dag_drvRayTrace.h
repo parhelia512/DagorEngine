@@ -263,7 +263,8 @@ struct RaytraceGeometryInstanceDescription
     NONE = 0x00,
     /// Disable any culling of triangles during BLAS traversal of this instance.
     TRIANGLE_CULL_DISABLE = 0x01,
-    /// Invert winding for culling calculation of triangles during BLAS traversal of this instance.
+    /// Invert triangle facing during BLAS traversal of this instance.
+    /// Affects both culling and the facing reported to hit shaders.
     TRIANGLE_CULL_FLIP_WINDING = 0x02,
     FORCE_OPAQUE = 0x04,
     FORCE_NO_OPAQUE = 0x08,

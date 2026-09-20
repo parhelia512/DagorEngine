@@ -66,8 +66,11 @@ shader sparks_ps, sparks_thermal
     blend_src = one; blend_dst = one;
     blend_asrc = one; blend_adst = one;
 
-    hlsl(ps) {
+    hlsl {
       #define SPARKS_DEBUG_RENDER_ENABLED 1
+      #define SPARKS_DEBUG_OUTLINE_PIXELS 3
+    }
+    hlsl(ps) {
       #include "fx_debug_color.hlsli"
     }
   }
@@ -213,6 +216,11 @@ shader sparks_ps, sparks_thermal
       float pixBorderSize = pixWorldSize * PIX_BORDER_AA;
       float ySize = max(p.width, pixBorderSize);
       float xSize = max(ySize, min(ps.motionScaleMax, ps.motionScale * velLen) * velDot);
+#if SPARKS_DEBUG_RENDER_ENABLED
+      float padding = pixWorldSize * SPARKS_DEBUG_OUTLINE_PIXELS * 2;
+      ySize += padding;
+      xSize += padding;
+#endif
       float3 worldPos = wpos + sideVec * vPos.x * xSize + upVec * vPos.y * ySize;
 
       float4 projPos = mul(float4(worldPos, 1.0), gparams.globtm);

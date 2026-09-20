@@ -46,9 +46,6 @@ void TextureModule::init()
   d3d::SamplerInfo samplerInfo;
   samplerInfo.filter_mode = d3d::FilterMode::Point;
   pointSamplerHandle = d3d::request_sampler(samplerInfo);
-
-  // Making the initial data collection for plugs
-  collect();
 }
 
 void TextureModule::shutdown() { shutdownImpl(); }
@@ -354,16 +351,6 @@ void TextureModule::rebuildFilteredList()
     ++filteredCount;
     filteredMemorySize += getTextureMemorySize(textures[name]);
   }
-}
-
-void TextureModule::initializeFilteredTextures()
-{
-  filteredTextures.clear();
-
-  for (const auto &[textureName, textureData] : textures)
-    filteredTextures.push_back(textureName);
-
-  rebuildFilteredList();
 }
 
 void TextureModule::recalculateStatistics()

@@ -7,7 +7,7 @@
 #include <ecs/render/updateStageRender.h>
 #include <animChar/dag_animCharacter2.h>
 #include <render/world/global_vars.h>
-#include <render/world/cameraParams.h>
+#include <render/cameraParams.h>
 
 dafg::NodeHandle create_dynamic_mirror_prepass_node(DynamicMirrorRenderer &mirror_renderer)
 {

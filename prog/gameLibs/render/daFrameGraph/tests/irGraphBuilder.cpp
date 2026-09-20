@@ -7,14 +7,18 @@
 #include <frontend/validityInfo.h>
 #include <frontend/nameResolver.h>
 #include <frontend/irGraphBuilder.h>
+#include <frontend/multiplexingInternal.h>
 #include <backend/intermediateRepresentation.h>
 #include <id/idRange.h>
 #include <render/daFrameGraph/multiplexing.h>
 #include <render/daFrameGraph/resourceCreation.h>
 #include <render/daFrameGraph/detail/projectors.h>
 #include <render/daFrameGraph/detail/resourceType.h>
+#include <render/daFrameGraph/detail/rtti.h>
 #include <drv/3d/dag_samplerHandle.h>
 #include <catch2/catch_test_macros.hpp>
+
+#include "testRuntime.h"
 
 
 namespace
@@ -71,7 +75,8 @@ struct IrGraphBuilderFixture
     const auto resCount = registry.knownNames.nameCount<dafg::ResNameId>();
     dafg::IrGraphBuilder::NodesChanged nodesChanged(nodeCount, true);
     dafg::IrGraphBuilder::ResourcesChanged resourcesChanged(resCount, true);
-    auto changes = builder->build(graph, extents, extents, dafg::intermediate::Mapping{}, resourcesChanged, nodesChanged);
+    auto changes =
+      builder->build(graph, extents, extents, dafg::intermediate::Mapping{}, resourcesChanged, resourcesChanged, nodesChanged);
     lastMapping = graph.calculateMapping();
     return changes;
   }
@@ -82,7 +87,54 @@ struct IrGraphBuilderFixture
     const auto resCount = registry.knownNames.nameCount<dafg::ResNameId>();
     dafg::IrGraphBuilder::NodesChanged nodesChanged(nodeCount, false);
     dafg::IrGraphBuilder::ResourcesChanged resourcesChanged(resCount, false);
-    auto changes = builder->build(graph, extents, extents, lastMapping, resourcesChanged, nodesChanged);
+    auto changes = builder->build(graph, extents, extents, lastMapping, resourcesChanged, resourcesChanged, nodesChanged);
+    lastMapping = graph.calculateMapping();
+    return changes;
+  }
+
+  dafg::IrGraphBuilder::Changes rebuildWithNodesAdded(std::initializer_list<dafg::NodeNameId> node_ids,
+    std::initializer_list<dafg::ResNameId> lifetimes_changed_ids)
+  {
+    const auto nodeCount = registry.knownNames.nameCount<dafg::NodeNameId>();
+    const auto resCount = registry.knownNames.nameCount<dafg::ResNameId>();
+    dafg::IrGraphBuilder::NodesChanged nodesChanged(nodeCount, false);
+    for (const auto nodeId : node_ids)
+    {
+      validityInfo.nodeValid.set(nodeId, true);
+      nodesChanged.set(nodeId, true);
+    }
+    {
+      FRAMEMEM_REGION;
+      dafg::NameResolver::NodesChanged resolverNodesChanged(nodeCount, false);
+      for (const auto nodeId : node_ids)
+        resolverNodesChanged.set(nodeId, true);
+      nameRes.update(resolverNodesChanged);
+    }
+    dafg::IrGraphBuilder::ResourcesChanged resourcesChanged(resCount, false);
+    dafg::IrGraphBuilder::ResourcesChanged lifetimesChanged(resCount, false);
+    for (const auto resId : lifetimes_changed_ids)
+      lifetimesChanged.set(resId, true);
+    auto changes = builder->build(graph, extents, extents, lastMapping, resourcesChanged, lifetimesChanged, nodesChanged);
+    lastMapping = graph.calculateMapping();
+    return changes;
+  }
+
+  dafg::IrGraphBuilder::Changes rebuildWithNodesRemoved(std::initializer_list<dafg::NodeNameId> node_ids,
+    std::initializer_list<dafg::ResNameId> lifetimes_changed_ids)
+  {
+    const auto nodeCount = registry.knownNames.nameCount<dafg::NodeNameId>();
+    const auto resCount = registry.knownNames.nameCount<dafg::ResNameId>();
+    dafg::IrGraphBuilder::NodesChanged nodesChanged(nodeCount, false);
+    for (const auto nodeId : node_ids)
+    {
+      validityInfo.nodeValid.set(nodeId, false);
+      nodesChanged.set(nodeId, true);
+    }
+    dafg::IrGraphBuilder::ResourcesChanged resourcesChanged(resCount, false);
+    dafg::IrGraphBuilder::ResourcesChanged lifetimesChanged(resCount, false);
+    for (const auto resId : lifetimes_changed_ids)
+      lifetimesChanged.set(resId, true);
+    auto changes = builder->build(graph, extents, extents, lastMapping, resourcesChanged, lifetimesChanged, nodesChanged);
     lastMapping = graph.calculateMapping();
     return changes;
   }
@@ -95,11 +147,32 @@ struct IrGraphBuilderFixture
     dafg::IrGraphBuilder::NodesChanged nodesChanged(nodeCount, false);
     nodesChanged.set(node_id, true);
     dafg::IrGraphBuilder::ResourcesChanged resourcesChanged(resCount, false);
-    auto changes = builder->build(graph, extents, extents, lastMapping, resourcesChanged, nodesChanged);
+    auto changes = builder->build(graph, extents, extents, lastMapping, resourcesChanged, resourcesChanged, nodesChanged);
     lastMapping = graph.calculateMapping();
     return changes;
   }
 
+  dafg::IrGraphBuilder::Changes rebuildWithDeclarationsChanged(std::initializer_list<dafg::NodeNameId> node_ids,
+    std::initializer_list<dafg::ResNameId> res_ids)
+  {
+    const auto nodeCount = registry.knownNames.nameCount<dafg::NodeNameId>();
+    const auto resCount = registry.knownNames.nameCount<dafg::ResNameId>();
+    dafg::IrGraphBuilder::NodesChanged nodesChanged(nodeCount, false);
+    for (const auto nodeId : node_ids)
+      nodesChanged.set(nodeId, true);
+    dafg::IrGraphBuilder::ResourcesChanged resourcesChanged(resCount, false);
+    for (const auto resId : res_ids)
+      resourcesChanged.set(resId, true);
+    dafg::IrGraphBuilder::ResourcesChanged lifetimesChanged(resCount, false);
+    auto changes = builder->build(graph, extents, extents, lastMapping, resourcesChanged, lifetimesChanged, nodesChanged);
+    lastMapping = graph.calculateMapping();
+    return changes;
+  }
+
+  dafg::ResNameId resourceId(const char *res_name) const
+  {
+    return registry.knownNames.getNameId<dafg::ResNameId>(registry.knownNames.root(), res_name);
+  }
 
   dafg::NodeNameId addNode(const char *name, dafg::SideEffects side_effects = dafg::SideEffects::External)
   {
@@ -405,6 +478,222 @@ TEST_CASE("removing node leaves clean sentinel", "[irGraphBuilder]")
   CHECK(dstFound);
 }
 
+TEST_CASE("a node inserted into a branch leaves the nodes scheduled before it untouched", "[irGraphBuilder][incremental]")
+{
+  FRAMEMEM_REGION;
+  IrGraphBuilderFixture f;
+
+  const auto pb = f.addNodeCreatingResource("producer_b", "tex_b");
+  const auto pa = f.addNodeCreatingResource("producer_a", "tex_a");
+  const auto mod = f.addNodeModifyingResource("modifier_a", "tex_a", dafg::SideEffects::None);
+  const auto ra = f.addNodeReadingResource("reader_a", "tex_a");
+  const auto texA = f.registry.knownNames.getNameId<dafg::ResNameId>(f.registry.knownNames.root(), "tex_a");
+  const auto texB = f.registry.knownNames.getNameId<dafg::ResNameId>(f.registry.knownNames.root(), "tex_b");
+  f.registry.nodes[pa].readResources.insert(texB);
+  f.registry.nodes[pa].resourceRequests[texB] = f.registry.nodes[ra].resourceRequests[texA];
+  f.depData.resourceLifetimes[texB].readers.push_back(pa);
+  f.finalize();
+  f.validityInfo.nodeValid.set(mod, false);
+  f.build();
+
+  const auto slotOf = [&f](dafg::NodeNameId node) { return f.lastMapping.mapNode(node, dafg::intermediate::MultiplexingIndex{0}); };
+  const auto slots = eastl::array{slotOf(pb), slotOf(pa)};
+
+  const auto changes = f.rebuildWithNodesAdded({mod}, {texA});
+  CHECK((eastl::array{slotOf(pb), slotOf(pa)} == slots));
+  CHECK_FALSE(changes.irNodesChanged[slotOf(pb)]);
+  CHECK(changes.irNodesChanged[slotOf(mod)]);
+  CHECK(f.graph.nodes[slotOf(pa)].predecessors.contains(slotOf(pb)));
+  CHECK(f.graph.nodes[slotOf(ra)].predecessors.contains(slotOf(mod)));
+}
+
+TEST_CASE("a new reader of two branches keeps the slots of both branches", "[irGraphBuilder][incremental]")
+{
+  FRAMEMEM_REGION;
+  IrGraphBuilderFixture f;
+
+  const auto pa = f.addNodeCreatingResource("producer_a", "tex_a");
+  const auto ra = f.addNodeReadingResource("reader_a", "tex_a");
+  const auto pb = f.addNodeCreatingResource("producer_b", "tex_b");
+  const auto rb = f.addNodeReadingResource("reader_b", "tex_b");
+  const auto both = f.addNodeReadingResource("reader_ab", "tex_a");
+  const auto texA = f.registry.knownNames.getNameId<dafg::ResNameId>(f.registry.knownNames.root(), "tex_a");
+  const auto texB = f.registry.knownNames.getNameId<dafg::ResNameId>(f.registry.knownNames.root(), "tex_b");
+  f.registry.nodes[both].readResources.insert(texB);
+  f.registry.nodes[both].resourceRequests[texB] = f.registry.nodes[both].resourceRequests[texA];
+  f.depData.resourceLifetimes[texB].readers.push_back(both);
+  f.finalize();
+  f.validityInfo.nodeValid.set(both, false);
+  f.build();
+
+  const auto slotOf = [&f](dafg::NodeNameId node) { return f.lastMapping.mapNode(node, dafg::intermediate::MultiplexingIndex{0}); };
+  const auto slots = eastl::array{slotOf(pa), slotOf(ra), slotOf(pb), slotOf(rb)};
+
+  const auto changes = f.rebuildWithNodesAdded({both}, {texA, texB});
+  CHECK((eastl::array{slotOf(pa), slotOf(ra), slotOf(pb), slotOf(rb)} == slots));
+  CHECK(changes.irNodesChanged[slotOf(both)]);
+  CHECK(f.graph.nodes[slotOf(both)].predecessors.contains(slotOf(pa)));
+  CHECK(f.graph.nodes[slotOf(both)].predecessors.contains(slotOf(pb)));
+  CHECK(changes.irResourceRequestsChanged[f.lastMapping.mapRes(texA, dafg::intermediate::MultiplexingIndex{0})]);
+  CHECK(changes.irResourceRequestsChanged[f.lastMapping.mapRes(texB, dafg::intermediate::MultiplexingIndex{0})]);
+}
+
+TEST_CASE("IR resources compare by value", "[irGraphBuilder]")
+{
+  FRAMEMEM_REGION;
+  IrGraphBuilderFixture f;
+
+  f.addNodeCreatingResource("producer", "tex");
+  f.addNodeReadingResource("consumer", "tex");
+  f.finalize();
+  f.build();
+
+  const auto resId = f.registry.knownNames.getNameId<dafg::ResNameId>(f.registry.knownNames.root(), "tex");
+  const auto idx = f.lastMapping.mapRes(resId, dafg::intermediate::MultiplexingIndex{0});
+  const dafg::intermediate::Resource before = f.graph.resources[idx];
+
+  f.build();
+  CHECK((f.graph.resources[idx] == before));
+
+  auto otherActivation = before;
+  auto &activation = otherActivation.asScheduled().getGpuDescription().asBasicRes.activation;
+  activation = activation == ResourceActivationAction::DISCARD_AS_UAV ? ResourceActivationAction::DISCARD_AS_RTV_DSV
+                                                                      : ResourceActivationAction::DISCARD_AS_UAV;
+  CHECK_FALSE((otherActivation == before));
+
+  f.registry.resources[resId].createdResData->clearValue = make_clear_value(1u, 0u, 0u, 0u);
+  f.build();
+  CHECK_FALSE((f.graph.resources[idx] == before));
+}
+
+TEST_CASE("blob callables compare by identity", "[irGraphBuilder]")
+{
+  int counter = 0;
+  const auto increment = [&counter](void *) { ++counter; };
+  const auto incrementCopy = increment;
+
+  const dafg::intermediate::CtorFunc first{increment};
+  const dafg::intermediate::CtorFunc same{increment};
+  const dafg::intermediate::CtorFunc other{incrementCopy};
+  const dafg::intermediate::CtorFunc empty{};
+
+  CHECK((first == same));
+  CHECK_FALSE((first == other));
+  CHECK_FALSE((first == empty));
+  CHECK((empty == dafg::intermediate::CtorFunc{}));
+}
+
+TEST_CASE("external resources compare every field of the texture info", "[irGraphBuilder]")
+{
+  using dafg::intermediate::BufferInfo;
+  using dafg::intermediate::ExternalResource;
+
+  TextureInfo info;
+  info.w = 4;
+  info.h = 8;
+  info.d = 2;
+  info.a = 6;
+  info.mipLevels = 3;
+  info.type = D3DResourceType::CUBETEX;
+  info.isCommitted = 1;
+  info.cflg = TEXFMT_R8G8B8A8;
+  CHECK((ExternalResource{info} == ExternalResource{info}));
+
+  const auto differsAfter = [&info](auto change) {
+    auto other = info;
+    change(other);
+    return !(ExternalResource{other} == ExternalResource{info});
+  };
+  CHECK(differsAfter([](TextureInfo &i) { i.w++; }));
+  CHECK(differsAfter([](TextureInfo &i) { i.h++; }));
+  CHECK(differsAfter([](TextureInfo &i) { i.d++; }));
+  CHECK(differsAfter([](TextureInfo &i) { i.a++; }));
+  CHECK(differsAfter([](TextureInfo &i) { i.mipLevels++; }));
+  CHECK(differsAfter([](TextureInfo &i) { i.type = D3DResourceType::TEX; }));
+  CHECK(differsAfter([](TextureInfo &i) { i.isCommitted = 0; }));
+  CHECK(differsAfter([](TextureInfo &i) { i.cflg |= TEXCF_RTARGET; }));
+
+  CHECK_FALSE((ExternalResource{info} == ExternalResource{BufferInfo{0}}));
+  CHECK((ExternalResource{BufferInfo{1}} == ExternalResource{BufferInfo{1}}));
+  CHECK_FALSE((ExternalResource{BufferInfo{1}} == ExternalResource{BufferInfo{2}}));
+}
+
+TEST_CASE("blob resources compare by value across rebuilds", "[irGraphBuilder]")
+{
+  TestRuntime testRuntime{};
+  auto &typeDb = dafg::Runtime::get().getTypeDb();
+  typeDb.registerNativeType(dafg::tag_for<int>(), dafg::detail::make_rtti<int>());
+  typeDb.registerNativeType(dafg::tag_for<float>(), dafg::detail::make_rtti<float>());
+
+  FRAMEMEM_REGION;
+  IrGraphBuilderFixture f;
+  f.addNodeCreatingResource("producer", "blob");
+  f.addNodeReadingResource("consumer", "blob");
+  const auto resId = f.registry.knownNames.getNameId<dafg::ResNameId>(f.registry.knownNames.root(), "blob");
+  auto &created = *f.registry.resources[resId].createdResData;
+  created.creationInfo = dafg::BlobDescription{dafg::tag_for<int>(), nullptr};
+  created.type = dafg::ResourceType::Blob;
+  f.finalize();
+  f.build();
+
+  const auto idx = f.lastMapping.mapRes(resId, dafg::intermediate::MultiplexingIndex{0});
+  REQUIRE(f.graph.resources[idx].isScheduled());
+  REQUIRE(f.graph.resources[idx].asScheduled().isCpuResource());
+  const dafg::intermediate::Resource before = f.graph.resources[idx];
+
+  f.build();
+  CHECK((f.graph.resources[idx] == before));
+
+  eastl::get<dafg::BlobDescription>(created.creationInfo).ctorOverride =
+    eastl::make_unique<dafg::BlobDescription::CtorT>([](void *) {});
+  f.build();
+  CHECK_FALSE((f.graph.resources[idx] == before));
+
+  created.creationInfo = dafg::BlobDescription{dafg::tag_for<float>(), nullptr};
+  f.build();
+  CHECK_FALSE((f.graph.resources[idx] == before));
+}
+
+TEST_CASE("a branch that leaves and comes back keeps the slots of the other branches", "[irGraphBuilder][incremental]")
+{
+  FRAMEMEM_REGION;
+  IrGraphBuilderFixture f;
+
+  const auto p1 = f.addNodeCreatingResource("producer_1", "tex_1");
+  const auto r1 = f.addNodeReadingResource("reader_1", "tex_1");
+  const auto p2 = f.addNodeCreatingResource("producer_2", "tex_2");
+  const auto r2 = f.addNodeReadingResource("reader_2", "tex_2");
+  const auto p3 = f.addNodeCreatingResource("producer_3", "tex_3");
+  const auto r3 = f.addNodeReadingResource("reader_3", "tex_3");
+  f.finalize();
+  f.build();
+
+  const auto tex2 = f.registry.knownNames.getNameId<dafg::ResNameId>(f.registry.knownNames.root(), "tex_2");
+  const auto slotOf = [&f](dafg::NodeNameId node) { return f.lastMapping.mapNode(node, dafg::intermediate::MultiplexingIndex{0}); };
+  const auto resSlotOf = [&f](dafg::ResNameId res) { return f.lastMapping.mapRes(res, dafg::intermediate::MultiplexingIndex{0}); };
+  const auto slots = eastl::array{slotOf(p1), slotOf(r1), slotOf(p3), slotOf(r3)};
+  const auto tex2Slot = resSlotOf(tex2);
+
+  const auto gone = f.rebuildWithNodesRemoved({p2, r2}, {tex2});
+  for (const auto node : {p1, r1, p3, r3})
+  {
+    CHECK_FALSE(gone.irNodesChanged[slotOf(node)]);
+  }
+  CHECK((eastl::array{slotOf(p1), slotOf(r1), slotOf(p3), slotOf(r3)} == slots));
+  CHECK_FALSE(gone.irResourceRequestsChanged.test(tex2Slot, false));
+
+  const auto back = f.rebuildWithNodesAdded({p2, r2}, {tex2});
+  for (const auto node : {p1, r1, p3, r3})
+  {
+    CHECK_FALSE(back.irNodesChanged[slotOf(node)]);
+  }
+  CHECK((eastl::array{slotOf(p1), slotOf(r1), slotOf(p3), slotOf(r3)} == slots));
+  CHECK(back.irNodesChanged[slotOf(p2)]);
+  CHECK(back.irNodesChanged[slotOf(r2)]);
+  CHECK(back.irResourceRequestsChanged[resSlotOf(tex2)]);
+  CHECK(back.irResourcesChanged[resSlotOf(tex2)]);
+}
+
 TEST_CASE("no-op rebuild with pruned nodes marks nothing changed", "[irGraphBuilder]")
 {
   FRAMEMEM_REGION;
@@ -429,6 +718,47 @@ TEST_CASE("no-op rebuild with pruned nodes marks nothing changed", "[irGraphBuil
     CHECK_FALSE(changes2.irNodesChanged[idx]);
   for (auto idx : changes2.irResourcesChanged.trueKeys())
     CHECK_FALSE(changes2.irResourcesChanged[idx]);
+}
+
+TEST_CASE("reader leaving a lifetime changes the requests but not the value", "[irGraphBuilder][incremental]")
+{
+  FRAMEMEM_REGION;
+  IrGraphBuilderFixture f;
+  auto producer = f.addNodeCreatingResource("producer", "tex");
+  auto readerA = f.addNodeReadingResource("reader_a", "tex");
+  auto readerB = f.addNodeReadingResource("reader_b", "tex");
+  f.finalize();
+  f.build();
+
+  const auto tex = f.resourceId("tex");
+  auto changes = f.rebuildWithNodesRemoved({readerB}, {tex});
+
+  const auto texIdx = f.lastMapping.mapRes(tex, {});
+  CHECK(changes.irResourceRequestsChanged[texIdx]);
+  CHECK_FALSE(changes.irResourcesChanged[texIdx]);
+
+  CHECK_FALSE(changes.irNodesChanged[f.lastMapping.mapNode(producer, {})]);
+  CHECK_FALSE(changes.irNodesChanged[f.lastMapping.mapNode(readerA, {})]);
+}
+
+TEST_CASE("modifier leaving a lifetime changes the value", "[irGraphBuilder][incremental]")
+{
+  FRAMEMEM_REGION;
+  IrGraphBuilderFixture f;
+  auto producer = f.addNodeCreatingResource("producer", "tex");
+  auto reader = f.addNodeReadingResource("reader", "tex");
+  auto modifier = f.addNodeModifyingResource("modifier", "tex");
+  f.finalize();
+  f.build();
+
+  const auto tex = f.resourceId("tex");
+  auto changes = f.rebuildWithNodesRemoved({modifier}, {tex});
+
+  const auto texIdx = f.lastMapping.mapRes(tex, {});
+  CHECK(changes.irResourceRequestsChanged[texIdx]);
+  CHECK(changes.irResourcesChanged[texIdx]);
+  CHECK(changes.irNodesChanged[f.lastMapping.mapNode(producer, {})]);
+  CHECK(changes.irNodesChanged[f.lastMapping.mapNode(reader, {})]);
 }
 
 namespace
@@ -845,4 +1175,224 @@ TEST_CASE("no-effect creation and renaming chain requests are cleared", "[irGrap
     if (irNode.frontendNode && (*irNode.frontendNode == creatorNode || *irNode.frontendNode == renamerNode))
       hasRequests |= !irNode.resourceRequests.empty();
   CHECK(!hasRequests);
+}
+
+TEST_CASE("declaration flagged without a change of value keeps every flag clear", "[irGraphBuilder][incremental]")
+{
+  FRAMEMEM_REGION;
+  IrGraphBuilderFixture f;
+  auto producer = f.addNodeCreatingResource("producer", "tex");
+  auto reader = f.addNodeReadingResource("reader", "tex");
+  f.finalize();
+  f.build();
+
+  const auto tex = f.resourceId("tex");
+  const auto texIdx = f.lastMapping.mapRes(tex, {});
+  auto changes = f.rebuildWithDeclarationsChanged({}, {tex});
+
+  CHECK(f.lastMapping.mapRes(tex, {}) == texIdx);
+  CHECK_FALSE(changes.irResourcesChanged[texIdx]);
+  CHECK_FALSE(changes.irResourceRequestsChanged[texIdx]);
+  CHECK_FALSE(changes.irNodesChanged[f.lastMapping.mapNode(producer, {})]);
+  CHECK_FALSE(changes.irNodesChanged[f.lastMapping.mapNode(reader, {})]);
+}
+
+TEST_CASE("declaration change of the created data flags the value and its requesters", "[irGraphBuilder][incremental]")
+{
+  FRAMEMEM_REGION;
+  IrGraphBuilderFixture f;
+  auto producer = f.addNodeCreatingResource("producer", "tex");
+  auto reader = f.addNodeReadingResource("reader", "tex");
+  f.finalize();
+  f.build();
+
+  const auto tex = f.resourceId("tex");
+  const auto texIdx = f.lastMapping.mapRes(tex, {});
+  f.registry.resources[tex].createdResData->creationInfo = dafg::Texture2dCreateInfo{TEXFMT_A16B16G16R16F, IPoint2{8, 8}};
+  auto changes = f.rebuildWithDeclarationsChanged({}, {tex});
+
+  CHECK(f.lastMapping.mapRes(tex, {}) == texIdx);
+  CHECK(changes.irResourcesChanged[texIdx]);
+  CHECK_FALSE(changes.irResourceRequestsChanged[texIdx]);
+  CHECK(changes.irNodesChanged[f.lastMapping.mapNode(producer, {})]);
+  CHECK(changes.irNodesChanged[f.lastMapping.mapNode(reader, {})]);
+}
+
+TEST_CASE("reader leaving a renamed resource rebuilds the shared entry in place", "[irGraphBuilder][incremental]")
+{
+  FRAMEMEM_REGION;
+  IrGraphBuilderFixture f;
+  f.addNodeCreatingResource("producer", "a");
+  f.addNodeRenamingResource("renamer", "a", "b");
+  auto readerB = f.addNodeReadingResource("reader_b", "b");
+  auto readerB2 = f.addNodeReadingResource("reader_b2", "b");
+  f.finalize();
+
+  const auto a = f.resourceId("a");
+  const auto b = f.resourceId("b");
+  f.depData.renamingChains[a] = b;
+  f.depData.renamingRepresentatives[b] = a;
+  f.build();
+
+  const auto sharedIdx = f.lastMapping.mapRes(a, {});
+  REQUIRE(f.lastMapping.mapRes(b, {}) == sharedIdx);
+
+  auto changes = f.rebuildWithNodesRemoved({readerB2}, {b});
+
+  CHECK(f.lastMapping.mapRes(a, {}) == sharedIdx);
+  CHECK(f.lastMapping.mapRes(b, {}) == sharedIdx);
+  REQUIRE(f.graph.resources.isMapped(sharedIdx));
+  const auto &chain = f.graph.resources[sharedIdx].frontendResources;
+  REQUIRE(chain.size() == 2);
+  CHECK(chain[0] == a);
+  CHECK(chain[1] == b);
+  CHECK(changes.irResourceRequestsChanged[sharedIdx]);
+  CHECK_FALSE(changes.irResourcesChanged[sharedIdx]);
+  CHECK_FALSE(changes.irNodesChanged[f.lastMapping.mapNode(readerB, {})]);
+}
+
+TEST_CASE("a creating node that gains a multiplexing index splits the shared entry", "[irGraphBuilder][incremental]")
+{
+  FRAMEMEM_REGION;
+  IrGraphBuilderFixture f;
+  f.extents = {2, 1, 1, 1};
+  auto producer = f.addNodeCreatingResource("producer", "tex");
+  auto reader = f.addNodeReadingResource("reader", "tex");
+  f.registry.nodes[producer].multiplexingMode = dafg::multiplexing::Mode::None;
+  f.finalize();
+  f.build();
+
+  const auto tex = f.resourceId("tex");
+  const auto secondMidx = dafg::multiplexing_index_to_ir({.superSample = 1}, f.extents);
+  const auto sharedIdx = f.lastMapping.mapRes(tex, {});
+  REQUIRE(f.lastMapping.mapRes(tex, secondMidx) == sharedIdx);
+
+  f.registry.nodes[producer].multiplexingMode = dafg::multiplexing::Mode::SuperSampling;
+  auto changes = f.rebuildWithDeclarationsChanged({producer}, {tex});
+
+  CHECK(f.lastMapping.mapRes(tex, {}) == sharedIdx);
+  const auto ownIdx = f.lastMapping.mapRes(tex, secondMidx);
+  REQUIRE(ownIdx != sharedIdx);
+  CHECK(changes.irResourcesChanged[sharedIdx]);
+  CHECK(changes.irResourcesChanged[ownIdx]);
+
+  const auto secondReaderIdx = f.lastMapping.mapNode(reader, secondMidx);
+  REQUIRE(f.graph.nodes.isMapped(secondReaderIdx));
+  const auto &requests = f.graph.nodes[secondReaderIdx].resourceRequests;
+  CHECK(eastl::any_of(requests.begin(), requests.end(), [ownIdx](const auto &req) { return req.resource == ownIdx; }));
+  CHECK(eastl::none_of(requests.begin(), requests.end(), [sharedIdx](const auto &req) { return req.resource == sharedIdx; }));
+}
+
+TEST_CASE("a reader keeps its own instance when the creator widens on a slower-varying axis", "[irGraphBuilder][incremental]")
+{
+  FRAMEMEM_REGION;
+  IrGraphBuilderFixture f;
+  f.extents = {2, 1, 2, 1};
+  auto producer = f.addNodeCreatingResource("producer", "tex");
+  auto reader = f.addNodeReadingResource("reader", "tex");
+  f.registry.nodes[producer].multiplexingMode = dafg::multiplexing::Mode::SuperSampling;
+  f.registry.nodes[reader].multiplexingMode = dafg::multiplexing::Mode::SuperSampling | dafg::multiplexing::Mode::Viewport;
+  f.finalize();
+  f.build();
+
+  const auto tex = f.resourceId("tex");
+  const auto idx2 = dafg::multiplexing_index_to_ir({.superSample = 0, .subSample = 0, .viewport = 1}, f.extents);
+  const auto clampedIdx = dafg::multiplexing_index_to_ir({.superSample = 0, .subSample = 0, .viewport = 0}, f.extents);
+
+  const auto readerBefore = f.lastMapping.mapNode(reader, idx2);
+  REQUIRE(f.graph.nodes.isMapped(readerBefore));
+  const auto &requestsBefore = f.graph.nodes[readerBefore].resourceRequests;
+  const auto heldBefore = f.lastMapping.mapRes(tex, clampedIdx);
+  REQUIRE(
+    eastl::any_of(requestsBefore.begin(), requestsBefore.end(), [heldBefore](const auto &req) { return req.resource == heldBefore; }));
+
+  f.registry.nodes[producer].multiplexingMode = dafg::multiplexing::Mode::SuperSampling | dafg::multiplexing::Mode::Viewport;
+  f.rebuildWithDeclarationsChanged({producer}, {tex});
+
+  const auto ownIdx = f.lastMapping.mapRes(tex, idx2);
+  REQUIRE(ownIdx != heldBefore);
+  const auto readerAfter = f.lastMapping.mapNode(reader, idx2);
+  REQUIRE(f.graph.nodes.isMapped(readerAfter));
+  const auto &requests = f.graph.nodes[readerAfter].resourceRequests;
+  CHECK(eastl::any_of(requests.begin(), requests.end(), [ownIdx](const auto &req) { return req.resource == ownIdx; }));
+  CHECK(eastl::none_of(requests.begin(), requests.end(), [heldBefore](const auto &req) { return req.resource == heldBefore; }));
+}
+
+TEST_CASE("a creating node that loses a multiplexing index drops the unclaimed entry", "[irGraphBuilder][incremental]")
+{
+  FRAMEMEM_REGION;
+  IrGraphBuilderFixture f;
+  f.extents = {2, 1, 1, 1};
+  auto producer = f.addNodeCreatingResource("producer", "tex");
+  auto reader = f.addNodeReadingResource("reader", "tex");
+  f.registry.nodes[producer].multiplexingMode = dafg::multiplexing::Mode::SuperSampling;
+  f.finalize();
+  f.build();
+
+  const auto tex = f.resourceId("tex");
+  const auto secondMidx = dafg::multiplexing_index_to_ir({.superSample = 1}, f.extents);
+  const auto firstIdx = f.lastMapping.mapRes(tex, {});
+  const auto droppedIdx = f.lastMapping.mapRes(tex, secondMidx);
+  REQUIRE(droppedIdx != firstIdx);
+
+  f.registry.nodes[producer].multiplexingMode = dafg::multiplexing::Mode::None;
+  f.rebuildWithDeclarationsChanged({producer}, {tex});
+
+  CHECK(f.lastMapping.mapRes(tex, {}) == firstIdx);
+  CHECK(f.lastMapping.mapRes(tex, secondMidx) == firstIdx);
+  CHECK_FALSE(f.graph.resources.isMapped(droppedIdx));
+
+  const auto secondReaderIdx = f.lastMapping.mapNode(reader, secondMidx);
+  REQUIRE(f.graph.nodes.isMapped(secondReaderIdx));
+  const auto &requests = f.graph.nodes[secondReaderIdx].resourceRequests;
+  CHECK(eastl::any_of(requests.begin(), requests.end(), [firstIdx](const auto &req) { return req.resource == firstIdx; }));
+  CHECK(eastl::none_of(requests.begin(), requests.end(), [droppedIdx](const auto &req) { return req.resource == droppedIdx; }));
+}
+
+TEST_CASE("reader leaving a lifetime does not flag a resource with declared but unread history", "[irGraphBuilder][incremental]")
+{
+  FRAMEMEM_REGION;
+  IrGraphBuilderFixture f;
+  auto producer = f.addNodeCreatingResource("producer", "tex");
+  auto readerA = f.addNodeReadingResource("reader_a", "tex");
+  auto readerB = f.addNodeReadingResource("reader_b", "tex");
+  const auto tex = f.resourceId("tex");
+  f.registry.resources[tex].history = dafg::History::DiscardOnFirstFrame;
+  f.finalize();
+  f.build();
+
+  auto changes = f.rebuildWithNodesRemoved({readerB}, {tex});
+
+  const auto texIdx = f.lastMapping.mapRes(tex, {});
+  CHECK(changes.irResourceRequestsChanged[texIdx]);
+  CHECK_FALSE(changes.irResourcesChanged[texIdx]);
+  CHECK(f.graph.resources[texIdx].asScheduled().history == dafg::History::No);
+  CHECK_FALSE(changes.irNodesChanged[f.lastMapping.mapNode(producer, {})]);
+  CHECK_FALSE(changes.irNodesChanged[f.lastMapping.mapNode(readerA, {})]);
+}
+
+TEST_CASE("no-op rebuild does not flag a renamed resource with declared but unread history", "[irGraphBuilder][incremental]")
+{
+  FRAMEMEM_REGION;
+  IrGraphBuilderFixture f;
+  f.addNodeCreatingResource("producer", "a");
+  f.addNodeRenamingResource("renamer", "a", "b");
+  f.addNodeReadingResource("reader_b", "b");
+  const auto a = f.resourceId("a");
+  const auto b = f.resourceId("b");
+  f.registry.resources[b].history = dafg::History::DiscardOnFirstFrame;
+  f.finalize();
+
+  f.depData.renamingChains[a] = b;
+  f.depData.renamingRepresentatives[b] = a;
+  f.build();
+
+  const auto sharedIdx = f.lastMapping.mapRes(a, {});
+  REQUIRE(f.lastMapping.mapRes(b, {}) == sharedIdx);
+  CHECK(f.graph.resources[sharedIdx].asScheduled().history == dafg::History::No);
+
+  auto changes = f.rebuildNoChanges();
+
+  CHECK_FALSE(changes.irResourcesChanged[sharedIdx]);
+  CHECK(f.graph.resources[sharedIdx].asScheduled().history == dafg::History::No);
 }

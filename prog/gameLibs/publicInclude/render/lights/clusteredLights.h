@@ -16,14 +16,14 @@
 #include <render/lights/clusteredLightsGrid.h>
 #include <render/lights/reallocatableLightsConstBuffer.h>
 #include <render/lights/lightsRenderer.h>
+#include <render/lights/dynamicLightShadows.h>
+#include <render/lights/lightsVisibilityChecker.h>
 #include <drv/3d/dag_driver.h>
 #include <drv/3d/dag_info.h>
 #include <math/dag_TMatrix4.h>
 #include <generic/dag_tab.h>
-#include <generic/dag_staticTab.h>
 #include <EASTL/array.h>
-#include <EASTL/fixed_function.h>
-#include <EASTL/bitset.h>
+#include <EASTL/optional.h>
 #include <math/dag_hlsl_floatx.h>
 #include "renderLights.hlsli"
 #include <shaders/dag_overrideStates.h>
@@ -55,7 +55,6 @@ enum class DynLightsOptimizationMode : int
 
 struct ClusteredLights
 {
-  static constexpr int DEFAULT_MAX_SHADOWS_TO_UPDATE_PER_FRAME = 4;
   constexpr static int LIGHTS_OPTIMIZATION_THRESHOLD = 32;
 
   typedef OmniLightsManager::RawLight OmniLight;
@@ -73,7 +72,7 @@ struct ClusteredLights
   // shadows_quality is size of dynamic shadow map. 0 means no shadows
   void init(int initial_frame_light_count, uint32_t shadows_quality, bool use_tiled_lights, const char *name_suffix = "");
   void setMaxClusteredDist(const float max_clustered_dist);
-  void setMaxShadowDist(const float max_shadow_dist) { maxShadowDist = max_shadow_dist; }
+  void setMaxShadowDist(const float max_shadow_dist);
   void changeShadowResolution(uint32_t shadows_quality, bool dynamic_shadow_32bit);
   void close();
   void cullFrustumLights(vec3f cur_view_pos, mat44f_cref globtm, mat44f_cref view, mat44f_cref proj, float znear, float zfar,
@@ -107,6 +106,8 @@ struct ClusteredLights
   void setEmptyOutOfFrustumLights();
   void setOutOfFrustumLightsToShader();
   void setInsideOfFrustumLightsToShader() const;
+
+  void selectBufferSlot(LightBufferSlot slot);
 
   void renderDebugSpotLights();
   void renderDebugOmniLights();
@@ -158,16 +159,14 @@ struct ClusteredLights
   void invalidateStaticObjects(bbox3f_cref box);          // invalidate static content within box
   void shrinkShadowVolumes();                             // release volume capacity retained from peak light count
 
-  using StaticRenderCallback = void(mat44f_cref globTm, mat44f_cref projTm, const TMatrix &itm, int updateIndex, int viewIndex,
-    DynamicShadowRenderGPUObjects render_gpu_objects);
-  using DynamicRenderCallback = void(const TMatrix &itm, const mat44f &view_tm, const mat44f &proj_tm);
+  using StaticRenderCallback = DynamicLightShadows::StaticRenderCallback;
+  using DynamicRenderCallback = DynamicLightShadows::DynamicRenderCallback;
 
-  void framePrepareShadows(dynamic_shadow_render::VolumesVector &volumesToRender, const Point3 &viewPos, mat44f_cref globtm, float hk,
-    dag::ConstSpan<bbox3f> dynamicBoxes, dynamic_shadow_render::FrameUpdates *frameUpdates);
+  void framePrepareShadows(dynamic_shadow_render::FrameVolumeData &volume_data, const Point3 &viewPos, mat44f_cref globtm,
+    float camera_focal, dag::ConstSpan<bbox3f> dynamicBoxes, bool collect_updates);
 
-  void frameRenderShadows(const dag::ConstSpan<uint16_t> &volumesToRender,
-    eastl::fixed_function<sizeof(void *) * 2, StaticRenderCallback> renderStatic,
-    eastl::fixed_function<sizeof(void *) * 2, DynamicRenderCallback> renderDynamic);
+  void frameRenderShadows(const dynamic_shadow_render::FrameVolumeData &volume_data, StaticRenderCallback renderStatic,
+    DynamicRenderCallback renderDynamic);
 
   void updateShadowBuffers() DAG_TS_REQUIRES(lightLock);
 
@@ -183,8 +182,8 @@ struct ClusteredLights
   bool initialized() const { return lightsInitialized; }
 
   void setNeedSsss(bool need_ssss);
-  void setMaxShadowsToUpdateOnFrame(int max_shadows) { maxShadowsToUpdateOnFrame = max_shadows; }
-  void setMaxShadowViewsToUpdateOnFrame(int max_views) { maxShadowViewsToUpdateOnFrame = max_views; }
+  void setMaxShadowsToUpdateOnFrame(int max_shadows);
+  void setMaxShadowViewsToUpdateOnFrame(int max_views);
 
   void resetShadows() DAG_TS_REQUIRES(lightLock);
 
@@ -199,14 +198,10 @@ protected:
   void changeShadowResolutionByQuality(uint32_t shadow_quality, bool dynamic_shadow_32bit) DAG_TS_REQUIRES(lightLock);
 
   Tab<TMatrix4> renderSpotLightsShadows;
-  ReallocatableLightsConstBuffer<1, false> commonLightShadowsBufferCB;
-  UniqueBufWithShaderVar spotLightSsssShadowDescBuffer;
+  LightBufferSlot currentBufferSlot = LightBufferSlot::Main;
 
   ReallocatableLightsConstBuffer<sizeof(RenderOmniLight) / 16, true> outOfFrustumOmniLightsCB;
   ReallocatableLightsConstBuffer<sizeof(RenderSpotLight) / 16, true> outOfFrustumVisibleSpotLightsCB;
-  ReallocatableLightsConstBuffer<1, false> outOfFrustumCommonLightsShadowsCB;
-  // true if we already filled empty buffer. we only should do it once since buffer is persistent
-  bool commonLightsShadowsAreEmpty = false;
   Point4 omniOOFBox[2], spotOOFBox[2];
   UniqueBufWithShaderVar outOfFrustumLightsFullGridCB;
   eastl::unique_ptr<ComputeShaderElement> cull_out_of_frustum_lights_cs, clear_out_of_frustum_grid_cs;
@@ -220,20 +215,17 @@ protected:
   OmniLightsManager omniLights DAG_TS_GUARDED_BY(lightLock); //-V730_NOINIT
   SpotLightsManager spotLights DAG_TS_GUARDED_BY(lightLock); //-V730_NOINIT
 
+  DynamicLightShadows dynamicLightShadows DAG_TS_GUARDED_BY(lightLock);
+  eastl::optional<LightsVisibilityChecker> lightVisibilityChecker DAG_TS_GUARDED_BY(lightLock);
+
   LightsPartition lightsPartition;
 
-  float closeSliceDist = 4, maxClusteredDist = 500;                        //?
-  int maxShadowsToUpdateOnFrame = DEFAULT_MAX_SHADOWS_TO_UPDATE_PER_FRAME; // quality param
-  int maxShadowViewsToUpdateOnFrame = 0;                                   // quality param, 0 = unlimited
-  float maxShadowDist = 120.f;                                             // quality and scene param
+  float closeSliceDist = 4, maxClusteredDist = 500;
   eastl::unique_ptr<ShadowSystem> lightShadows DAG_TS_PT_GUARDED_BY(lightLock);
   eastl::unique_ptr<DistanceReadbackLights> dstReadbackLights;
-  eastl::bitset<SpotLightsManager::MAX_LIGHTS + OmniLightsManager::MAX_LIGHTS> dynamicLightsShadowsVolumeSet DAG_TS_GUARDED_BY(
-    lightLock);
-  bool buffersFilled = false;
+  // Per slot: a cull invalidates every slot, each fill consumes only its own.
+  eastl::array<bool, LIGHTS_BUFFER_SLOTS> buffersFilled = {};
   bool lightsInitialized = false;
-  void setSpotLightShadowVolume(int spot_light_id) DAG_TS_REQUIRES(lightLock);
-  void setOmniLightShadowVolume(int omni_light_id) DAG_TS_REQUIRES(lightLock);
 
   void initClustered(int initial_light_density);
 

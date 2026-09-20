@@ -13,8 +13,10 @@ Sources =
   processMat.cpp
   validateLods.cpp
   validateUv.cpp
+  validateAlphaTest.cpp
 
   dynSceneResSrc.cpp
+  clothProxyBuild.cpp
   rendInstResSrc.cpp
   rendInstVoxel.cpp
 
@@ -34,6 +36,7 @@ AddIncludes =
 UseProgLibs =
   3rdPartyLibs/meshoptimizer
   3rdPartyLibs/eastl
+  gameLibs/render/omm
 ;
 
 if $(PlatformArch) = e2k {

@@ -11,6 +11,7 @@
 #include <gui/dag_imgui.h>
 #include <gui/dag_imguiUtil.h>
 #include <render/daFrameGraph/ecs/frameGraphNode.h>
+#include <render/daFrameGraph/singleShaders.h>
 
 #include <daECS/core/entitySystem.h>
 #include <daECS/core/coreEvents.h>
@@ -133,52 +134,55 @@ static void request_common_blur_data(dafg::Registry registry)
 
 static dafg::NodeHandle makeSsssReflectanceHorizontalNode(bool is_rr_enable)
 {
-  return dafg::register_node("ssss_reflectance_blur_horizontal_node", DAFG_PP_NODE_SRC, [is_rr_enable](dafg::Registry registry) {
-    request_common_blur_data(registry);
+  if (is_rr_enable)
+    return {}; // TODO: DLSS RR causes artifacts with blur, so as a workaround just turn it off
+  return dafg::register_node("ssss_reflectance_blur_horizontal_node", DAFG_PP_NODE_SRC,
+    [is_rr_enable](dafg::Registry registry) { //-V788
+      request_common_blur_data(registry);
 
-    const auto target_fmt = get_frame_render_target_format();
+      const auto target_fmt = get_frame_render_target_format();
 
-    registry.create("ssss_intermediate_target")
-      .texture({target_fmt | TEXCF_RTARGET, registry.getResolution<2>("main_view")})
-      .clear(make_clear_value(0.f, 0.f, 0.f, 0.f));
-    if (is_rr_enable)
-    {
-      registry.create("ssss_rr_guide")
-        .texture({TEXFMT_R16F | TEXCF_RTARGET, registry.getResolution<2>("main_view")})
+      registry.create("ssss_intermediate_target")
+        .texture({target_fmt | TEXCF_RTARGET, registry.getResolution<2>("main_view")})
         .clear(make_clear_value(0.f, 0.f, 0.f, 0.f));
-    }
+      if (is_rr_enable)
+      {
+        registry.create("ssss_rr_guide")
+          .texture({TEXFMT_R16F | TEXCF_RTARGET, registry.getResolution<2>("main_view")})
+          .clear(make_clear_value(0.f, 0.f, 0.f, 0.f));
+      }
 
-    if (!is_rr_enable)
-    {
-      registry.requestRenderPass().color({"ssss_intermediate_target"}).depth("ssss_depth_mask");
-    }
-    else
-    {
-      registry.requestRenderPass().color({"ssss_intermediate_target", "ssss_rr_guide"}).depth("ssss_depth_mask");
-    }
+      if (!is_rr_enable)
+      {
+        registry.requestRenderPass().color({"ssss_intermediate_target"}).depth("ssss_depth_mask");
+      }
+      else
+      {
+        registry.requestRenderPass().color({"ssss_intermediate_target", "ssss_rr_guide"}).depth("ssss_depth_mask");
+      }
 
-    registry.read("opaque_with_envi").texture().atStage(dafg::Stage::PS).bindToShaderVar("ssss_reflectance_blur_color_source_tex");
-    {
-      // TODO: Experiment with linear depth sampler, original paper seems to use that in SSSS_FOLLOW_SURFACE part
-      d3d::SamplerInfo smpInfo;
-      smpInfo.address_mode_u = smpInfo.address_mode_v = smpInfo.address_mode_w = d3d::AddressMode::Clamp;
-      smpInfo.filter_mode = d3d::FilterMode::Point;
-      registry.create("ssss_reflectance_blur_sampler")
-        .blob<d3d::SamplerHandle>(d3d::request_sampler(smpInfo))
-        .bindToShaderVar("ssss_reflectance_blur_color_source_tex_samplerstate");
-    }
+      registry.read("opaque_with_envi").texture().atStage(dafg::Stage::PS).bindToShaderVar("ssss_reflectance_blur_color_source_tex");
+      {
+        // TODO: Experiment with linear depth sampler, original paper seems to use that in SSSS_FOLLOW_SURFACE part
+        d3d::SamplerInfo smpInfo;
+        smpInfo.address_mode_u = smpInfo.address_mode_v = smpInfo.address_mode_w = d3d::AddressMode::Clamp;
+        smpInfo.filter_mode = d3d::FilterMode::Point;
+        registry.create("ssss_reflectance_blur_sampler")
+          .blob<d3d::SamplerHandle>(d3d::request_sampler(smpInfo))
+          .bindToShaderVar("ssss_reflectance_blur_color_source_tex_samplerstate");
+      }
 
-    return [shader = PostFxRenderer("ssss_reflectance_blur_ps"), is_rr_enable] {
-      ShaderGlobal::set_int(ssss_reflectance_blur_passVarId, 0);
-      ShaderGlobal::set_int(ssss_rr_guide_passVarId, is_rr_enable ? 1 : 0);
-      shader.render();
-    };
-  });
+      registry.create("ssss_horizontal_blur_pass").blob<int>(0).bindToShaderVar("ssss_reflectance_blur_pass");
+      registry.create("ssss_horizontal_rr_guide_pass").blob<int>(is_rr_enable ? 1 : 0).bindToShaderVar("ssss_rr_guide_pass");
+      dafg::postFx("ssss_reflectance_blur_ps", registry);
+    });
 }
 
 static dafg::NodeHandle makeSsssReflectanceVerticalNode(bool is_rr_enable)
 {
-  return dafg::register_node("ssss_reflectance_blur_vertical_node", DAFG_PP_NODE_SRC, [is_rr_enable](dafg::Registry registry) {
+  if (is_rr_enable)
+    return {}; // TODO: DLSS RR causes artifacts with blur, so as a workaround just turn it off
+  return dafg::register_node("ssss_reflectance_blur_vertical_node", DAFG_PP_NODE_SRC, [is_rr_enable](dafg::Registry registry) { //-V788
     request_common_blur_data(registry);
     registry.read("ssss_intermediate_target")
       .texture()
@@ -201,11 +205,9 @@ static dafg::NodeHandle makeSsssReflectanceVerticalNode(bool is_rr_enable)
     {
       registry.requestRenderPass().color({"opaque_processed", "ssss_rr_guide"}).depth("ssss_depth_mask");
     }
-    return [shader = PostFxRenderer("ssss_reflectance_blur_ps"), is_rr_enable]() {
-      ShaderGlobal::set_int(ssss_reflectance_blur_passVarId, 1);
-      ShaderGlobal::set_int(ssss_rr_guide_passVarId, is_rr_enable ? 2 : 0);
-      shader.render();
-    };
+    registry.create("ssss_vertical_blur_pass").blob<int>(1).bindToShaderVar("ssss_reflectance_blur_pass");
+    registry.create("ssss_vertical_rr_guide_pass").blob<int>(is_rr_enable ? 2 : 0).bindToShaderVar("ssss_rr_guide_pass");
+    dafg::postFx("ssss_reflectance_blur_ps", registry);
   });
 }
 

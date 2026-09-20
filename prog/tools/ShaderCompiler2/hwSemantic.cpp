@@ -303,6 +303,23 @@ HlslCompileClass parse_hlsl_compilation_info(ShaderTerminal::hlsl_compile_class 
   if (strcmp(profile, "ps_null") == 0)
     return {};
 
+#if _CROSS_TARGET_SPIRV
+  // SpirV targeted for different vulkan/spirv version cause pipeline bubbles on GPU due to different execution constraints
+  // avoid this by clamping min version by profile specified in commandline/blk.
+  // by design this leaves the *s_set_target default-profile directive untouched
+  if (!useDefTarget)
+  {
+    const int verPos = int(strchr(profile.c_str(), '_') - profile.c_str()) + 1; // start of "M_N" (after "cs_" / "lib_")
+    String verStr(profile.c_str() + verPos);
+    verStr.replaceAll("_", ".");
+    if (operator""_sm(verStr.c_str()) < hwopt.fshVersion)
+    {
+      erase_items(profile, verPos, profile.length() - verPos);
+      profile.aprintf(0, "%u_%u", unsigned(hwopt.fshVersion.major), unsigned(hwopt.fshVersion.minor));
+    }
+  }
+#endif
+
   compileDirective.profile = eastl::move(profile);
   compileDirective.entry = eastl::move(entry);
   return {eastl::move(compileDirective), stage};

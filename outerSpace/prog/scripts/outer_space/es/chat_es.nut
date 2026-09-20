@@ -1,11 +1,10 @@
+import "console" as console
 import "%dngscripts/ecs.nut" as ecs
-
-let console = require("console")
-let {INVALID_USER_ID}= require("%scripts/globs/types.nut")
-let {find_local_player, find_human_player_by_connid} = require("%dngscripts/common_queries.nut")
-let {has_network, INVALID_CONNECTION_ID} = require("net")
-let {startswith} = require("string")
-let {CmdChatMessage, mkEventSqChatMessage} = require("%scripts/globs/sqevents.nut")
+from "net" import has_network, INVALID_CONNECTION_ID
+from "string" import startswith
+from "%scripts/globs/types.nut" import INVALID_USER_ID
+from "%scripts/globs/sqevents.nut" import CmdChatMessage, mkEventSqChatMessage
+from "%dngscripts/common_queries.nut" import find_local_player, find_human_player_by_connid
 
 let peersThatWantToReceiveQuery = ecs.SqQuery("peersThatWantToReceiveQuery",
   {

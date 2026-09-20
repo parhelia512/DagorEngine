@@ -45,6 +45,7 @@ public:
   virtual void renderSky() = 0;
   virtual void renderClouds() = 0;
   virtual bool areCloudTexturesReady() = 0;
+  virtual bool isLightingConverged() = 0;
 
   virtual void afterD3DReset(bool full_reset) = 0;
 

@@ -65,3 +65,7 @@ static constexpr int EDITOR_CORE_CURSOR_ADDITIONAL_CLICK = ImGuiMouseCursor_COUN
 
 // The default size of the fonts used everywhere.
 static constexpr int EDITOR_CORE_DEFAULT_FONT_SIZE = 16;
+
+// The default face again, registered by editor_core_initialize_imgui with advances that do not
+// depend on the rasterizer density. Reach it with IPropPanelService::getCustomFont.
+static constexpr const char *LINEAR_METRICS_FONT_NAME = "linear_metrics";

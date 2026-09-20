@@ -883,39 +883,33 @@ protected:
       actionHistory.push_back(msg);
     }
 
-    void recordBufferEvent(ActionInfo::Type type, size_t size, bool is_gpu, const char *name)
+    void recordBufferEvent(ActionInfo::Type type, size_t size, bool is_gpu, eastl::string_view name)
     {
       ActionInfo msg;
       msg.type = type;
       msg.frameIndex = currentFrame.frameIndex;
       msg.eventPath = curentEventPath;
+      msg.objectName = name;
       msg.size = size;
       msg.isGPUMemory = is_gpu;
       msg.timeIndex = get_time_msec();
-      if (name)
-      {
-        msg.objectName = name;
-      }
       actionHistory.push_back(msg);
     }
 
     void recordTextureEvent(ActionInfo::Type type, MipMapCount mips, ArrayLayerCount arrays, const Extent3D &extent, uint32_t size,
-      FormatStore format, const char *name)
+      FormatStore format, eastl::string_view name)
     {
       ActionInfo msg;
       msg.type = type;
       msg.frameIndex = currentFrame.frameIndex;
       msg.eventPath = curentEventPath;
-      msg.format = format.asDxGiResourceCreateFormat();
+      msg.objectName = name;
       msg.size = size;
+      msg.format = format.asDxGiResourceCreateFormat();
       msg.extent = extent;
       msg.mips = mips.count();
       msg.arrays = arrays.count();
       msg.timeIndex = get_time_msec();
-      if (name)
-      {
-        msg.objectName = name;
-      }
       actionHistory.push_back(msg);
     }
   };
@@ -944,7 +938,7 @@ private:
   }
 
   void recordBufferEvent(ConcurrentMetricsState::AccessToken &at, MetricsState::ActionInfo::Type type, size_t size,
-    bool is_gpu = false, const char *name = nullptr)
+    bool is_gpu = false, eastl::string_view name = {})
   {
     if (!isCollectingMetric(Metric::EVENT_LOG))
       return;
@@ -952,7 +946,7 @@ private:
   }
 
   void recordTextureEvent(ConcurrentMetricsState::AccessToken &at, MetricsState::ActionInfo::Type type, MipMapCount mips,
-    ArrayLayerCount arrays, const Extent3D &extent, uint32_t size, FormatStore format, const char *name)
+    ArrayLayerCount arrays, const Extent3D &extent, uint32_t size, FormatStore format, eastl::string_view name)
   {
     if (!isCollectingMetric(Metric::EVENT_LOG))
       return;
@@ -1035,7 +1029,7 @@ protected:
     recordMemoryEvent(metricsAccess, MetricsState::ActionInfo::Type::FREE_MEMORY, size, is_gpu);
   }
 
-  void recordBufferHeapAllocated(uint32_t size, bool is_gpu, const char *name)
+  void recordBufferHeapAllocated(uint32_t size, bool is_gpu, eastl::string_view name)
   {
     if (!isCollectingMetric(Metric::BUFFERS))
       return;
@@ -1047,7 +1041,8 @@ protected:
 
     recordBufferEvent(metricsAccess, MetricsState::ActionInfo::Type::ALLOCATE_BUFFER_HEAP, size, is_gpu, name);
   }
-  void recordBufferHeapFreed(uint32_t size, bool is_gpu, const char *name)
+
+  void recordBufferHeapFreed(uint32_t size, bool is_gpu, eastl::string_view name)
   {
     if (!isCollectingMetric(Metric::BUFFERS))
       return;
@@ -1061,7 +1056,7 @@ protected:
   }
 
   void recordTextureAllocated(MipMapCount mips, ArrayLayerCount arrays, const Extent3D &extent, uint32_t size, FormatStore format,
-    const char *name)
+    eastl::string_view name)
   {
     if (!isCollectingMetric(Metric::TEXTURES))
       return;
@@ -1073,7 +1068,8 @@ protected:
     recordTextureEvent(metricsAccess, MetricsState::ActionInfo::Type::ALLOCATE_TEXTURE, mips, arrays, extent, size, format, name);
   }
 
-  void recordTextureAliased(MipMapCount mips, ArrayLayerCount arrays, const Extent3D &extent, FormatStore format, const char *name)
+  void recordTextureAliased(MipMapCount mips, ArrayLayerCount arrays, const Extent3D &extent, FormatStore format,
+    eastl::string_view name)
   {
     if (!isCollectingMetric(Metric::TEXTURES))
       return;
@@ -1085,7 +1081,8 @@ protected:
     recordTextureEvent(metricsAccess, MetricsState::ActionInfo::Type::ALIAS_TEXTURE, mips, arrays, extent, 0, format, name);
   }
 
-  void recordTextureAdopted(MipMapCount mips, ArrayLayerCount arrays, const Extent3D &extent, FormatStore format, const char *name)
+  void recordTextureAdopted(MipMapCount mips, ArrayLayerCount arrays, const Extent3D &extent, FormatStore format,
+    eastl::string_view name)
   {
     if (!isCollectingMetric(Metric::TEXTURES))
       return;
@@ -1098,7 +1095,7 @@ protected:
   }
 
   void recordTextureESRamAllocated(MipMapCount mips, ArrayLayerCount arrays, const Extent3D &extent, uint32_t size, FormatStore format,
-    const char *name)
+    eastl::string_view name)
   {
     if (!isCollectingMetric(Metric::TEXTURES))
       return;
@@ -1112,7 +1109,7 @@ protected:
   }
 
   void recordTextureFreed(MipMapCount mips, ArrayLayerCount arrays, const Extent3D &extent, uint32_t size, FormatStore format,
-    const char *name)
+    eastl::string_view name)
   {
     if (!isCollectingMetric(Metric::TEXTURES))
       return;
@@ -1363,7 +1360,7 @@ protected:
   }
 
   void recordTexturePlacedInUserResourceHeap(MipMapCount mips, ArrayLayerCount arrays, const Extent3D &extent, uint32_t size,
-    FormatStore format, const char *name)
+    FormatStore format, eastl::string_view name)
   {
     if (!isCollectingMetric(Metric::TEXTURES))
       return;
@@ -1376,7 +1373,7 @@ protected:
       format, name);
   }
 
-  void recordBufferPlacedInUserResourceHeap(uint32_t size, bool is_gpu, const char *name)
+  void recordBufferPlacedInUserResourceHeap(uint32_t size, bool is_gpu, eastl::string_view name)
   {
     if (!isCollectingMetric(Metric::BUFFERS))
       return;
@@ -1664,19 +1661,18 @@ class MetricsProvider : public MetricsProviderBase
   using BaseType = MetricsProviderBase;
 
 protected:
-  WinCritSec *getMetrixMutex() { return nullptr; }
-
+  bool isCollectingMetric(Metric) const { return false; }
   void recordHeapAllocated(uint32_t, bool) {}
   void recordHeapFreed(uint32_t, bool) {}
   void recordMemoryAllocated(uint32_t, bool) {}
   void recordMemoryFreed(uint32_t, bool) {}
-  void recordBufferHeapAllocated(uint32_t, bool, const char *) {}
-  void recordBufferHeapFreed(uint32_t, bool, const char *) {}
-  void recordTextureAllocated(MipMapCount, ArrayLayerCount, const Extent3D &, uint32_t, FormatStore, const char *) {}
-  void recordTextureAliased(MipMapCount, ArrayLayerCount, const Extent3D &, FormatStore, const char *) {}
-  void recordTextureAdopted(MipMapCount, ArrayLayerCount, const Extent3D &, FormatStore, const char *) {}
-  void recordTextureESRamAllocated(MipMapCount, ArrayLayerCount, const Extent3D &, uint32_t, FormatStore, const char *) {}
-  void recordTextureFreed(MipMapCount, ArrayLayerCount, const Extent3D &, uint32_t, FormatStore, const char *) {}
+  void recordBufferHeapAllocated(uint32_t, bool, auto &&) {}
+  void recordBufferHeapFreed(uint32_t, bool, auto &&) {}
+  void recordTextureAllocated(MipMapCount, ArrayLayerCount, const Extent3D &, uint32_t, FormatStore, auto &&) {}
+  void recordTextureAliased(MipMapCount, ArrayLayerCount, const Extent3D &, FormatStore, auto &&) {}
+  void recordTextureAdopted(MipMapCount, ArrayLayerCount, const Extent3D &, FormatStore, auto &&) {}
+  void recordTextureESRamAllocated(MipMapCount, ArrayLayerCount, const Extent3D &, uint32_t, FormatStore, auto &&) {}
+  void recordTextureFreed(MipMapCount, ArrayLayerCount, const Extent3D &, uint32_t, FormatStore, auto &&) {}
   void recordConstantRingAllocated(uint32_t) {}
   void recordConstantRingFreed(uint32_t) {}
   void recordConstantRingUsed(uint32_t) {}
@@ -1697,8 +1693,8 @@ protected:
   void recordPersistentBidirectionalMemoryFreed(uint32_t) {}
   void recordNewUserResourceHeap(size_t, bool) {}
   void recordDeletedUserResourceHeap(size_t, bool) {}
-  void recordTexturePlacedInUserResourceHeap(MipMapCount, ArrayLayerCount, const Extent3D &, uint32_t, FormatStore, const char *) {}
-  void recordBufferPlacedInUserResourceHeap(uint32_t, bool, const char *) {}
+  void recordTexturePlacedInUserResourceHeap(MipMapCount, ArrayLayerCount, const Extent3D &, uint32_t, FormatStore, auto &&) {}
+  void recordBufferPlacedInUserResourceHeap(uint32_t, bool, auto &&) {}
   // void setup(const SetupInfo &) {}
   // void shutdown() {}
   // void preRecovery() {}

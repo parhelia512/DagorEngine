@@ -7,6 +7,7 @@
 #include <dag/dag_vectorSet.h>
 
 #include <id/idIndexedFlags.h>
+#include <id/idIndexedMapping.h>
 #include <common/graphDumper.h>
 #include <common/dynamicResolution.h>
 #include <backend/badResolutionTracker.h>
@@ -23,6 +24,7 @@ public:
   ResourceAllocator(IGraphDumper &dumper) : graphDumper{dumper} {}
 
   void applySchedule(int prev_frame, const ResourceSchedule &schedule, const intermediate::Graph &graph,
+    const IdIndexedMapping<intermediate::ResourceIndex, intermediate::EnhancedBarrier> &release_barriers,
     const DynamicResolutions &dyn_resolutions, const BadResolutionTracker::Corrections &corrections,
     PotentialDeactivationSet &potential_deactivations);
 
@@ -44,6 +46,7 @@ public:
 
   // Required for answering external get resource and set resolution requests
   IntermediateResources cachedIntermediateResources;
+  IdIndexedMapping<intermediate::ResourceIndex, intermediate::EnhancedBarrier> cachedReleaseBarriers;
   IdSparseIndexedMapping<intermediate::ResourceIndex, intermediate::DebugResourceName> cachedIntermediateResourceNames;
 
   // Caching of heaps to reduce memory reallocation. For simplicity,

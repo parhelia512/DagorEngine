@@ -38,7 +38,7 @@ Di8JoystickDevice::Di8JoystickDevice(IDirectInputDevice8 *dev, bool must_poll, b
   memset(&state, 0, sizeof(state));
   decodeData = NULL;
   if (!quiet)
-    DEBUG_CTX("added joystick: dev=%p mustPoll=%d", device, mustPoll);
+    debug("[HID][DI8][%s] added joystick: dev=%p mustPoll=%d", devID, device, mustPoll);
 }
 
 
@@ -106,7 +106,7 @@ void Di8JoystickDevice::setDeviceName(const char *nm)
     else
       break;
   name.resize(strlen(name) + 1);
-  DEBUG_CTX("joy device name: <%s>", (char *)name);
+  debug("[HID][DI8][%s] name set to '%s'", this->devID, (char *)name);
 }
 
 
@@ -147,7 +147,7 @@ void Di8JoystickDevice::addAxis(AxisType axis_type, int di_type, const char *axi
         else
         {
           axes.pop_back();
-          logerr("cannot map axis: %d, <%s>", (int)axis_type, axis_name);
+          logerr("[HID][DI8][%s] cannot map axis: %d, <%s>", devID, (int)axis_type, axis_name);
           return;
         }
       }
@@ -156,8 +156,7 @@ void Di8JoystickDevice::addAxis(AxisType axis_type, int di_type, const char *axi
 
     default: axes[l].valStorage = NULL;
   }
-
-  DEBUG_CTX("add axis: %d, <%s>", (int)axis_type, axis_name);
+  // debug("[HID][DI8] add axis: %d, <%s>", (int)axis_type, axis_name);
 }
 
 
@@ -167,11 +166,11 @@ void Di8JoystickDevice::addButton(const char *button_name)
     return;
   if (buttons.size() >= MAX_BUTTONS)
   {
-    DEBUG_CTX("buttons maximum (%d) is already reached; button <%s> skipped", MAX_BUTTONS, button_name);
+    logerr("[HID][DI8] buttons maximum (%d) is already reached; button <%s> skipped", MAX_BUTTONS, button_name);
     return;
   }
   buttons.push_back(String(button_name));
-  DEBUG_CTX("add button: <%s>", button_name);
+  // debug("[HID][DI8] add button: <%s>", button_name);
 }
 
 
@@ -181,7 +180,7 @@ void Di8JoystickDevice::addPovHat(const char *hat_name)
     return;
   if (povHats.size() >= JoystickRawState::MAX_POV_HATS)
   {
-    LOGERR_CTX("maximum joystick pov hats count (%d) reached, hat <%s> skipped", JoystickRawState::MAX_POV_HATS, hat_name);
+    logerr("[HID][DI8] maximum joystick pov hats count (%d) reached, hat <%s> skipped", JoystickRawState::MAX_POV_HATS, hat_name);
     return;
   }
   PovHatData &phd = povHats.push_back();
@@ -222,7 +221,7 @@ bool Di8JoystickDevice::processAxes(JoyCookedCreateParams &dest, const JoyFfCrea
   int i;
   if (src.axisNum < 1 || src.axisNum > 3)
   {
-    DEBUG_CTX("invalid axis num: %d", src.axisNum);
+    debug("[HID][DI8][%s] invalid axis num: %d", devID, src.axisNum);
     return false;
   }
 
@@ -243,14 +242,14 @@ bool Di8JoystickDevice::processAxes(JoyCookedCreateParams &dest, const JoyFfCrea
       for (i = 0; i < src.axisNum; i++)
         dest.dir[i] = src.dir[i] * 180 / PI * DI_DEGREES;
       break;
-    default: DEBUG_CTX("invalid coord type: %d", src.coordType); return false;
+    default: debug("[HID][DI8][%s] invalid coord type: %d", devID, src.coordType); return false;
   }
   dest.axisNum = src.axisNum;
 
   for (i = 0; i < src.axisNum; i++)
     if (src.axisId[i] >= axes.size())
     {
-      DEBUG_CTX("invalid axisId[%d]=%d", i, src.axisId[i]);
+      debug("[HID][DI8][%s] invalid axisId[%d]=%d", devID, i, src.axisId[i]);
       return false;
     }
     else
@@ -359,7 +358,7 @@ void Di8JoystickDevice::acquire()
     const int max_times_to_show_this_debug = 50;
 
     if ((++timesReacquired < max_times_to_show_this_debug) || !(timesReacquired % max_times_to_show_this_debug))
-      DEBUG_CTX("reacqired device %p, restoring effects", this);
+      debug("[HID][DI8][%s] reacqired device %p, restoring effects", this->devID, this);
     for (int i = fxList.size() - 1; i >= 0; i--)
       if (fxList[i])
         fxList[i]->restore();
@@ -424,7 +423,7 @@ bool Di8JoystickDevice::updateState(int dt_msec, bool def)
     }
 
     // record event
-    // DEBUG_CTX("event recv");
+    // debug("[HID][DI8] event recv");
 
     static constexpr int DATA_SZ = 14 * sizeof(int);
     char prev_state[DATA_SZ];
@@ -547,7 +546,7 @@ bool Di8JoystickDevice::updateState(int dt_msec, bool def)
 
     if (client && changed)
       client->stateChanged(this, ordId);
-    // DEBUG_CTX("%d, %d, %d  %d, %d, %d, %d, %d",
+    // debug("[HID][DI8] %d, %d, %d  %d, %d, %d, %d, %d",
     //   state.x, state.y, state.z, state.rx, state.ry, state.rz, state.slider[0], state.slider[1]);
   }
 
@@ -655,7 +654,7 @@ float Di8JoystickDevice::getAxisPos(int axis_id) const
   const int ac = axes.size();
   if (axis_id >= 0 && axis_id < ac)
   {
-    // DEBUG_CTX("axis %d: %d -> %.5f",
+    // debug("[HID][DI8] axis %d: %d -> %.5f",
     //   axis_id, axes[axis_id].valStorage[0], axes[axis_id].v0 + axes[axis_id].dv * axes[axis_id].valStorage[0]);
     return axes[axis_id].v0 + axes[axis_id].dv * axes[axis_id].valStorage[0];
   }

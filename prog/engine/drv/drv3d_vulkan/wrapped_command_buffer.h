@@ -8,6 +8,7 @@
 #include "vulkan_device.h"
 #include "vk_wrapped_handles.h"
 #include "globals.h"
+#include <generic/dag_smallTab.h>
 
 namespace drv3d_vulkan
 {
@@ -20,7 +21,7 @@ struct WrappedCommandBuffer
 
   struct ParametersMemory
   {
-    Tab<void *> overflow;
+    SmallTab<void *> overflow;
     void *data = nullptr;
     uintptr_t ptr = 0;
     size_t size = 0;
@@ -81,23 +82,15 @@ struct WrappedCommandBuffer
   ParametersMemory parMem;
 
   typedef uint8_t CmdID;
-  Tab<uint8_t> cmdMem;
+  // Id and params are packed with no padding: params are misaligned on purpose (denser stream), access them only via memcpy
+  SmallTab<uint8_t> cmdMem;
 
   template <typename T>
-  struct CmdAndParameter
+  void pushCmd(const T &val)
   {
-    CmdID id;
-    T param;
-  };
-
-  template <typename T>
-  T &pushCmd(const T &val)
-  {
-    constexpr size_t sz = sizeof(CmdAndParameter<T>);
-    CmdAndParameter<T> &tgt = *((CmdAndParameter<T> *)cmdMem.append_default(sz));
-    tgt.id = T::ID;
-    tgt.param = val;
-    return tgt.param;
+    uint8_t *dst = cmdMem.append_default(sizeof(CmdID) + sizeof(T));
+    *dst = T::ID;
+    memcpy(dst + sizeof(CmdID), (const void *)&val, sizeof(T));
   }
 
   size_t getMemoryUsedMax();
@@ -244,9 +237,11 @@ struct WrappedCommandBuffer
   {
     if (reorder)
     {
-      VkRenderPassBeginInfo &rpbi = pushCmd<BeginRenderPassParameters>({*pRenderPassBegin, contents}).renderPassBegin;
+      BeginRenderPassParameters par{*pRenderPassBegin, contents};
+      VkRenderPassBeginInfo &rpbi = par.renderPassBegin;
       rpbi.pClearValues = parMem.push(rpbi.clearValueCount, rpbi.pClearValues);
       wrapChainedStructs(reinterpret_cast<VkBaseInStructure *>(&rpbi), reinterpret_cast<const VkBaseInStructure *>(rpbi.pNext));
+      pushCmd<BeginRenderPassParameters>(par);
     }
     else
       Globals::VK::dev.vkCmdBeginRenderPass(cb, pRenderPassBegin, contents);
@@ -289,21 +284,26 @@ struct WrappedCommandBuffer
   {
     static constexpr CmdID ID = AUTO_ID;
 
-    VkPipelineBindPoint pipelineBindPoint;
     VkPipelineLayout layout;
+    const VkDescriptorSet *pDescriptorSets;
+    const uint32_t *pDynamicOffsets;
+    VkPipelineBindPoint pipelineBindPoint;
     uint32_t firstSet;
     uint32_t descriptorSetCount;
-    const VkDescriptorSet *pDescriptorSets;
     uint32_t dynamicOffsetCount;
-    const uint32_t *pDynamicOffsets;
   };
   void wCmdBindDescriptorSets(VkPipelineBindPoint pipelineBindPoint, VkPipelineLayout layout, uint32_t firstSet,
     uint32_t descriptorSetCount, const VkDescriptorSet *pDescriptorSets, uint32_t dynamicOffsetCount, const uint32_t *pDynamicOffsets)
   {
     if (reorder)
     {
-      pushCmd<BindDescriptorSetsParameters>({pipelineBindPoint, layout, firstSet, descriptorSetCount,
-        parMem.push(descriptorSetCount, pDescriptorSets), dynamicOffsetCount, parMem.push(dynamicOffsetCount, pDynamicOffsets)});
+      pushCmd<BindDescriptorSetsParameters>({.layout = layout,
+        .pDescriptorSets = parMem.push(descriptorSetCount, pDescriptorSets),
+        .pDynamicOffsets = parMem.push(dynamicOffsetCount, pDynamicOffsets),
+        .pipelineBindPoint = pipelineBindPoint,
+        .firstSet = firstSet,
+        .descriptorSetCount = descriptorSetCount,
+        .dynamicOffsetCount = dynamicOffsetCount});
     }
     else
       Globals::VK::dev.vkCmdBindDescriptorSets(cb, pipelineBindPoint, layout, firstSet, descriptorSetCount, pDescriptorSets,
@@ -911,15 +911,15 @@ struct WrappedCommandBuffer
   {
     static constexpr CmdID ID = AUTO_ID;
 
+    const VkMemoryBarrier *pMemoryBarriers;
+    const VkBufferMemoryBarrier *pBufferMemoryBarriers;
+    const VkImageMemoryBarrier *pImageMemoryBarriers;
     VkPipelineStageFlags srcStageMask;
     VkPipelineStageFlags dstStageMask;
     VkDependencyFlags dependencyFlags;
     uint32_t memoryBarrierCount;
-    const VkMemoryBarrier *pMemoryBarriers;
     uint32_t bufferMemoryBarrierCount;
-    const VkBufferMemoryBarrier *pBufferMemoryBarriers;
     uint32_t imageMemoryBarrierCount;
-    const VkImageMemoryBarrier *pImageMemoryBarriers;
   };
   void wCmdPipelineBarrier(VkPipelineStageFlags srcStageMask, VkPipelineStageFlags dstStageMask, VkDependencyFlags dependencyFlags,
     uint32_t memoryBarrierCount, const VkMemoryBarrier *pMemoryBarriers, uint32_t bufferMemoryBarrierCount,
@@ -928,10 +928,15 @@ struct WrappedCommandBuffer
   {
     if (reorder)
     {
-      pushCmd<PipelineBarrierParameters>(
-        {srcStageMask, dstStageMask, dependencyFlags, memoryBarrierCount, parMem.push(memoryBarrierCount, pMemoryBarriers),
-          bufferMemoryBarrierCount, parMem.push(bufferMemoryBarrierCount, pBufferMemoryBarriers), imageMemoryBarrierCount,
-          parMem.push(imageMemoryBarrierCount, pImageMemoryBarriers)});
+      pushCmd<PipelineBarrierParameters>({.pMemoryBarriers = parMem.push(memoryBarrierCount, pMemoryBarriers),
+        .pBufferMemoryBarriers = parMem.push(bufferMemoryBarrierCount, pBufferMemoryBarriers),
+        .pImageMemoryBarriers = parMem.push(imageMemoryBarrierCount, pImageMemoryBarriers),
+        .srcStageMask = srcStageMask,
+        .dstStageMask = dstStageMask,
+        .dependencyFlags = dependencyFlags,
+        .memoryBarrierCount = memoryBarrierCount,
+        .bufferMemoryBarrierCount = bufferMemoryBarrierCount,
+        .imageMemoryBarrierCount = imageMemoryBarrierCount});
     }
     else
       Globals::VK::dev.vkCmdPipelineBarrier(cb, srcStageMask, dstStageMask, dependencyFlags, memoryBarrierCount, pMemoryBarriers,
@@ -969,14 +974,15 @@ struct WrappedCommandBuffer
   {
     if (reorder)
     {
-      BuildAccelerationStructuresKHRParameters &par = pushCmd<BuildAccelerationStructuresKHRParameters>(
-        {infoCount, (VkAccelerationStructureBuildGeometryInfoKHR *)parMem.push(infoCount, pInfos),
-          (const VkAccelerationStructureBuildRangeInfoKHR **)parMem.push(infoCount, ppBuildRangeInfos)});
+      BuildAccelerationStructuresKHRParameters par{infoCount,
+        (VkAccelerationStructureBuildGeometryInfoKHR *)parMem.push(infoCount, pInfos),
+        (const VkAccelerationStructureBuildRangeInfoKHR **)parMem.push(infoCount, ppBuildRangeInfos)};
       for (uint32_t i = 0; i < par.infoCount; ++i)
       {
         par.pInfos[i].pGeometries = parMem.push(par.pInfos[i].geometryCount, par.pInfos[i].pGeometries);
         par.ppBuildRangeInfos[i] = parMem.push(par.pInfos[i].geometryCount, par.ppBuildRangeInfos[i]);
       }
+      pushCmd<BuildAccelerationStructuresKHRParameters>(par);
     }
     else
       Globals::VK::dev.vkCmdBuildAccelerationStructuresKHR(cb, infoCount, pInfos, ppBuildRangeInfos);
@@ -1018,11 +1024,11 @@ struct WrappedCommandBuffer
   {
     if (reorder)
     {
-      BuildMicromapsEXTParameters &par =
-        pushCmd<BuildMicromapsEXTParameters>({infoCount, (VkMicromapBuildInfoEXT *)parMem.push(infoCount, pInfos)});
+      BuildMicromapsEXTParameters par{infoCount, (VkMicromapBuildInfoEXT *)parMem.push(infoCount, pInfos)};
       for (uint32_t i = 0; i < par.infoCount; ++i)
         if (par.pInfos[i].pUsageCounts)
           par.pInfos[i].pUsageCounts = parMem.push(par.pInfos[i].usageCountsCount, par.pInfos[i].pUsageCounts);
+      pushCmd<BuildMicromapsEXTParameters>(par);
     }
     else
       Globals::VK::dev.vkCmdBuildMicromapsEXT(cb, infoCount, pInfos);

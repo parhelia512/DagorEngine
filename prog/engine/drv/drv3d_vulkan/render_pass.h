@@ -241,7 +241,7 @@ private:
     // variats can only differ in clear mode
     // can't use encode_variant(CLEAR_TARGET | CLEAR_ZBUFFER | CLEAR_STENCIL, true) + 1
     // because vs fails to evaluate it...
-    NUM_PASS_VARIANTS = 1 + (CLEAR_TARGET | CLEAR_ZBUFFER | CLEAR_STENCIL | CLEAR_DISCARD)
+    NUM_PASS_VARIANTS = 1 + (CLEAR_TARGET | CLEAR_ZBUFFER | CLEAR_STENCIL | DISCARD_ALL)
   };
   Identifier identifier = {};
   VulkanRenderPassHandle variants[NUM_PASS_VARIANTS] = {};

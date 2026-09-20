@@ -7,4 +7,13 @@ camera_in_camera {
   camcam__frame_after_deactivation:b=no
   camcam__lens_only_zoom_enabled:b=no // zoom only in lens area
   camcam__uv_remapping:p4=1,1,1,1
+  camcam__lens_viewport_uv:p4=0,0,1,1
+}
+
+camera_in_camera_dbg_render{
+  _singleton:b=yes
+  _tags:t="render"
+
+  dafg_camera_registrator__name:t="camcam_debug"
+  "camcam_debug_nodes_registrator:tag"{}
 }

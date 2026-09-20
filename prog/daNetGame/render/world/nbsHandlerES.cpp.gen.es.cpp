@@ -97,9 +97,9 @@ static constexpr ecs::ComponentDesc nbs_volfog_init_es_comps[] =
 };
 static void nbs_volfog_init_es_all_events(const ecs::Event &__restrict evt, const ecs::QueryView &__restrict components)
 {
-  G_FAST_ASSERT(evt.is<OnLevelLoaded>());
+  G_FAST_ASSERT(evt.is<EventRenderSceneLoaded>());
   auto comp = components.begin(), compE = components.end(); G_ASSERT(comp!=compE); do
-    nbs_volfog_init_es(static_cast<const OnLevelLoaded&>(evt)
+    nbs_volfog_init_es(static_cast<const EventRenderSceneLoaded&>(evt)
         , ECS_RO_COMP(nbs_volfog_init_es_comps, "volfog_nbs__rootGraph", ecs::string)
     , ECS_RO_COMP(nbs_volfog_init_es_comps, "volfog_nbs__low_range", float)
     , ECS_RO_COMP(nbs_volfog_init_es_comps, "volfog_nbs__high_range", float)
@@ -117,7 +117,7 @@ static ecs::EntitySystemDesc nbs_volfog_init_es_es_desc
   make_span(nbs_volfog_init_es_comps+0, 5)/*ro*/,
   empty_span(),
   empty_span(),
-  ecs::EventSetBuilder<OnLevelLoaded>::build(),
+  ecs::EventSetBuilder<EventRenderSceneLoaded>::build(),
   0
 );
 static constexpr ecs::ComponentDesc nbs_envi_cover_init_es_comps[] =
@@ -127,9 +127,9 @@ static constexpr ecs::ComponentDesc nbs_envi_cover_init_es_comps[] =
 };
 static void nbs_envi_cover_init_es_all_events(const ecs::Event &__restrict evt, const ecs::QueryView &__restrict components)
 {
-  G_FAST_ASSERT(evt.is<OnLevelLoaded>());
+  G_FAST_ASSERT(evt.is<EventRenderSceneLoaded>());
   auto comp = components.begin(), compE = components.end(); G_ASSERT(comp!=compE); do
-    nbs_envi_cover_init_es(static_cast<const OnLevelLoaded&>(evt)
+    nbs_envi_cover_init_es(static_cast<const EventRenderSceneLoaded&>(evt)
         , ECS_RO_COMP(nbs_envi_cover_init_es_comps, "envi_cover_nbs__rootGraph", ecs::string)
     );
   while (++comp != compE);
@@ -143,7 +143,7 @@ static ecs::EntitySystemDesc nbs_envi_cover_init_es_es_desc
   make_span(nbs_envi_cover_init_es_comps+0, 1)/*ro*/,
   empty_span(),
   empty_span(),
-  ecs::EventSetBuilder<OnLevelLoaded>::build(),
+  ecs::EventSetBuilder<EventRenderSceneLoaded>::build(),
   0
 );
 static constexpr ecs::ComponentDesc add_clouds_optional_graph_es_event_handler_comps[] =
@@ -181,9 +181,9 @@ static constexpr ecs::ComponentDesc nbs_clouds_init_es_comps[] =
 };
 static void nbs_clouds_init_es_all_events(const ecs::Event &__restrict evt, const ecs::QueryView &__restrict components)
 {
-  G_FAST_ASSERT(evt.is<OnLevelLoaded>());
+  G_FAST_ASSERT(evt.is<EventRenderSceneLoaded>());
   auto comp = components.begin(), compE = components.end(); G_ASSERT(comp!=compE); do
-    nbs_clouds_init_es(static_cast<const OnLevelLoaded&>(evt)
+    nbs_clouds_init_es(static_cast<const EventRenderSceneLoaded&>(evt)
         , ECS_RO_COMP(nbs_clouds_init_es_comps, "clouds_nbs__rootGraph", ecs::string)
     );
   while (++comp != compE);
@@ -197,7 +197,7 @@ static ecs::EntitySystemDesc nbs_clouds_init_es_es_desc
   make_span(nbs_clouds_init_es_comps+0, 1)/*ro*/,
   empty_span(),
   empty_span(),
-  ecs::EventSetBuilder<OnLevelLoaded>::build(),
+  ecs::EventSetBuilder<EventRenderSceneLoaded>::build(),
   0
 );
 static constexpr ecs::ComponentDesc volfog_optional_graphs_ecs_query_comps[] =

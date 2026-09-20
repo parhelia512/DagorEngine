@@ -45,13 +45,8 @@ SMAA::SMAA(const IPoint2 &resolution) : resolution(resolution)
   init_shader_vars();
   ShaderGlobal::set_float4(smaa_rt_size_var_id, 1.f / resolution.x, 1.f / resolution.y, resolution.x, resolution.y);
 
-  edgeDetect.set(d3d::create_tex(nullptr, resolution.x, resolution.y, TEXFMT_R8G8 | TEXCF_RTARGET, 1, "smaa_edges_tex", RESTAG_AA),
-    "smaa_edges_tex");
-  edgeDetect.setVar();
-  blendWeights.set(
-    d3d::create_tex(nullptr, resolution.x, resolution.y, TEXFMT_R8G8B8A8 | TEXCF_RTARGET, 1, "smaa_blend_tex", RESTAG_AA),
-    "smaa_blend_tex");
-  blendWeights.setVar();
+  edgeDetect = dag::create_tex(nullptr, resolution.x, resolution.y, TEXFMT_R8G8 | TEXCF_RTARGET, 1, "smaa_edges_tex", RESTAG_AA);
+  blendWeights = dag::create_tex(nullptr, resolution.x, resolution.y, TEXFMT_R8G8B8A8 | TEXCF_RTARGET, 1, "smaa_blend_tex", RESTAG_AA);
 
 
   areaTex = SharedTexWithShaderVar(dag::get_tex_gameres("smaa_area_tex"), "smaa_area_tex");
@@ -117,7 +112,7 @@ void SMAA::apply(Texture *source, Texture *destination)
       d3d::set_render_target({}, DepthAccess::RW, {{destination, 0, 0}});
     else
       d3d::set_render_target();
-    d3d::clearview(CLEAR_DISCARD_TARGET, 0, 0.f, 0);
+    d3d::clearview(DISCARD_TARGET, 0, 0.f, 0);
     apply_smaa.render();
   }
 

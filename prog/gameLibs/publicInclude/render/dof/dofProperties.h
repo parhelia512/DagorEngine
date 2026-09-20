@@ -27,7 +27,9 @@ public:
   } // 24mm is 35mm camera height
   bool hasNearDof(float zn, float threshold) const { return calcNearCoc(zn) > threshold; }
   bool hasFarDof(float zf, float threshold) const { return calcFarCoc(zf) > threshold; }
-  bool hasCustomFocalLength() const { return customFocalLength; }
+  // CoC params already describe the final image; DepthOfFieldPS::perform does not rescale them by the camera FOV
+  bool isFovInvariant() const { return fovInvariant; }
+  void setFovInvariant(bool v) { fovInvariant = v; }
 
   float maxNearDofDist(float threshold) const { return nearDofDist(threshold, 0); }
   float minNearDofDist(float threshold) const { return nearDofDist(threshold, 100000); }
@@ -110,7 +112,7 @@ protected:
   float nearCoCScale = 0, nearCoCBias = 0;
   float farLinearMin = 0, farLinearMax = 0;
   float nearLinearMin = 0, nearLinearMax = 0;
-  bool customFocalLength = false;
+  bool fovInvariant = false;
 
   float nearDofDist(float threshold, float def) const { return dist_from_coc_scale_bias(nearCoCScale, nearCoCBias, threshold, def); }
   float farDofDist(float threshold, float def) const { return dist_from_coc_scale_bias(farCoCScale, farCoCBias, threshold, def); }
@@ -214,7 +216,7 @@ inline void DOFProperties::setFilmicDoF(float focalPlane, float fNumber, float s
   farCoCBias = coeff;
   nearCoCScale = -farCoCScale;
   nearCoCBias = -coeff;
-  customFocalLength = focalLength > 0.0f;
+  fovInvariant = focalLength > 0.0f;
 }
 
 inline void DOFProperties::setFilmicInfiniteDoF(float fNumber, float sensorHeight, float focalLengthFor90FOV) // set for FoV at 90

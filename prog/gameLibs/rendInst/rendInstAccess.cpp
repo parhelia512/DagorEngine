@@ -64,6 +64,47 @@ int rendinst::getRIGenMaterialId(const RendInstDesc &desc, bool need_lock)
   return -1;
 }
 
+template <SimpleString rendinst::props::DestrProps::*field>
+static const char *get_ri_gen_destr_str(const rendinst::RendInstDesc &desc)
+{
+  int pool = desc.isRiExtra() ? rendinst::riExtra[desc.pool].riPoolRef : desc.pool;
+  if (pool < 0)
+    return "";
+  RendInstGenData *rgl = rendinst::getRgLayer(desc.isRiExtra() ? rendinst::riExtra[desc.pool].riPoolRefLayer : desc.layer);
+  if (!rgl)
+    return "";
+  G_ASSERTF_RETURN(pool < rgl->rtData->riDestr.size(), "", "pool %i < %i", pool, rgl->rtData->riDestr.size());
+  return (rgl->rtData->riDestr[pool].*field).c_str();
+}
+
+const char *rendinst::getRIGenDestrPropsTag(const RendInstDesc &desc) { return get_ri_gen_destr_str<&props::DestrProps::tag>(desc); }
+
+const char *rendinst::getRIGenDestrPropsDestroyedByTag(const RendInstDesc &desc)
+{
+  return get_ri_gen_destr_str<&props::DestrProps::destroyedByTag>(desc);
+}
+
+const char *rendinst::getRIGenDestrPropsFxTemplate(const RendInstDesc &desc)
+{
+  return get_ri_gen_destr_str<&props::DestrProps::destrFxTemplate>(desc);
+}
+
+bool rendinst::getRIGenOverrideMaterialForTraces(const RendInstDesc &desc, bool need_lock)
+{
+  int pool = desc.isRiExtra() ? rendinst::riExtra[desc.pool].riPoolRef : desc.pool;
+  if (pool < 0)
+    return false;
+  RendInstGenData *rgl = rendinst::getRgLayer(desc.isRiExtra() ? rendinst::riExtra[desc.pool].riPoolRefLayer : desc.layer);
+  if (rgl)
+  {
+    ScopedLockRead lock(need_lock ? &rgl->rtData->riRwCs : nullptr);
+    G_ASSERTF(pool < rgl->rtData->riProperties.size(), "getRIGenOverrideMaterialForTraces failed pool %i < %i", pool,
+      rgl->rtData->riProperties.size());
+    return rgl->rtData->riProperties[pool].overrideMaterialForTraces;
+  }
+  return false;
+}
+
 int rendinst::getRIGenCanopyShape(const RendInstDesc &desc)
 {
   RendInstGenData *rgl = RendInstGenData::getGenDataByLayer(desc);
@@ -293,6 +334,12 @@ const char *rendinst::getRIGenResName(const RendInstDesc &desc)
     return rendinst::riExtraMap.getName(desc.pool);
   RendInstGenData *rgl = getRgLayer(desc.layer);
   return rgl && desc.pool >= 0 && desc.pool < rgl->rtData->riResName.size() ? rgl->rtData->riResName[desc.pool] : nullptr;
+}
+
+const char *rendinst::getRIGenResNameByPool(int layer, int pool)
+{
+  RendInstGenData *rgl = getRgLayer(layer);
+  return (rgl && rgl->rtData && pool >= 0 && pool < rgl->rtData->riResName.size()) ? rgl->rtData->riResName[pool] : nullptr;
 }
 
 const char *rendinst::getRIGenDestrFxTemplateName(const RendInstDesc &desc)
@@ -586,6 +633,36 @@ RenderableInstanceLodsResource *rendinst::getRIGenRes(int layer_ix, int pool_ix)
     return nullptr;
 
   return rgl->rtData->riRes[pool_ix];
+}
+
+RenderableInstanceLodsResource *rendinst::getRIGenResAddRef(int layer_ix, int pool_ix, const char **out_res_name)
+{
+  if (out_res_name)
+    *out_res_name = nullptr;
+  // the loading path fills the pool tables with no lock, and every threaded fill runs
+  // inside the isLoading window (loadRIGen asserts it off the main thread): defer until
+  // the window closes; outside it the tables only append under the same discipline
+  if (RendInstGenData::isLoading)
+    return nullptr;
+  RendInstGenData *rgl = getRgLayer(layer_ix);
+  if (!rgl || !rgl->rtData)
+    return nullptr;
+  if (pool_ix < 0 || pool_ix >= rgl->rtData->riRes.size())
+    return nullptr;
+  RenderableInstanceLodsResource *res = rgl->rtData->riRes[pool_ix];
+  if (res)
+    res->addRef();
+  if (out_res_name)
+    *out_res_name = rgl->rtData->riResName[pool_ix];
+  return res;
+}
+
+int rendinst::getRIGenLayersCount() { return rgLayer.size(); }
+
+int rendinst::getRIGenPoolsCount(int layer_ix)
+{
+  RendInstGenData *rgl = getRgLayer(layer_ix);
+  return rgl && rgl->rtData ? rgl->rtData->riRes.size() : 0;
 }
 
 static inline vec4f v_frac(vec4f value) { return v_sub(value, v_round(value)); }

@@ -28,6 +28,7 @@
 #include "behaviors/bhvInspectPicker.h"
 #include "behaviors/bhvRtPropUpdate.h"
 #include "behaviors/bhvBoundProps.h"
+#include "behaviors/bhvVirtualList.h"
 #include "behaviors/bhvRecalcHandler.h"
 #include "behaviors/bhvDragAndDrop.h"
 #include "behaviors/bhvEatInput.h"
@@ -552,6 +553,7 @@ static void register_std_behaviors(SqModules *module_mgr)
   REG_BHV_DATA(BhvMoveResizeData)
   REG_BHV_DATA(BhvPieMenuData)
   REG_BHV_DATA(BhvBoundPropsData)
+  REG_BHV_DATA(BhvVirtualListData)
 #undef REG_BHV_DATA
 
   Sqrat::Table tblBhv(vm);
@@ -625,6 +627,36 @@ static void register_std_behaviors(SqModules *module_mgr)
     code@
   */
   BHV(Marquee, bhv_marquee)
+  /* qdox @const VirtualList
+
+    Builds only the items inside the scroll viewport. Items come from
+    'virtualItems' instead of 'children'; the skipped runs become empty spacer
+    children so the content extent, and the scrollbar with it, cover the whole
+    list. Every item must lay out at exactly its declared height, carry no
+    margin on the flow axis, and the container no gap.
+
+    The component must be defined by a function: moving the window rebuilds it.
+    'children', 'gap' and 'sortChildren' must be left unset - each of them
+    breaks the child-to-item mapping - and the flow axis must stay aligned to
+    its start, since the other alignments offset by the size of what was built.
+
+    @code Properties:
+      virtualItems: array of component descriptions (used instead of children).
+                    Unlike 'children', a null entry is not skipped - it keeps the
+                    height declared for it, leaving an empty slot. To drop a row,
+                    leave it out of both this and virtualItemHeights. A builder
+                    entry must return a description, never null: a null result
+                    lays out at nothing and loses the height declared for it
+      virtualItemHeight: float, size of one item along the flow axis
+      virtualItemHeights: array of float, per item, overrides virtualItemHeight
+      virtualTail: array of component descriptions built after every item, whatever
+                   the window; their own size covers the end of the content, so
+                   their height need not be declared
+      virtualOverscan: integer, items kept built beyond the viewport, default 3
+      virtualInitialCount: integer, window size before the first layout, default 32
+    code@
+  */
+  BHV(VirtualList, bhv_virtual_list)
   /* qdox @const WheelScroll
 
     @code Properties:

@@ -1,12 +1,13 @@
 // Copyright (C) Gaijin Games KFT.  All rights reserved.
 
 #include <ecs/anim/anim.h>
+#include <ecs/render/animCharUtils.h>
 #include <shaders/dag_dynSceneRes.h>
 #include <memory/dag_framemem.h>
 
 bool recreate_material_with_new_params(AnimV20::AnimcharRendComponent &animchar_render,
-  const eastl::function<bool(const ShaderMaterial *)> &material_filter,
-  const eastl::function<void(ShaderMaterial *)> &shader_var_setter)
+  dag::FunctionRef<bool(const ShaderMaterial *) const> material_filter,
+  dag::FunctionRef<void(ShaderMaterial *) const> shader_var_setter)
 {
   DynamicRenderableSceneInstance *scene = animchar_render.getSceneInstance();
   if (scene == nullptr)
@@ -38,7 +39,7 @@ bool recreate_material_with_new_params(AnimV20::AnimcharRendComponent &animchar_
 }
 
 static bool recreate_material_with_new_params(AnimV20::AnimcharRendComponent &animchar_render,
-  const eastl::function<bool(const char *)> &shader_name_filter, const eastl::function<void(ShaderMaterial *)> &shader_var_setter)
+  dag::FunctionRef<bool(const char *) const> shader_name_filter, dag::FunctionRef<void(ShaderMaterial *) const> shader_var_setter)
 {
   return recreate_material_with_new_params(
     animchar_render, [&shader_name_filter](const ShaderMaterial *m) { return shader_name_filter(m->getShaderClassName()); },
@@ -46,21 +47,21 @@ static bool recreate_material_with_new_params(AnimV20::AnimcharRendComponent &an
 }
 
 bool recreate_material_with_new_params(AnimV20::AnimcharRendComponent &animchar_render,
-  eastl::function<void(ShaderMaterial *)> &&shader_var_setter)
+  dag::FunctionRef<void(ShaderMaterial *) const> shader_var_setter)
 {
-  return recreate_material_with_new_params(animchar_render, [](const char *) { return true; }, eastl::move(shader_var_setter));
+  return recreate_material_with_new_params(animchar_render, [](const char *) { return true; }, shader_var_setter);
 }
 
 bool recreate_material_with_new_params(AnimV20::AnimcharRendComponent &animchar_render, const char *shader_name,
-  eastl::function<void(ShaderMaterial *)> &&shader_var_setter)
+  dag::FunctionRef<void(ShaderMaterial *) const> shader_var_setter)
 {
   return recreate_material_with_new_params(
-    animchar_render, [shader_name](const char *name) { return strcmp(shader_name, name) == 0; }, eastl::move(shader_var_setter));
+    animchar_render, [shader_name](const char *name) { return strcmp(shader_name, name) == 0; }, shader_var_setter);
 }
 
 bool recreate_material_with_new_params(AnimV20::AnimcharRendComponent &animchar_render,
   const eastl::vector<const char *, framemem_allocator> &shader_names_filter,
-  eastl::function<void(ShaderMaterial *)> &&shader_var_setter)
+  dag::FunctionRef<void(ShaderMaterial *) const> shader_var_setter)
 {
   return recreate_material_with_new_params(
     animchar_render,
@@ -71,5 +72,5 @@ bool recreate_material_with_new_params(AnimV20::AnimcharRendComponent &animchar_
           return true;
       return false;
     },
-    eastl::move(shader_var_setter));
+    shader_var_setter);
 }

@@ -25,7 +25,6 @@ bool connect_lru_collision(ContextId, LRURendinstCollision *, lru_collision_gath
   logerr("[BVH] connect_lru_collision: the LruCollision module is compiled out (BVHLruCollision = no)");
   return false;
 }
-void remove_lru_collision(ContextId) {}
 void invalidate_lru_collision(ContextId) {}
 void set_lru_collision_range(ContextId, float, float) {}
 LruCollisionStats get_lru_collision_stats(ContextId) { return {}; }

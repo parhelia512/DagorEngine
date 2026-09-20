@@ -1,5 +1,6 @@
 // Copyright (C) Gaijin Games KFT.  All rights reserved.
 
+#include "debug/names.h"
 #include "device.h"
 
 #if D3D_HAS_RAY_TRACING
@@ -144,7 +145,11 @@ struct AutoLifetimeTimer
   AutoLifetimeTimer(T maker) : timingFormatString{maker()}, timingData{timingFormatString.c_str()}
   {}
 
-  void abbortTiming() { timingData.fmt = nullptr; }
+  void abbortTiming()
+  {
+    if constexpr (requires { timingData.fmt; })
+      timingData.fmt = nullptr;
+  }
 };
 
 // TODO copy pasta from compute signature builder, needs to be refactored
@@ -708,7 +713,12 @@ struct PipelineBuilder : AutoLifetimeTimer<AFP_MSEC>
 
     auto errorCode = DX12_CHECK_RESULT(
       device->CreateRootSignature(0, rootSignBlob->GetBufferPointer(), rootSignBlob->GetBufferSize(), COM_ARGS(&target.signature)));
-    return DX12_CHECK_OK(errorCode);
+    if (!DX12_CHECK_OK(errorCode))
+    {
+      return false;
+    }
+    drv3d_dx12::debug::name_object(target.signature.Get(), drv3d_dx12::debug::make_pool_object_name("RayTraceRootSignature"));
+    return true;
   }
 
   ComPtr<ID3D12StateObject> createPipeline(ID3D12Device5 *device, ID3D12RootSignature *signature)
@@ -776,6 +786,7 @@ struct PipelineBuilder : AutoLifetimeTimer<AFP_MSEC>
     {
       D3D_ERROR("DX12: Failed to create RT pipeline");
     }
+    drv3d_dx12::debug::name_object(o.Get(), drv3d_dx12::debug::format_object_name("RayTracePipeline:%s", name()));
     return o;
   }
 
@@ -833,6 +844,7 @@ struct PipelineBuilder : AutoLifetimeTimer<AFP_MSEC>
     {
       D3D_ERROR("DX12: Failed to add to RT pipeline");
     }
+    drv3d_dx12::debug::name_object(o.Get(), drv3d_dx12::debug::format_object_name("ExpandedRayTracePipeline:%s", name()));
     return o;
   }
 
@@ -899,6 +911,7 @@ struct PipelineBuilder : AutoLifetimeTimer<AFP_MSEC>
     {
       D3D_ERROR("DX12: Failed to create RT pipeline");
     }
+    drv3d_dx12::debug::name_object(o.Get(), drv3d_dx12::debug::format_object_name("RebuiltRayTracePipeline:%s", name()));
     return o;
   }
 

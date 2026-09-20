@@ -18,7 +18,15 @@
   #endif
 #endif
 
+// <immintrin.h> declares every x86 intrinsic down to the AVX512 family; clang parses it in about
+// 90ms per translation unit against 16ms for the <smmintrin.h> an SSE4.1 target needs, MSVC in
+// about a fifth of that. Take it only where the target compiles an intrinsic above SSE4.1; F16C
+// lives in dag_vecMath_fc16.h so a plain SSE4.1 build never pulls the umbrella just for it.
+#if defined(__AVX__) || defined(__AVX2__) || defined(__AVX512F__) || defined(__FMA__) || defined(__F16C__)
 #include <immintrin.h>
+#else
+#include <smmintrin.h>
+#endif
 
 #ifdef _MSC_VER
   #pragma warning(push)
@@ -36,7 +44,9 @@
 VECTORCALL VECMATH_FINLINE vec4f v_zero() { return _mm_setzero_ps(); }
 VECTORCALL VECMATH_FINLINE vec4i v_zeroi() { return _mm_setzero_si128(); }
 VECTORCALL VECMATH_FINLINE vec4f v_set_all_bits() { return v_cast_vec4f(v_set_all_bitsi()); }
-VECTORCALL VECMATH_FINLINE vec4i v_set_all_bitsi() { vec4i u = _mm_undefined_si128(); return v_cmp_eqi(u, u); }
+// comparing zero with itself, not _mm_undefined_si128: same instruction out of both compilers
+// (clang pcmpeqd, MSVC a constant load), and it does not drag in the umbrella intrinsic header
+VECTORCALL VECMATH_FINLINE vec4i v_set_all_bitsi() { vec4i z = v_zeroi(); return v_cmp_eqi(z, z); }
 VECTORCALL VECMATH_FINLINE vec4f v_msbit() { return (const vec4f&)V_CI_SIGN_MASK; }
 VECTORCALL VECMATH_FINLINE vec4f v_splats(float a) {return _mm_set1_ps(a);}//_mm_set_ps1(a) is slower...
 VECTORCALL VECMATH_FINLINE vec4i v_splatsi(int a) {return _mm_set1_epi32(a);}
@@ -482,7 +492,15 @@ VECTORCALL VECMATH_FINLINE vec4f sse2_ceil(vec4f a)
   return _mm_add_ps(fi, _mm_and_ps(_mm_cmplt_ps(fi, a), V_C_ONE));
 }
 
-VECTORCALL VECMATH_FINLINE vec4f sse2_round_ieee(vec4f a) { return _mm_cvtepi32_ps(_mm_cvtps_epi32(a)); }
+VECTORCALL VECMATH_FINLINE vec4f sse2_round_ieee(vec4f a)
+{
+  // cvtps2dq returns INT_MIN outside the int32 range; from 2^23 on every float is integral
+  // already, so those lanes (and inf, NaN) pass through unchanged
+  vec4f fits = _mm_cmplt_ps(_mm_and_ps(a, V_CI_INV_SIGN_MASK), _mm_set1_ps(8388608.f)); // not 'small': rpcndr.h macro
+  // the input sign bit is or-ed back in: cvt turns -0.0 and downward ties like -0.5 into +0.0
+  vec4f r = _mm_or_ps(_mm_cvtepi32_ps(_mm_cvtps_epi32(a)), _mm_and_ps(a, (const vec4f &)V_CI_SIGN_MASK));
+  return v_btsel(a, r, fits);
+}
 
 #if _TARGET_SIMD_SSE >= 4 || defined(_DAGOR_PROJECT_OPTIONAL_SSE4) || defined(__SSE4_1__)
 VECTORCALL VECMATH_FINLINE vec4f sse4_floor(vec4f a) { return _mm_round_ps(a, _MM_FROUND_TO_NEG_INF|_MM_FROUND_NO_EXC); }
@@ -520,6 +538,7 @@ VECTORCALL VECMATH_FINLINE vec4i v_cvt_ceili(vec4f a) {return sse2_cvt_ceili(a);
 VECTORCALL VECMATH_FINLINE vec4i v_cvt_trunci(vec4f a) { return v_cvti_vec4i(a); }
 VECTORCALL VECMATH_FINLINE vec4f v_floor(vec4f a) { return sse2_floor(a); }
 VECTORCALL VECMATH_FINLINE vec4f v_ceil(vec4f a) { return sse2_ceil(a); }
+VECTORCALL VECMATH_FINLINE vec4f v_round_ieee(vec4f a) { return sse2_round_ieee(a); }
 VECTORCALL VECMATH_FINLINE vec4f v_trunc(vec4f a) { return v_cvti_vec4f(v_cvti_vec4i(a)); }
 VECTORCALL VECMATH_FINLINE vec4f v_sel(vec4f a, vec4f b, vec4f c)
 {
@@ -1332,38 +1351,12 @@ VECTORCALL VECMATH_FINLINE int v_test_vec_x_ge_0(vec3f v) { return v_test_vec_x_
 VECTORCALL VECMATH_FINLINE int v_test_vec_x_lt_0(vec3f v) { return v_test_vec_x_lt(v, v_zero()); }
 VECTORCALL VECMATH_FINLINE int v_test_vec_x_le_0(vec3f v) { return v_test_vec_x_le(v, v_zero()); }
 
-#if (!defined(_TARGET_HAS_FC16) && (_TARGET_PC_WIN || defined(__F16C__) || defined(__AVX2__))) || _TARGET_HAS_FC16
-
-// on _TARGET_PC_WIN v_fc16_* are optionally possible
-
 #if (defined(__F16C__) || defined(__AVX2__)) && !defined(_TARGET_HAS_FC16)
 #define _TARGET_HAS_FC16 1 // target should use v_fc16* intrinsics instead of emulation
 #endif
 
-VECTORCALL VECMATH_FINLINE vec4f v_fc16_half_to_float_lo(vec4i v)
-{
-  return _mm_cvtph_ps(v);
-}
-
-VECTORCALL VECMATH_FINLINE vec4i v_fc16_float_to_half_rtne_lo(vec4f v)
-{
-  return _mm_cvtps_ph(v, _MM_FROUND_TO_NEAREST_INT);
-}
-
-VECTORCALL VECMATH_FINLINE vec4i v_fc16_float_to_half_down_lo(vec4f v)
-{
-  return _mm_cvtps_ph(v, _MM_FROUND_TO_NEG_INF);
-}
-
-VECTORCALL VECMATH_FINLINE vec4i v_fc16_float_to_half_up_lo(vec4f v)
-{
-  return _mm_cvtps_ph(v, _MM_FROUND_TO_POS_INF);
-}
-
-VECTORCALL VECMATH_FINLINE vec4i v_fc16_float_to_half_trunc_lo(vec4f v)
-{
-  return _mm_cvtps_ph(v, _MM_FROUND_TO_ZERO);
-}
+#if _TARGET_HAS_FC16
+#include <vecmath/dag_vecMath_fc16.h>
 #endif
 
 #undef V_SHUFFLE

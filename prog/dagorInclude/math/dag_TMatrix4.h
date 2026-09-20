@@ -36,7 +36,7 @@ public:
   static const TMatrix4 IDENT, ZERO;
 
   INLINE TMatrix4() = default;
-  INLINE explicit TMatrix4(real);
+  constexpr INLINE explicit TMatrix4(real);
   INLINE TMatrix4(const TMatrix &tm)
   {
     m[0][0] = tm.m[0][0], m[0][1] = tm.m[0][1], m[0][2] = tm.m[0][2], m[0][3] = 0;
@@ -174,11 +174,10 @@ using Matrix44 = TMatrix4;
 INLINE TMatrix4 operator*(real, const TMatrix4 &);
 INLINE TMatrix4 inverse43(const TMatrix4 &);
 
-INLINE TMatrix4::TMatrix4(real a)
-{
-  memset(m, 0, sizeof(m));
-  _11 = _22 = _33 = _44 = a;
-}
+constexpr INLINE TMatrix4::TMatrix4(real a) : m{{a, 0, 0, 0}, {0, a, 0, 0}, {0, 0, a, 0}, {0, 0, 0, a}} {}
+
+inline constexpr TMatrix4 TMatrix4::IDENT(1);
+inline constexpr TMatrix4 TMatrix4::ZERO(0);
 
 INLINE void TMatrix4::zero() { memset(m, 0, sizeof(m)); }
 

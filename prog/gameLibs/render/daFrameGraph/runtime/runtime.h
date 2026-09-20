@@ -69,6 +69,8 @@ public:
   NodeTracker &getNodeTracker() { return nodeTracker; }
   TypeDb &getTypeDb() { return typeDb; }
   InternalRegistry &getInternalRegistry() { return registry; }
+  intermediate::Graph &getIntermediateGraph() { return intermediateGraph; }
+  sd::NodeStateDeltas &getNodeStateDeltas() { return perNodeStateDeltas; }
   visualization::IVisualizationManager *getVisualizerPtr() { return fgVisManager.get(); }
   DependencyData &getDependencyData() { return dependencyDataCalculator.depData; }
   void updateExternalState(ExternalState state) { nodeExec->externalState = state; }
@@ -156,6 +158,7 @@ private:
   PassColoring passColoring;
   sd::NodeStateDeltas perNodeStateDeltas;
   BarrierScheduler::EventsCollection allResourceEvents;
+  IdIndexedMapping<intermediate::ResourceIndex, intermediate::EnhancedBarrier> untrackedReleaseBarriers;
 
   sd::DeltaCalculator deltaCalculator{intermediateGraph};
 
@@ -190,15 +193,17 @@ private:
   auto resolveNames(const NodesChanged &nodes_changed);
   auto calculateDependencyData(const NodesChanged &nodes_changed);
   void resolveBlobTypes();
-  void validateRegistry(NodesChanged &nodeChanges, ResourcesChanged &resourceChanges);
-  auto buildIrGraph(const ResourcesChanged &resources_changed, const NodesChanged &nodes_changed);
+  void validateRegistry(NodesChanged &nodeChanges, ResourcesChanged &resourceChanges, ResourcesChanged &resourceRequestChanges);
+  auto buildIrGraph(const ResourcesChanged &resources_changed, const ResourcesChanged &resource_requests_changed,
+    const NodesChanged &nodes_changed);
   void colorPasses(const IrNodesChanged &irNodesChanged);
   IrNodesChanged scheduleNodes(const IrNodesChanged &irNodesChanged, const IrResourcesChanged &irResourcesChanged);
   IrResourcesChanged calculateResourceLifetimes();
   void scheduleBarriers(const IrNodesChanged &nodesChanged, const IrResourcesChanged &resourcesChanged,
-    const IrResourcesChanged &lifetimeChangedResources);
+    const IrResourcesChanged &resourceRequestsChanged, const IrResourcesChanged &lifetimeChangedResources);
   void cacheUntrackedReleaseBarriers();
-  void recalculateStateDeltas(const IrNodesChanged &nodesChanged, const IrResourcesChanged &resourcesChanged);
+  void recalculateStateDeltas(const IrNodesChanged &nodesChanged, const IrResourcesChanged &resourcesChanged,
+    const IrResourcesChanged &resourceRequestsChanged);
   void updateAutoResolutions();
   void scheduleResources(const IrResourcesChanged &lifetimeChangedResources);
   void applyAliasSyncStages(const ResourceSchedule &schedule, const BadResolutionTracker::Corrections &corrections);

@@ -404,21 +404,22 @@ static bool get_panel_property_address(int pcb_id, int &out_lod, int &out_mat_id
 
 static String get_asset_dag_file_path(const DagorAsset &asset, int lod)
 {
-  const int lodNameId = asset.props.getNameId("lod");
+  // LOD list may sit in a per-target sub-block; resolve it the way the dabuild exporters do.
+  const DataBlock &props = asset.getProfileTargetProps(_MAKE4C('PC'), nullptr);
+  const int lodNameId = props.getNameId("lod");
   int lodBlockIndex = 0;
 
-  for (int i = 0; const DataBlock *blk = asset.props.getBlock(i); ++i)
+  for (int i = 0; const DataBlock *blk = props.getBlock(i); ++i)
   {
     if (blk->getBlockNameId() != lodNameId)
       continue;
 
     if (lodBlockIndex == lod)
     {
-      const int paramIndex = blk->findParam("fname");
-      const char *dagName = blk->getStr(paramIndex);
+      const char *dagName = blk->getStr("fname", nullptr);
       if (dagName && *dagName)
         return String(0, "%s/%s", asset.getFolderPath(), dagName);
-      return String(0, "%s/%s.lod%02d.dag", asset.getFolderPath(), asset.getName(), lod);
+      return String(0, "%s/%s.lod%02d.dag", asset.getFolderPath(), asset.props.getStr("lod_fn_prefix", asset.getName()), lod);
     }
 
     ++lodBlockIndex;
@@ -2093,8 +2094,8 @@ void EntityMaterialEditor::beginUndo(int lod, int material_index, const EntityMa
   UndoSystem *undoSystem = get_app().getUndoSystem();
   G_ASSERT(undoSystem);
 
-  undoSystem->begin();
-  undoSystem->put(new MaterialEditorUndoObject(*this, lod, material_index));
+  undoSystem->begin(true);
+  undoSystem->put<MaterialEditorUndoObject>(*this, lod, material_index);
 }
 
 void EntityMaterialEditor::endUndo(const char *operation_name, bool accept)

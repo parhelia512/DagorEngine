@@ -7,7 +7,7 @@
 #include <ioSys/dag_dataBlock.h>
 #include <math/dag_mathUtils.h>
 #include <render/daFrameGraph/daFG.h>
-#include <render/world/cameraParams.h>
+#include <render/cameraParams.h>
 #include <render/world/frameGraphHelpers.h>
 #include <shaders/dag_computeShaders.h>
 
@@ -38,9 +38,7 @@ DeepLearningSuperSampling::DeepLearningSuperSampling(const IPoint2 &outputResolu
           .bindToShaderVar("dlss_specular_albedo")
           .clear(make_clear_value(0.5f, 0.5f, 0.5f, 0.f));
 
-        return [this, renderer = ComputeShader("prepare_ray_reconstruction")] {
-          renderer.dispatchThreads(inputResolution.x, inputResolution.y, 1);
-        };
+        registry.dispatchThreads("prepare_ray_reconstruction").x(inputResolution.x).y(inputResolution.y).z(1);
       });
 
     colorBeforeTransparencyNode =
@@ -146,15 +144,12 @@ DeepLearningSuperSampling::DeepLearningSuperSampling(const IPoint2 &outputResolu
         .farZ = camera.ref().noJitterPersp.zf,
         .fov = 2 * atan(1.f / camera.ref().noJitterPersp.wk),
         .aspect = camera.ref().noJitterPersp.hk / camera.ref().noJitterPersp.wk,
-        .depthTexture = depthHndl.get(),
         .motionTexture = motionVectorsHndl.get(),
-        .albedoTexture = albedoHndl ? albedoHndl->get() : nullptr,
         .hitDistTexture = hitDistHndl ? hitDistHndl->get() : nullptr,
         .normalRoughnessTexture = normalRoughnessHndl ? normalRoughnessHndl->get() : nullptr,
         .specularAlbedoTexture = specularAlbedoHndl ? specularAlbedoHndl->get() : nullptr,
         .exposureTexture = exposureNormFactorHndl ? exposureNormFactorHndl->get() : nullptr,
         .ssssGuideTexture = ssssGuideHndl ? ssssGuideHndl->get() : nullptr,
-        .colorBeforeTransparencyTexture = colorBeforeTransparencyHndl ? colorBeforeTransparencyHndl->get() : nullptr,
         .jitterPixelOffset = camera.ref().jitterOffset,
         .inputOffset = IPoint2::ZERO,
         .viewIndex = 0,
@@ -164,7 +159,9 @@ DeepLearningSuperSampling::DeepLearningSuperSampling(const IPoint2 &outputResolu
         .vrVrsMask = nullptr,
         .resetHistory = is_teleporting(camera.ref(), cameraHistory.ref())};
 
-      render::antialiasing::apply_dlss(opaqueFinalTargetHndl.get(), applyContext, antialiasedHndl.get());
+      render::antialiasing::apply_dlss(opaqueFinalTargetHndl.get(), depthHndl.get(),
+        colorBeforeTransparencyHndl ? colorBeforeTransparencyHndl->get() : nullptr, albedoHndl ? albedoHndl->get() : nullptr,
+        applyContext, antialiasedHndl.get());
     };
   });
 
@@ -214,7 +211,6 @@ DeepLearningSuperSampling::DeepLearningSuperSampling(const IPoint2 &outputResolu
       registry.readTextureHistory("ui_tex").atStage(dafg::Stage::PS_OR_CS).useAs(dafg::Usage::SHADER_RESOURCE);
       registry.readTextureHistory("depth_for_postfx").atStage(dafg::Stage::PS_OR_CS).useAs(dafg::Usage::SHADER_RESOURCE);
       registry.readTextureHistory("motion_vecs_after_transparency").atStage(dafg::Stage::PS_OR_CS).useAs(dafg::Usage::SHADER_RESOURCE);
-      return [] {};
     });
   }
 

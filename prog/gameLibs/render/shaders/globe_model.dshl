@@ -76,7 +76,9 @@ shader globe_model
 
   PACK_UNPACK_GBUFFER()
   USE_PIXEL_TANGENT_SPACE()
-  supports global_const_block;
+  (ps) {
+    from_sun_direction@f3 = from_sun_direction;
+  }
   GLOBE_MODEL_GAME_SPECIFICS()
 
   POSTFX_VS_VIEWVEC(0, dir)

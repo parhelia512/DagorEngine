@@ -381,6 +381,7 @@ IOEventsPollLoopImpl::IOEventsPollLoopImpl(int tick_ms, bool use_default_loop)
     loop = get_default_loop();
   else
     loop = ev_loop_new(0);
+  ev_set_syserr_cb(syserr_cb);
   ev_set_userdata(loop, this);
   ev_async_init(&wakeupEvent, dummy_cb); //-V1027
   ev_async_start(loop, &wakeupEvent);

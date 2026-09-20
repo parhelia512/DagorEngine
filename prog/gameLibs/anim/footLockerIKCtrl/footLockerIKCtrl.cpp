@@ -155,17 +155,16 @@ static void get_heightmap_query_result(int &query_id, float &displacement)
   }
 }
 
-static void apply_heightmap_query_results(AnimV20::FootLockerIKCtrl::LegData &leg, float max_toe_move_up, float max_toe_move_down)
+static void apply_heightmap_query_results(AnimV20::FootLockerIKCtrl::LegData &leg, Point2 toe_displacement_limits, Point2 ankle_limits)
 {
-  if (leg.toeHeightmapQueryId < 0 && leg.ankleHeightmapQueryId < 0)
-    return;
   get_heightmap_query_result(leg.toeHeightmapQueryId, leg.toeDisplacement);
   get_heightmap_query_result(leg.ankleHeightmapQueryId, leg.ankleDisplacement);
   if (leg.toeHeightmapQueryId >= 0 || leg.ankleHeightmapQueryId >= 0) // some query is not finished
     return;
+  leg.toeDisplacement = clamp(leg.toeDisplacement, toe_displacement_limits.x, toe_displacement_limits.y);
   leg.lockedPosition.y += leg.toeDisplacement;
   leg.posOffset.y -= leg.toeDisplacement;
-  leg.ankleTargetMove = clamp(leg.ankleTargetMove + leg.ankleDisplacement - leg.toeDisplacement, -max_toe_move_up, max_toe_move_down);
+  leg.ankleTargetMove = clamp(leg.ankleTargetMove + leg.ankleDisplacement - leg.toeDisplacement, ankle_limits.x, ankle_limits.y);
 }
 
 void AnimV20::FootLockerIKCtrl::process(AnimGraphStateHolder &st, real wt, GeomNodeTree &tree, AnimPostBlendCtrl::Context &ctx)
@@ -224,6 +223,7 @@ void AnimV20::FootLockerIKCtrl::process(AnimGraphStateHolder &st, real wt, GeomN
   int proceduralStepLeg = -1;
 
   constexpr float TOE_UNDER_HIP_LIMIT = 0.2f;
+  constexpr float HIP_BREATH_AMPLITUDE = 0.015f;
   float dt = st.getParam(AnimationGraph::PID_GLOBAL_LAST_DT);
   for (int legNo = 0; legNo < numLegs; legNo++)
   {
@@ -246,7 +246,7 @@ void AnimV20::FootLockerIKCtrl::process(AnimGraphStateHolder &st, real wt, GeomN
     if (!leg.isLocked)
     {
       // Do not allow to move the foot too high, close to the hip
-      float traceFromY = min(v_extract_y(hipPos) - TOE_UNDER_HIP_LIMIT, v_extract_y(toePos) + maxFootUp) + hipMoveDown;
+      float traceFromY = min(v_extract_y(hipPos) - TOE_UNDER_HIP_LIMIT, v_extract_y(toePos) + maxFootUp) + hipMoveDown - toeNodeHeight;
       vec3f posOffset = v_ldu(&leg.posOffset.x);
       vec3f toeTraceFrom = v_perm_xbzw(v_add(toePos, posOffset), v_splats(traceFromY));
       float traceDist = traceFromY - v_extract_y(toePos) + maxFootDown;
@@ -395,11 +395,11 @@ void AnimV20::FootLockerIKCtrl::process(AnimGraphStateHolder &st, real wt, GeomN
     }
     else if (leg.isLocked)
     {
-      apply_heightmap_query_results(leg, maxToeMoveUp, maxToeMoveDown);
       vec3f lockedPosRel = v_sub(v_ldu(&leg.lockedPosition.x), worldOffset);
       float horzDistSq = v_extract_x(v_length3_sq_x(v_and(v_sub(lockedPosRel, toe.col3), V_CI_MASK1010)));
       float unreachableDist = v_extract_x(v_length3_x(v_sub(lockedPosRel, hip.col3))) - (len0 + len1 + len2);
-      bool toeTooHigh = v_extract_y(v_sub(lockedPosRel, hip.col3)) > -TOE_UNDER_HIP_LIMIT;
+      float allowedDistAboveToe = v_extract_y(v_sub(hip.col3, lockedPosRel)) - TOE_UNDER_HIP_LIMIT;
+      bool toeTooHigh = allowedDistAboveToe + HIP_BREATH_AMPLITUDE < 0.f;
       if (!needLock || horzDistSq > sqr(unlockRadius) || unreachableDist > unlockWhenUnreachableRadius || toeTooHigh ||
           leg.isProceduralStepActive)
       {
@@ -409,6 +409,14 @@ void AnimV20::FootLockerIKCtrl::process(AnimGraphStateHolder &st, real wt, GeomN
         bool isTeleported = unreachableDist > 1.f;
         vec3f newOffset = isTeleported ? v_zero() : v_sub(v_add(lockedPosRel, v_ldu(&leg.posOffset.x)), toe.col3);
         v_stu_p3(&leg.posOffset.x, newOffset);
+      }
+      if (leg.isLocked && (leg.toeHeightmapQueryId >= 0 || leg.ankleHeightmapQueryId >= 0))
+      {
+        // Apply heightmap query displacement only in safe range, to avoid unlock on next frame. Otherwise we get
+        // stuck in an infinite lock-unlock cycle.
+        float minToeDisplacement = unreachableDist - unlockWhenUnreachableRadius;
+        float maxToeDisplacement = max(allowedDistAboveToe, 0.f);
+        apply_heightmap_query_results(leg, Point2(minToeDisplacement, maxToeDisplacement), Point2(-maxToeMoveUp, maxToeMoveDown));
       }
     }
 
@@ -471,7 +479,7 @@ void AnimV20::FootLockerIKCtrl::process(AnimGraphStateHolder &st, real wt, GeomN
     if (hipMoveDown > hipTargetMove)
     {
       // add small offset to keep space for additive breath animation
-      float hipMoveThreshold = min(hipTargetMove + 0.015f, hipTargetMove * 2.f);
+      float hipMoveThreshold = min(hipTargetMove + HIP_BREATH_AMPLITUDE, hipTargetMove * 2.f);
       hipTargetMove = min(hipMoveThreshold, hipMoveDown);
     }
     hipTargetMove = min(hipTargetMove, maxHipMoveDown);

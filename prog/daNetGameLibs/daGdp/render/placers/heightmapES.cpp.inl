@@ -243,7 +243,7 @@ static inline void heightmap_view_process_es(
       entry.discardOnGrassErasure = dagdp__discard_on_grass_erasure;
       entry.sampleRange = dagdp__sample_range;
       entry.drawRangeLogFloor = floor(log(viewIndependentMaxDrawDistance) / log(dagdp__heightmap_manager.config.drawRangeLogBase));
-      entry.effectiveDensity = dagdp__density / pow2f(dagdp__heightmap_cell_size);
+      entry.effectiveDensity = dagdp__density * GlobalManager::clampedGlobalDensityMul() / pow2f(dagdp__heightmap_cell_size);
       entry.densityMaskChannelWeights = dagdp__density_mask_channel_weights;
 
       for (const auto biomeIndex : dagdp__biomes)

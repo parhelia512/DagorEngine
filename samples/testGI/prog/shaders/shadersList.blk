@@ -16,9 +16,9 @@
   file:t = "./source/copy_hmap_depth.dshl"
   file:t = "scrollShadow.dshl"
   file:t = "heightmap_shadows.dshl"
+  file:t = "../../../../prog/gameLibs/heightmapTrace/shaders/heightmap_max_grid_update.dshl"
+  file:t = "./source/testgi_hmap_trace_debug.dshl"
   file:t = "giHelpers/render_lru_collision.dshl"
-  file:t = "giHelpers/trees_above_process.dshl"
-  file:t = "giHelpers/trees_above_clear.dshl"
 
   file:t = "ssr_ps.dshl"
   file:t = "ssr_compute.dshl"

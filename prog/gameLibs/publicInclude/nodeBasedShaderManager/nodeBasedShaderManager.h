@@ -101,6 +101,14 @@ public:
 
   static void initCompilation();
 
+  // Node-based shaders carry their target shader model with them, in a fsh:t=... field
+  // of the shader graph blk. Both the runtime recompile path and the offline dsc2-nodeBased tool read it
+  // from the very same blk through these helpers, so they always resolve the same target. Defaults to
+  // NBS_DEFAULT_FSH when the block/key is missing.
+  static constexpr const char *NBS_DEFAULT_FSH = "5.0";
+  static const char *getShaderModelFsh(const DataBlock &shader_blk) { return shader_blk.getStr("fsh", NBS_DEFAULT_FSH); }
+  static d3d::shadermodel::Version fshToShaderModel(const char *fsh);
+
   static String buildScriptedShaderName(char const *asset);
 
   ShaderBindumpHandle bindumpHandle() const { return scriptedShadersDumpHandle; }

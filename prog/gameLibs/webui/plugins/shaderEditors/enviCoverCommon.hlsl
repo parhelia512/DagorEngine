@@ -206,11 +206,7 @@ NBSGbuffer init_NBSGbuffer(uint2 tc)
     nbsGbuffer.unpackedGbuffer.normal = readGbuffNormal(tc).xyz * 2 - 1;
   #endif
 
-  // only PS5 does hardware sRGB -> linear conversion on UAV read
-  #if !NBS_HW_SRGB_UAV
-    nbsGbuffer.unpackedGbuffer.albedo = convertGbuffSRGBToLinear(nbsGbuffer.unpackedGbuffer.albedo);
-  #endif
-
+  nbsGbuffer.unpackedGbuffer.albedo = convertGbuffSRGBToLinear(nbsGbuffer.unpackedGbuffer.albedo);
   return nbsGbuffer;
 }
 
@@ -482,7 +478,7 @@ void lerp_shadow(inout NBSGbuffer gbuff, float value, float weight)
 }
 
 // Overwrite with Layer Node
-void overwriteWithLayer(inout NBSGbuffer gbuff, UnpackedGbuffer layer, uint flags, bool shouldOverwrite)
+bool overwriteWithLayer(inout NBSGbuffer gbuff, UnpackedGbuffer layer, uint flags, bool shouldOverwrite)
 {
   BRANCH
   if (shouldOverwrite)
@@ -506,11 +502,13 @@ void overwriteWithLayer(inout NBSGbuffer gbuff, UnpackedGbuffer layer, uint flag
     gbuff.unpackedGbuffer.isHeroCockpit = isMemberMaskSet(flags, IS_HERO_COCKPIT_MASK) ?  layer.isHeroCockpit : gbuff.unpackedGbuffer.isHeroCockpit;
     gbuff.unpackedGbuffer.material = isMemberMaskSet(flags, MATERIAL_MASK) ?  layer.material : gbuff.unpackedGbuffer.material;
     setModifiedFromMix(gbuff.flags, flags);
+    return true;
   }
+  return false;
 }
 
 // Overwrite with Layer Node
-void lerpWithLayer(inout NBSGbuffer gbuff, UnpackedGbuffer layer, uint flags, float weight, bool allowOverwrite)
+bool lerpWithLayer(inout NBSGbuffer gbuff, UnpackedGbuffer layer, uint flags, float weight, bool allowOverwrite)
 {
   BRANCH
   if (weight > EPS)
@@ -534,10 +532,13 @@ void lerpWithLayer(inout NBSGbuffer gbuff, UnpackedGbuffer layer, uint flags, fl
     gbuff.unpackedGbuffer.isHeroCockpit = isMemberMaskSet(flags, IS_HERO_COCKPIT_MASK) && allowOverwrite ?  layer.isHeroCockpit : gbuff.unpackedGbuffer.isHeroCockpit;
     gbuff.unpackedGbuffer.material = isMemberMaskSet(flags, MATERIAL_MASK) && allowOverwrite ?  layer.material : gbuff.unpackedGbuffer.material;
     setModifiedFromMix(gbuff.flags, flags);
+
+    return true;
   }
+  return false;
 }
 
-void ditherWithLayer(inout NBSGbuffer gbuff, UnpackedGbuffer layer, uint flags, float weight, float bias, uint2 tc)
+bool ditherWithLayer(inout NBSGbuffer gbuff, UnpackedGbuffer layer, uint flags, float weight, float bias, uint2 tc)
 {
   BRANCH
   if (weight > EPS && envi_cover_is_temporal_aa != 0)
@@ -546,11 +547,15 @@ void ditherWithLayer(inout NBSGbuffer gbuff, UnpackedGbuffer layer, uint flags, 
 
     if(weight >= dither_limit + bias)
       overwriteWithLayer(gbuff, layer, flags, true);
+
+    return true;
   }
   else if (weight > EPS && envi_cover_is_temporal_aa == 0)
   {
     lerpWithLayer(gbuff, layer, flags, weight, true);
+    return true;
   }
+  return false;
 }
 
 

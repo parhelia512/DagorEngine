@@ -36,9 +36,12 @@ struct PlaneBasis
     U = normalize(cross(plane.n, fabsf(plane.n.y) < 0.9f ? Point3(0, 1, 0) : Point3(1, 0, 0)));
     V = cross(U, plane.n);
   }
-  Point3 origin() const { return -plane.n * plane.d; }
-  Point2 project(Point3 p) const { return Point2(dot(U, p), dot(V, p)); }
-  Point3 unProject(Point2 uv) const { return U * uv.x + V * uv.y + origin(); }
+  explicit PlaneBasis(Plane3 plane) : PlaneBasis(v_ldu(&plane.n.x)) {}
+
+  __forceinline Point3 origin() const { return -plane.n * plane.d; }
+  __forceinline Point2 project(Point3 p) const { return Point2(dot(U, p), dot(V, p)); }
+  __forceinline Point3 unProject(Point2 uv) const { return U * uv.x + V * uv.y + origin(); }
+  __forceinline Point3 unProject(Point2 uv, float h) const { return U * uv.x + V * uv.y - plane.n * (plane.d - h); }
 };
 
 struct CutFaceData

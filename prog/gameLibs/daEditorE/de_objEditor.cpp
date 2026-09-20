@@ -380,7 +380,7 @@ void ObjectEditor::deleteSelectedObjects(bool use_undo)
   Tab<EditableObject *> list(tmpmem);
   list.reserve(selection.size());
 
-  DAEDITOR4.undoSys.begin();
+  DAEDITOR4.undoSys.begin(true);
 
   for (int i = 0; i < selection.size(); ++i)
     if (selection[i]->mayDelete())
@@ -536,7 +536,7 @@ void ObjectEditor::changed(const Point3 &delta)
   {
     if (DAEDITOR4.undoSys.is_holding())
       DAEDITOR4.undoSys.cancel();
-    DAEDITOR4.undoSys.begin();
+    DAEDITOR4.undoSys.begin(true);
   }
 
   IDaEditor4Engine::BasisType basis = DAEDITOR4.getGizmoBasisType();
@@ -589,7 +589,7 @@ void ObjectEditor::gizmoStarted()
     cloneDelta = getPt();
   }
 
-  DAEDITOR4.undoSys.begin();
+  DAEDITOR4.undoSys.begin(true);
   if (cloneMode)
   {
     clear_and_shrink(cloneObjs);

@@ -6,7 +6,95 @@
 #include <ioSys/dag_chainedMemIo.h>
 #include <ioSys/dag_dataBlock.h>
 #include <osApiWrappers/dag_direct.h>
+#include <osApiWrappers/dag_rwSpinLock.h>
+#include <osApiWrappers/dag_rwLock.h>
 #include <util/dag_string.h>
+#include <EASTL/utility.h>
+
+DataBlock gameres_rendinst_desc;
+DataBlock gameres_dynmodel_desc;
+
+// loading is serialized on one job manager thread, but the main thread may pull a resource and read the index meanwhile;
+// the lock suits that ratio, rare writes against thousands of reads
+static NoWritersSpinLockReadWriteLock riDescIndexLock;
+static Tab<int> riDescIndex(inimem);     // block index, -1 for none
+static uint32_t riDescIndexedBlocks = 0; // 0 while the index holds nothing
+
+void gameres_invalidate_ri_desc_index(const DataBlock &desc)
+{
+  if (&desc != &gameres_rendinst_desc)
+    return;
+  ScopedLockWriteTemplate<NoWritersSpinLockReadWriteLock> lock(riDescIndexLock);
+  clear_and_shrink(riDescIndex);
+  riDescIndexedBlocks = 0;
+}
+
+static void build_ri_desc_index()
+{
+  ScopedLockWriteTemplate<NoWritersSpinLockReadWriteLock> lock(riDescIndexLock);
+  const uint32_t blocks = gameres_rendinst_desc.blockCount();
+  int maxNameId = -1;
+  for (uint32_t i = 0; i < blocks; i++)
+    maxNameId = max(maxNameId, gameres_rendinst_desc.getBlock(i)->getBlockNameId());
+  riDescIndex.resize(maxNameId + 1);
+  mem_set_ff(riDescIndex); // block 0 is valid, so -1 is the empty slot
+  for (uint32_t i = 0; i < blocks; i++)
+  {
+    const DataBlock *b = gameres_rendinst_desc.getBlock(i);
+    if (int &slot = riDescIndex[b->getBlockNameId()]; slot < 0)
+      slot = i;
+    else if (DAGOR_DBGLEVEL > 0)
+      logerr("riDesc: duplicate block <%s>, only the first one is used", b->getBlockName());
+  }
+  riDescIndexedBlocks = blocks;
+}
+
+const DataBlock *gameres_find_ri_desc_block(const char *name)
+{
+  ScopedLockReadTemplate<NoWritersSpinLockReadWriteLock> lock(riDescIndexLock);
+  const int nameId = gameres_rendinst_desc.getNameId(name); // -1 for a null name too
+  if (nameId < 0)
+    return nullptr;
+  // by name id, so the dev-only singleBlockChecking pass over every block is skipped
+  if (riDescIndexedBlocks != gameres_rendinst_desc.blockCount())
+    return gameres_rendinst_desc.getBlockByNameId(nameId);
+  if (nameId >= riDescIndex.size() || riDescIndex[nameId] < 0)
+    return nullptr;
+  const DataBlock *b = gameres_rendinst_desc.getBlock(riDescIndex[nameId]);
+  if (DAGOR_LIKELY(b->getBlockNameId() == nameId))
+    return b;
+  // a mutation that keeps the block count leaves the epoch above satisfied and the slot pointing at whatever block took that position;
+  // say so in a dev build, and answer from the desc rather than answer a block under another name
+  G_ASSERTF(false, "riDesc index is stale for <%s>", name);
+  return gameres_rendinst_desc.getBlockByNameId(nameId);
+}
+
+DataBlock *gameres_add_ri_desc_block(const char *name)
+{
+  // null rather than a block, in release too - G_ASSERTF_RETURN drops only the report there:
+  // the caller faults on the return value instead of riDesc holding two blocks under one name,
+  // which the index and a rebuild would answer differently. Neither case happens today
+  G_ASSERTF_RETURN(name && *name && !gameres_find_ri_desc_block(name), nullptr, // find takes its own lock
+    "bad or duplicate riDesc name <%s>", name);
+
+  ScopedLockWriteTemplate<NoWritersSpinLockReadWriteLock> lock(riDescIndexLock);
+  const uint32_t at = gameres_rendinst_desc.blockCount();
+  // addNewBlock, not addBlock, which would scan every block to prove the name is absent;
+  // it appends, so the new block sits at the old block count
+  DataBlock *b = gameres_rendinst_desc.addNewBlock(name); // under the lock: interns a name find_block reads
+  if (!b || !riDescIndexedBlocks)
+    return b;
+  const int nameId = b->getBlockNameId();
+  if (nameId >= riDescIndex.size())
+  {
+    const int was = riDescIndex.size();
+    riDescIndex.resize(nameId + 1);
+    mem_set_ff(make_span(riDescIndex.data() + was, riDescIndex.size() - was));
+  }
+  riDescIndex[nameId] = at;
+  riDescIndexedBlocks = gameres_rendinst_desc.blockCount();
+  return b;
+}
 
 void gameres_append_desc(DataBlock &desc, const char *desc_fn, const char *pkg_folder, bool allow_override)
 {
@@ -32,6 +120,17 @@ void gameres_append_desc(DataBlock &desc, const char *desc_fn, const char *pkg_f
         });
       }
       int processed_cnt = 0, replaced_cnt = 0;
+      // here, not at entry: every exit above refuses the append without touching a block,
+      // and dropping the index for one of those puts every later lookup on the scan path until the next optimize
+      gameres_invalidate_ri_desc_index(desc);
+      // an empty desc takes the file whole, so hand its storage over instead of rebuilding every block and param in place;
+      // blk.paramCount() is in the test because the loop below copies blocks only, and a move brings the file's params too
+      if (!patch_mode && desc.blockCount() == 0 && desc.paramCount() == 0 && blk.paramCount() == 0)
+      {
+        // blk is topmost, so the move swaps: desc takes the blocks and blk is left empty, which skips the loop below
+        desc = eastl::move(blk);
+        processed_cnt = desc.blockCount();
+      }
       for (int j = 0; j < blk.blockCount(); j++)
       {
         if (patch_mode)
@@ -66,6 +165,7 @@ void gameres_patch_desc(DataBlock &desc, const char *patch_desc_fn, const char *
     if (blk.load(patch_desc_fn) && !blk.isEmpty() &&
         validate_file_md5_hash(desc_fn, blk.getStr("base_md5", ""), "validation failed for patch: "))
     {
+      gameres_invalidate_ri_desc_index(desc); // here, not at entry: the exits above refuse the patch, blocks untouched
       for (int j = 0; j < blk.blockCount(); j++)
         if (!blk.getBlock(j)->isEmpty())
           desc.addBlock(blk.getBlock(j)->getBlockName())->setFrom(blk.getBlock(j));
@@ -82,7 +182,7 @@ void gameres_patch_desc(DataBlock &desc, const char *patch_desc_fn, const char *
     }
   }
 }
-void gameres_final_optimize_desc(DataBlock &desc, const char *label, dag::ConstSpan<const char *> strip_sub_blocks)
+static void final_optimize_desc(DataBlock &desc, const char *label, dag::ConstSpan<const char *> strip_sub_blocks)
 {
   if (desc.getBool("optimized", true) || desc.blockCount() + desc.paramCount() == 0)
     return;
@@ -114,4 +214,18 @@ void gameres_final_optimize_desc(DataBlock &desc, const char *label, dag::ConstS
     debug("%s: optimized to ROM BLK format, size=%dK, %d names", label, crd.getTargetDataSize() >> 10, desc.blockCount());
   else
     logerr("%s: failed to reload %s=%p from memory stream (sz=%d)", __FUNCTION__, label, &desc, crd.getTargetDataSize());
+}
+
+void gameres_final_optimize_desc(DataBlock &desc, const char *label, dag::ConstSpan<const char *> strip_sub_blocks)
+{
+  gameres_invalidate_ri_desc_index(desc); // the reload recreates every block and renumbers the name ids
+  final_optimize_desc(desc, label, strip_sub_blocks);
+  if (&desc == &gameres_rendinst_desc)
+    build_ri_desc_index(); // only here: the optimize is the one point where the desc is settled
+}
+
+void gameres_reset_desc(DataBlock &desc)
+{
+  gameres_invalidate_ri_desc_index(desc);
+  desc.reset();
 }

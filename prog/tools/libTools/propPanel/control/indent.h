@@ -17,6 +17,8 @@ public:
   unsigned getTypeMaskForSet() const override { return 0; }
   unsigned getTypeMaskForGet() const override { return 0; }
 
+  const char *getImguiTypeName() const override { return "Indent"; }
+
   void updateImgui() override { ImGui::Dummy(ImVec2(mW, mH)); }
 };
 

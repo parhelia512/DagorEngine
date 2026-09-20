@@ -16,6 +16,8 @@
 #include <debug/dag_assert.h>
 #include <EASTL/iterator.h>
 #include <EASTL/array.h>
+#include <EASTL/tuple.h>
+#include <EASTL/unique_ptr.h>
 #include <render/daFrameGraph/daFG.h>
 #include <render/antialiasing.h>
 #include <gui/dag_imgui.h>
@@ -23,7 +25,7 @@
 
 #include <numeric>
 
-#include "../shaders/tsr_coeffs.hlsli"
+#include "shaders/tsr_coeffs.hlsli"
 #include "drv/3d/dag_buffers.h"
 #include "drv/3d/dag_consts.h"
 #include "drv/3d/dag_drv3d_multi.h"
@@ -33,6 +35,7 @@
   VAR(tsr_input_color)                      \
   VAR(tsr_history_color)                    \
   VAR(tsr_history_confidence)               \
+  VAR(tsr_history_depth)                    \
   VAR(tsr_reactive_mask)                    \
   VAR(tsr_jitter_offset)                    \
   VAR(tsr_input_resolution)                 \
@@ -45,6 +48,9 @@
   VAR(tsr_resampling_loss_sigma)            \
   VAR(tsr_depth_overhang_sigma)             \
   VAR(tsr_process_loss)                     \
+  VAR(tsr_stability_sigma)                  \
+  VAR(tsr_stability_motion_sigma)           \
+  VAR(tsr_stability_edge_sigma)             \
   VAR(tsr_debug)                            \
   VAR(tsr_scale_base)                       \
   VAR(tsr_scale_motion_steepness)           \
@@ -76,6 +82,9 @@ float tsr_sharpening = 0.5f;
 float tsr_resampling_loss_sigma = 1.0f;
 float tsr_depth_overhang_sigma = 0.01f;
 float tsr_process_loss = 0.99f;
+float tsr_stability_sigma = 0.1f;
+float tsr_stability_motion_sigma = 2.0f;
+float tsr_stability_edge_sigma = 0.003f;
 float tsr_debug_update_override = 1.0f;
 int tsr_debug_view = 1;
 float tsr_scale_base = 1.5f;
@@ -199,6 +208,7 @@ TemporalSuperResolution::TemporalSuperResolution(const IPoint2 &input_resolution
   ShaderGlobal::set_sampler(get_shader_variable_id("tsr_input_color_samplerstate", true), bilinearSmp);
   ShaderGlobal::set_sampler(get_shader_variable_id("tsr_history_color_samplerstate"), bilinearSmp);
   ShaderGlobal::set_sampler(get_shader_variable_id("tsr_history_confidence_samplerstate"), bilinearSmp);
+  ShaderGlobal::set_sampler(get_shader_variable_id("tsr_history_depth_samplerstate"), bilinearSmp);
   ShaderGlobal::set_sampler(get_shader_variable_id("tsr_reactive_mask_samplerstate"), bilinearSmp);
 }
 
@@ -217,12 +227,14 @@ void TemporalSuperResolution::releaseShaderResources()
   filterWeightsBuf.close();
 }
 
+unsigned int TemporalSuperResolution::getOutputTextureFormat() const { return TEXFMT_R11G11B10F; }
+
 dafg::NodeHandle TemporalSuperResolution::createApplierNode(const char *input_name)
 {
   return dafg::register_node("tsr", DAFG_PP_NODE_SRC, [this, input_name](dafg::Registry registry) {
     auto applyCtxHndl = registry.readBlob<render::antialiasing::ApplyContext>("aa_apply_context").handle();
 
-    unsigned int antialiasedTexFlags = TEXFMT_A16B16G16R16F | TEXCF_UNORDERED | extraTexFlags;
+    unsigned int antialiasedTexFlags = getOutputTextureFormat() | TEXCF_UNORDERED | extraTexFlags;
     auto antialiasedHndl = registry.createTexture2d("frame_after_aa", {antialiasedTexFlags, outputResolution})
                              .withHistory(dafg::History::ClearZeroOnFirstFrame)
                              .atStage(dafg::Stage::PS_OR_CS)
@@ -239,6 +251,15 @@ dafg::NodeHandle TemporalSuperResolution::createApplierNode(const char *input_na
     auto antialiasedHistHndl =
       registry.readTextureHistory("frame_after_aa").atStage(dafg::Stage::PS_OR_CS).useAs(dafg::Usage::SHADER_RESOURCE).handle();
 
+    auto depthHndl = registry.createTexture2d("tsr_depth", {TEXFMT_R16F | TEXCF_UNORDERED, outputResolution})
+                       .withHistory(dafg::History::ClearZeroOnFirstFrame)
+                       .atStage(dafg::Stage::PS_OR_CS)
+                       .useAs(dafg::Usage::SHADER_RESOURCE)
+                       .handle();
+
+    auto depthHistHndl =
+      registry.readTextureHistory("tsr_depth").atStage(dafg::Stage::PS_OR_CS).useAs(dafg::Usage::SHADER_RESOURCE).handle();
+
     auto confidenceHndl = registry.createTexture2d("tsr_confidence", {TEXFMT_R8 | TEXCF_UNORDERED, outputResolution})
                             .withHistory(dafg::History::ClearZeroOnFirstFrame)
                             .atStage(dafg::Stage::PS_OR_CS)
@@ -252,14 +273,27 @@ dafg::NodeHandle TemporalSuperResolution::createApplierNode(const char *input_na
 
     registry.readTexture("depth_after_transparency").atStage(dafg::Stage::COMPUTE).bindToShaderVar("depth_gbuf");
 
-    return [this, frameHndl, applyCtxHndl, antialiasedHndl, antialiasedHistHndl, antialiasedHistCopyHndl, confidenceHndl,
-             confidenceHistHndl] {
+    auto resources = eastl::make_tuple(frameHndl, applyCtxHndl, antialiasedHndl, antialiasedHistHndl, antialiasedHistCopyHndl,
+      depthHndl, depthHistHndl, confidenceHndl, confidenceHistHndl);
+
+    return [this, resources = eastl::make_unique<decltype(resources)>(resources)] {
+      auto [frameHndl, applyCtxHndl, antialiasedHndl, antialiasedHistHndl, antialiasedHistCopyHndl, depthHndl, depthHistHndl,
+        confidenceHndl, confidenceHistHndl] = *resources;
       const render::antialiasing::ApplyContext &applyCtx = applyCtxHndl.ref();
 
-      auto historyTarget = antialiasedHistCopyHndl.get() ? antialiasedHistCopyHndl.get() : antialiasedHistHndl.get();
-      apply(frameHndl.get(), antialiasedHndl.get(), historyTarget, confidenceHndl.get(), confidenceHistHndl.get(),
-        applyCtx.reactiveTexture, getDebugRenderTarget().getTex2D(), applyCtx.depthTexTransform, applyCtx.resetHistory,
-        applyCtx.jitterPixelOffset, applyCtx.vrVrsMask, applyCtx.inputResolution);
+      ApplyTextures textures;
+      textures.inColor = frameHndl.get();
+      textures.outColor = antialiasedHndl.get();
+      textures.historyColor = antialiasedHistCopyHndl.get() ? antialiasedHistCopyHndl.get() : antialiasedHistHndl.get();
+      textures.outDepth = depthHndl.get();
+      textures.historyDepth = depthHistHndl.get();
+      textures.outConfidence = confidenceHndl.get();
+      textures.historyConfidence = confidenceHistHndl.get();
+      textures.reactiveMask = applyCtx.reactiveTexture;
+      textures.vrsMask = applyCtx.vrVrsMask;
+      textures.debug = getDebugRenderTarget().getTex2D();
+
+      apply(textures, applyCtx.depthTexTransform, applyCtx.resetHistory, applyCtx.jitterPixelOffset, applyCtx.inputResolution);
     };
   });
 }
@@ -282,13 +316,12 @@ TextureIDPair TemporalSuperResolution::getDebugRenderTarget()
 #endif
 }
 
-void TemporalSuperResolution::apply(Texture *in_color, Texture *out_color, Texture *history_color, Texture *out_confidence,
-  Texture *history_confidence, Texture *reactive_tex, Texture *debug_texture, const Point4 &uv_transform, bool reset,
-  Point2 jitterPixelOffset, Texture *vrs_mask, IPoint2 input_resolution)
+void TemporalSuperResolution::apply(const ApplyTextures &textures, const Point4 &uv_transform, bool reset, Point2 jitterPixelOffset,
+  IPoint2 input_resolution)
 {
   if (!tsr)
   {
-    d3d::stretch_rect(in_color, out_color);
+    d3d::stretch_rect(textures.inColor, textures.outColor);
     return;
   }
 
@@ -310,6 +343,9 @@ void TemporalSuperResolution::apply(Texture *in_color, Texture *out_color, Textu
   ShaderGlobal::set_float(tsr_resampling_loss_sigma_var_id, tsr_resampling_loss_sigma);
   ShaderGlobal::set_float(tsr_depth_overhang_sigma_var_id, tsr_depth_overhang_sigma);
   ShaderGlobal::set_float(tsr_process_loss_var_id, tsr_process_loss);
+  ShaderGlobal::set_float(tsr_stability_sigma_var_id, tsr_stability_sigma);
+  ShaderGlobal::set_float(tsr_stability_motion_sigma_var_id, tsr_stability_motion_sigma);
+  ShaderGlobal::set_float(tsr_stability_edge_sigma_var_id, tsr_stability_edge_sigma);
   ShaderGlobal::set_float(tsr_scale_base_var_id, tsr_scale_base);
   ShaderGlobal::set_float(tsr_scale_motion_steepness_var_id, tsr_scale_motion_steepness);
   ShaderGlobal::set_float(tsr_scale_motion_max_var_id, tsr_scale_motion_max);
@@ -319,7 +355,7 @@ void TemporalSuperResolution::apply(Texture *in_color, Texture *out_color, Textu
   ShaderGlobal::set_int4(tsr_phase_configuration_var_id, phaseConfig.Qx, phaseConfig.Qy, phaseConfig.Px, phaseConfig.Py);
 
   const unsigned totalPhases = phaseConfig.Px * phaseConfig.Py;
-  const bool usePrecalculatedWeights = allow_precalculated_filter_weights && !vrs_mask && totalPhases <= TSR_MAX_PHASES;
+  const bool usePrecalculatedWeights = allow_precalculated_filter_weights && !textures.vrsMask && totalPhases <= TSR_MAX_PHASES;
   ShaderGlobal::set_int(tsr_use_precalculated_filter_weights_var_id, usePrecalculatedWeights ? 1 : 0);
 
   if (usePrecalculatedWeights)
@@ -345,30 +381,33 @@ void TemporalSuperResolution::apply(Texture *in_color, Texture *out_color, Textu
     ShaderGlobal::set_buffer(tsr_kernel_weights_var_id, nullptr);
   }
 
-  d3d::resource_barrier({in_color, RB_RO_SRV | RB_STAGE_COMPUTE, 0, 0});
-  d3d::resource_barrier({history_color, RB_RO_SRV | RB_STAGE_COMPUTE, 0, 0});
-  d3d::resource_barrier({history_confidence, RB_RO_SRV | RB_STAGE_COMPUTE, 0, 0});
+  d3d::resource_barrier({textures.inColor, RB_RO_SRV | RB_STAGE_COMPUTE, 0, 0});
+  d3d::resource_barrier({textures.historyColor, RB_RO_SRV | RB_STAGE_COMPUTE, 0, 0});
+  d3d::resource_barrier({textures.historyDepth, RB_RO_SRV | RB_STAGE_COMPUTE, 0, 0});
+  d3d::resource_barrier({textures.historyConfidence, RB_RO_SRV | RB_STAGE_COMPUTE, 0, 0});
 
-  if (reactive_tex)
+  if (textures.reactiveMask)
   {
-    d3d::resource_barrier({reactive_tex, RB_RO_SRV | RB_STAGE_COMPUTE, 0, 0});
+    d3d::resource_barrier({textures.reactiveMask, RB_RO_SRV | RB_STAGE_COMPUTE, 0, 0});
   }
-  if (vrs_mask)
+  if (textures.vrsMask)
   {
-    d3d::resource_barrier({vrs_mask, RB_RO_SRV | RB_STAGE_COMPUTE, 0, 0});
+    d3d::resource_barrier({textures.vrsMask, RB_RO_SRV | RB_STAGE_COMPUTE, 0, 0});
   }
 
-  ShaderGlobal::set_texture(tsr_input_color_var_id, in_color);
-  ShaderGlobal::set_texture(tsr_history_color_var_id, history_color);
-  ShaderGlobal::set_texture(tsr_history_confidence_var_id, history_confidence);
-  ShaderGlobal::set_texture(tsr_reactive_mask_var_id, reactive_tex);
-  ShaderGlobal::set_texture(tsr_vrs_mask_var_id, vrs_mask);
+  ShaderGlobal::set_texture(tsr_input_color_var_id, textures.inColor);
+  ShaderGlobal::set_texture(tsr_history_color_var_id, textures.historyColor);
+  ShaderGlobal::set_texture(tsr_history_depth_var_id, textures.historyDepth);
+  ShaderGlobal::set_texture(tsr_history_confidence_var_id, textures.historyConfidence);
+  ShaderGlobal::set_texture(tsr_reactive_mask_var_id, textures.reactiveMask);
+  ShaderGlobal::set_texture(tsr_vrs_mask_var_id, textures.vrsMask);
 
   ShaderGlobal::set_float4(tsr_uv_transform_var_id, uv_transform);
 
-  STATE_GUARD_NULLPTR(d3d::set_rwtex(STAGE_CS, 7, VALUE, 0, 0), out_color);
-  STATE_GUARD_NULLPTR(d3d::set_rwtex(STAGE_CS, 6, VALUE, 0, 0), out_confidence);
-  STATE_GUARD_NULLPTR(d3d::set_rwtex(STAGE_CS, 5, VALUE, 0, 0), debug_texture);
+  STATE_GUARD_NULLPTR(d3d::set_rwtex(STAGE_CS, 7, VALUE, 0, 0), textures.outColor);
+  STATE_GUARD_NULLPTR(d3d::set_rwtex(STAGE_CS, 6, VALUE, 0, 0), textures.outConfidence);
+  STATE_GUARD_NULLPTR(d3d::set_rwtex(STAGE_CS, 4, VALUE, 0, 0), textures.outDepth);
+  STATE_GUARD_NULLPTR(d3d::set_rwtex(STAGE_CS, 5, VALUE, 0, 0), textures.debug);
 
   G_ASSERT(preset != Preset::Vr || render_vr_cs);
 
@@ -376,6 +415,7 @@ void TemporalSuperResolution::apply(Texture *in_color, Texture *out_color, Textu
 
   ShaderGlobal::set_texture(tsr_input_color_var_id, BAD_TEXTUREID);
   ShaderGlobal::set_texture(tsr_history_color_var_id, BAD_TEXTUREID);
+  ShaderGlobal::set_texture(tsr_history_depth_var_id, BAD_TEXTUREID);
   ShaderGlobal::set_texture(tsr_history_confidence_var_id, BAD_TEXTUREID);
   ShaderGlobal::set_texture(tsr_reactive_mask_var_id, BAD_TEXTUREID);
   ShaderGlobal::set_texture(tsr_vrs_mask_var_id, BAD_TEXTUREID);
@@ -399,6 +439,9 @@ static void render_imgui()
   ImGui::SliderFloat("Resampling Loss Sigma", &tsr_resampling_loss_sigma, 0.0f, 10.0f);
   ImGui::SliderFloat("Depth Overhang Sigma", &tsr_depth_overhang_sigma, 0.0f, 0.1f, "%.6f");
   ImGui::SliderFloat("Process Loss", &tsr_process_loss, 0.0f, 1.0f);
+  ImGui::SliderFloat("Stability Sigma", &tsr_stability_sigma, 0.0f, 1.0f, "%.3f");
+  ImGui::SliderFloat("Stability Motion Sigma", &tsr_stability_motion_sigma, 0.0f, 16.0f, "%.1f px");
+  ImGui::SliderFloat("Stability Edge Sigma", &tsr_stability_edge_sigma, 0.0f, 0.1f, "%.4f");
   ImGui::SliderFloat("Debug Update Override", &tsr_debug_update_override, 0.0f, 1.0f);
   ImGui::SliderFloat("Scale Base", &tsr_scale_base, 0.0f, 10.0f);
   ImGui::SliderFloat("Scale Motion Steepness", &tsr_scale_motion_steepness, 0.0f, 1e6f);
@@ -415,8 +458,8 @@ static void render_imgui()
   if (!debugTex.getTex2D())
     return;
 
-  static const char *const debug_view_labels[] = {
-    "Confidence", "Rejection", "Tonemapped color", "Variance clipping AABB scale", "History", "Rectified history"};
+  static const char *const debug_view_labels[] = {"Confidence", "Rejection", "Tonemapped color", "Variance clipping AABB scale",
+    "History", "Rectified history", "Flicker heatmap", "Input stability", "Edge gate"};
   const int debug_view_max = static_cast<int>(sizeof(debug_view_labels) / sizeof(debug_view_labels[0])) - 1;
   if (tsr_debug_view < 0)
     tsr_debug_view = 0;

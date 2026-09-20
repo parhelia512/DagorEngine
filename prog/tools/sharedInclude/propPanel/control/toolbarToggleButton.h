@@ -36,6 +36,8 @@ public:
 
   void sendOnClickNotification();
 
+  const char *getImguiTypeName() const override { return "ToolbarToggleButton"; }
+
   void updateImgui() override { toolbarToggleButtonUpdateImgui(ImDrawFlags_RoundCornersAll); }
 
   // frame_draw_flags: allows specifying which side of the button should be rounded

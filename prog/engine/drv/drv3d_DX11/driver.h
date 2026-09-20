@@ -108,6 +108,17 @@ extern bool use_tearing;
 extern double vsync_refresh_rate;
 extern eastl::optional<StreamlineAdapter> streamlineAdapter;
 extern HandlePointer waitableObject;
+extern HWND main_window_hwnd;
+
+// @TEST(hang): for diagnosing hangs inside dx11 runtime, @TODO: remove once fixed
+extern volatile uintptr_t pending_reset_reason;
+inline void set_pending_reset_reason(const char *reason) { interlocked_relaxed_store(pending_reset_reason, (uintptr_t)reason); }
+inline void set_pending_reset_reason_if_none(const char *reason)
+{
+  interlocked_compare_exchange(pending_reset_reason, (uintptr_t)reason, 0);
+}
+inline const char *fetch_pending_reset_reason() { return (const char *)interlocked_exchange(pending_reset_reason, 0); }
+void log_present_state(const char *tag);
 
 extern float screen_aspect_ratio;
 
@@ -171,10 +182,6 @@ bool init_buffers(RenderState &rs, int imm_vb_size);
 bool init_shaders(RenderState &rs);
 bool init_states(RenderState &rs);
 bool init_textures();
-
-void set_vertex_shader_debug_info(VPROG vpr, const char *debug_info);
-void set_pixel_shader_debug_info(FSHADER fsh, const char *debug_info);
-void set_compute_shader_debug_info(PROGRAM fsh, const char *debug_info);
 
 void flush_null_rendertargets(RenderState &rs);
 void flush_null_cs_rendertargets(RenderState &rs);

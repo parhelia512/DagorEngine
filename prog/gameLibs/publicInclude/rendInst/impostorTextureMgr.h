@@ -89,7 +89,7 @@ public:
     int lod = -1);
   void generate_mask_octahedral(uint32_t h, uint32_t v, const GenerationData &gen_data, RenderableInstanceLodsResource *res,
     DeferredRenderTarget *rt, Texture *mask_tex, int lod = -1);
-  void start_rendering_slices(DeferredRenderTarget *rt);
+  void start_rendering_slices(DeferredRenderTarget *rt, bool is_voxel = false);
   void start_rendering_branches(Texture *rt);
   void end_rendering_slices();
 
@@ -106,6 +106,7 @@ public:
 
 private:
   shaders::UniqueOverrideStateId impostorShaderState;
+  shaders::UniqueOverrideStateId impostorVoxelShaderState;
   PostFxRenderer impostorMaskShader;
   PostFxRenderer impostorShadowShader;
 

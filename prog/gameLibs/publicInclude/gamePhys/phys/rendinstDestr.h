@@ -10,7 +10,9 @@
 #include <gamePhys/phys/rendinstSound.h>
 #include <gamePhys/phys/destructableObject.h>
 #include <EASTL/functional.h>
+#include <generic/dag_functionRef.h>
 #include <gameMath/quantization.h>
+#include <generic/dag_tab.h>
 
 namespace rendinst
 {
@@ -38,12 +40,18 @@ typedef int (*create_apex_actors_callback)(const char *name, const TMatrix &norm
 typedef void (*apex_force_remove_actor_callback)(const int);
 typedef void (*on_destr_changed_callback)(const rendinst::RendInstDesc &desc, const TMatrix &ri_tm, const Point3 &pos,
   const Point3 &impulse, bool create_destr);
-typedef void (*on_rendinst_destroyed_callback)(rendinst::riex_handle_t riex_handle, const TMatrix &tm, const BBox3 &box);
-typedef void (*on_ri_restored_callback)(const rendinst::RendInstDesc &restorable_desc);
+// box = the box of the destroying path (collision or full, per DestrOptionFlag);
+// full_bbox = the res bbox at unit scale, so a visual consumer can span the drawn crown
+typedef void (*on_rendinst_destroyed_callback)(rendinst::riex_handle_t riex_handle, const TMatrix &tm, const BBox3 &box,
+  const BBox3 &full_bbox);
+// tm = the instance transform saved at destruction: a riex desc's idx is stale after the
+// restore (the instance re-adds under a fresh one), so the slot must not be read through it
+typedef void (*on_ri_restored_callback)(const rendinst::RendInstDesc &restorable_desc, const TMatrix &tm);
 typedef void (*on_tree_destr_created_callback)(const rendinst::RendInstDesc &old_desc, rendinst::riex_handle_t tree_destr_riex_handle);
-typedef eastl::function<void(const rendinst::riex_handle_t)> on_riextra_destroyed_callback;
-typedef eastl::function<void(const rendinst::RendInstDesc &)> on_destr_callback;
-typedef eastl::function<bool(rendinst::riex_handle_t)> riextra_should_damage;
+// borrowed for the call only, never stored (unlike on_destr_changed_callback above)
+typedef dag::FunctionRef<void(const rendinst::riex_handle_t) const> on_riextra_destroyed_callback;
+typedef dag::FunctionRef<void(const rendinst::RendInstDesc &) const> on_destr_callback;
+typedef dag::FunctionRef<bool(rendinst::riex_handle_t) const> riextra_should_damage;
 typedef bool (*restorable_rendinst_callback)(const rendinst::RendInstDesc &desc, RestorableRendinstState state);
 typedef eastl::function<Point3()> get_camera_pos;
 typedef float (*get_current_time_callback)();
@@ -193,11 +201,11 @@ void apply_damage_to_ri(const rendinst::RendInstDesc &desc, float dmg, float imp
   float at_time, bool create_destr_effects, float impulse_mult_for_child, bool *isDestroyed = nullptr);
 
 void damage_ri_in_sphere(const Point3 &pos, float rad, const Point2 &dmg_near_far, float impulse_to_hp, float at_time,
-  bool create_destr_effects, on_riextra_destroyed_callback &&riex_destr_cb, riextra_should_damage &&should_damage);
+  bool create_destr_effects, on_riextra_destroyed_callback riex_destr_cb, riextra_should_damage should_damage);
 
 void set_on_rendinst_destroyed_cb(on_rendinst_destroyed_callback cb);
 void set_on_ri_restored_cb(on_ri_restored_callback cb);
-void call_on_rendinst_destroyed_cb(rendinst::riex_handle_t riex_handle, const TMatrix &tm, const BBox3 &box);
+void call_on_rendinst_destroyed_cb(rendinst::riex_handle_t riex_handle, const TMatrix &tm, const BBox3 &box, const BBox3 &full_bbox);
 rendinst::ri_damage_effect_cb get_ri_damage_effect_cb();
 void set_ri_damage_effect_cb(rendinst::ri_damage_effect_cb effect_cb);
 void set_on_tree_destr_created_cb(on_tree_destr_created_callback cb);
@@ -216,6 +224,8 @@ CachedCollisionObjectInfo *get_or_add_cached_tree_collision_object(const rendins
 
 int test_dynobj_to_ri_phys_collision(const CollisionObject &coA, const TMatrix &tmA, float max_rad);
 int test_dynobj_to_ri_phys_collision(const CollisionObject &coA, float max_rad);
+void gather_ri_phys_for_dynobj_test(Tab<Point3> &out_pos);
+bool is_dynobj_near_ri_phys(dag::ConstSpan<Point3> ri_phys_pos, const Point3 &pos, float max_rad);
 
 void remove_tree_rendinst_destr(const rendinst::RendInstDesc &desc);
 rendinst::RendInstDesc create_tree_rend_inst_destr(const rendinst::RendInstDesc &desc, bool add_restorable, const Point3 &impactPos,

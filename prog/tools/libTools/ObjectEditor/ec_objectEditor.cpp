@@ -421,7 +421,7 @@ void ObjectEditor::deleteSelectedObjects(bool use_undo)
   Tab<RenderableEditableObject *> list(tmpmem);
   list.reserve(selection.size());
 
-  getUndoSystem()->begin();
+  getUndoSystem()->begin(true);
 
   for (int i = 0; i < selection.size(); ++i)
     if (selection[i]->mayDelete())
@@ -607,7 +607,7 @@ void ObjectEditor::changed(const Point3 &delta)
   if (editMode != CM_OBJED_MODE_MOVE && editMode != CM_OBJED_MODE_SURF_MOVE)
   {
     getUndoSystem()->cancel();
-    getUndoSystem()->begin();
+    getUndoSystem()->begin(true);
   }
 
   IEditorCoreEngine::ModeType gt = editModeToModeType(editMode);
@@ -654,7 +654,7 @@ void ObjectEditor::gizmoStarted()
   gizmoOrigin = gizmoPt;
   isGizmoStarted = true;
 
-  getUndoSystem()->begin();
+  getUndoSystem()->begin(true);
 
   switch (editMode)
   {
@@ -1492,7 +1492,7 @@ void ObjectEditor::renameObject(RenderableEditableObject *obj, const char *new_n
   if (use_undo)
   {
     getUndoSystem()->begin();
-    getUndoSystem()->put(new UndoObjectEditorRename(this, obj));
+    getUndoSystem()->put<UndoObjectEditorRename>(this, obj);
 
     // make name unique
     while (getObjectByName(name))

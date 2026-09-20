@@ -14,6 +14,7 @@
 #include "frontend.h"
 #include "resource_manager.h"
 #include "pipeline_state.h"
+#include "global_const_buffer.h"
 #include "buffer.h"
 #include "texture.h"
 #include "sampler_cache.h"
@@ -91,7 +92,7 @@ bool d3d::set_const_buffer(uint32_t stage, uint32_t unit, Sbuffer *buffer)
   BufferRef bReg{};
   if (buffer)
   {
-    GenericBufferInterface *gb = (GenericBufferInterface *)buffer;
+    GenericBufferInterface *gb = static_cast<GenericBufferInterface *>(buffer);
     bReg = gb->getBufferRef();
     if (!bReg)
       bReg = gb->fillFrameMemWithDummyData();
@@ -113,9 +114,15 @@ bool d3d::setvsrc_ex(int stream, Vbuffer *vb, int ofs, int stride_bytes)
   BufferRef bRef = {};
   if (vb)
   {
-    bRef = ((GenericBufferInterface *)vb)->getBufferRef();
-    D3D_CONTRACT_ASSERTF(((GenericBufferInterface *)vb)->getFlags() & SBCF_BIND_VERTEX,
+    bRef = static_cast<GenericBufferInterface *>(vb)->getBufferRef();
+    D3D_CONTRACT_ASSERTF(static_cast<GenericBufferInterface *>(vb)->getFlags() & SBCF_BIND_VERTEX,
       "vulkan: using non vertex buffer %p:%s in vertex bind slot %u", bRef.buffer, bRef.buffer->getDebugName(), stream);
+    const int bufSize = vb->getSize();
+    D3D_CONTRACT_ASSERTF_RETURN(ofs >= 0 && ofs < bufSize, false, "vulkan: setvsrc_ex ofs (%d) not within buffer range (%d)", ofs,
+      bufSize);
+    D3D_CONTRACT_ASSERTF_RETURN(stride_bytes > 0, false, "vulkan: setvsrc_ex stride_bytes must be greater than zero");
+    D3D_CONTRACT_ASSERTF_RETURN(stride_bytes <= bufSize, false,
+      "vulkan: setvsrc_ex stride_bytes (%d) must not exceed buffer size (%d)", stride_bytes, bufSize);
   }
   Bind bind{bRef, (uint32_t)ofs};
   la.pipeState.set<StateFieldGraphicsVertexBuffers, Bind::Indexed, FrontGraphicsState>({(uint32_t)stream, bind});
@@ -129,7 +136,7 @@ bool d3d::setind(Ibuffer *ib)
   D3D_CONTRACT_ASSERT_RETURN(!ib || ib->getFlags() & SBCF_BIND_INDEX, false);
   LocalAccessor la;
 
-  GenericBufferInterface *gb = ((GenericBufferInterface *)ib); //-V522
+  GenericBufferInterface *gb = static_cast<GenericBufferInterface *>(ib); //-V522
   BufferRef bRef = {};
   if (gb)
     bRef = gb->getBufferRef();
@@ -210,10 +217,23 @@ bool d3d::set_program(PROGRAM prog_id)
         bool progChanged = la.pipeState.set<StateFieldGraphicsProgram, ProgramID, FrontGraphicsState>(prog);
         if (layoutOvChanged && !progChanged)
           la.pipeState.makeFieldDirty<StateFieldGraphicsProgram, FrontGraphicsState>();
+        if (progChanged)
+        {
+          uint32_t vsRegs, fsRegs;
+          ShaderProgramDatabase::getGraphicsProgImplicitCbufRegCounts(prog, vsRegs, fsRegs);
+          Frontend::GCB.setRegCount(STAGE_VS, vsRegs);
+          Frontend::GCB.setRegCount(STAGE_PS, fsRegs);
+        }
         Stat3D::updateProgram();
       }
       break;
-      case program_type_compute: la.pipeState.set<StateFieldComputeProgram, ProgramID, FrontComputeState>(prog); break;
+      case program_type_compute:
+      {
+        bool progChanged = la.pipeState.set<StateFieldComputeProgram, ProgramID, FrontComputeState>(prog);
+        if (progChanged)
+          Frontend::GCB.setRegCount(STAGE_CS, ShaderProgramDatabase::getComputeProgImplicitCbufRegCount(prog));
+      }
+      break;
       default: D3D_CONTRACT_ASSERT_FAIL_RETURN(false, "Broken program type");
     }
   }
@@ -288,7 +308,7 @@ bool d3d::set_rwbuffer(unsigned shader_stage, unsigned unit, Sbuffer *buffer)
   return true;
 }
 
-NO_UBSAN void d3d::set_sampler(unsigned shader_stage, unsigned unit, d3d::SamplerHandle sampler)
+void d3d::set_sampler(unsigned shader_stage, unsigned unit, d3d::SamplerHandle sampler)
 {
   LocalAccessor la;
 

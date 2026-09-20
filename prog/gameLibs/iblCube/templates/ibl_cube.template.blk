@@ -1,0 +1,35 @@
+ibl_cube_registry{
+  _singleton:b=yes
+
+  _group{
+    _tags:t="render"
+
+    "ibl_cube__registry:IBLCubeRegistry"{}
+  }
+}
+
+ibl_cube {
+  transform:m=[[1, 0, 0] [0, 1, 0] [0, 0, 1] [0, 0, 0]]
+  "box_zone:tag"{} // daEditorE draws the unit-box OBB (the camera/pixel inside volume) on selection.
+
+  _group{
+    _tags:t="render"
+
+    // PUBLIC VARIABLES TO SET
+    ibl_cube__panorama_res:t=""
+
+    ibl_cube__mul_specular:r=1.0
+    ibl_cube__mul_diffuse:r=1.0
+    ibl_cube__mul_specular__falloff_end:r=0
+    ibl_cube__mul_diffuse__falloff_end:r=0
+    ibl_cube__falloff_start:r=0
+    ibl_cube__falloff_end:r=0
+
+
+    // PRIVATE VARIABLES
+    "ibl_cube__panorama:SharedTexWithShaderVar"{}
+    ibl_cube__panorama_var:t="ibl_cube_source"
+    ibl_cube__is_baked:b=no
+  }
+  _tracked:t="ibl_cube__panorama_res"
+}

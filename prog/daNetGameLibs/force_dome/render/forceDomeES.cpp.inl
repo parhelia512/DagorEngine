@@ -229,5 +229,5 @@ void force_dome_created_es(const ecs::Event &, float force_dome__radius, const P
   transform.setcol(3, force_dome__position);
 }
 
-ECS_ON_EVENT(AfterDeviceReset)
+ECS_ON_EVENT(EventAfterDeviceReset)
 void force_dome_after_reset_es(const ecs::Event &, ForceDomeResources &force_dome_resources) { force_dome_resources.fillBuffers(); }

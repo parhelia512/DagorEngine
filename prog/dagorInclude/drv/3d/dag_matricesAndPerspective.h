@@ -4,6 +4,8 @@
 //
 #pragma once
 
+#include <drv/3d/dag_multi_interface.h>
+
 class TMatrix4;
 class TMatrix;
 struct mat44f;
@@ -11,7 +13,7 @@ struct Driver3dPerspective;
 
 using Matrix44 = TMatrix4;
 
-namespace d3d
+namespace d3d _MULTI_INTERFACE
 {
 /**
  * @brief Set the transformation matrix for the specified index.
@@ -203,7 +205,7 @@ void calcglobtm(const TMatrix &view_tm, const TMatrix4 &proj_tm, TMatrix4 &resul
  * @param result Reference to a TMatrix4 object to store the result.
  */
 void calcglobtm(const TMatrix &view_tm, const Driver3dPerspective &persp, TMatrix4 &result);
-} // namespace d3d
+} // namespace d3d _MULTI_INTERFACE
 
 #if _TARGET_D3D_MULTI
 #include <drv/3d/dag_interface_table.h>

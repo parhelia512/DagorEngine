@@ -199,7 +199,7 @@ namespace das {
         auto ft = new TypeDecl(Type::tBitfield);
         ft->alias = "MoreFunctionFlags";
         ft->argNames = {
-            "macroFunction", "needStringCast", "aotHashDeppendsOnArguments", "lateInit", "requestJit",
+            "macroFunction", "aotHashDeppendsOnArguments", "lateInit", "requestJit",
             "unsafeOutsideOfFor", "mustInline", "safeImplicit", "deprecated", "aliasCMRES", "neverAliasCMRES",
             "addressTaken", "propertyFunction", "pinvoke", "jitOnly", "isStaticClassMethod", "requestNoJit",
             "jitContextAndLineInfo", "nodiscard", "captureString", "callCaptureString", "hasStringBuilder",
@@ -213,7 +213,7 @@ namespace das {
         auto ft = new TypeDecl(Type::tBitfield);
         ft->alias = "MoreFunctionFlags2";
         ft->argNames = {
-            "localFunction", "tempStringResult", "mayQueueTempString"
+            "localFunction", "tempStringResult", "mayQueueTempString", "nttp"
         };
         return ft;
     }

@@ -6,7 +6,7 @@
 #include <render/occlusion/occlusionMaskApplier.h>
 
 #include <render/world/animCharRenderJob.h>
-#include <render/world/cameraParams.h>
+#include <render/cameraParams.h>
 #include <render/world/occlusionLandMeshManager.h>
 #include <render/world/visibilityJobs.h>
 

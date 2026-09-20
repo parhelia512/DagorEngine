@@ -231,6 +231,7 @@ inline int get_num_event_instances_with_name_path(const char *name, const char *
 }
 
 inline bool has(const char *name, const char *path) { return sndsys::has_event(name, path); }
+inline bool sound_banks_is_valid_event(const char *full_path) { return sndsys::is_valid_event_banks(full_path); }
 
 inline void set_pos(sndsys::EventHandle handle, Point3 pos) { sndsys::set_3d_attr(handle, pos); }
 inline void __set_pos(const SoundEvent &sound_event, Point3 pos) { sndsys::set_3d_attr(sound_event.handle, pos); }

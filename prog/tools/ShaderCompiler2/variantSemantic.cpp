@@ -444,22 +444,6 @@ eastl::optional<NamedConstDefInfo> parse_named_const_definition(const state_bloc
     report_warning(parser, *def.varTerm, "named const <%s%s> hides one in supported non-compatible blocks", def.baseName,
       def.nameSpaceTerm->text);
 
-  if (ctx.namedConstTable().globConstBlk)
-  {
-    bool conflict_blk = false;
-    if (def.stage == STAGE_VS)
-    {
-      conflict_blk = ctx.namedConstTable().globConstBlk->getVsNameId(def.baseName) != -1;
-    }
-    else
-    {
-      conflict_blk = ctx.namedConstTable().globConstBlk->getPsNameId(def.baseName) != -1;
-    }
-    if (conflict_blk)
-      report_error(parser, def.varTerm, "named const <%s%s> conflicts with global const block <%s>", def.baseName,
-        def.nameSpaceTerm->text, ctx.namedConstTable().globConstBlk->name.c_str());
-  }
-
   if (def.type == VariableType::Unknown)
   {
     report_error(parser, def.nameSpaceTerm, "named const <%s> has unknown type <%s> block", def.baseName, def.nameSpaceTerm->text);
@@ -467,9 +451,7 @@ eastl::optional<NamedConstDefInfo> parse_named_const_definition(const state_bloc
   }
 
   // validate hlsl existence
-  if ((def.type == VariableType::buf || def.type == VariableType::cbuf || def.type == VariableType::tex ||
-        def.type == VariableType::smp) &&
-      !def.hlsl)
+  if ((def.type == VariableType::buf || def.type == VariableType::cbuf || def.type == VariableType::tex) && !def.hlsl)
   {
     report_error(parser, def.nameSpaceTerm, "named const <%s> has type of <%s> and so requires hlsl", def.baseName,
       def.nameSpaceTerm->text);
@@ -555,18 +537,12 @@ eastl::optional<NamedConstDefInfo> parse_named_const_definition(const state_bloc
       def.regSpace = HLSL_RSPACE_T;
       break;
 
-    case VariableType::smp:
     case VariableType::smp2d:
     case VariableType::smp3d:
     case VariableType::smpArray:
-    case VariableType::smpCube:
-    case VariableType::smpCubeArray:
-    case VariableType::shd:
-    case VariableType::shdArray:
       def.shvarType = SHVT_TEXTURE;
       def.regSpace = HLSL_RSPACE_T;
       needPairSampler = true;
-      def.pairSamplerIsShadow = def.type == VariableType::shd || def.type == VariableType::shdArray;
       break;
     case VariableType::staticTex:
     case VariableType::staticSmp:
@@ -623,10 +599,9 @@ eastl::optional<NamedConstDefInfo> parse_named_const_definition(const state_bloc
   }
 
   // @HACK produces a fake sampler declaration if a pair sampler var needs to be implicitly emitted
-  // (this takes place for @smp... vars). This feature should be inevitably removed in favor of explicit
+  // (this takes place for @smp2d... vars). This feature should be inevitably removed in favor of explicit
   // @tex... + @sampler combinations
   auto addPairSampler = [&] {
-    def.pairSamplerBindSuffix = def.pairSamplerIsShadow ? "_cmpSampler" : "_samplerstate";
     def.pairSamplerName = String{0, "%s_samplerstate", def.shaderVarTerm->text};
     def.pairSamplerTmpDecl = TMPMEM_ALLOC(sampler_decl);
     def.pairSamplerTmpDecl->name = TMPMEM_ALLOC(SHTOK_ident);

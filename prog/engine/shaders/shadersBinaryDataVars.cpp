@@ -779,8 +779,6 @@ bool ShaderGlobal::is_resource_used_as_unmanaged_pointer(D3dResource *resource_p
   for (int i = 0, e = state.size(); i < e; i++)
   {
     const auto type = vars.getType(i);
-    D3DRESID managedId = BAD_D3DRESID;
-    const char *resourceName = "";
 
     if (type == SHVT_TEXTURE)
     {

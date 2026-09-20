@@ -56,6 +56,7 @@ shader dynamic_painted_by_mask
 
   static int num_bones = 0;
   interval num_bones: no_bones<1, four_bones;
+  INIT_DYNAMIC_THERMAL_SIGNATURE()
 
 
   if (dyn_model_render_pass == render_pass_normal)
@@ -124,7 +125,7 @@ shader dynamic_painted_by_mask
   }
   else if ((dyn_model_render_pass != render_pass_normal))
   {
-    if (num_bones == four_bones && has_wounds == torn_wounds)
+    if (num_bones == four_bones && has_wounds >= torn_wounds)
     {
       DYNAMIC_SIMPLE_CLIP_ALPHA_DISCRAD_WOUNDS_PS()
     }
@@ -150,9 +151,17 @@ shader dynamic_painted_by_mask
 
     hlsl(ps) {
       #define HAS_MICRO_DETAIL 1
+      #define THERMAL_TWEAK_ALBEDO_OFFSET     (-0.5)
+      #define THERMAL_TWEAK_SMOOTHNESS_OFFSET  (0.5)
+      #define THERMAL_TWEAK_METALNESS_OFFSET  (-0.75)
+    }
+    if (num_bones != no_bones)
+    {
+      hlsl(ps) { #define THERMAL_TWEAK_SKINNED_ALBEDO_MUL (0.35) }
     }
     WRITE_GBUFFER()
     USE_NORMAL_DETAIL()
+    USE_DYNAMIC_THERMAL_SIGNATURE()
 
     USE_EMISSIVE_ANIMCHAR_DYNMAT_SIMPLE_PARAMS()
 
@@ -235,6 +244,7 @@ shader dynamic_painted_by_mask
           init_emission(result, emissiveColor.a);
           init_emission_color(result, float4(emissiveColor.rgb, emissionAlbedoMult));
         }
+        init_thermal_signature(result, diffuseColor.rgb);
         #ifdef MOTION_VECTORS_ENABLED
           float3 motion = encode_motion_vector( input.out_pos, input.out_pos_prev );
           init_motion_vector(result, motion);

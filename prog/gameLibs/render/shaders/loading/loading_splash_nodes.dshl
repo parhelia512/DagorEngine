@@ -1,0 +1,237 @@
+include "shader_global.dshl"
+include "loading_splash_common.dshl"
+
+// Scene-independent graph nodes (splash_graph_spec.md, section 11). A scene's
+// graph blk wires them by name and sets their knobs with params:p4; a zero
+// knob means the default named below.
+
+// TAA resolve. t2 = scene color at any size not above this node's, t3 = motion
+// in uv units, t4 = the history pair. A smaller scene is upsampled temporally:
+// every output pixel weighs the jittered samples around it by distance, and
+// blends history in proportion to how much new coverage the frame brought.
+// params.x = history blend weight (0.1), params.y = sample kernel sigma in
+// output pixels (0.35), params.z = 1: reference mode for a still scene, the
+// plain running mean of every frame (no clamp), to measure the real TAA against
+shader loading_splash_node_taa
+{
+  LOADING_SPLASH_NODE_STATE()
+  (ps) {
+    scene_color@tex2d : register(2);
+    motion_tex@tex2d : register(3);
+    taa_history@tex2d : register(4);
+  }
+  hlsl(ps) {
+    #define motion_tex_samplerstate loading_splash_point_clamp
+    #define taa_history_samplerstate loading_splash_linear_clamp
+    #include <loading/loading_splash_taa.hlsl>
+
+    // Catmull-Rom through 5 bilinear fetches: history keeps its edges under
+    // the sub-pixel resampling of every reprojection
+    float3 sample_history(float2 uv, float2 res)
+    {
+      float2 pos = uv * res;
+      float2 center = floor(pos - 0.5) + 0.5;
+      float2 f = pos - center;
+      float2 w0 = f * (-0.5 + f * (1.0 - 0.5 * f));
+      float2 w1 = 1.0 + f * f * (-2.5 + 1.5 * f);
+      float2 w2 = f * (0.5 + f * (2.0 - 1.5 * f));
+      float2 w3 = f * f * (-0.5 + 0.5 * f);
+      float2 w12 = w1 + w2;
+      float2 off12 = w2 / w12;
+      float2 tc0 = (center - 1.0) / res;
+      float2 tc3 = (center + 2.0) / res;
+      float2 tc12 = (center + off12) / res;
+      float3 c = tex2Dlod(taa_history, float4(tc12.x, tc0.y, 0, 0)).rgb * (w12.x * w0.y);
+      c += tex2Dlod(taa_history, float4(tc0.x, tc12.y, 0, 0)).rgb * (w0.x * w12.y);
+      c += tex2Dlod(taa_history, float4(tc12.x, tc12.y, 0, 0)).rgb * (w12.x * w12.y);
+      c += tex2Dlod(taa_history, float4(tc3.x, tc12.y, 0, 0)).rgb * (w3.x * w12.y);
+      c += tex2Dlod(taa_history, float4(tc12.x, tc3.y, 0, 0)).rgb * (w12.x * w3.y);
+      // the four dropped corner taps leave the weights short of 1 between texels
+      float wsum = w12.x * w12.y + w12.y * (w0.x + w3.x) + w12.x * (w0.y + w3.y);
+      return max(c / wsum, 0.0);
+    }
+
+    // Only finite radiance reaches the history. A NaN or an inf out of a scene
+    // would be read back next frame, spread over sample_history's five taps and
+    // kept by every blend after it, and nothing downstream takes it out again.
+    // Written as a range test rather than isnan: it holds where fast math folds
+    // the predicate away, and it catches an inf with the same instructions.
+    float3 taa_finite(float3 c, float3 fallback)
+    {
+      return all(c < 3.4e38) && all(c > -3.4e38) ? c : fallback;
+    }
+
+    float4 taa_ps(VsOutput input HW_USE_SCREEN_POS) : SV_Target0
+    {
+      float2 fragCoord = GET_SCREEN_POS(input.pos).xy;
+      float2 outRes = iResolution.xy;
+      float2 uv = fragCoord / outRes;
+      float2 srcRes;
+      scene_color.GetDimensions(srcRes.x, srcRes.y);
+      float2 ratio = outRes / srcRes;
+      float2 jitter = loading_splash_taa_jitter(iFrame, ratio);
+      float sigma = iNodeParams.y > 0.0 ? iNodeParams.y : 0.35;
+      float k = -0.5 / (sigma * sigma);
+      // the clamp box: the source pixels whose samples can land near this pixel
+      float clampDist = 1.25 * max(ratio.x, ratio.y);
+      int2 base = int2(floor(uv * srcRes - 0.5));
+      float3 sum = float3(0, 0, 0), mn = float3(1e9, 1e9, 1e9), mx = float3(-1e9, -1e9, -1e9);
+      float wsum = 0;
+      [unroll] for (int y = -1; y <= 1; ++y)
+        [unroll] for (int x = -1; x <= 1; ++x)
+        {
+          int2 p = clamp(base + int2(x, y), int2(0, 0), int2(srcRes) - 1);
+          float3 c = texelFetch(scene_color, p, 0).rgb;
+          float2 d = (float2(p) + 0.5 + jitter) * ratio - fragCoord;
+          float w = exp(k * dot(d, d));
+          sum += c * w;
+          wsum += w;
+          if (max(abs(d.x), abs(d.y)) <= clampDist)
+          {
+            mn = min(mn, c);
+            mx = max(mx, c);
+          }
+        }
+      float3 cur = taa_finite(sum / max(wsum, 1e-5), float3(0, 0, 0));
+      float2 prevUv = uv - tex2Dlod(motion_tex, float4(uv, 0, 0)).xy;
+      bool valid = history_is_valid > 0.5 && all(prevUv >= 0.0) && all(prevUv <= 1.0);
+      if (iNodeParams.z > 0.5)
+        return float4(taa_finite(valid ? lerp(tex2Dlod(taa_history, float4(prevUv, 0, 0)).rgb, cur, 1.0 / (iFrame + 1.0)) : cur, cur), 1.0);
+      float3 hist = clamp(sample_history(prevUv, outRes), mn, mx);
+      // blend in proportion to the kernel mass this frame put on the pixel (1 =
+      // a sample on its center): over the jitter cycle every sample then
+      // counts by its distance, and a sparser scene converges to the same
+      // kernel supersample, only slower
+      float alpha = (iNodeParams.x > 0.0 ? iNodeParams.x : 0.1) * saturate(wsum);
+      // a history that went bad falls back on this frame, not on black
+      return float4(taa_finite(valid ? lerp(hist, cur, alpha) : cur, cur), 1.0);
+    }
+  }
+  compile("target_ps", "taa_ps");
+}
+
+// Bright pass into a smaller target: four bilinear taps at the quadrant
+// centers of the covered source block, each through a soft luminance
+// threshold before the average, so a small bright seed survives the box.
+// params.x = threshold (1), params.y = knee (1)
+shader loading_splash_node_bloom_bright
+{
+  LOADING_SPLASH_NODE_STATE()
+  (ps) {
+    src_tex@tex2d : register(2);
+  }
+  hlsl(ps) {
+    #define src_tex_samplerstate loading_splash_linear_clamp
+    float4 bright_ps(VsOutput input HW_USE_SCREEN_POS) : SV_Target0
+    {
+      float2 uv = GET_SCREEN_POS(input.pos).xy / iResolution.xy;
+      float2 px = 0.25 / iResolution.xy;
+      float thr = iNodeParams.x > 0.0 ? iNodeParams.x : 1.0;
+      float knee = iNodeParams.y > 0.0 ? iNodeParams.y : 1.0;
+      float3 c = float3(0, 0, 0);
+      [unroll] for (int i = 0; i < 4; ++i)
+      {
+        float2 tap = float2(i & 1 ? px.x : -px.x, i & 2 ? px.y : -px.y);
+        float3 s = tex2Dlod(src_tex, float4(uv + tap, 0, 0)).rgb;
+        c += s * smoothstep(thr, thr + knee, dot(s, float3(0.2126, 0.7152, 0.0722)));
+      }
+      return float4(c * 0.25, 1.0);
+    }
+  }
+  compile("target_ps", "bright_ps");
+}
+
+// One tent blur at the node's own size. params.x = tap radius in pixels (1.5)
+shader loading_splash_node_blur
+{
+  LOADING_SPLASH_NODE_STATE()
+  (ps) {
+    src_tex@tex2d : register(2);
+  }
+  hlsl(ps) {
+    #define src_tex_samplerstate loading_splash_linear_clamp
+    float4 blur_ps(VsOutput input HW_USE_SCREEN_POS) : SV_Target0
+    {
+      float2 px = 1.0 / iResolution.xy;
+      float2 uv = GET_SCREEN_POS(input.pos).xy * px;
+      float radius = iNodeParams.x > 0.0 ? iNodeParams.x : 1.5;
+      float3 c = float3(0, 0, 0);
+      float wsum = 0;
+      [unroll] for (int y = -1; y <= 1; ++y)
+        [unroll] for (int x = -1; x <= 1; ++x)
+        {
+          float w = (x == 0 ? 2.0 : 1.0) * (y == 0 ? 2.0 : 1.0);
+          c += w * tex2Dlod(src_tex, float4(uv + float2(x, y) * radius * px, 0, 0)).rgb;
+          wsum += w;
+        }
+      return float4(c / wsum, 1.0);
+    }
+  }
+  compile("target_ps", "blur_ps");
+}
+
+// Preload for the flares: a 256 by 4 LUT over distance along the streak, row 0
+// = chromatic tint, row 1 = falloff (readers sample the LOADING_SPLASH_FLARE_LUT_*_V
+// rows of loading_splash_common.dshl), the other rows repeat the falloff
+shader loading_splash_node_flare_lut
+{
+  LOADING_SPLASH_NODE_STATE_CS()
+  (cs) {
+    flare_lut@uav : register(0) hlsl {
+      RWTexture2D<float4> flare_lut@uav;
+    }
+  }
+  hlsl(cs) {
+    [numthreads(64, 4, 1)]
+    void flare_lut_cs(uint3 id : SV_DispatchThreadID)
+    {
+      if (id.x >= uint(iResolution.x) || id.y >= uint(iResolution.y))
+        return;
+      float d = (float(id.x) + 0.5) / iResolution.x;
+      float3 tint = lerp(float3(0.9, 0.95, 1.0), float3(0.3, 0.55, 1.0), smoothstep(0.0, 0.6, d));
+      float fall = pow(1.0 - d, 2.5);
+      texture2DAt(flare_lut, id.xy) = id.y == 0 ? float4(tint, 1.0) : float4(fall, fall, fall, 1.0);
+    }
+  }
+  compile("target_cs", "flare_lut_cs");
+}
+
+// One pass of a separable horizontal streak: 3 taps each side at a fixed
+// spacing in source pixels, so a tap never skips its source. Run it 3 times
+// at spacings 1, 4, 16 over the previous pass (t2, at this node's size) for
+// a gap-free streak of +-63 px; the LUT at t3 tints (row 0) and fades (row 1)
+// each tap by its distance. params.x = spacing in px (1), params.y = the
+// half-length of the whole chain in px (63), the same value on every pass; a
+// tap past it reads the LUT's end and fades to nothing, so a fourth pass at
+// spacing 64 needs 255 on all four
+shader loading_splash_node_flares
+{
+  LOADING_SPLASH_NODE_STATE()
+  (ps) {
+    src_tex@tex2d : register(2);
+    flare_lut@tex2d : register(3);
+  }
+  hlsl(ps) {
+    #define src_tex_samplerstate loading_splash_linear_clamp
+    #define flare_lut_samplerstate loading_splash_linear_clamp
+    float4 flares_ps(VsOutput input HW_USE_SCREEN_POS) : SV_Target0
+    {
+      float2 uv = GET_SCREEN_POS(input.pos).xy / iResolution.xy;
+      float spacing = iNodeParams.x > 0.0 ? iNodeParams.x : 1.0;
+      float halfLen = iNodeParams.y > 0.0 ? iNodeParams.y : 63.0;
+      float stepU = spacing / iResolution.x;
+      float3 c = float3(0, 0, 0);
+      float wsum = 0;
+      [unroll] for (int i = -3; i <= 3; ++i)
+      {
+        float d = abs(float(i)) * spacing / halfLen;
+        float3 tint = tex2Dlod(flare_lut, float4(d, LOADING_SPLASH_FLARE_LUT_TINT_V, 0, 0)).rgb;
+        float fall = tex2Dlod(flare_lut, float4(d, LOADING_SPLASH_FLARE_LUT_FALL_V, 0, 0)).x;
+        c += tex2Dlod(src_tex, float4(uv + float2(float(i) * stepU, 0), 0, 0)).rgb * tint * fall;
+        wsum += fall;
+      }
+      return float4(c / wsum, 1.0);
+    }
+  }
+  compile("target_ps", "flares_ps");
+}

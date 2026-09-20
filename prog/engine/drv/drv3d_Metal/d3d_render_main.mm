@@ -230,9 +230,10 @@ bool d3d::init_video(void* hinst,
 
   render.device = render.mainview.device;
 
-  d3d::set_render_target();
-
   render.init();
+
+  // before render.init() backbuffer does not exist
+  d3d::set_render_target();
 
   debug("[METAL_INIT] readWriteTextureTier1 %d", render.caps.readWriteTextureTier1);
   debug("[METAL_INIT] readWriteTextureTier2 %d", render.caps.readWriteTextureTier2);

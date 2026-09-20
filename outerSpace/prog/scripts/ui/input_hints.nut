@@ -1,12 +1,12 @@
 from "%darg/ui_imports.nut" import *
 import "dainput2" as dainput
 from "types" import String
+from "%scripts/ui/widgets/simpleComponents.nut" import dtext
+from "dainput2" import format_ctrl_name
 
-let {dtext} = require("%scripts/ui/widgets/simpleComponents.nut")
-let format_ctrl_name = dainput.format_ctrl_name
 let loc = @(text) text
 
-let sticksAliases = {
+const sticksAliases = {
   lx = ["J:L.Thumb.h", "J:Axis1"]
   ly = ["J:L.Thumb.v", "J:Axis2"]
   rx = ["J:R.Thumb.h", "J:Axis3"]

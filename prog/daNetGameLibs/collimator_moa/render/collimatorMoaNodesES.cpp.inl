@@ -8,7 +8,7 @@
 #include <render/daFrameGraph/daFG.h>
 #include <render/daFrameGraph/ecs/frameGraphNode.h>
 
-#include <render/world/cameraParams.h>
+#include <render/cameraParams.h>
 
 
 ECS_TAG(render)
@@ -22,11 +22,11 @@ static void create_collimator_moa_lens_render_fg_node_es_event_handler(const ecs
 
     registry.readTexture("depth_after_transparency").atStage(dafg::Stage::PS).bindToShaderVar("depth_gbuf");
 
-    registry.readBlob<CameraParams>("current_camera")
+    registry.readBlob<CameraParams>("current_cockpit_camera")
       .bindAsView<&CameraParams::viewRotTm>()
       .bindAsProj<&CameraParams::noJitterProjTm>();
 
-    auto displayResolution = registry.getResolution<2>("displayResolution");
+    auto displayResolution = registry.getResolution<2>("post_fx");
 
     return [displayResolution]() { collimator_moa::render(displayResolution.get()); };
   });

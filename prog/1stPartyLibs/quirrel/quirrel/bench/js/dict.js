@@ -11,12 +11,14 @@ function dict_makeSrc(){
 	return src;
 }
 
+var PASSES = 10;
+
 function dict(src) {
 	var tab = {}
 	var n = src.length;
 	var max = 1
 	for (var i=0; i != n; ++i ) {
-		var l = src[n];
+		var l = src[i];
 		if ( tab.hasOwnProperty(l) ) {
 			max = Math.max(++tab[l],max);
 		} else {
@@ -52,7 +54,7 @@ function performance_tests() {
 	{
 		var src = dict_makeSrc();
 		profile("dictionary",20,function(){
-			dict(src);
+			for ( var r=0; r!=PASSES; ++r ) dict(src);
 		});
 	}
 	timeStamp();

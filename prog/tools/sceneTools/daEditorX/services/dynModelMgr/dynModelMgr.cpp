@@ -324,7 +324,8 @@ public:
     collisionTried = true;
     if (!collision)
       return false;
-    collision->collapseAndOptimize(assetName(), true);
+    if (!(collision->collisionFlags & COLLISION_RES_FLAG_OPTIMIZED))
+      logerr("collRes (%p, %s) expected to be optimized", collision, resName.str());
     return true;
   }
   void beforeRender() { sceneInstance->beforeRender(::grs_cur_view.pos); }

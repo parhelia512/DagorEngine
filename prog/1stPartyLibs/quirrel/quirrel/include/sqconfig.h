@@ -46,13 +46,7 @@ typedef void* SQUserPointer;
 typedef SQUnsignedInteger SQBool;
 typedef SQInteger SQRESULT;
 
-#if defined __EMSCRIPTEN__
 #define scsprintf   snprintf
-#elif (!defined(_TARGET_PC_WIN) && !defined(_TARGET_XBOX)) || (defined(_MSC_VER) && _MSC_VER <= 1800)
-#define scsprintf   _snprintf
-#else
-#define scsprintf   snprintf
-#endif
 #ifdef _SQ64
 #ifdef _MSC_VER
 #define scstrtol    _strtoi64
@@ -81,9 +75,20 @@ typedef SQInteger SQRESULT;
 #define SQ_CHECK_THREAD SQ_CHECK_THREAD_LEVEL_NONE
 #endif
 
-// doc strings and native function declaration strings
+// Runtime docstrings and native function declaration strings.
 #ifndef SQ_STORE_DOC_OBJECTS
 #define SQ_STORE_DOC_OBJECTS 1
+#endif
+
+#if SQ_STORE_DOC_OBJECTS
+#define SQ_DOC(text) text
+#else
+#define SQ_DOC(text) ((const char *)0)
+#endif
+
+// 1 replaces getenv, setenv and system with stubs that throw (console, mobile).
+#ifndef SQ_SYSTEM_STUBS
+#define SQ_SYSTEM_STUBS 0
 #endif
 
 // if SQ_RANDOMIZE_FOREACH == 1, the foreach loop for tables will be randomized

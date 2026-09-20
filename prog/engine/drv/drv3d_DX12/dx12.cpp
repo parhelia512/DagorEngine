@@ -2,6 +2,7 @@
 
 #include "device.h"
 #include "driver_mutex.h"
+#include "enhanced_barrier_validation.h"
 #include "frontend_state.h"
 #include "swapchain.h"
 
@@ -482,8 +483,63 @@ static bool is_auto_gamedvr() { return ::dgs_get_settings()->getBlockByNameEx("d
 namespace
 {
 
+DriverVersion parse_driver_version(const char *text)
+{
+  DriverVersion v{};
+  sscanf(text, " %hu . %hu . %hu . %hu", &v.product, &v.major, &v.minor, &v.build);
+  return v;
+}
+
+bool has_driver_version(const DataBlock &blk, const char *param_name, const DriverVersion &version)
+{
+  bool result = false;
+  dblk::iterate_params_by_name_and_type(blk, param_name, DataBlock::TYPE_STRING,
+    [&](int param_idx) { result |= version == parse_driver_version(blk.getStr(param_idx)); });
+  return result;
+}
+
+// Vendor block layout:
+//   blacklistedDrivers:t[]=["a.b.c.d"; ...] - banned on every device of the vendor;
+//   blacklistedDrivers{                     - banned only on the listed devices,
+//     "a.b.c.d"{                              a block without deviceIds bans on every device
+//       deviceIds:i[]=[...]
+//       fixedDriverAvailable:b=...          - if yes, the driver is blacklisted, but a fixed driver is available, so the user can
+//                                             update the driver
+//     }
+//   }
+bool is_blacklisted_driver(const DataBlock &vendor, const DXGI_ADAPTER_DESC1 &adapter_info, const DriverVersion &version,
+  bool &out_fixed_driver_available)
+{
+  if (has_driver_version(vendor, "blacklistedDrivers", version))
+  {
+    return true;
+  }
+
+  bool result = false;
+  dblk::iterate_child_blocks_by_name(vendor, "blacklistedDrivers", [&](const DataBlock &blacklistedDriversBlock) {
+    if (result)
+      return;
+
+    dblk::iterate_child_blocks(blacklistedDriversBlock, [&](const DataBlock &versionBlock) {
+      if (result)
+        return;
+
+      if (version == parse_driver_version(versionBlock.getBlockName()))
+      {
+        result |= versionBlock.findParam("deviceIds") < 0;
+        dblk::iterate_params_by_name_and_type(versionBlock, "deviceIds", DataBlock::TYPE_INT,
+          [&](int param_idx) { result |= versionBlock.getInt(param_idx) == adapter_info.DeviceId; });
+
+        if (result)
+          out_fixed_driver_available = versionBlock.getBool("fixedDriverAvailable", true);
+      }
+    });
+  });
+  return result;
+}
+
 APISupport check_driver_version(const DXGI_ADAPTER_DESC1 &adapter_info, const DriverVersion &version, const DataBlock &gpu_cfg,
-  DriverVersion *out_min_version = nullptr)
+  DriverVersion *out_min_version = nullptr, bool *out_fixed_driver_available = nullptr)
 {
   for (int i = 0; i < gpu_cfg.blockCount(); i++)
   {
@@ -491,9 +547,7 @@ APISupport check_driver_version(const DXGI_ADAPTER_DESC1 &adapter_info, const Dr
     if (vendor.getInt("vendorId", 0) != adapter_info.VendorId)
       continue;
 
-    DriverVersion minVersion{};
-    sscanf(vendor.getStr("minDriver", "0.0.0.0"), " %hu . %hu . %hu . %hu", &minVersion.product, &minVersion.major, &minVersion.minor,
-      &minVersion.build);
+    const DriverVersion minVersion = parse_driver_version(vendor.getStr("minDriver", "0.0.0.0"));
 
     // a buggy driver can report 0.0.0.0 driver version in that case, we continue with the unknown driver
     if (version != DriverVersion{} && version < minVersion)
@@ -503,17 +557,13 @@ APISupport check_driver_version(const DXGI_ADAPTER_DESC1 &adapter_info, const Dr
       return APISupport::OUTDATED_DRIVER;
     }
 
-    bool result = false;
-    dblk::iterate_params_by_name(vendor, "blacklistedDrivers", [&](int param_idx, auto, auto) {
-      DriverVersion blacklist{};
-      sscanf(vendor.getStr(param_idx), " %hu . %hu . %hu . %hu", &blacklist.product, &blacklist.major, &blacklist.minor,
-        &blacklist.build);
-
-      result |= version == blacklist;
-    });
-
-    if (result)
+    bool fixedDriverAvailable = true;
+    if (is_blacklisted_driver(vendor, adapter_info, version, fixedDriverAvailable))
+    {
+      if (out_fixed_driver_available)
+        *out_fixed_driver_available = fixedDriverAvailable;
       return APISupport::BLACKLISTED_DRIVER;
+    }
   }
   return APISupport::FULL_SUPPORT;
 }
@@ -578,7 +628,7 @@ APISupport check_device_features(const ComPtr<ID3D12Device> &device)
 }
 
 APISupport check_adapter(const Direct3D12Enviroment &d3d12_env, D3D_FEATURE_LEVEL feature_level, const DataBlock *gpu_cfg,
-  const ComPtr<DXGIAdapter> &adapter)
+  const ComPtr<DXGIAdapter> &adapter, ProbedAdapterInfo &out_adapter)
 {
   DXGI_ADAPTER_DESC1 info;
   adapter->GetDesc1(&info);
@@ -598,6 +648,10 @@ APISupport check_adapter(const Direct3D12Enviroment &d3d12_env, D3D_FEATURE_LEVE
 
   auto version = get_driver_version_from_adapter(adapter.Get());
   logdbg("DX12: Driver version %s", version.toString().c_str());
+  out_adapter.name = strBuffer;
+  out_adapter.vendorId = info.VendorId;
+  out_adapter.deviceId = info.DeviceId;
+  out_adapter.driverVersion = version;
   if (gpu::VENDOR_ID_NVIDIA == info.VendorId)
   {
     // on NV we can deduce GeForce version and report more details.
@@ -608,13 +662,17 @@ APISupport check_adapter(const Direct3D12Enviroment &d3d12_env, D3D_FEATURE_LEVE
   if (gpu_cfg)
   {
     DriverVersion minVersion{};
-    auto result = check_driver_version(info, version, *gpu_cfg, &minVersion);
+    bool fixedDriverAvailable = true;
+    auto result = check_driver_version(info, version, *gpu_cfg, &minVersion, &fixedDriverAvailable);
     switch (result)
     {
       case APISupport::OUTDATED_DRIVER:
         logdbg("DX12: Rejected, driver version is older than minVersion %s", minVersion.toString().c_str());
         return result;
-      case APISupport::BLACKLISTED_DRIVER: logdbg("DX12: Rejected, driver version is blacklisted"); return result;
+      case APISupport::BLACKLISTED_DRIVER:
+        logdbg("DX12: Rejected, driver version is blacklisted, fixed driver %s", fixedDriverAvailable ? "available" : "not available");
+        out_adapter.fixedDriverAvailable = fixedDriverAvailable;
+        return result;
       default: break;
     }
   }
@@ -767,19 +825,6 @@ bool d3d::init_video(void *hinst, main_wnd_f *wnd_proc, const char *wcname, int 
     // and pix reports TDR as an error.
     deviceCfg.features.set(DeviceFeaturesConfig::DISABLE_PIPELINE_LIBRARY_CACHE);
   }
-
-#if DX12_DOES_SET_DEBUG_NAMES
-  if (api_state.debugState.captureTool().isAnyActive())
-  {
-    logdbg("DX12: ...frame capturing tool active, enabling naming of API objects...");
-    deviceCfg.features.set(DeviceFeaturesConfig::NAME_OBJECTS);
-  }
-  else if (dxCfg->getBool("nameObjects", (DAGOR_DBGLEVEL > 0)))
-  {
-    logdbg("DX12: ...naming of API objects enabled by config value...");
-    deviceCfg.features.set(DeviceFeaturesConfig::NAME_OBJECTS);
-  }
-#endif
 
   if (dxCfg->getBool("validateBindlessTypes", false))
   {
@@ -997,9 +1042,6 @@ bool d3d::init_video(void *hinst, main_wnd_f *wnd_proc, const char *wcname, int 
   sci.freqLevel = freqLevel > -1 ? freqLevel : 1;
 
   auto deviceCfg = get_device_config(dxCfg);
-#if DX12_DOES_SET_DEBUG_NAMES
-  deviceCfg.features.set(DeviceFeaturesConfig::NAME_OBJECTS);
-#endif
 
   api_state.device.init(sci, deviceCfg);
 
@@ -1299,6 +1341,7 @@ void cause_page_fault()
     D3D_ERROR("DX12: Unable to create resource to cause page fault...");
     return;
   }
+  debug::name_resource(faultyResource.Get(), "CausePageFaultTexture");
   // note we are technically leaking the descriptor, but reset should take care of this
   auto descriptor = api_state.device.allocateResourceDescriptor();
   const D3D12_SHADER_RESOURCE_VIEW_DESC viewDesc{.Format = desc.Format,
@@ -1392,6 +1435,7 @@ int d3d::driver_command(Drv3dCommand command, void *par1, void *par2, [[maybe_un
         *frameLatency = FRAME_LATENCY;
       }
       return api_state.device.getPipelineCompilationQueueLength();
+    case Drv3dCommand::GET_PRESENTED_FRAME_COUNT: return api_state.device.getContext().getLastPresentedFrameCount();
 #if _TARGET_PC_WIN
     case Drv3dCommand::ASYNC_PIPELINE_COMPILE_RANGE_BEGIN:
     {
@@ -1480,14 +1524,6 @@ int d3d::driver_command(Drv3dCommand command, void *par1, void *par2, [[maybe_un
       }
       break;
     case Drv3dCommand::AFTERMATH_MARKER: api_state.device.getContext().placeAftermathMarker((const char *)par1); break;
-    case Drv3dCommand::SET_VS_DEBUG_INFO:
-      api_state.shaderProgramDatabase.updateVertexShaderName(api_state.device.getContext(), ShaderID::importValue(*(int *)par1),
-        (const char *)par2);
-      break;
-    case Drv3dCommand::SET_PS_DEBUG_INFO:
-      api_state.shaderProgramDatabase.updatePixelShaderName(api_state.device.getContext(), ShaderID::importValue(*(int *)par1),
-        (const char *)par2);
-      break;
     case Drv3dCommand::D3D_FLUSH:
     case Drv3dCommand::GPU_BARRIER_WAIT_ALL_COMMANDS: // TODO: Implement GPU_BARRIER_WAIT_ALL_COMMANDS separately
       api_state.device.getContext().wait();
@@ -1669,12 +1705,6 @@ int d3d::driver_command(Drv3dCommand command, void *par1, void *par2, [[maybe_un
       frames = api_state.device.getContext().isXeFGSupported() ? 1 : 0;
       return 1;
     }
-    case Drv3dCommand::GET_XESS_PRESENTED_FRAME_COUNT:
-    {
-      auto &presented_frames = *(int *)par1;
-      presented_frames = api_state.device.getContext().getXeFgPresentedFrameCount();
-      return 1;
-    }
     case Drv3dCommand::GET_XESS_FG_ENABLED:
     {
       auto &enabled = *(bool *)par1;
@@ -1737,12 +1767,6 @@ int d3d::driver_command(Drv3dCommand command, void *par1, void *par2, [[maybe_un
     {
       auto &frames = *(int *)par1;
       frames = api_state.device.getContext().isFsrFGSupported() ? amd::FSR::getMaximumNumberOfGeneratedFrames() : 0;
-      return 1;
-    }
-    case Drv3dCommand::GET_FSR_PRESENTED_FRAME_COUNT:
-    {
-      auto &presented_frames = *(int *)par1;
-      presented_frames = api_state.device.getContext().getFsrFgPresentedFrameCount();
       return 1;
     }
     case Drv3dCommand::GET_FSR_FG_ENABLED:
@@ -1824,6 +1848,16 @@ int d3d::driver_command(Drv3dCommand command, void *par1, void *par2, [[maybe_un
     case Drv3dCommand::SET_DLSS_OPTIONS:
     {
       api_state.device.getContext().setDlssOptions(*(nv::DlssOptions *)par1, par2 ? *(int *)par2 : 0);
+      return 1;
+    }
+    case Drv3dCommand::EXECUTE_DLSS_NR:
+    {
+      api_state.device.getContext().executeDlssNR(*(nv::DlssNRParams<> *)par1, par2 ? *(int *)par2 : 0);
+      return 1;
+    }
+    case Drv3dCommand::SET_DLSS_NR_OPTIONS:
+    {
+      api_state.device.getContext().setDlssNROptions(*(nv::DlssNROptions *)par1, par2 ? *(int *)par2 : 0);
       return 1;
     }
     case Drv3dCommand::EXECUTE_XESS:
@@ -2301,7 +2335,26 @@ bool d3d::reset_device()
     auto featureLevel = make_feature_level(blk_dx.getInt("FeatureLevelMajor", min_major_feature_level),
       blk_dx.getInt("FeatureLevelMinor", min_minor_feature_level));
     ComPtr<DXGIAdapter> adapter;
-    if (SUCCEEDED(api_state.dxgiFactory->EnumAdapterByLuid(luid, COM_ARGS(&adapter))))
+    // Right after a device reset, the previously used adapter can be transiently missing (only
+    // the software adapter enumerates) even though the same GPU is about to come back - so wait
+    // and retry instead of giving up right away.
+    constexpr uint32_t adapter_lost_retry_count = 5;
+    constexpr uint32_t adapter_lost_retry_delay_ms = 1000;
+    HRESULT adapterLookupResult = E_FAIL;
+    uint32_t adapterLookupAttempt = 0;
+    do
+    {
+      adapterLookupResult = api_state.dxgiFactory->EnumAdapterByLuid(luid, COM_ARGS(&adapter));
+      if (SUCCEEDED(adapterLookupResult))
+        break;
+      if (adapterLookupAttempt + 1 < adapter_lost_retry_count)
+      {
+        watchdog_kick();
+        sleep_msec(adapter_lost_retry_delay_ms);
+      }
+    } while (++adapterLookupAttempt < adapter_lost_retry_count);
+
+    if (SUCCEEDED(adapterLookupResult))
     {
       SwapchainCreateInfo sci{};
       // window handle and modes are restored by recover
@@ -2316,8 +2369,9 @@ bool d3d::reset_device()
     }
     else
     {
-      logwarn("DX12: EnumAdapterByLuid with previously used device LUID failed, device no longer "
-              "available?");
+      logwarn("DX12: Previously used device LUID could not be found after %u retries, device no "
+              "longer available?",
+        adapter_lost_retry_count);
       // TODO fallback to normal enumeration path to find a suitable device
     }
 
@@ -2640,7 +2694,7 @@ unsigned d3d::get_texformat_usage(int cflg, D3DResourceType type)
   return map_dx12_format_features_to_tex_usage(fmt, type);
 }
 
-VPROG d3d::create_vertex_shader(const ShaderSource &data)
+VPROG d3d::create_vertex_shader(const ShaderSourceExt &data)
 {
   STORE_RETURN_ADDRESS();
   return api_state.shaderProgramDatabase.newVertexShader(api_state.device.getContext(), data).exportValue();
@@ -2655,19 +2709,7 @@ void d3d::delete_vertex_shader(VPROG vs)
   api_state.shaderProgramDatabase.deleteVertexShader(api_state.device.getContext(), shader);
 }
 
-int d3d::set_cs_constbuffer_register_count(int required_count)
-{
-  D3D_CONTRACT_ASSERTF(required_count >= 0, "Negative register count?");
-  return api_state.state.setComputeConstRegisterCount(required_count);
-}
-
-int d3d::set_vs_constbuffer_register_count(int required_count)
-{
-  D3D_CONTRACT_ASSERTF(required_count >= 0, "Negative register count?");
-  return api_state.state.setVertexConstRegisterCount(required_count);
-}
-
-FSHADER d3d::create_pixel_shader(const ShaderSource &data)
+FSHADER d3d::create_pixel_shader(const ShaderSourceExt &data)
 {
   STORE_RETURN_ADDRESS();
   return api_state.shaderProgramDatabase.newPixelShader(api_state.device.getContext(), data).exportValue();
@@ -2696,7 +2738,7 @@ PROGRAM d3d::create_program(VPROG vs, FSHADER fs, VDECL vdecl, unsigned *, unsig
     .exportValue();
 }
 
-PROGRAM d3d::create_program_cs(const ShaderSource &data, CSPreloaded preloaded)
+PROGRAM d3d::create_program_cs(const ShaderSourceExt &data, CSPreloaded preloaded)
 {
   STORE_RETURN_ADDRESS();
   return api_state.shaderProgramDatabase.newComputeProgram(api_state.device.getContext(), data, preloaded).exportValue();
@@ -2709,7 +2751,7 @@ bool d3d::set_program(PROGRAM prog_id)
   {
     if (prog.isCompute())
     {
-      api_state.state.setComputeProgram(prog);
+      api_state.state.setComputeProgram(api_state.shaderProgramDatabase.getComputeProgramForStateUpdate(prog));
     }
     else
     {
@@ -2923,6 +2965,7 @@ bool d3d::discard_tex(BaseTexture *tex)
   return true;
 }
 
+#define RP_GENERIC_MAX_T_REGISTERS dxil::MAX_T_REGISTERS
 #include <renderPassGeneric.cpp.inl>
 
 void d3d::clear_render_pass(const RenderPassTarget &target, const RenderPassArea &area, const RenderPassBind &bind)
@@ -3135,9 +3178,6 @@ bool d3d::setviews(dag::ConstSpan<Viewport> viewports)
     D3D_CONTRACT_ASSERTF_RETURN(withinBounds, false,
       "DX12: in setviews(), all viewport boundary coordinates must be between -32768 and 32767");
 
-    D3D_CONTRACT_ASSERTF_RETURN(viewport.minz <= viewport.maxz, false,
-      "DX12: in setviews(), minz must be less than or equal to maxz for every viewport");
-
     // Negative widths and heights are not supported right now.
     // They can be supported however with the Agility SDK:
     // https://learn.microsoft.com/en-us/windows/win32/api/d3d12/ns-d3d12-d3d12_feature_data_d3d12_options13
@@ -3203,7 +3243,7 @@ bool d3d::clearview(int what, E3DCOLOR color, float z, uint32_t stencil)
 {
   STORE_RETURN_ADDRESS();
   CHECK_MAIN_THREAD();
-  what &= ~CLEAR_DISCARD;
+  what &= ~DISCARD_ALL;
   if (what)
   {
     api_state.state.clearView(api_state.device.getContext(), what, color, z, stencil);
@@ -3424,7 +3464,8 @@ bool d3d::dispatch(uint32_t x, uint32_t y, uint32_t z, GpuPipeline gpu_pipeline)
   CHECK_MAIN_THREAD();
 
   ScopedCommitLock ctxLock{api_state.device.getContext()};
-  api_state.state.flushCompute(api_state.device.getContext());
+  if (!api_state.state.flushCompute(api_state.device.getContext()))
+    return false;
   api_state.device.getContext().dispatch(x, y, z);
   return true;
 }
@@ -3528,7 +3569,8 @@ bool d3d::dispatch_indirect(Sbuffer *args, uint32_t byte_offset, GpuPipeline gpu
   buffer->updateDeviceBuffer([](auto &buf) { buf.resourceId.markUsedAsIndirectBuffer(); });
   BufferResourceReferenceAndOffset bufferRef{get_any_buffer_ref(buffer), byte_offset};
 
-  api_state.state.flushCompute(api_state.device.getContext());
+  if (!api_state.state.flushCompute(api_state.device.getContext()))
+    return false;
   api_state.device.getContext().dispatchIndirect(bufferRef);
   return true;
 }
@@ -3879,6 +3921,7 @@ Vbuffer *d3d::create_vb(int size, int flg, const char *name, ResourceTagType tag
 
   D3D_CONTRACT_ASSERTF_RETURN(size > 0, nullptr, "DX12: create_vb size parameter must be greater than 0");
 
+  D3D_CONTRACT_ASSERT(((flg & SBCF_BIND_MASK) & ~(SBCF_BIND_VERTEX | SBCF_BIND_SHADER_RES)) == 0);
   validate_sbuffer_flags(flg | SBCF_BIND_VERTEX, name);
   return api_state.device.newBufferObject(0, size, flg | SBCF_BIND_VERTEX, 0, name, tag);
 }
@@ -3889,6 +3932,7 @@ Ibuffer *d3d::create_ib(int size, int flg, const char *stat_name, ResourceTagTyp
 
   D3D_CONTRACT_ASSERTF_RETURN(size > 0, nullptr, "DX12: create_ib size parameter must be greater than 0");
 
+  D3D_CONTRACT_ASSERT(((flg & SBCF_BIND_MASK) & ~(SBCF_BIND_INDEX | SBCF_BIND_SHADER_RES)) == 0);
   validate_sbuffer_flags(flg | SBCF_BIND_INDEX, stat_name);
   return api_state.device.newBufferObject(0, size, flg | SBCF_BIND_INDEX, 0, stat_name, tag);
 }
@@ -4189,7 +4233,7 @@ void d3d::copy_raytrace_acceleration_structure(RaytraceAnyAccelerationStructure 
 #endif
 
 #if _TARGET_PC_WIN
-APISupport get_dx12_support_status()
+APISupport get_dx12_support_status(ProbedAdapterInfo &out_adapter)
 {
   const DataBlock &dxCfg = *::dgs_get_settings()->getBlockByNameEx("dx12");
   const DataBlock *gpuCfg = dxCfg.getBlockByName("gpuPreferences");
@@ -4233,7 +4277,7 @@ APISupport get_dx12_support_status()
   if (auto hr = dxgiFactory->EnumAdapterByGpuPreference(index, DXGI_GPU_PREFERENCE_HIGH_PERFORMANCE, COM_ARGS(&adapter));
       hr != DXGI_ERROR_NOT_FOUND)
   {
-    apiSupport = check_adapter(d3d12Env, featureLevel, gpuCfg, adapter);
+    apiSupport = check_adapter(d3d12Env, featureLevel, gpuCfg, adapter, out_adapter);
     if (apiSupport != APISupport::FULL_SUPPORT)
     {
       logdbg("DX12: No viable device found, DX12 is unavailable!");
@@ -4728,7 +4772,7 @@ bool validate_sampler_info(const d3d::SamplerInfo &info)
 }
 } // namespace
 
-NO_UBSAN d3d::SamplerHandle d3d::request_sampler(const d3d::SamplerInfo &info)
+d3d::SamplerHandle d3d::request_sampler(const d3d::SamplerInfo &info)
 {
   if (!validate_sampler_info(info))
     return d3d::INVALID_SAMPLER_HANDLE;
@@ -4736,12 +4780,12 @@ NO_UBSAN d3d::SamplerHandle d3d::request_sampler(const d3d::SamplerInfo &info)
   return api_state.device.createSampler(SamplerState::fromSamplerInfo(info));
 }
 
-NO_UBSAN void d3d::set_sampler(unsigned shader_stage, unsigned slot, d3d::SamplerHandle handle)
+void d3d::set_sampler(unsigned shader_stage, unsigned slot, d3d::SamplerHandle handle)
 {
   api_state.state.setStageSampler(shader_stage, slot, handle);
 }
 
-NO_UBSAN uint32_t d3d::register_bindless_sampler(d3d::SamplerHandle sampler)
+uint32_t d3d::register_bindless_sampler(d3d::SamplerHandle sampler)
 {
   STORE_RETURN_ADDRESS();
   D3D_CONTRACT_ASSERTF_RETURN(d3d::get_driver_desc().caps.hasBindless, 0, "Bindless resources are not supported on this hardware");
@@ -4910,6 +4954,10 @@ Sbuffer *d3d::place_buffer_in_resource_heap(ResourceHeap *heap, const ResourceDe
 {
   STORE_RETURN_ADDRESS();
   D3D_CONTRACT_ASSERTF_RETURN(nullptr != heap, nullptr, "DX12: 'heap' of place_buffer_in_resource_heap was nullptr");
+  D3D_CONTRACT_ASSERTF(!(desc.asBufferRes.cFlags & SBCF_MISC_DRAWINDIRECT) || desc.asBufferRes.elementSizeInBytes == 4,
+    "DX12: SBCF_MISC_DRAWINDIRECT requires 4 byte elements, got %u", desc.asBufferRes.elementSizeInBytes);
+  D3D_CONTRACT_ASSERTF(!(desc.asBufferRes.cFlags & SBCF_MISC_ALLOW_RAW) || desc.asBufferRes.elementSizeInBytes == 4,
+    "DX12: SBCF_MISC_ALLOW_RAW requires 4 byte elements, got %u", desc.asBufferRes.elementSizeInBytes);
   // validate already throws asserts, no need to do it again
   if (!validate_resource_description(desc, "'desc' of place_buffer_in_resource_heap"))
   {
@@ -5582,109 +5630,6 @@ void d3d::visit_tagged_resources(const ResourceTypeFilter &filter, const Resourc
 
 namespace
 {
-constexpr d3d::AccessFlags buffer_only_access_mask =
-  d3d::AccessFlag::IndirectArgument | d3d::AccessFlag::VertexBuffer | d3d::AccessFlag::IndexBuffer | d3d::AccessFlag::ConstantBuffer;
-
-constexpr d3d::AccessFlags texture_only_access_mask =
-  d3d::AccessFlag::RenderTargetRead | d3d::AccessFlag::RenderTargetWrite | d3d::AccessFlag::DepthStencilWrite |
-  d3d::AccessFlag::DepthStencilRead | d3d::AccessFlag::InputAttachment | d3d::AccessFlag::BlitRead | d3d::AccessFlag::BlitWrite |
-  d3d::AccessFlag::ResolveRead | d3d::AccessFlag::ResolveWrite | d3d::AccessFlag::ShadingRate;
-
-constexpr d3d::AccessFlags write_access_mask = d3d::AccessFlag::RenderTargetWrite | d3d::AccessFlag::UnorderedAccess |
-                                               d3d::AccessFlag::DepthStencilWrite | d3d::AccessFlag::CopyWrite |
-                                               d3d::AccessFlag::BlitWrite | d3d::AccessFlag::ResolveWrite;
-
-bool is_depth_layout(d3d::TextureLayout layout)
-{
-  return layout == d3d::TextureLayout::DepthRwStencilRw || layout == d3d::TextureLayout::DepthRwStencilRo ||
-         layout == d3d::TextureLayout::DepthRoStencilRw || layout == d3d::TextureLayout::DepthRoStencilRo ||
-         layout == d3d::TextureLayout::DepthRw || layout == d3d::TextureLayout::DepthRo;
-}
-
-bool has_multiple_write_accesses(d3d::AccessFlags access)
-{
-  auto writes = (access & write_access_mask).asInteger();
-  return (writes & (writes - 1)) != 0;
-}
-
-bool sync_stage_is_none_for_non_empty_access(d3d::PipelineStageFlags stages, d3d::AccessFlags access)
-{
-  return access != d3d::AccessFlags{} && stages == d3d::PipelineStageFlags{};
-}
-
-// D3D12 accepts depth/stencil access only within the SYNC_ALL or SYNC_DEPTH_STENCIL scopes
-bool depth_stencil_access_without_depth_stage(d3d::PipelineStageFlags stages, d3d::AccessFlags access)
-{
-  constexpr d3d::AccessFlags depthAccess = d3d::AccessFlag::DepthStencilWrite | d3d::AccessFlag::DepthStencilRead;
-  constexpr d3d::PipelineStageFlags depthStages =
-    d3d::PipelineStageFlag::All | d3d::PipelineStageFlag::EarlyFragmentTests | d3d::PipelineStageFlag::LateFragmentTests;
-  return (access & depthAccess) && !(stages & depthStages);
-}
-
-void validate_enhanced_buffer_barrier(const d3d::BufferBarrier &barrier)
-{
-  if (barrier.memorySync.src & texture_only_access_mask)
-    D3D_CONTRACT_ERROR("DX12: enhanced_buffer_barrier source access mask contains texture-only flags");
-  if (barrier.memorySync.dst & texture_only_access_mask)
-    D3D_CONTRACT_ERROR("DX12: enhanced_buffer_barrier destination access mask contains texture-only flags");
-  if (has_multiple_write_accesses(barrier.memorySync.src))
-    D3D_CONTRACT_ERROR("DX12: enhanced_buffer_barrier source access mask sets more than one write access bit");
-  if (has_multiple_write_accesses(barrier.memorySync.dst))
-    D3D_CONTRACT_ERROR("DX12: enhanced_buffer_barrier destination access mask sets more than one write access bit");
-  if (sync_stage_is_none_for_non_empty_access(barrier.pipelineSync.src, barrier.memorySync.src))
-    D3D_CONTRACT_ERROR("DX12: enhanced_buffer_barrier has source access flags but no source pipeline stage");
-  if (sync_stage_is_none_for_non_empty_access(barrier.pipelineSync.dst, barrier.memorySync.dst))
-    D3D_CONTRACT_ERROR("DX12: enhanced_buffer_barrier has destination access flags but no destination pipeline stage");
-}
-
-void validate_enhanced_texture_barrier(const d3d::TextureBarrier &barrier, BaseTex *btex)
-{
-  const char *texName = btex->getName();
-  if (barrier.memorySync.src & buffer_only_access_mask)
-    D3D_CONTRACT_ERROR("DX12: enhanced_texture_barrier for <%s>: source access mask contains buffer-only flags", texName);
-  if (barrier.memorySync.dst & buffer_only_access_mask)
-    D3D_CONTRACT_ERROR("DX12: enhanced_texture_barrier for <%s>: destination access mask contains buffer-only flags", texName);
-  if (has_multiple_write_accesses(barrier.memorySync.src))
-    D3D_CONTRACT_ERROR("DX12: enhanced_texture_barrier for <%s>: source access mask sets more than one write access bit", texName);
-  if (has_multiple_write_accesses(barrier.memorySync.dst))
-    D3D_CONTRACT_ERROR("DX12: enhanced_texture_barrier for <%s>: destination access mask sets more than one write access bit",
-      texName);
-  if (sync_stage_is_none_for_non_empty_access(barrier.pipelineSync.src, barrier.memorySync.src))
-    D3D_CONTRACT_ERROR("DX12: enhanced_texture_barrier for <%s>: source access flags require a non-empty source pipeline stage",
-      texName);
-  if (sync_stage_is_none_for_non_empty_access(barrier.pipelineSync.dst, barrier.memorySync.dst))
-    D3D_CONTRACT_ERROR(
-      "DX12: enhanced_texture_barrier for <%s>: destination access flags require a non-empty destination pipeline stage", texName);
-  if (depth_stencil_access_without_depth_stage(barrier.pipelineSync.src, barrier.memorySync.src))
-    D3D_CONTRACT_ERROR("DX12: enhanced_texture_barrier for <%s>: source depth/stencil access requires a depth/stencil or All source "
-                       "pipeline stage",
-      texName);
-  if (depth_stencil_access_without_depth_stage(barrier.pipelineSync.dst, barrier.memorySync.dst))
-    D3D_CONTRACT_ERROR("DX12: enhanced_texture_barrier for <%s>: destination depth/stencil access requires a depth/stencil or All "
-                       "destination pipeline stage",
-      texName);
-  bool isUav = btex->isUav();
-  bool isRt = btex->isRenderTarget();
-  bool isDepth = btex->getFormat().isDepth();
-  auto requiresUav = [](d3d::TextureLayout l) { return l == d3d::TextureLayout::UnorderedAccess; };
-  auto requiresRt = [](d3d::TextureLayout l) { return l == d3d::TextureLayout::RenderTarget; };
-  if ((requiresUav(barrier.layoutTransition.src) || requiresUav(barrier.layoutTransition.dst)) && !isUav)
-    D3D_CONTRACT_ERROR(
-      "DX12: enhanced_texture_barrier for <%s>: UnorderedAccess layout requires a texture created with TEXCF_UNORDERED", texName);
-  if ((requiresRt(barrier.layoutTransition.src) || requiresRt(barrier.layoutTransition.dst)) && !isRt)
-    D3D_CONTRACT_ERROR("DX12: enhanced_texture_barrier for <%s>: RenderTarget layout requires a texture created with TEXCF_RTARGET",
-      texName);
-  if ((is_depth_layout(barrier.layoutTransition.src) || is_depth_layout(barrier.layoutTransition.dst)) && !isDepth)
-    D3D_CONTRACT_ERROR("DX12: enhanced_texture_barrier for <%s>: Depth/stencil layout requires a depth-format texture", texName);
-  if (barrier.layoutTransition.dst == d3d::TextureLayout::Undefined && barrier.memorySync.dst != d3d::AccessFlags{})
-    D3D_CONTRACT_ERROR(
-      "DX12: enhanced_texture_barrier for <%s>: Undefined destination layout requires NoAccess destination access mask (D3D12 spec)",
-      texName);
-  if (barrier.layoutTransition.src == d3d::TextureLayout::Undefined && barrier.memorySync.src != d3d::AccessFlags{})
-    D3D_CONTRACT_ERROR(
-      "DX12: enhanced_texture_barrier for <%s>: Undefined source layout requires NoAccess source access mask (D3D12 spec)", texName);
-}
-
 void dispatch_enhanced_texture_barrier(const d3d::TextureBarrier &barrier, BaseTexture *texture)
 {
   if (!texture)
@@ -5719,7 +5664,7 @@ void dispatch_enhanced_buffer_barrier(const d3d::BufferBarrier &barrier, Sbuffer
       buffer->getBufName());
     return;
   }
-  validate_enhanced_buffer_barrier(barrier);
+  validate_enhanced_buffer_barrier(barrier, buffer);
   api_state.device.getContext().enhancedBufferBarrier(barrier, buffer);
 }
 } // namespace

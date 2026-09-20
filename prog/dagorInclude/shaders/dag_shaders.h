@@ -313,4 +313,5 @@ VDECL addShaderVdecl(const CompiledShaderChannelId *ch, int numch, int stride = 
 int getStride(const CompiledShaderChannelId *ch, int numch);
 
 void convert_channels_to_vsd(const CompiledShaderChannelId *ch, int numch, Tab<VSDTYPE> &out_vsd);
+
 } // namespace dynrender

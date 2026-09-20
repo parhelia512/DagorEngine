@@ -15,6 +15,7 @@
 #include "net/net.h" // net::ConnectParams
 #include "main/appProfile.h"
 #include "main/physMat.h"
+#include "main/level.h"
 
 #include "game/gameLauncher.h"
 

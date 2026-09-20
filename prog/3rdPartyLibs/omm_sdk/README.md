@@ -14,4 +14,8 @@ Local modifications not present upstream:
   skip OMM rasterization for triangles with an enormous or non-finite
   texel-space UV footprint, which otherwise hangs gpu.
 
+- src/std_containers.h: the container aliases are EASTL containers over the
+  SDK memory interface; map, set and vector keep 16 elements inline. The
+  insert(std::make_pair(...)) calls in the sources became emplace for that.
+
 Licensed under the NVIDIA RTX SDKs proprietary license (see LICENSE.txt).

@@ -15,6 +15,7 @@
 #include <perfMon/dag_statDrv.h>
 #include <util/dag_console.h>
 #include "render/renderEvent.h"
+#include "game/gameEvents.h"
 
 #include "filmGrain.h"
 #include "renderSettings.h"
@@ -40,9 +41,38 @@ static ShaderVariableInfo film_grain_lut_paramsVarId("film_grain_lut_params", tr
 static ShaderVariableInfo film_grain_gen_paramsVarId("film_grain_gen_params", true);
 static ShaderVariableInfo film_grain_gen_sizeVarId("film_grain_gen_size", true);
 
+// The generated LUT depends only on gen params and resolution, not on the scene,
+// so a finished LUT is stashed here when the per-scene holder entity is destroyed
+// and adopted by the next holder instead of being regenerated on scene switch.
+static struct FilmGrainLutCache
+{
+  UniqueTexWithShaderVar lut;
+  int wh = 0;
+  int d = 0;
+  Point4 genParams = Point4(0, 0, 0, 0);
+  bool shuttingDown = false;
+
+  void release()
+  {
+    lut.close();
+    wh = d = 0;
+  }
+} lut_cache;
+
 FilmGrainLutHolder::FilmGrainLutHolder() { setFilmGrainReady(false); }
 
-FilmGrainLutHolder::~FilmGrainLutHolder() { setFilmGrainReady(false); }
+FilmGrainLutHolder::~FilmGrainLutHolder()
+{
+  setFilmGrainReady(false);
+  // stash a fully generated LUT for the next holder instance (scene switch)
+  if (lut && genSlice < 0 && !rebuildRequested && !lut_cache.shuttingDown)
+  {
+    lut_cache.lut = eastl::move(lut);
+    lut_cache.wh = lutWH;
+    lut_cache.d = lutD;
+    lut_cache.genParams = genParams;
+  }
+}
 
 void FilmGrainLutHolder::setFilmGrainReady(bool is_ready)
 {
@@ -134,6 +164,7 @@ void FilmGrainLutHolder::setLutResolution(int wh, int d)
 void FilmGrainLutHolder::resetLut()
 {
   lut.close();
+  lut_cache.release(); // film grain is not needed anymore - no point in keeping the stash either
   genCs.reset();
   genSlice = -1;
   rebuildRequested = false;
@@ -150,6 +181,21 @@ bool FilmGrainLutHolder::generate()
   if (genSlice < 0)
   {
     lut.close();
+
+    // Adopt the LUT stashed by the previous holder instance (scene switch)
+    // if it was generated with the same parameters
+    if (lut_cache.lut && lut_cache.wh == lutWH && lut_cache.d == lutD && lut_cache.genParams == genParams)
+    {
+      lut = eastl::move(lut_cache.lut);
+      lut_cache.release();
+      lut.setVar();
+      rebuildRequested = false;
+      setFilmGrainReady(true);
+      return true;
+    }
+    else
+      lut_cache.release();
+
     uint32_t fmt = TEXFMT_R11G11B10F;
     if (!(d3d::get_texformat_usage(fmt) & d3d::USAGE_UNORDERED))
       fmt = TEXFMT_DEFAULT;
@@ -194,10 +240,26 @@ ECS_REGISTER_RELOCATABLE_TYPE(FilmGrainLutHolder, nullptr);
 ECS_AUTO_REGISTER_COMPONENT(FilmGrainLutHolder, "film_grain_lut", nullptr, 0);
 
 ECS_TAG(render)
-ECS_ON_EVENT(AfterDeviceReset)
+ECS_ON_EVENT(EventAfterDeviceReset)
 static void film_grain_lut_after_device_reset_es_event_handler(const ecs::Event &, FilmGrainLutHolder &film_grain_lut)
 {
   film_grain_lut.afterDeviceReset();
+}
+
+ECS_TAG(render)
+static void film_grain_lut_cache_after_device_reset_es(const EventAfterDeviceReset &)
+{
+  // a stashed LUT contains garbage after device reset
+  lut_cache.release();
+}
+
+ECS_TAG(render)
+static void film_grain_lut_cache_shutdown_es(const EventOnGameShutdown &)
+{
+  // the stash is a file-scope static: it must be released before d3d shutdown,
+  // and the holder's destructor must not re-populate it afterwards
+  lut_cache.shuttingDown = true;
+  lut_cache.release();
 }
 
 

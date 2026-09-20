@@ -1306,7 +1306,7 @@ float3 apply_advanced_translucency_to_lighting(float3 lighting_part, VsOutput in
         lnorm.xy = src_tex_1 * 2.f - 1.f;
         lnorm.z = sqrt( saturate( 1 - dot( lnorm.xy, lnorm.xy ) ) );
 
-        float2 flip = (input.frame_flags.xx & uint2(MODFX_FRAME_FLAGS_FLIP_X, MODFX_FRAME_FLAGS_FLIP_Y)) ? -1 : 1;
+        float2 flip = select(bool2(input.frame_flags.xx & uint2(MODFX_FRAME_FLAGS_FLIP_X, MODFX_FRAME_FLAGS_FLIP_Y)), float2(-1, -1), float2(1, 1));
         wnorm = fwd_dir * lnorm.z + flip.x * input.right_dir * lnorm.x - flip.y * input.up_dir * lnorm.y;
 
         nda = saturate( dot( sphere_normal, wnorm ) );

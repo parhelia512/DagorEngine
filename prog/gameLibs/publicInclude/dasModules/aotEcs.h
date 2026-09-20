@@ -637,6 +637,12 @@ inline char *_builtin_remove_sub_template_name_str(const char *from_templ_name, 
   return context->allocateString(str.c_str(), uint32_t(str.length()), at);
 }
 
+// whole-token match of a sub-template in a compound template name
+inline bool _builtin_has_sub_template_name_str(const char *templ_name, const char *sub_name_str)
+{
+  return templ_name && sub_name_str && find_sub_template_name(templ_name, sub_name_str) != nullptr;
+}
+
 inline ecs::EntityId _builtin_add_sub_template(ecs::EntityId eid, const char *add_name_str,
   const das::TBlock<void, ecs::ComponentsInitializer> &block, das::Context *context, das::LineInfoArg *at)
 {

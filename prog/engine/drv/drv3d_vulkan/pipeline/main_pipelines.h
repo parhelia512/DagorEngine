@@ -115,7 +115,7 @@ public:
         stagesFb += String(45, "    stage [%d] doesn't have a feedback \n", i);
     }
 
-    debug("%s \n  %s\n%s", prefix, "pipeline hit cache: no", stagesFb.c_str());
+    debug("%s\n%s", prefix, stagesFb.c_str());
   }
 
 private:
@@ -183,13 +183,15 @@ public:
   void compile();
   bool pendingCompilation();
 
+  ProgramID getProgram() const { return program; }
+
 private:
   static const uint32_t workGroupDims = 3;
   static uint32_t spirvWorkGroupSizeDimConstantIds[workGroupDims];
 
   ComputePipelineCompileScratchData *compileScratch;
   ShaderModuleBlob blob;
-  ProgramID prog;
+  ProgramID program;
 };
 
 struct GraphicsPipelineVariantDescription

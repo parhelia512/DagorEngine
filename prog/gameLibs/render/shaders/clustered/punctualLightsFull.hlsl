@@ -36,7 +36,7 @@ half3 perform_omni_light_full(uint omni_light_index, RenderOmniLight ol, FullLig
 
   float4 pos_and_radius = ol.posRadius;
   float4 color_and_specular = getFinalColor(ol, worldPos);
-  float2 shadowZnZf = ol.shadowZnZf_pad.xy;
+  float2 shadowZnZf = ol.shadowZnZf_flags_packedDataBits.xy;
   hasShadow = any(ol.colorFlags.rgb > 0);
   #if OMNI_SHADOWS
     float4 shadowTcToAtlas = getOmniLightShadowData(omni_light_index);

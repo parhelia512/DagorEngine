@@ -27,7 +27,7 @@ function dtext(val, params={}, addchildren = null) {
     txt = val
   }
   local obsVal = null
-  if (type(val) == "instance" && isObservable(val)) {
+  if (isObservable(val)) {
     txt = val.get()
     obsVal = val
     watchedtext = true

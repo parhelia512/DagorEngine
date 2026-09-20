@@ -33,6 +33,7 @@ inline constexpr uint32_t MAX_VERTEX_ATTRIBUTES = 16;
 inline constexpr uint32_t MAX_ACTIVE_DESCRIPTOR_SETS = 2;
 inline constexpr uint8_t MAX_IMMEDIATE_CONST_WORDS = 4;
 inline constexpr uint32_t IMMEDAITE_CB_REGISTER_NO = 7;
+inline constexpr uint32_t UNKNOWN_CONST_REGISTER_COUNT_REQUIREMENT = UINT32_MAX;
 
 // holds driver specific cache for pipeline creations
 // const char VULKAN_PIPELINE_CACHE_FILE_NAME[] = "cache/vulkan.bin";

@@ -15,7 +15,7 @@ String modulePath;
 
 das::FileAccessPtr get_file_access(char *pak)
 {
-  if (pak)
+  if (pak && *pak)
     return das::make_smart<bind_dascript::DagFileAccess>(pak);
   if (!modulePath.empty())
     return das::make_smart<bind_dascript::DagFileAccess>(modulePath.c_str());

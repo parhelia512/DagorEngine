@@ -314,7 +314,7 @@ public:
     onErrorCb(NULL)
   {}
 
-  const char *getJobName(bool &) const override { return "AviAsyncJob"; }
+  const char *getJobName(bool &) const override { return DAPROFILER_STRING("AviAsyncJob"); }
 
   void doJob()
   {

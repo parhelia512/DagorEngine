@@ -4,6 +4,7 @@
 
 #include <debug/dag_log.h>
 #include <ioSys/dag_dataBlock.h>
+#include <osApiWrappers/dag_direct.h>
 #include <startup/dag_globalSettings.h>
 #include <statsd/statsd.h>
 #include <util/dag_finally.h>
@@ -74,6 +75,7 @@ static bool handle_nvph(LPCWSTR lpFileName, HANDLE handle)
         statsd::counter("nv_dx_cache_file_deleted");
         // reset shader warmup status, to do it again
         ::DeleteFile("shader_warmup_status.blk");
+        dd_erase("cache/dx12.cache");
 
         return true;
       }

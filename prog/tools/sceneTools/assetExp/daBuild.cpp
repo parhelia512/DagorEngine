@@ -22,6 +22,7 @@
 #include <libTools/dtx/ddsxPlugin.h>
 #include <ioSys/dag_findFiles.h>
 #include <util/dag_fileMd5Validate.h>
+#include <util/dag_strUtil.h>
 #include "packList.h"
 #include "jobSharedMem.h"
 #include <perfMon/dag_cpuFreq.h>
@@ -194,6 +195,9 @@ static void makePack(DagorAssetMgr &mgr, dag::ConstSpan<DagorAsset *> assets, da
 bool detect_valid_patch(const DataBlock &expblk, const char *pkg_name, const char *app_dir, const char *target_str,
   const char *profile, char *out_md5)
 {
+  G_ASSERTF(dabuild_allow_patch_build, "patch dest paths are valid only for a patch build (pkg=%s target=%s)",
+    pkg_name ? pkg_name : "*", target_str);
+
   VirtualRomFsData *vrom = NULL;
   String nonpatch_dest, patch_dest, prefix;
   assethlp::build_package_dest_strings(patch_dest, prefix, expblk, pkg_name, app_dir, target_str, profile, true);
@@ -228,7 +232,6 @@ bool detect_valid_patch(const DataBlock &expblk, const char *pkg_name, const cha
 static bool detect_valid_patches(Tab<bool> &out_pkg_patch_build, const DataBlock &expblk, FastNameMapEx &addPackages,
   const char *app_dir, const char *target_str, const char *profile, Tab<MD5Buffer> *out_pkg_base_md5 = nullptr)
 {
-  G_ASSERT(dabuild_allow_patch_build);
   G_ASSERT(out_pkg_patch_build.size() == addPackages.nameCount() + 1);
 
   bool patch_detected = false;
@@ -2281,6 +2284,20 @@ void dabuild_prepare_out_blk(DataBlock &dest, DagorAssetMgr &mgr, const DataBloc
         if (*fn)
           exporter->setBuildResultsBlk(dest.addBlock(mgr.getAssetTypeName(i)));
 }
+void dabuild_set_desc_base_md5(DataBlock &desc_blk, const char *base_desc_fname)
+{
+  unsigned char hash[AssetExportCache::HASH_SZ];
+  if (!AssetExportCache::getFileHash(base_desc_fname, hash))
+    return;
+
+  String stor;
+  const char *md5 = data_to_str_hex(stor, hash, sizeof(hash));
+  if (const char *prev = desc_blk.getStr("base_md5", nullptr))
+    if (strcmp(prev, md5) != 0)
+      logwarn("base desc changed while its patch is live: %s (base_md5 %s -> %s)", base_desc_fname, prev, md5);
+  desc_blk.setStr("base_md5", md5);
+}
+
 void dabuild_finish_out_blk(DataBlock &dest, DagorAssetMgr &mgr, const DataBlock &build_blk, const DataBlock &export_blk,
   const char *app_dir, unsigned tc, const char *profile)
 {
@@ -2289,6 +2306,8 @@ void dabuild_finish_out_blk(DataBlock &dest, DagorAssetMgr &mgr, const DataBlock
     if (IDagorAssetExporter *exporter = mgr.getAssetExporter(i))
     {
       exporter->setBuildResultsBlk(NULL);
+      if (dabuild_dry_run) // after the reset above: every type needs that, written or not
+        continue;
       if (const char *fn = build_blk.getBlockByNameEx(mgr.getAssetTypeName(i))->getStr("descListOutPath", NULL))
       {
         if (!*fn)
@@ -2368,6 +2387,12 @@ void dabuild_finish_out_blk(DataBlock &dest, DagorAssetMgr &mgr, const DataBlock
 
             if (blk.blockCount())
             {
+              if (patch_build)
+              {
+                String base_mnt;
+                assethlp::build_package_dest(base_mnt, export_blk, pack_name, app_dir, ts, profile);
+                dabuild_set_desc_base_md5(blk, String(0, "%s/%s%s.bin", base_mnt, fn, profile_suffix));
+              }
               dd_mkpath(abs_fn);
               dblk::pack_to_binary_file(blk, abs_fn);
               debug("sync %d asset descriptions to %s", src_blk.blockCount(), abs_fn);

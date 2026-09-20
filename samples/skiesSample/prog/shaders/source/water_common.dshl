@@ -323,7 +323,7 @@ void getShore(float3 worldPos, out ShoreData shoreData)
     DEBUG_WATER_RET(1, y);
 #endif
 
-    wakeGradient = get_wake_gradient(worldPos).xzy;
+    wakeGradient = get_wake_gradient(worldPos);
   }
 
   float calcDetailFactor(float d, float fovy, float d_min, float d_max)
@@ -398,7 +398,6 @@ void getShore(float3 worldPos, out ShoreData shoreData)
     vd.surfaceAttributes = GFSDK_WaveWorks_GetSurfaceAttributes(In, nvsf_blendfactors0123, nvsf_blendfactors4567);
 #endif
     vd.screenPos = screenPos;
-    vd.pos_world_undisplaced = vd.pos_world_undisplaced;
 ##if shader == water_3d_decal
     vd.localUV_fade = In.localUV_fade;
 ##endif
@@ -567,7 +566,7 @@ void getShore(float3 worldPos, out ShoreData shoreData)
 #ifdef WATER_FOAM_TRAIL
   ##if shader != water_3d_decal
     ##if compatibility_mode == compatibility_mode_off
-        get_water_foam_trail( vd.worldPos, foamData.FoamLowFreq, vd.wakeGradient.xzy, foamData.scatterFoamFactor, foamData.foamFactor );
+        get_water_foam_trail( vd.worldPos, foamData.FoamLowFreq, vd.wakeGradient, foamData.scatterFoamFactor, foamData.foamFactor );
     ##else
         get_water_foam_trail_comp( vd.worldPos, foamData.foamFactor );
     ##endif
@@ -773,7 +772,7 @@ void getShore(float3 worldPos, out ShoreData shoreData)
     half sssViewFactor = (half)(1 - smoothstep(0, sssMaxViewAngleCos, abs(vd.pointToEyeNormalized.y))) * refrVis;
     sssViewFactor = pow3(sssViewFactor);
   #else
-    half displaceY = (half)max(1.0h, vd.worldPos.y - vd.pos_world_undisplaced.z + 2.0h);
+    half displaceY = (half)max(1.0h, vd.worldPos.y - vd.pos_world_undisplaced.y + 2.0h);
     half sssHeightFactor = half(displaceY * distanceFaderStartingAt1000m * lrefl_scatter_hdr_psize.y * sssHeightFactorMul);
     half sssViewFactor = (half)(1 - smoothstep(0, sssMaxViewAngleCos, abs(vd.pointToEyeNormalized.y)));
   #endif

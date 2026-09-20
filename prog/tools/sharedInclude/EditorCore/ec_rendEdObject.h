@@ -237,6 +237,10 @@ public:
   virtual void scaleObject(const Point3 &delta, const Point3 &origin, IEditorCoreEngine::BasisType basis);
   //@}
 
+  /// Queries if the object can be transformed
+  /// @return possibility of object transformation
+  virtual bool canTransform() const { return true; }
+
   //*****************************************************************
   /// @name Undo / redo methods.
   //@{
@@ -368,6 +372,7 @@ protected:
     void redo() override { obj->setFlags(redoFlags, ~0); }
 
     size_t size() override { return sizeof(*this); }
+    UNDO_MERGE_SNAPSHOT_BY_TARGET(0x218026D5u, obj.get()) // UndoObjFlags
     void accepted() override {}
     void get_description(String &s) override { s = "UndoObjFlags"; }
   };
@@ -392,6 +397,7 @@ protected:
     void redo() override { obj->setPos(redoPos); }
 
     size_t size() override { return sizeof(*this); }
+    UNDO_MERGE_SNAPSHOT_BY_TARGET(0x351CA44Bu, obj.get()) // UndoMove
     void accepted() override {}
     void get_description(String &s) override { s = "UndoMove"; }
   };
@@ -416,6 +422,7 @@ protected:
     void redo() override { obj->setMatrix(redoMatrix); }
 
     size_t size() override { return sizeof(*this); }
+    UNDO_MERGE_SNAPSHOT_BY_TARGET(0x0357EB02u, obj.get()) // UndoMatrix
     void accepted() override {}
     void get_description(String &s) override { s = "UndoMatrix"; }
   };

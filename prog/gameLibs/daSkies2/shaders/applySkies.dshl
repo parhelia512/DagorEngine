@@ -63,8 +63,10 @@ shader applySkies, applySkies_sphere
       USE_SUBPASS_LOADS()
 
       hlsl(ps) {
+        // Emulated backends bind read N at MAX_T_REGISTERS - 1 - N, so the register and the
+        // attachment index below are one pair: change either and the other must follow.
         #ifndef APPLY_SKIES_DEPTH_REGISTER
-          #define APPLY_SKIES_DEPTH_REGISTER t2
+          #define APPLY_SKIES_DEPTH_REGISTER t29
         #endif
         #ifndef APPLY_SKIES_DEPTH_IA
           #define APPLY_SKIES_DEPTH_IA 2

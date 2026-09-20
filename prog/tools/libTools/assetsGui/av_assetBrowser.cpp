@@ -90,6 +90,8 @@ bool AssetBrowser::isTheSameAssetList(dag::Span<DagorAsset *> assets) const
   return true;
 }
 
+bool AssetBrowser::isContextMenuOpen() const { return contextMenu != nullptr; }
+
 void AssetBrowser::setAssets(dag::Span<DagorAsset *> assets, DagorAsset *selected_asset)
 {
   // If the asset list is the same then we can keep the texture references.

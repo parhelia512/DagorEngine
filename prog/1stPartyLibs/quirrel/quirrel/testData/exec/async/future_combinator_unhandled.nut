@@ -16,7 +16,7 @@ async function main() {
   async function faulter() { throw "loser-suppressed" }
   let loser = faulter()
   let r = await Future.race([winner, loser])
-  print("race winner: " + r + "\n")
+  println($"race winner: {r}")
   print("body done\n")
 }
 

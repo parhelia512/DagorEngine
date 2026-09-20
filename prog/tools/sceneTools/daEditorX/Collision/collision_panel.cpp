@@ -32,16 +32,8 @@ enum
   CM_PID_SHOW_GAME_FRT,
   CM_PID_SHOW_VCM_WIRE,
   CM_PID_SHOW_DAGS,
-  CM_PID_EDITOR_BOX_ACTORS,
-  CM_PID_EDITOR_SPH_ACTORS,
-  CM_PID_EDITOR_CAP_ACTORS,
-  CM_PID_EDITOR_MESH_ACTORS,
 
   CM_PID_MATER_COLOR_BROSE_BASE,
-  CM_PID_EDITOR_RT_GRID_STEP,
-  CM_PID_EDITOR_RT_MIN_MUTUAL_OVERLAP,
-  CM_PID_EDITOR_RT_MIN_FACE_CNT,
-  CM_PID_EDITOR_RT_MIN_SMALL_OVERLAP,
 
   CM_PID_MATERIAL_GRP_BASE,
   CM_PID_MATERIAL_COLOR_BASE,
@@ -54,8 +46,8 @@ enum
 };
 
 
-CollisionPropPanelClient::CollisionPropPanelClient(CollisionPlugin *plg, CollisionBuildSettings &_stg, int &cur_phys_eng_type) :
-  plugin(plg), stg(_stg), curPhysEngType(cur_phys_eng_type), mPanelWindow(NULL)
+CollisionPropPanelClient::CollisionPropPanelClient(CollisionPlugin *plg, CollisionBuildSettings &_stg) :
+  plugin(plg), stg(_stg), mPanelWindow(NULL)
 {}
 
 
@@ -90,26 +82,9 @@ void CollisionPropPanelClient::setCollisionParams()
   maxGroup->createSeparator(0);
   maxGroup->createCheckBox(CM_PID_SHOW_DAGS, "Show DAGs collision", plugin->showDags);
   maxGroup->createSeparator(0);
-  maxGroup->createStatic(0, "Game collision preview:");
-  maxGroup->createCheckBox(CM_PID_EDITOR_BOX_ACTORS, "Box objects", plugin->showGcBox);
-  maxGroup->createCheckBox(CM_PID_EDITOR_SPH_ACTORS, "Sphere objects", plugin->showGcSph);
-  maxGroup->createCheckBox(CM_PID_EDITOR_CAP_ACTORS, "Capsule objects", plugin->showGcCap);
-  maxGroup->createCheckBox(CM_PID_EDITOR_MESH_ACTORS, "Tri-mesh objects", plugin->showGcMesh);
-  maxGroup->createIndent();
-  maxGroup->createSeparator(0);
   maxGroup->createPoint3(CM_PID_EDITOR_LEAF_SIZE, "Leaf size:", stg.leafSize());
   maxGroup->createEditInt(CM_PID_EDITOR_LEVELS_COUNT, "Levels count:", stg.levels);
   maxGroup->createIndent();
-
-  if (curPhysEngType == CollisionPlugin::PHYSENG_Bullet)
-  {
-    maxGroup->createStatic(0, "Bullet settings");
-    maxGroup->createEditFloat(CM_PID_EDITOR_RT_GRID_STEP, "Actors grid step", stg.gridStep);
-    maxGroup->createEditFloat(CM_PID_EDITOR_RT_MIN_MUTUAL_OVERLAP, "Merge actors thres.(%)", stg.minMutualOverlap * 100);
-    maxGroup->createIndent();
-    maxGroup->createEditInt(CM_PID_EDITOR_RT_MIN_FACE_CNT, "Small actor max faces", stg.minFaceCnt);
-    maxGroup->createEditFloat(CM_PID_EDITOR_RT_MIN_SMALL_OVERLAP, "Merge small actor thres.(%)", stg.minSmallOverlap * 100);
-  }
 
   for (int i = 0; i < info_mats.size(); i++)
   {
@@ -159,14 +134,6 @@ void CollisionPropPanelClient::onChange(int pcb_id, PropPanel::ContainerProperty
       panel->setBool(CM_PID_SHOW_GAME_FRT, plugin->showGameFrt);
       break;
 
-    case CM_PID_EDITOR_BOX_ACTORS: plugin->showGcBox = panel->getBool(pcb_id); break;
-
-    case CM_PID_EDITOR_SPH_ACTORS: plugin->showGcSph = panel->getBool(pcb_id); break;
-
-    case CM_PID_EDITOR_CAP_ACTORS: plugin->showGcCap = panel->getBool(pcb_id); break;
-
-    case CM_PID_EDITOR_MESH_ACTORS: plugin->showGcMesh = panel->getBool(pcb_id); break;
-
     case CM_PID_EDITOR_LEAF_SIZE:
       stg.leafSize() = panel->getPoint3(pcb_id);
       changed = true;
@@ -174,26 +141,6 @@ void CollisionPropPanelClient::onChange(int pcb_id, PropPanel::ContainerProperty
 
     case CM_PID_EDITOR_LEVELS_COUNT:
       stg.levels = panel->getInt(pcb_id);
-      changed = true;
-      break;
-
-    case CM_PID_EDITOR_RT_GRID_STEP:
-      stg.gridStep = panel->getFloat(pcb_id);
-      changed = true;
-      break;
-
-    case CM_PID_EDITOR_RT_MIN_MUTUAL_OVERLAP:
-      stg.minMutualOverlap = panel->getFloat(pcb_id) * 0.01;
-      changed = true;
-      break;
-
-    case CM_PID_EDITOR_RT_MIN_SMALL_OVERLAP:
-      stg.minSmallOverlap = panel->getFloat(pcb_id) * 0.01;
-      changed = true;
-      break;
-
-    case CM_PID_EDITOR_RT_MIN_FACE_CNT:
-      stg.minFaceCnt = panel->getInt(pcb_id);
       changed = true;
       break;
   }

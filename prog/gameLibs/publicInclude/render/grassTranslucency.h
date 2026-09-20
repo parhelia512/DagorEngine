@@ -4,7 +4,7 @@
 //
 #pragma once
 
-#include <3d/dag_textureIDHolder.h>
+#include <3d/dag_resPtr.h>
 #include <shaders/dag_postFxRenderer.h>
 #include <math/dag_bounds3.h>
 #include <render/toroidalHelper.h>
@@ -42,7 +42,7 @@ public:
 
 protected:
   void recreateTex(int sz);
-  TextureIDHolderWithVar grass_color_tex, grass_mask_tex;
+  UniqueTexWithShaderVar grass_color_tex, grass_mask_tex;
   PostFxRenderer decode_grass_mask;
   BBox3 last_grass_color_box;
   int grass_tex_size;

@@ -15,6 +15,12 @@ public:
       "::bind_dascript::register_props");
     das::addExtern<DAS_BIND_FUN(get_props_id)>(*this, lib, "get_props_id", das::SideEffects::accessExternal,
       "::bind_dascript::get_props_id");
+    das::addExtern<DAS_BIND_FUN(get_props_registered_name)>(*this, lib, "get_props_registered_name", das::SideEffects::accessExternal,
+      "::bind_dascript::get_props_registered_name");
+    das::addExtern<DAS_BIND_FUN(is_props_valid)>(*this, lib, "is_props_valid", das::SideEffects::accessExternal,
+      "::bind_dascript::is_props_valid");
+    das::addExtern<DAS_BIND_FUN(get_props_count)>(*this, lib, "get_props_count", das::SideEffects::accessExternal,
+      "::bind_dascript::get_props_count");
 
     verifyAotReady();
   }

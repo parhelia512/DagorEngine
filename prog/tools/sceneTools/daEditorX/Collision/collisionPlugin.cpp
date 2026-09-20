@@ -18,6 +18,10 @@
 
 #include <ioSys/dag_dataBlock.h>
 #include <ioSys/dag_ioUtils.h>
+#include <ioSys/dag_fileIo.h>
+#include <ioSys/dag_memIo.h>
+#include <ioSys/dag_zstdIo.h>
+#include <ioSys/dag_btagCompr.h>
 
 #include <libTools/dagFileRW/dagFileNode.h>
 #include <libTools/dagFileRW/textureNameResolver.h>
@@ -48,7 +52,6 @@
 
 #include <EditorCore/ec_editorCommandSystem.h>
 #include <EditorCore/ec_wndGlobal.h>
-#include "physMesh.h"
 #include <generic/dag_tab.h>
 #include "de3_box_vs_tri.h"
 #include <3d/dag_render.h>
@@ -114,40 +117,13 @@ static bool is_bad_wtm(const TMatrix &tm)
 }
 
 
-Tab<int> PhysMesh::vmap(tmpmem);
-Tab<int> PhysMesh::pmmap(tmpmem);
-Tab<int> PhysMesh::facePerMat(tmpmem);
-Tab<int> PhysMesh::vertPerMat(tmpmem);
-Tab<int> PhysMesh::objPerMat(tmpmem);
-FastNameMapEx PhysMesh::sceneMatNames;
-
-namespace cook
-{
-float gridStep = 20, minSmallOverlap = 0.1, minMutualOverlap = 0.95;
-int minFaceCnt = 8;
-} // namespace cook
-
-Tab<BBox3> phys_actors_bbox(midmem);
-Tab<TMatrix> phys_box_actors(midmem);
-Tab<Point4> phys_sph_actors(midmem);
-Tab<TMatrix> phys_cap_actors(midmem);
-
 //==============================================================================
 CollisionPlugin::CollisionPlugin() :
-  isVisible(false),
-  clipDag(midmem),
-  toolBarId(0),
-  clipDagNew(midmem),
-  panelClient(NULL),
-  vcmRad(50.0),
-  curPhysEngType(PHYSENG_Bullet),
-  mPanelVisible(false)
+  isVisible(false), clipDag(midmem), toolBarId(0), clipDagNew(midmem), panelClient(NULL), vcmRad(50.0), mPanelVisible(false)
 {
-  showGcBox = showGcSph = showGcCap = showGcMesh = true;
   showVcm = true;
   showDags = false;
   showVcmWire = true;
-  gameFrt = NULL;
   showGameFrt = false;
   collisionReady = false;
   dagRtDumpReady = false;
@@ -367,39 +343,6 @@ void CollisionPlugin::setVisible(bool vis)
 
 void CollisionPlugin::renderObjects()
 {
-  begin_draw_cached_debug_lines();
-  set_cached_debug_lines_wtm(TMatrix::IDENT);
-
-  if (showGcMesh && phys_actors_bbox.size())
-    for (int i = 0; i < phys_actors_bbox.size(); i++)
-      draw_cached_debug_box(phys_actors_bbox[i], E3DCOLOR(((i & 30) >> 4) * 80, ((i & 0xC) >> 2) * 80, (i & 3) * 80));
-
-  if (showGcBox && phys_box_actors.size())
-    for (int i = 0; i < phys_box_actors.size(); i++)
-      draw_cached_debug_box(
-        phys_box_actors[i].getcol(3) - phys_box_actors[i].getcol(0) - phys_box_actors[i].getcol(1) - phys_box_actors[i].getcol(2),
-        phys_box_actors[i].getcol(0) * 2, phys_box_actors[i].getcol(1) * 2, phys_box_actors[i].getcol(2) * 2,
-        E3DCOLOR(255, 255, 255, 255));
-
-  if (showGcSph && phys_sph_actors.size())
-    for (int i = 0; i < phys_sph_actors.size(); i++)
-      draw_cached_debug_sphere(Point3::xyz(phys_sph_actors[i]), phys_sph_actors[i].w, E3DCOLOR(255, 0, 255, 255));
-
-  if (showGcCap && phys_cap_actors.size())
-    for (int i = 0; i < phys_cap_actors.size(); i++)
-    {
-      Capsule cap;
-      float r = phys_cap_actors[i].getcol(0).length();
-      float l = phys_cap_actors[i].getcol(1).length();
-
-      cap.set(phys_cap_actors[i].getcol(3) - phys_cap_actors[i].getcol(1) * 0.5,
-        phys_cap_actors[i].getcol(3) + phys_cap_actors[i].getcol(1) * 0.5, r);
-
-      draw_cached_debug_capsule_w(cap, E3DCOLOR(255, 255, 0, 255));
-    }
-
-  end_draw_cached_debug_lines();
-
   if (showDags)
   {
     makeDagPreviewCollision(false);
@@ -415,9 +358,24 @@ bool CollisionPlugin::catchEvent(unsigned ev_huid, void *userData)
   {
     if (showGameFrt)
       makeGameFrtPreviewCollision(false);
-    FastRtDump *rt = showGameFrt ? gameFrt : DagorPhys::getFastRtDump();
+    FastRtDump *rt = showGameFrt ? nullptr : DagorPhys::getFastRtDump();
     IGenViewportWnd *vp = DAGORED2->getRenderViewport();
-    if (rt && vp)
+    if (showGameFrt && gameStaticColl && vp)
+    {
+      const CollisionResource *coll = gameStaticColl.get();
+      TMatrix cameraTm;
+      vp->getCameraTransform(cameraTm);
+      // the stream draws what it is handed, so the panel's radius bounds the walk
+      bbox3f box;
+      v_bbox3_init_by_bsph(box, v_ldu(&cameraTm.getcol(3).x), v_splats(get_vcm_rad()));
+      ::render_visclipmesh_stream([coll, &box](const VisClipMeshEmit &emit) {
+        coll->visitTrianglesInBox(box, CollisionNode::PHYS_COLLIDABLE, [&emit](vec3f a, vec3f b, vec3f c, int mat, int) {
+          emit(a, b, c, mat);
+          return false; //-V657 draw everything the box holds
+        });
+      });
+    }
+    else if (rt && vp)
     {
       TMatrix cameraTm;
       vp->getCameraTransform(cameraTm);
@@ -431,7 +389,7 @@ bool CollisionPlugin::catchEvent(unsigned ev_huid, void *userData)
 bool CollisionPlugin::recreatePanel()
 {
   if (!panelClient)
-    panelClient = new (uimem) CollisionPropPanelClient(this, rtStg, curPhysEngType);
+    panelClient = new (uimem) CollisionPropPanelClient(this, rtStg);
 
   panelClient->showPropPanel(!panelClient->isVisible());
 
@@ -759,12 +717,47 @@ void CollisionPlugin::makeDagPreviewCollision(bool force_remake)
   collisionReady = true;
 }
 
+
+// The decompressor reports the size it wrote, so its destination only has to swallow the bytes.
+struct NullSaveCB final : public IGenSave
+{
+  void write(const void *, int) override {}
+  int tell() override { return 0; }
+  void seekto(int) override {}
+  void seektoend(int) override {}
+  const char *getTargetName() override { return "<size counter>"; }
+  void beginBlock() override {}
+  void endBlock(unsigned) override {}
+  int getBlockLevel() override { return 0; }
+  void flush() override {}
+};
+
 void CollisionPlugin::makeGameFrtPreviewCollision(bool force_remake)
 {
-  if (!force_remake && gameFrt)
+  if (!force_remake && gameStaticColl)
     return;
-  del_it(gameFrt);
-  gameFrt = getFrt(true);
+  gameStaticColl = nullptr;
+  String clipFname;
+  getGameClipPath(clipFname, _MAKE4C('PC'));
+  FullFileLoadCB fl(clipFname);
+  if (!fl.fileHandle)
+  {
+    debug("Unable to find file %s", clipFname.str());
+    return;
+  }
+  // a truncated or empty clip throws on the first read; the preview must survive that
+  DAGOR_TRY { gameStaticColl = new CollisionResource(fl, -1, "game static collision"); }
+  DAGOR_CATCH(IGenLoad::LoadException)
+  {
+    debug("File %s is not a readable static collision", clipFname.str());
+    gameStaticColl = nullptr;
+    return;
+  }
+  if (gameStaticColl->getAllNodes().empty())
+  {
+    debug("File %s holds no static collision", clipFname.str());
+    gameStaticColl = nullptr;
+  }
 }
 
 
@@ -829,7 +822,7 @@ bool CollisionPlugin::onPluginMenuClickInternal(unsigned id, PropPanel::Containe
 
 
 //==============================================================================
-void CollisionPlugin::getGameClipPath(String &path, unsigned target_code) const
+void CollisionPlugin::getClipPath(String &path, unsigned target_code, const char *suffix) const
 {
   char name_prefix[64] = {"game_clip"};
 
@@ -837,13 +830,17 @@ void CollisionPlugin::getGameClipPath(String &path, unsigned target_code) const
   if (target_code != _MAKE4C('PC'))
     sprintf(name_prefix + strlen(name_prefix), "-%s", mkbindump::get_target_str(target_code, tc_storage));
 
-  switch (curPhysEngType)
-  {
-    case PHYSENG_DagorFastRT: strcat(name_prefix, ".frt.bin"); break;
-    case PHYSENG_Bullet: strcat(name_prefix, ".bt.bin"); break;
-  }
+  strcat(name_prefix, suffix);
   path = DAGORED2->getPluginFilePath(this, name_prefix);
 }
+
+
+//==============================================================================
+void CollisionPlugin::getGameClipPath(String &path, unsigned target_code) const { getClipPath(path, target_code, ".scol.bin"); }
+
+
+//==============================================================================
+void CollisionPlugin::getWaterClipPath(String &path, unsigned target_code) const { getClipPath(path, target_code, ".wcol.bin"); }
 
 
 //==============================================================================
@@ -854,33 +851,17 @@ void CollisionPlugin::getCollisionFiles(Tab<String> &files, unsigned target_code
 
   files.push_back(path);
 
-  if (curPhysEngType == PHYSENG_Bullet)
-  {
-    remove_trailing_string(path, ".bin");
-    path += "-frt.bin";
-    files.push_back(path);
-  }
+  String waterPath;
+  getWaterClipPath(waterPath, target_code);
+  if (::dd_file_exist(waterPath)) // a level without water cooks no water stream
+    files.push_back(waterPath);
 }
 
 
 //==============================================================================
 bool CollisionPlugin::validateBuild(int target, ILogWriter &rep, PropPanel::ContainerPropertyControl *params)
 {
-  switch (curPhysEngType)
-  {
-    case PHYSENG_DagorFastRT:
-    {
-      getPhysMatPath(&rep);
-      break;
-    }
-
-    case PHYSENG_Bullet: break;
-    default:
-    {
-      rep.addMessage(ILogWriter::ERROR, "Unknown collision PhysEngine type");
-      return false;
-    }
-  }
+  getPhysMatPath(&rep);
 
   if (!compileGameClip(params, target))
   {
@@ -893,26 +874,12 @@ bool CollisionPlugin::validateBuild(int target, ILogWriter &rep, PropPanel::Cont
 
   if (!::dd_file_exist(clipFnameGame))
   {
-    rep.addMessage(ILogWriter::ERROR, "Couldn't load raytracer dump from \"%s\"\n", clipFnameGame);
+    rep.addMessage(ILogWriter::ERROR, "Couldn't load game collision from \"%s\"\n", clipFnameGame);
 
-    logerr("Can't open raytracer dump from \"%s\"", clipFnameGame.str());
+    logerr("Can't open game collision from \"%s\"", clipFnameGame.str());
     return false;
   }
 
-  if (curPhysEngType == PHYSENG_Bullet)
-  {
-    String frt_name(clipFnameGame);
-    remove_trailing_string(frt_name, ".bin");
-    frt_name += "-frt.bin";
-    if (!::dd_file_exist(frt_name))
-    {
-      rep.addMessage(ILogWriter::ERROR, "Can't open raytracer dump to '%s'\n", frt_name);
-
-      logerr("Can't open raytracer dump from \"%s\"", frt_name.str());
-
-      return false;
-    }
-  }
   return true;
 }
 
@@ -922,7 +889,22 @@ bool CollisionPlugin::buildAndWrite(BinDumpSaveCB &cwr, const ITextureNumerator 
   Tab<String> files(tmpmem);
   getCollisionFiles(files, cwr.getTarget());
 
-  if (files.size() == 2)
+  {
+    file_ptr_t fp = df_open(files[0], DF_READ);
+    if (!fp)
+      return false;
+
+    if (df_length(fp) > 0)
+    {
+      cwr.beginTaggedBlock(_MAKE4C('SCol'));
+      copy_file_to_stream(fp, cwr.getRawWriter(), df_length(fp));
+      cwr.endBlock();
+    }
+    ::df_close(fp);
+  }
+
+  // the second file is the water stream, listed only when the cook wrote one
+  if (files.size() > 1)
   {
     file_ptr_t fp = df_open(files[1], DF_READ);
     if (!fp)
@@ -930,32 +912,7 @@ bool CollisionPlugin::buildAndWrite(BinDumpSaveCB &cwr, const ITextureNumerator 
 
     if (df_length(fp) > 0)
     {
-      cwr.beginTaggedBlock(_MAKE4C('FRT'));
-      copy_file_to_stream(fp, cwr.getRawWriter(), df_length(fp));
-      cwr.endBlock();
-    }
-
-    ::df_close(fp);
-  }
-
-  if (curPhysEngType == PHYSENG_Bullet && stricmp(DagorPhys::get_collision_name(), "DagorBullet") != 0)
-    return true;
-
-  {
-    file_ptr_t fp = df_open(files[0], DF_READ);
-    if (!fp)
-      return false;
-
-    int label;
-    switch (curPhysEngType)
-    {
-      case PHYSENG_DagorFastRT: label = _MAKE4C('FRT'); break;
-      case PHYSENG_Bullet: label = _MAKE4C('B_RT'); break;
-    }
-
-    if (df_length(fp) > 0)
-    {
-      cwr.beginTaggedBlock(label);
+      cwr.beginTaggedBlock(_MAKE4C('WCol'));
       copy_file_to_stream(fp, cwr.getRawWriter(), df_length(fp));
       cwr.endBlock();
     }
@@ -997,7 +954,7 @@ bool CollisionPlugin::checkMetrics(const DataBlock &metrics_blk)
 
   const int maxSize = metrics_blk.getReal("max_size", 0) * 1024 * 1024;
   int totalSize = 0;
-  int compressed_frt = 0;
+  int packedSize = 0;
 
   for (int i = 0; i < files.size(); ++i)
   {
@@ -1006,15 +963,21 @@ bool CollisionPlugin::checkMetrics(const DataBlock &metrics_blk)
     if (f)
     {
       // debug("file %s: %d", files[i].str(), df_length(f));
-      if (trail_stricmp(files[i], "-frt.bin") && df_length(f) >= 20)
+      if (df_length(f) >= 8)
       {
-        int sz;
-        ::df_seek_to(f, 16);
-        ::df_read(f, &sz, 4);
-        if (sz < 0)
-          sz = -sz;
+        // the metric is the unpacked size, and a ZSTD block keeps none: decode to count it
+        LFileGeneralLoadCB crd(f);
+        crd.readInt();
+        unsigned compr = btag_compr::NONE;
+        const int blockLen = crd.beginBlock(&compr);
+        int sz = blockLen;
+        if (compr == btag_compr::ZSTD)
+        {
+          NullSaveCB sink;
+          sz = (int)zstd_stream_decompress_data(sink, crd, blockLen);
+        }
         totalSize += sz;
-        compressed_frt += df_length(f);
+        packedSize += df_length(f);
       }
       else
         totalSize += df_length(f);
@@ -1025,9 +988,8 @@ bool CollisionPlugin::checkMetrics(const DataBlock &metrics_blk)
   if (totalSize > maxSize)
   {
     DAEDITOR3.conError("Metrics validation failed: collision file(s) size %s (%i bytes) more "
-                       "than maximum %s (%i bytes), compressed FRT=%dK (for leafSize=%@ levels=%d gridStep=%.1f)",
-      ::bytes_to_mb(totalSize), totalSize, ::bytes_to_mb(maxSize), maxSize, compressed_frt >> 10, rtStg.leafSize(), rtStg.levels,
-      rtStg.gridStep);
+                       "than maximum %s (%i bytes), packed=%dK (for leafSize=%@ levels=%d)",
+      ::bytes_to_mb(totalSize), totalSize, ::bytes_to_mb(maxSize), maxSize, packedSize >> 10, rtStg.leafSize(), rtStg.levels);
 
     return false;
   }
@@ -1039,7 +1001,6 @@ bool CollisionPlugin::checkMetrics(const DataBlock &metrics_blk)
 //==============================================================================
 void CollisionPlugin::clearObjects()
 {
-  showGcBox = showGcSph = showGcCap = showGcMesh = true;
   showVcm = true;
   showDags = false;
   showVcmWire = true;
@@ -1050,18 +1011,13 @@ void CollisionPlugin::clearObjects()
   editClipPlugins.reset();
   disableCustomColliders.reset();
   disabledGamePlugins.reset();
-  curPhysEngType = PHYSENG_DagorFastRT;
   collision.clear();
   rtStg.defaults();
-  del_it(gameFrt);
+  gameStaticColl = nullptr;
 
   close_tps_physmat();
   DagorPhys::close_collision();
   initCollision(false);
-  clear_and_shrink(phys_actors_bbox);
-  clear_and_shrink(phys_box_actors);
-  clear_and_shrink(phys_sph_actors);
-  clear_and_shrink(phys_cap_actors);
   collisionReady = false;
   dagRtDumpReady = false;
 }
@@ -1105,10 +1061,6 @@ bool CollisionPlugin::handleMouseMove(IGenViewportWnd *wnd, int x, int y, bool i
 void CollisionPlugin::saveObjects(DataBlock &blk, DataBlock &local_data, const char *base_path)
 {
   local_data.setReal("vcm_rad", get_vcm_rad());
-  local_data.setBool("showGcBox", showGcBox);
-  local_data.setBool("showGcSph", showGcSph);
-  local_data.setBool("showGcCap", showGcCap);
-  local_data.setBool("showGcMesh", showGcMesh);
   local_data.setBool("showVcm", showVcm);
   local_data.setBool("showDags", showDags);
   local_data.setBool("showGameFrt", showGameFrt);
@@ -1119,10 +1071,6 @@ void CollisionPlugin::saveObjects(DataBlock &blk, DataBlock &local_data, const c
 
   blk.setPoint3("rt_leafSize", rtStg.leafSize());
   blk.setInt("rt_levels", rtStg.levels);
-  blk.setReal("rt_gridStep", rtStg.gridStep);
-  blk.setReal("rt_minMutualOverlap", rtStg.minMutualOverlap);
-  blk.setReal("rt_minSmallOverlap", rtStg.minSmallOverlap);
-  blk.setInt("rt_minFaceCnt", rtStg.minFaceCnt);
 
   DataBlock *plugBlk = blk.addBlock("EditClipPlugNames");
 
@@ -1142,32 +1090,12 @@ void CollisionPlugin::saveObjects(DataBlock &blk, DataBlock &local_data, const c
 void CollisionPlugin::loadObjects(const DataBlock &blk, const DataBlock &local_data, const char *base_path)
 {
   vcmRad = local_data.getReal("vcm_rad", get_vcm_rad());
-  showGcBox = local_data.getBool("showGcBox", true);
-  showGcSph = local_data.getBool("showGcSph", true);
-  showGcCap = local_data.getBool("showGcCap", true);
-  showGcMesh = local_data.getBool("showGcMesh", true);
   showVcm = local_data.getBool("showVcm", true);
   showDags = local_data.getBool("showDags", false);
   showGameFrt = local_data.getBool("showGameFrt", false);
 
   if (vcmRad != get_vcm_rad())
     set_vcm_rad(vcmRad);
-
-  curPhysEngType = PHYSENG_Bullet;
-  const char *collisName = DagorPhys::get_collision_name();
-
-  if (collisName)
-  {
-    if (stricmp(collisName, "Dagor") == 0)
-      curPhysEngType = PHYSENG_DagorFastRT;
-    else if (!stricmp(collisName, "Bullet") || !stricmp(collisName, "DagorBullet"))
-      curPhysEngType = PHYSENG_Bullet;
-    else
-    {
-      DAEDITOR3.conError("unknown collision type: <%s>, switching to <%s>", collisName, "Bullet");
-      curPhysEngType = PHYSENG_Bullet;
-    }
-  }
 
   int dagNid = blk.getNameId("dag");
   int i;
@@ -1192,10 +1120,6 @@ void CollisionPlugin::loadObjects(const DataBlock &blk, const DataBlock &local_d
   rtStg.defaults();
   rtStg.leafSize() = blk.getPoint3("rt_leafSize", rtStg.leafSize());
   rtStg.levels = blk.getInt("rt_levels", rtStg.levels);
-  rtStg.gridStep = blk.getReal("rt_gridStep", rtStg.gridStep);
-  rtStg.minMutualOverlap = blk.getReal("rt_minMutualOverlap", rtStg.minMutualOverlap);
-  rtStg.minSmallOverlap = blk.getReal("rt_minSmallOverlap", rtStg.minSmallOverlap);
-  rtStg.minFaceCnt = blk.getInt("rt_minFaceCnt", rtStg.minFaceCnt);
 
   const DataBlock *plugBlk = blk.getBlockByName("EditClipPlugNames");
 
@@ -1490,7 +1414,7 @@ static void addConvexCollision(ICollisionDumpBuilder *rt, StaticGeometryNode &n,
 }
 
 //==============================================================================
-bool CollisionPlugin::compileCollision(bool for_game, Tab<int> &plugs, int physeng_type, unsigned target_code)
+bool CollisionPlugin::compileCollision(bool for_game, Tab<int> &plugs, unsigned target_code)
 {
   Tab<String> clipPlug(tmpmem);
 
@@ -1503,17 +1427,23 @@ bool CollisionPlugin::compileCollision(bool for_game, Tab<int> &plugs, int physe
     return false;
   }
 
-  switch (physeng_type)
+  // the editor's own clip stays a tracer dump (DagorPhys traces it); the game's is the stream
+  if (for_game)
   {
-    case PHYSENG_DagorFastRT: rt = ::create_dagor_raytracer_dump_builder(); break;
-    case PHYSENG_Bullet:
-      rt = ::create_bullet_collision_dump_builder(stricmp(DagorPhys::get_collision_name(), "DagorBullet") == 0);
-      break;
+    // the same gate the asset cook of every other collision reads
+    DataBlock appBlk(DAGORED2->getWorkspace().getAppBlkPath());
+    const bool joltFail = appBlk.getBlockByNameEx("assets")
+                            ->getBlockByNameEx("build")
+                            ->getBlockByNameEx("collision")
+                            ->getBool("joltDegenerativeTriFailExport", false);
+    rt = ::create_static_collision_dump_builder(CollisionPlugin::getPhysMatPath(), joltFail);
   }
+  else
+    rt = ::create_dagor_raytracer_dump_builder();
 
   if (!rt)
   {
-    DEBUG_CTX("Cannot create physeng collision dump builder: %d", physeng_type);
+    DEBUG_CTX("Cannot create collision dump builder");
     return false;
   }
 
@@ -1523,7 +1453,7 @@ bool CollisionPlugin::compileCollision(bool for_game, Tab<int> &plugs, int physe
   int i;
 
   if (report_stats)
-    DAEDITOR3.conNote("--- start building FRT geom");
+    DAEDITOR3.conNote("--- start building collision geom");
   if (plugs.size() && plugs[0] == -1)
   {
     clipPlug.push_back() = "DAG files";
@@ -1619,7 +1549,7 @@ bool CollisionPlugin::compileCollision(bool for_game, Tab<int> &plugs, int physe
       geom->gatherStaticCollisionGeomEditor(geoCont);
 
     if (report_stats)
-      DAEDITOR3.conNote("----- FRT geom from: %s (%d nodes)", plugin->getMenuCommandName(), geoCont.nodes.size());
+      DAEDITOR3.conNote("----- collision geom from: %s (%d nodes)", plugin->getMenuCommandName(), geoCont.nodes.size());
     // preprocessing
     bool need_kill = false;
     if (removeInvisibleFacesLand /*&& (DAEDITOR3.getEntitySubTypeMask(IObjEntityFilter::STMASK_TYPE_EXPORT) & lmeshObj)*/)
@@ -1664,36 +1594,45 @@ bool CollisionPlugin::compileCollision(bool for_game, Tab<int> &plugs, int physe
     getEditorClipPath(clipFname);
 
   if (report_stats)
-    DAEDITOR3.conNote("--- finished gathering geom for FRT");
+    DAEDITOR3.conNote("--- finished gathering the collision geom");
   tmpFname = DAGORED2->getPluginFilePath(this, "temp_rtdump");
 
   {
-    FullFileSaveCB cwr(clipFname);
-    bool ok = cwr.fileHandle && rt->finishAndWrite(tmpFname, cwr, target_code);
-
+    bool ok = false;
+    {
+      FullFileSaveCB cwr(clipFname);
+      ok = cwr.fileHandle && rt->finishAndWrite(tmpFname, cwr, target_code);
+    }
     if (!ok)
     {
       debug("Errors while compile collision");
+      // The file is closed by now: a refused write leaves an empty one, which the build would
+      // still find and ship as an empty block.
+      ::dd_erase(clipFname);
       rt->destroy();
       return false;
     }
   }
 
-  if (rt->getSeparateRayTracer())
+  if (for_game)
   {
-    ICollisionDumpBuilder *sep_rt = rt->getSeparateRayTracer();
-    String frt_fname(clipFname);
-    remove_trailing_string(frt_fname, ".bin");
-    frt_fname += "-frt.bin";
-
-    FullFileSaveCB cwr(frt_fname);
-    bool ok = cwr.fileHandle && sep_rt->finishAndWrite(tmpFname, cwr, target_code);
-
-    if (!ok)
+    // The water stream is a file of its own, and a cook without water must leave none behind. A
+    // file that will not open is a failed cook, not a level without water.
+    String waterFname;
+    getWaterClipPath(waterFname, target_code);
+    bool hasWater = false;
     {
-      rt->destroy();
-      return false;
+      FullFileSaveCB wcwr(waterFname);
+      if (!wcwr.fileHandle)
+      {
+        logerr("Can't open \"%s\" to write the water collision", waterFname.str());
+        rt->destroy();
+        return false;
+      }
+      hasWater = rt->finishAndWriteWater(wcwr);
     }
+    if (!hasWater)
+      ::dd_erase(waterFname);
   }
 
   rt->destroy();
@@ -1714,12 +1653,10 @@ bool CollisionPlugin::initCollision(bool for_game)
 
   if (for_game)
   {
-    getGameClipPath(clipFname, _MAKE4C('PC'));
-    remove_trailing_string(clipFname, ".bin");
-    clipFname += "-frt.bin";
+    debug("initCollision(for_game): the game collision is not a tracer dump, nothing installed");
+    return false;
   }
-  else
-    getEditorClipPath(clipFname);
+  getEditorClipPath(clipFname);
 
   close_tps_physmat();
   DagorPhys::close_collision();
@@ -1729,7 +1666,7 @@ bool CollisionPlugin::initCollision(bool for_game)
   if (IDagorEd2Engine::get())
   {
     if (!panelClient)
-      panelClient = new (uimem) CollisionPropPanelClient(this, rtStg, curPhysEngType);
+      panelClient = new (uimem) CollisionPropPanelClient(this, rtStg);
   }
 
   FullFileLoadCB fl((const char *)clipFname);
@@ -1759,17 +1696,10 @@ bool CollisionPlugin::initCollision(bool for_game)
   return success;
 }
 
-FastRtDump *CollisionPlugin::getFrt(bool game_frt)
+FastRtDump *CollisionPlugin::getFrt()
 {
   String clipFname;
-  if (game_frt)
-  {
-    getGameClipPath(clipFname, _MAKE4C('PC'));
-    remove_trailing_string(clipFname, ".bin");
-    clipFname += "-frt.bin";
-  }
-  else
-    getEditorClipPath(clipFname);
+  getEditorClipPath(clipFname);
 
   FullFileLoadCB fl((const char *)clipFname);
 
@@ -1845,7 +1775,7 @@ bool CollisionPlugin::compileEditClip()
   if (plugs.empty())
     return false;
 
-  return compileCollision(false, plugs, PHYSENG_DagorFastRT, _MAKE4C('PC'));
+  return compileCollision(false, plugs, _MAKE4C('PC'));
 }
 
 void CollisionPlugin::prepareDAGcollision()
@@ -1930,7 +1860,7 @@ bool CollisionPlugin::compileGameClip(PropPanel::ContainerPropertyControl *panel
   if (!gamePlugs.size())
     DAEDITOR3.conWarning("No plugins selected to get collision data. Collision will be empty.");
 
-  return compileCollision(true, gamePlugs, curPhysEngType, target_code);
+  return compileCollision(true, gamePlugs, target_code);
 }
 
 

@@ -20,6 +20,7 @@
 #include "util/dag_base64.h"
 #include <ecs/scripts/sqEntity.h>
 #include <sqmodules/sqmodules.h>
+#include <quirrel/frp/dag_frp.h>
 #include <quirrel/sqEventBus/sqEventBus.h>
 #include <json/json.h>
 #include <rendInst/rendInstExtra.h>
@@ -349,8 +350,6 @@ static bool on_daed4_activate(bool activate)
   if (activate)
     init_entity_object_editor();
 
-  sqeventbus::send_event("entity_editor.onEditorActivated", Json::Value(activate));
-
   if (activate || wasFreeCameraActive)
   {
     if (activate)
@@ -371,9 +370,11 @@ static bool on_daed4_activate(bool activate)
   {
     if (objEd->getEditMode() == CM_OBJED_MODE_CREATE_ENTITY || objEd->getEditMode() == CM_OBJED_MODE_POINT_ACTION)
       objEd->setEditMode(CM_OBJED_MODE_SELECT);
+    objEd->dropPendingSaveMainSceneCopy();
   }
 
   daed4_state = activate ? EditorState::ACTIVE : EditorState::DISABLED;
+  ::update_active_state_on_toolbar(activate);
   return true;
 }
 
@@ -410,6 +411,7 @@ void term_da_editor4()
 {
   daEd4->setObjectEditor(NULL);
   objEd.reset();
+  invalidate_scene_tree();
   daEd4Embedded.reset();
   daEd4 = &daEd4Stub;
   daEd4Vrom.reset();
@@ -669,11 +671,31 @@ static TMatrix make_cam_spawn_tm()
 
 /// @module entity_editor
 
+// Built on pull only, so a burst of edits costs one table. Owned with the bound VM.
+struct SceneTreeNode final : public sqfrp::INativeComputedSource
+{
+  eastl::unique_ptr<sqfrp::ComputedHandle> handle; // null while no VM is bound
+
+  sqfrp::NativePullResult pull(HSQUIRRELVM vm) override
+  {
+    Sqrat::Table tree = EntityObjEditor::getSceneTree(vm, objEd.get());
+    sq_pushobject(vm, tree.GetObject());
+    return sqfrp::NativePullResult::Changed; // a fresh table never compares equal
+  }
+};
+static SceneTreeNode scene_tree_node;
+
+void invalidate_scene_tree()
+{
+  if (scene_tree_node.handle)
+    scene_tree_node.handle->graph->invalidateNativeComputed(scene_tree_node.handle->id);
+}
+
 void register_editor_script(SqModules *module_mgr)
 {
   HSQUIRRELVM vm = module_mgr->getVM();
 
-  ::register_da_editor4_script(module_mgr);
+  ::register_da_editor4_script(module_mgr, daed4_state != EditorState::DISABLED); // RELOADING keeps the UI open
   EntityObjEditor::register_script_class(vm);
 
   Sqrat::Table exports(vm);
@@ -714,7 +736,21 @@ void register_editor_script(SqModules *module_mgr)
 
     .Func("make_cam_spawn_tm", make_cam_spawn_tm)
     /**/;
+
+  sqfrp::ObservablesGraph *graph = sqfrp::ObservablesGraph::get_from_vm(vm);
+  G_ASSERTF_RETURN(graph, , "entity_editor: the VM has no FRP graph");
+  G_ASSERTF_RETURN(!scene_tree_node.handle, , "entity_editor: already bound to a VM; the editor UI runs in one VM at a time");
+  scene_tree_node.handle.reset(new sqfrp::ComputedHandle(graph->createNativeComputed(&scene_tree_node), graph));
+  exports.SetInstance("sceneTree", scene_tree_node.handle.get());
+
   module_mgr->addNativeModule("entity_editor", exports);
+}
+
+void unregister_editor_script(HSQUIRRELVM vm)
+{
+  ::unregister_da_editor4_script(vm);
+  if (scene_tree_node.handle && scene_tree_node.handle->graph->vm == vm)
+    scene_tree_node.handle.reset();
 }
 
 

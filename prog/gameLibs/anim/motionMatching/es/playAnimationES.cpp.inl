@@ -130,7 +130,7 @@ public:
   float dt = 0.;
   uint32_t tpqpos = 0;
   int maxMotionMatchingPerFrame = 0;
-  const char *getJobName(bool &) const override { return "motion_matching_job"; }
+  const char *getJobName(bool &) const override { return DAPROFILER_STRING("motion_matching_job"); }
   void doJob() override
   {
     int processedMotionMatchingCount = 0;

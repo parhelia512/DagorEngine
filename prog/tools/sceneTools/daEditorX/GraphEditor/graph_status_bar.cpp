@@ -2,6 +2,7 @@
 
 #include "graph_status_bar.h"
 
+#include "graph_theme.h"
 #include "pluginService/graph_tex_gen_service.h"
 
 #include <de3_interface.h>
@@ -99,9 +100,11 @@ void draw_graph_status_bar(const GraphData &graph_data, IGraphTexGenService *tex
   const float iconGap = static_cast<float>(hdpi::_pxS(STATUS_BAR_ICON_GAP));
   const float donutSize = static_cast<float>(hdpi::_pxS(STATUS_DONUT_SIZE));
 
-  // Theme-driven background; labels inherit the theme text color (no forced white).
-  const ImU32 barBg = ImGui::GetColorU32(ImGuiCol_PopupBg);
-  ImGui::PushStyleColor(ImGuiCol_ChildBg, barBg);
+  // The text push reaches the labels and the hover tooltips, which draw as plain ImGui items: the
+  // color stack is global, so it covers the tooltip windows too.
+  ImGui::PushStyleColor(ImGuiCol_ChildBg, GRAPH_POPUP_BG_COLOR);
+  ImGui::PushStyleColor(ImGuiCol_PopupBg, GRAPH_POPUP_BG_COLOR);
+  ImGui::PushStyleColor(ImGuiCol_Text, GRAPH_TEXT_COLOR);
   ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(padX, 0.0f));
   const bool barVisible = ImGui::BeginChild("graph_status_bar", ImVec2(0.0f, bar_height), ImGuiChildFlags_AlwaysUseWindowPadding,
     ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse);
@@ -182,7 +185,7 @@ void draw_graph_status_bar(const GraphData &graph_data, IGraphTexGenService *tex
     // Priority: stage-1 graph-compile failure > stage-2 texgen error > texgen warning > clean info.
     String msgText;
     ImU32 msgColor = 0;
-    const char *iconName = nullptr; // commonData/icons/<theme>/<name>.png; pre-colored, drawn untinted
+    const char *iconName = nullptr; // commonData/icons/dark/<name>.png; pre-colored, drawn untinted
     if (!showProgress)
     {
       if (pipeline.graphCompileFailed)
@@ -191,25 +194,25 @@ void draw_graph_status_bar(const GraphData &graph_data, IGraphTexGenService *tex
         msgText = pipeline.lastError.empty() ? String("ERROR: graph compile failed (unresolved node dependencies)")
                                              : String(0, "ERROR: %s", pipeline.lastError.c_str());
         msgColor = STATUS_ERROR_COLOR;
-        iconName = "error";
+        iconName = "dark/error";
       }
       else if (pipeline.hasErrors)
       {
         msgText = String(0, "ERROR: %s", pipeline.lastError.c_str());
         msgColor = STATUS_ERROR_COLOR;
-        iconName = "error";
+        iconName = "dark/error";
       }
       else if (pipeline.hasWarnings)
       {
         msgText = String(0, "WARNING: %s", pipeline.lastWarning.c_str());
         msgColor = STATUS_WARNING_COLOR;
-        iconName = "warning";
+        iconName = "dark/warning";
       }
       else if (pipeline.generationCompleted)
       {
         msgText = "Generation complete";
         msgColor = STATUS_INFO_COLOR;
-        iconName = "info";
+        iconName = "dark/info";
       }
     }
 
@@ -255,13 +258,9 @@ void draw_graph_status_bar(const GraphData &graph_data, IGraphTexGenService *tex
       }
 
       tempString.printf(0, "%d/%d", done, pipeline.commandsTotal);
-      // Theme text color, not a fixed white: the label is left-aligned, so at low progress it sits
-      // over the (theme-tinted) track rather than the blue fill -- forcing white made it vanish on
-      // the light theme. ImGuiCol_Text reads dark-on-light / light-on-dark and stays legible over
-      // both the track and the blue fill across themes.
       dl->AddText(ImVec2(pillMin.x + static_cast<float>(hdpi::_pxS(STATUS_PROGRESS_PAD_X)),
                     pillMin.y + (progressHeight - ImGui::GetTextLineHeight()) * 0.5f),
-        ImGui::GetColorU32(ImGuiCol_Text), tempString.str());
+        GRAPH_TEXT_COLOR, tempString.str());
       ImGui::SameLine(0.0f, blockGap);
     }
     else if (slotWidth > 0.0f)
@@ -304,5 +303,5 @@ void draw_graph_status_bar(const GraphData &graph_data, IGraphTexGenService *tex
   }
   ImGui::EndChild();
   ImGui::PopStyleVar();
-  ImGui::PopStyleColor(1);
+  ImGui::PopStyleColor(3);
 }

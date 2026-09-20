@@ -13,7 +13,9 @@ enum class D3DResourceType : uint8_t
   VOLTEX,
   ARRTEX,
   CUBEARRTEX,
-  SBUF
+  SBUF,
+
+  MAX_VAL = SBUF,
 };
 
 class D3dResource

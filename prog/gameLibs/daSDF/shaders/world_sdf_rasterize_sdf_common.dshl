@@ -70,7 +70,7 @@ macro INIT_RASTERIZE_SDF()
         unwrappedCoordLt = unwrappedCoordBase - N;
         unwrappedCoordRb = unwrappedCoordBase + N;
       }
-      if (!(any(unwrappedCoordRb < world_sdf_raster_begin()-1 || unwrappedCoordLt > world_sdf_raster_end())))//that's just faster
+      if (!(any(or(unwrappedCoordRb < world_sdf_raster_begin()-1, unwrappedCoordLt > world_sdf_raster_end()))))//that's just faster
       {
         writeVoxel(unwrappedCoordBase, input); // to increase chances of writing closest distance, write that first and latest
         int3 roundCoord = floor(worldPos.xzy*world_sdf_raster_inv_voxel_size() + 0.5);

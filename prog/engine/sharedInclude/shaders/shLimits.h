@@ -5,6 +5,6 @@
 static constexpr int MAX_TEMP_REGS = 256;
 
 // If runtime sees a dump with > soft limit, it logerrs
-static constexpr int SOFT_SHADER_VARIANT_LIMIT = 32000;
+static constexpr int SOFT_SHADER_VARIANT_LIMIT = 28500;
 // If compiler is about to generate a dump with > hard limit shaders, it errors and does not write it.
-static constexpr int HARD_SHADER_VARIANT_LIMIT = 33000;
+static constexpr int HARD_SHADER_VARIANT_LIMIT = 29500;

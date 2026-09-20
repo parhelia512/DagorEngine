@@ -3,5 +3,5 @@
 
 include $(Root)/prog/daNetGameLibs/frame_graph_renderer/_aot.jam ;
 include $(Root)/prog/daNetGameLibs/terraform/_aot.jam ;
-include $(Root)/prog/daNetGameLibs/puddle_query/_aot.jam ;
 include $(Root)/prog/daNetGameLibs/local_tone_mapping/_aot.jam ;
+include $(Root)/prog/gameLibs/render/puddle_query/_aot.jam ;

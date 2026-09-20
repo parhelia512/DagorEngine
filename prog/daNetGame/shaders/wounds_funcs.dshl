@@ -38,12 +38,6 @@ hlsl(code) {
   {
     return hole_close_ease(w.timeParams.x, w.timeParams.y, w.timeParams.z, w.easeParams.x, cur_time);
   }
-
-  bool is_inside_wound_hole(uint2 offset_count, int j, float3 pos, float cur_time)
-  {
-    WoundHole w = load_wound_hole(offset_count, j);
-    return wound_hole_peak_dist(w, pos) < animated_wound_hole_radius(w, cur_time);
-  }
 }
 endmacro
 
@@ -82,7 +76,7 @@ hlsl(code) {
     return rise / max(length(mul(world_to_unit_sphere, rim_n)), 1e-6);
   }
 
-  bool apply_wound_vertex_deform(float cur_time, float3 local_normal, inout float3 pos, inout float4 bone_weights)
+  bool apply_wound_vertex_deform(float cur_time, float hole_cut_radius, float3 local_normal, inout float3 pos, inout float4 bone_weights)
   {
     uint2 dataOffsetCount = get_offset_count_additional_data(AAD_HUMAN_COMBINED_PARAMS);
     if (dataOffsetCount.y == 0)
@@ -103,8 +97,7 @@ hlsl(code) {
       WoundHole w = load_wound_hole(dataOffsetCount, offset + h * HOLE_WOUND_SIZE);
       float en = wound_hole_peak_dist(w, basePos);
       float s = animated_wound_hole_radius(w, cur_time);
-      inside = inside || en < max(wound_hole_close_ease(w, cur_time), s);
-      carve = carve || en < s;
+      carve = carve || en < s * hole_cut_radius;
       float inflateRatio = w.easeParams.w;
       BRANCH
       if (inflateRatio > 0)
@@ -112,7 +105,10 @@ hlsl(code) {
         float rim = w.timeParams.w;
         float edgeN = en - s;
         if (edgeN >= 0 && edgeN < rim)
+        {
           bulge = max(bulge, rim_inflate_dist(w.worldToUnitSphere, rimN, rim * inflateRatio * (1 - edgeN / rim) * s));
+          inside = true;
+        }
       }
     }
     offset += holes_count * HOLE_WOUND_SIZE;

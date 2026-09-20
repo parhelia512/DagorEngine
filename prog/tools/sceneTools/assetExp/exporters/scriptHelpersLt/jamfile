@@ -17,5 +17,13 @@ AddIncludes =
 
 CPPopt = ;
 
+# Must be set before this jamfile is parsed when the final binary also links
+# propPanel (duplicate curve math otherwise). Setter: animgraphPropPanel/_lib.jam.
+ScriptHelpersLtExternCurveMath ?= no ;
+if $(ScriptHelpersLtExternCurveMath) = yes {
+  Target = $(Target:S=~excm.lib) ;
+  CPPopt += -DSCRIPT_HELPERS_EXTERN_CURVE_MATH=1 ;
+}
+
 
 include $(Root)/prog/_jBuild/build.jam ;

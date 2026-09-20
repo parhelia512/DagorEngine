@@ -373,6 +373,17 @@ void WsJsonRpcPersistentConnection::processCurrentConnectionState() // applicati
     {
       // currentConnection gets CLOSED state. It cannot get to CLOSING state without moving to `closingConnections`.
       G_ASSERT(currentConnection->isConnected());
+
+      if (currentConnection->isServerGoingToShutdown())
+      {
+        // Leave the announced host behind, but keep serving requests on it until the new connection is ready.
+        failedCurrentConnection = currentConnection;
+
+        if (state == State::WORKING)
+        {
+          switchState(State::WORKING, State::RECONNECTING);
+        }
+      }
     }
   }
 

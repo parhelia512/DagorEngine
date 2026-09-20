@@ -2,7 +2,8 @@
 
 #include "w_curve_math.h"
 #include <memory/dag_mem.h>
-#include <generic/dag_qsort.h>
+#include <generic/dag_smallTab.h>
+#include <EASTL/sort.h>
 #include <math/srcc_msu/srcc_msu.h>
 #include <debug/dag_debug.h>
 
@@ -55,20 +56,6 @@ public:
       knot[i - 1].calc_ks(knot[i]);
     if (closed)
       knot.back().calc_ks(knot[0]);
-  }
-};
-
-class PointXSorter
-{
-public:
-  static int compare(const ICurveControlCallback::ControlPoint &p1, const ICurveControlCallback::ControlPoint &p2)
-  {
-    if (p1.pos.x < p2.pos.x)
-      return -1;
-    else if (p1.pos.x > p2.pos.x)
-      return 1;
-    else
-      return 0;
   }
 };
 
@@ -227,7 +214,10 @@ bool CatmullRomCBTest::addNewControlPoint(const Point2 &at_pos)
 
   if (lock_x)
   {
-    SimpleQsort<ICurveControlCallback::ControlPoint, PointXSorter>::sort(&controlPoints[0], controlPoints.size());
+    // Stable, not a quicksort: two points sharing an x encode a vertical cut, and a sort free to
+    // reorder them changes what the curve reads on either side.
+    eastl::insertion_sort(controlPoints.begin(), controlPoints.end(),
+      [](const ControlPoint &a, const ControlPoint &b) { return a.pos.x < b.pos.x; });
   }
   return true;
 }

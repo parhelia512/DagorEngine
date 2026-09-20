@@ -26,6 +26,8 @@ public:
 
   void setButtonPictureValues(const char *fname) override;
 
+  const char *getImguiTypeName() const override { return "ToolbarButton"; }
+
   void updateImgui() override;
 
 private:

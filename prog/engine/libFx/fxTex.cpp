@@ -10,6 +10,9 @@
 
 static Tab<TEXTUREID> active_fx_tex;
 static int fx_gen = 0;
+#if DAGOR_DBGLEVEL > 0
+bool fx_force_hq_tex = false;
+#endif
 
 void update_and_prefetch_fx_textures_used()
 {
@@ -42,7 +45,12 @@ void update_and_prefetch_fx_textures_used()
     return;
 
   prefetch_managed_textures(active_fx_tex);
-  mark_managed_textures_important(active_fx_tex, 1, 10);
+  int minLevForDynDecrease = 10;
+#if DAGOR_DBGLEVEL > 0
+  if (fx_force_hq_tex)
+    minLevForDynDecrease = 16; // above any real tex level: no fx tex hits the dyn_qlev_decrease cap
+#endif
+  mark_managed_textures_important(active_fx_tex, 1, minLevForDynDecrease);
   for (TEXTUREID tid : active_fx_tex)
     mark_managed_tex_lfu(tid);
 }

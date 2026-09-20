@@ -203,7 +203,7 @@ CompilerAction check_scripted_shader(const char *filename, dag::ConstSpan<String
 
   if (header.last_blk_hash != comp.targetBlkHash())
   {
-    sh_debug(SHLOG_NORMAL, "[INFO] Outdated blk hash '%s' in header of obj file '%s'", blk_hash_string(header.last_blk_hash).c_str(),
+    sh_debug(SHLOG_NORMAL, "[INFO] Outdated blk hash '%s' in header of obj file '%s'", hash_string(header.last_blk_hash).c_str(),
       dd_get_fname(filename));
     return CompilerAction::COMPILE_AND_LINK;
   }

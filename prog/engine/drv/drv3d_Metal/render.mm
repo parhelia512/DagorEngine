@@ -769,15 +769,15 @@ namespace drv3d_metal
 
   void Render::StageBinding::apply_biases(StageStorage &storage, Shader *shader, ResourceArray &resources)
   {
-    uint32_t size = (16 + render.bindlessSamplerBiases.size()) * sizeof(float);
+    uint32_t size = (StageStorage::MAX_SAMPLERS + render.bindlessSamplerBiases.size()) * sizeof(float);
 
     G_ASSERT(shader);
     for (int i = 0; i < shader->num_samplers; i++)
     {
       int slot = shader->sampler_binding[i];
       uint32_t tslot = shader->sampler_remap[i];
-      G_ASSERT(slot < 16);
-      G_ASSERT(tslot < 16);
+      G_ASSERT(slot < StageStorage::MAX_SAMPLERS);
+      G_ASSERT(tslot < StageStorage::MAX_SAMPLERS);
       sampler_biases_remapped[tslot] = sampler_biases[slot];
     }
 
@@ -909,7 +909,7 @@ namespace drv3d_metal
       else if (cache.texture)
       {
         cache.texture->apply(texture, cache.mip_level, cache.slice, is_uav, cache.as_uint);
-        resource = cache.texture;
+        resource = cache.texture->apiTex;
       }
 
       if (texture == nil)
@@ -955,7 +955,7 @@ namespace drv3d_metal
 
       id<MTLSamplerState> sampler = nil;
 
-      G_ASSERT(slot < 16);
+      G_ASSERT(slot < StageStorage::MAX_SAMPLERS);
       if (samplers[slot])
         sampler = samplers[slot];
       else
@@ -1023,12 +1023,13 @@ namespace drv3d_metal
     {
       G_ASSERT(d3d::get_driver_desc().caps.hasBindless);
 
+      // drain pending sampler registrations before snapshotting biases
+      render.prepareBindlessResources(shader->bindless_type_mask, storage.is_vertex());
       if (shader->bindless_type_mask & BindlessTypeSampler) // update bindless sampler biases
       {
         for (size_t i = 0; i < render.bindlessSamplerBiases.size(); ++i)
-          sampler_biases_remapped[16 + i] = render.bindlessSamplerBiases[i];
+          sampler_biases_remapped[StageStorage::MAX_SAMPLERS + i] = render.bindlessSamplerBiases[i];
       }
-      render.prepareBindlessResources(shader->bindless_type_mask);
       for (int i = 0; i < shader->num_bindless_buffers; ++i)
       {
         const auto &remap = shader->bindless_buffers[i];
@@ -1098,29 +1099,6 @@ namespace drv3d_metal
         acceleration_structures[j] = nullptr;
   }
 
-  void Render::StageBinding::removeBuf(Buffer* buf)
-  {
-    G_ASSERT(buf);
-    for (int i = 0; i < BUFFER_POINT_COUNT; i++)
-    {
-      if (buffers[i] == buf)
-      {
-        buffers[i] = nullptr;
-      }
-    }
-  }
-
-  void Render::StageBinding::removeTex(Texture* tex)
-  {
-    for (int i = 0; i < MAX_STAGE_TEXTURES; i++)
-    {
-      if (textures[i].texture == tex)
-      {
-        textures[i] = {};
-      }
-    }
-  }
-
   Render::Render()
     : shaders(midmem_ptr(), 128)
     , progs(midmem_ptr(), 128)
@@ -1149,8 +1127,6 @@ namespace drv3d_metal
     need_change_rt = 0;
 
     depth_clip = MTLDepthClipModeClip;
-
-    main_thread = 0;
 
     device_name[0] = 0;
 
@@ -1303,7 +1279,7 @@ namespace drv3d_metal
       return false;
     }
 
-    sampler_states.reserve(256);
+    sampler_states.reserve(BINDLESS_SAMPLER_COUNT);
 #if HAVE_SAMPLE_QUERIES
     if ([device supportsCounterSampling : MTLCounterSamplingPointAtStageBoundary])
     {
@@ -1370,12 +1346,14 @@ namespace drv3d_metal
 
       if (error == nil && [[lib functionNames] count] > 0)
       {
-        id<MTLFunction> func = [[lib newFunctionWithName : [[lib functionNames] objectAtIndex:0]] retain];
+        id<MTLFunction> func = [lib newFunctionWithName : [[lib functionNames] objectAtIndex:0]];
 
         clear_cs_pipeline = [device newComputePipelineStateWithFunction : func error : &error];
         if (error)
           clear_cs_pipeline = nil;
+        [func release];
       }
+      [lib release];
     }
     d3d::get_driver_desc();
     shadersPreCache.init(get_shader_cache_version());
@@ -1485,10 +1463,6 @@ namespace drv3d_metal
 
     ::create_critical_section(acquireSec);
     ::create_critical_section(rcSec);
-
-    pthread_threadid_np(NULL, &main_thread);
-
-    cur_thread = main_thread;
 
     cur_prog = nil;
     vdecl = nil;
@@ -1649,6 +1623,8 @@ namespace drv3d_metal
                              }];
 #endif
 
+    getSampler({});
+
     debug("[METAL] init done");
     return true;
   }
@@ -1693,13 +1669,13 @@ namespace drv3d_metal
       TIME_PROFILE(free_queued);
 
       std::lock_guard<std::mutex> scopedLock(delete_lock);
-
+      const uint64_t completed = submits_completed;
       {
         int freed_items = 0;
         for (freed_items; freed_items < residency2delete.size(); ++freed_items)
         {
           const auto &res = residency2delete[freed_items];
-          if (res.submit > submits_completed)
+          if (res.submit > completed)
             break;
           G_ASSERT(res.type == DeletedResource::Type::RemoveFromResidency);
           removeResource(res.native_resource);
@@ -1709,7 +1685,7 @@ namespace drv3d_metal
         commitResidencySet();
       }
 
-      if (resources2delete.empty() || resources2delete[0].submit > submits_completed)
+      if (resources2delete.empty() || resources2delete[0].submit > completed)
         return;
 
       progs.lock();
@@ -1719,7 +1695,7 @@ namespace drv3d_metal
       for (freed_items; freed_items < resources2delete.size(); ++freed_items)
       {
         const auto &res = resources2delete[freed_items];
-        if (res.submit > submits_completed)
+        if (res.submit > completed)
           break;
         switch (res.type)
         {
@@ -1742,6 +1718,10 @@ namespace drv3d_metal
 #endif
             res.texture->release();
             break;
+          case DeletedResource::Type::ApiTexture:
+            G_ASSERT(res.apiTexture);
+            delete res.apiTexture;
+            break;
           case DeletedResource::Type::Buffer:
             G_ASSERT(res.buffer);
 #if DAGOR_DBGLEVEL > 0
@@ -1763,11 +1743,16 @@ namespace drv3d_metal
           case DeletedResource::Type::Program:
             progs.freeIndex(res.program)->release();
             break;
+          case DeletedResource::Type::AccelerationStructure:
+            G_ASSERT(resource_residency.find(res.as->acceleration_struct) == resource_residency.end());
+            [res.as->acceleration_struct release];
+            delete res.as;
+            break;
           case DeletedResource::Type::RemoveFromResidency:
             G_ASSERT(0 && "Shouldn't be here");
             break;
           case DeletedResource::Type::NativeResource:
-            G_ASSERT(resource_residency.find(res.native_resource) == resource_residency.end());
+            G_ASSERTF(resource_residency.find(res.native_resource) == resource_residency.end(), "Residency set still has the deleted resource %s", [res.native_resource.label UTF8String]);
             [res.native_resource release];
             break;
           case DeletedResource::Type::Heap:
@@ -2110,8 +2095,8 @@ namespace drv3d_metal
 
     for (const auto &t : textures2clear)
     {
-      G_ASSERT(t.tex);
-      track_resource_write(*t.tex);
+      G_ASSERT(t.tracker);
+      track_resource_write(*t.tracker);
       doClearTexture(t.width, t.height, t.slices, t.depth, t.levels, t.metalTex, t.base_format, t.use_dxt);
     }
 
@@ -2183,22 +2168,22 @@ namespace drv3d_metal
             if (render_targets.colors[i].texture)
             {
               if (render_targets.colors[i].store_action == MTLStoreActionDontCare)
-                track_resource_read(*render_targets.colors[i].texture, true);
+                track_resource_read(*render_targets.colors[i].texture->apiTex, true);
               else
-                track_resource_write(*render_targets.colors[i].texture, true);
+                track_resource_write(*render_targets.colors[i].texture->apiTex, true);
             }
             if (render_targets.colors[i].resolve_target)
-              track_resource_write(*render_targets.colors[i].resolve_target);
+              track_resource_write(*render_targets.colors[i].resolve_target->apiTex);
           }
           if (render_targets.depth.texture)
           {
             if (render_targets.depth.store_action == MTLStoreActionDontCare)
-              track_resource_read(*render_targets.depth.texture, true);
+              track_resource_read(*render_targets.depth.texture->apiTex, true);
             else
-              track_resource_write(*render_targets.depth.texture, true);
+              track_resource_write(*render_targets.depth.texture->apiTex, true);
           }
           if (render_targets.depth.resolve_target)
-            track_resource_write(*render_targets.depth.resolve_target);
+            track_resource_write(*render_targets.depth.resolve_target->apiTex);
         }
         break;
         case CommandType::SetResources:
@@ -2542,7 +2527,7 @@ namespace drv3d_metal
         break;
         case CommandType::GenerateMips:
         {
-          Texture *tex = nullptr;
+          HazardTracker *tex = nullptr;
           id<MTLTexture> tex_metal = nil;
           command_encoder.read(tex).read(tex_metal);
 
@@ -2563,8 +2548,8 @@ namespace drv3d_metal
 
           ensureHaveEncoderExceptRender(commandBuffer, Render::EncoderType::Blit, "CopyTex");
 
-          track_resource_read(*src);
-          track_resource_write(*dest);
+          track_resource_read(*src->apiTex);
+          track_resource_write(*dest->apiTex);
 
           MTLOrigin origin = { 0, 0, 0 };
           MTLSize size = { 1, 1, 1 };
@@ -2654,7 +2639,7 @@ namespace drv3d_metal
           ensureHaveEncoderExceptRender(commandBuffer, Render::EncoderType::Blit, "ReadbackTexture");
 
           G_ASSERT(tex_ptr);
-          track_resource_read(*tex_ptr);
+          track_resource_read(*tex_ptr->apiTex);
 
 #if DAGOR_DBGLEVEL > 0
           if (enable_postmortem)
@@ -2688,43 +2673,44 @@ namespace drv3d_metal
         case CommandType::TrackBindless:
         {
           uint32_t type = 0;
-          command_encoder.read(type);
+          uint8_t is_from_vs = 0;
+          command_encoder.read(type).read(is_from_vs);
 
           if (type == BindlessTypeBuffer)
           {
             for (auto &buf : bindlessBuffers.cache)
               if (buf.buf)
-                track_resource_read(*buf.buf);
+                track_resource_read(*buf.buf, is_from_vs);
           }
           else if (type == BindlessTypeTexture2DArray)
           {
             for (auto &tex : bindlessTextures2DArray.cache)
               if (tex.tex)
-                track_resource_read(*tex.tex);
+                track_resource_read(*tex.tex->apiTex, is_from_vs);
           }
           else if (type == BindlessTypeTextureCube)
           {
             for (auto &tex : bindlessTexturesCube.cache)
               if (tex.tex)
-                track_resource_read(*tex.tex);
+                track_resource_read(*tex.tex->apiTex, is_from_vs);
           }
           else if (type == BindlessTypeTexture2D)
           {
             for (auto &tex : bindlessTextures2D.cache)
               if (tex.tex)
-                track_resource_read(*tex.tex);
+                track_resource_read(*tex.tex->apiTex, is_from_vs);
           }
           else if (type == BindlessTypeTexture3D)
           {
             for (auto &tex : bindlessTextures3D.cache)
               if (tex.tex)
-                track_resource_read(*tex.tex);
+                track_resource_read(*tex.tex->apiTex, is_from_vs);
           }
           else if (type == BindlessTypeTextureCubeArray)
           {
             for (auto &tex : bindlessTexturesCubeArray.cache)
               if (tex.tex)
-                track_resource_read(*tex.tex);
+                track_resource_read(*tex.tex->apiTex, is_from_vs);
           }
         }
         break;
@@ -2830,8 +2816,8 @@ namespace drv3d_metal
             if (manual_hazard_tracking)
             {
               ensureHaveEncoderExceptRender(commandBuffer, Render::EncoderType::Blit);
-              track_resource_read(*color);
-              track_resource_write(*output);
+              track_resource_read(*color->apiTex);
+              track_resource_write(*output->apiTex);
               G_ASSERT(current_encoder);
               fence = encoders[current_encoder->index].fence;
             }
@@ -2902,10 +2888,10 @@ namespace drv3d_metal
             if (manual_hazard_tracking)
             {
               ensureHaveEncoderExceptRender(commandBuffer, Render::EncoderType::Blit);
-              track_resource_read(*color);
-              track_resource_read(*motion);
-              track_resource_read(*depth);
-              track_resource_write(*output);
+              track_resource_read(*color->apiTex);
+              track_resource_read(*motion->apiTex);
+              track_resource_read(*depth->apiTex);
+              track_resource_write(*output->apiTex);
               G_ASSERT(current_encoder);
               fence = encoders[current_encoder->index].fence;
             }
@@ -3054,6 +3040,32 @@ namespace drv3d_metal
     commandBuffer = nil;
   }
 
+  // Only the swapchain layer changes: device, shaders and resources all stay. Called between frames,
+  // so no drawable is held and the layer can be reconfigured in place.
+  bool Render::applyHdrModeChange()
+  {
+    G_ASSERT_RETURN(is_main_thread(), false); // CAMetalLayer state belongs to the ui thread
+    G_ASSERT(!drawable_acquired);
+
+    // Gated like view creation: the setting alone can ask for hdr on a display that cannot show it.
+    const bool wantHdr = [mainview isHDREnabled] && [mainview isHDRAvailable];
+    const int fmt = wantHdr ? TEXFMT_A2R10G10B10 : TEXFMT_A8R8G8B8;
+    if (backbuffer->base_format == fmt)
+      return true;
+
+    flush(true); // retire command buffers still referencing a drawable of the old format
+    [mainview setHDR:wantHdr];
+
+    // Patched in place instead of recreated: the backbuffer is recognized by object identity, so a
+    // new one would orphan the bound render target and everything holding get_backbuffer_tex().
+    backbuffer->base_format = fmt;
+    backbuffer->metal_format = Texture::format2Metal(fmt);
+    backbuffer->metal_rt_format = Texture::format2Metal(fmt);
+
+    debug("metal: hdr mode changed, backbuffer is %s", wantHdr ? "hdr" : "sdr");
+    return true;
+  }
+
   void Render::flush(bool wait, bool present)
   {
     TIME_PROFILE(flush);
@@ -3090,6 +3102,7 @@ namespace drv3d_metal
     cur_prog = nullptr;
     cur_state = nullptr;
     bindless_resources_bound = 0;
+    bindless_resources_bound_vs = 0;
   }
 
   bool Render::setBlendFactor(E3DCOLOR factor)
@@ -3129,7 +3142,7 @@ namespace drv3d_metal
           attach.load_action = MTLLoadActionClear;
         }
       }
-      if (what & CLEAR_DISCARD_TARGET)
+      if (what & DISCARD_TARGET)
       {
         for (int i = 0; i < Program::MAX_SIMRT; ++i)
         {
@@ -3144,10 +3157,10 @@ namespace drv3d_metal
         rt.stencil.load_action = what & CLEAR_STENCIL ? MTLLoadActionClear : MTLLoadActionLoad;
         rt.stencil.clear_value[0] = stencil;
       }
-      if (what & (CLEAR_DISCARD_ZBUFFER | CLEAR_DISCARD_STENCIL))
+      if (what & (DISCARD_ZBUFFER | DISCARD_STENCIL))
       {
-        rt.depth.load_action = what & CLEAR_DISCARD_ZBUFFER ? MTLLoadActionDontCare : MTLLoadActionLoad;
-        rt.stencil.load_action = what & CLEAR_DISCARD_STENCIL ? MTLLoadActionDontCare : MTLLoadActionLoad;
+        rt.depth.load_action = what & DISCARD_ZBUFFER ? MTLLoadActionDontCare : MTLLoadActionLoad;
+        rt.stencil.load_action = what & DISCARD_STENCIL ? MTLLoadActionDontCare : MTLLoadActionLoad;
       }
       updateEncoder(what, c, z, stencil);
     }
@@ -3155,7 +3168,7 @@ namespace drv3d_metal
     {
       if (encoder_type != EncoderType::Render)
         updateEncoder();
-      doClear(nullptr, 0, 0, z, stencil, c, false, what & CLEAR_TARGET, what & CLEAR_ZBUFFER, what & CLEAR_STENCIL);
+      doClear(nullptr, nullptr, 0, 0, z, stencil, c, false, what & CLEAR_TARGET, what & CLEAR_ZBUFFER, what & CLEAR_STENCIL);
     }
   }
 
@@ -3298,7 +3311,10 @@ namespace drv3d_metal
       return false;
 
     if (cache[index].metal_tex)
-      render.removeResource(cache[index].metal_tex);
+    {
+      std::lock_guard<std::mutex> scopedLock(render.delete_lock);
+      render.residency2delete.push_back({ .type = DeletedResource::Type::RemoveFromResidency, .submit = render.submits_scheduled, .native_resource = cache[index].metal_tex });
+    }
     cache[index] = { texture, metal_tex };
     if (res)
       render.addResource(cache[index].metal_tex);
@@ -3324,7 +3340,10 @@ namespace drv3d_metal
       return false;
 
     if (cache[index].metal_buf)
-      render.removeResource(cache[index].metal_buf);
+    {
+      std::lock_guard<std::mutex> scopedLock(render.delete_lock);
+      render.residency2delete.push_back({ .type = DeletedResource::Type::RemoveFromResidency, .submit = render.submits_scheduled, .native_resource = cache[index].metal_buf });
+    }
     cache[index] = { buffer, metal_buffer };
     if (res)
       render.addResource(cache[index].metal_buf);
@@ -3517,6 +3536,34 @@ namespace drv3d_metal
     pending_bindless_count.fetch_add(1, std::memory_order_release);
   }
 
+  void Render::updateBindlessSampler(uint32_t slot, float bias, uint64_t sampler_res_id)
+  {
+    G_ASSERT(slot < BINDLESS_SAMPLER_COUNT);
+    if (bindlessSamplerBiases.size() < slot + 1)
+    {
+      bindlessSamplerBiases.resize(slot + 1);
+      bindlessSamplersCache.resize(slot + 1);
+    }
+    bindlessSamplerBiases[slot] = bias;
+    bindlessSamplersCache[slot] = sampler_res_id;
+    bindless_resources_bound &= ~BindlessTypeSampler;
+  }
+
+  void Render::updateBindlessSamplerAnyThread(uint32_t slot, float bias, uint64_t sampler_res_id)
+  {
+    if (isRenderAcquiredInThisThread())
+    {
+      applyQueuedBindlessUpdates();
+      updateBindlessSampler(slot, bias, sampler_res_id);
+      return;
+    }
+
+    std::lock_guard<std::mutex> lock(pending_bindless_lock);
+    pending_bindless_updates.push_back(
+      {PendingBindlessUpdate::Op::Sampler, D3DResourceType::TEX, slot, 0, nullptr, bias, sampler_res_id});
+    pending_bindless_count.fetch_add(1, std::memory_order_release);
+  }
+
   void Render::purgeQueuedBindlessUpdates(D3dResource *res)
   {
     if (pending_bindless_count.load(std::memory_order_acquire) == 0)
@@ -3539,23 +3586,21 @@ namespace drv3d_metal
 
     checkRenderAcquired();
 
-    G_ASSERT(pending_bindless_updates_render_acquired.empty());
-    {
-      std::lock_guard<std::mutex> lock(pending_bindless_lock);
-      pending_bindless_updates_render_acquired.swap(pending_bindless_updates);
-      pending_bindless_count.store(0, std::memory_order_release);
-    }
-
-    for (const auto &u : pending_bindless_updates_render_acquired)
+    // held across the whole drain, so a delete on another thread lands either before an entry is applied
+    // (purgeQueuedBindlessUpdates turns it into Null) or after, never in between
+    std::lock_guard<std::mutex> lock(pending_bindless_lock);
+    for (const auto &u : pending_bindless_updates)
     {
       switch (u.op)
       {
         case PendingBindlessUpdate::Op::Resize: resizeBindlessArray(u.type, u.index); break;
         case PendingBindlessUpdate::Op::Update: updateBindlessResource(u.type, u.index, u.res); break;
         case PendingBindlessUpdate::Op::Null: updateBindlessResourcesToNull(u.type, u.index, u.count); break;
+        case PendingBindlessUpdate::Op::Sampler: updateBindlessSampler(u.index, u.bias, u.samplerResId); break;
       }
     }
-    pending_bindless_updates_render_acquired.clear();
+    pending_bindless_updates.clear();
+    pending_bindless_count.store(0, std::memory_order_release);
   }
 
   bool Render::draw(int prim_type, int start_vertex, int vertex_count, uint32_t num_instances, uint32_t start_instance)
@@ -3945,9 +3990,11 @@ namespace drv3d_metal
     resources2delete.push_back({ .type = DeletedResource::Type::Program, .submit = submits_scheduled, .program = prog });
   }
 
-  int Render::createComputeProgram(const uint8_t* code, const uint8_t *meta)
+  int Render::createComputeProgram(const uint8_t* code, const uint8_t *meta, const char *name)
   {
     Shader* shader = new Shader();
+    if (name)
+      shader->name = name;
 
     if (!shader->compileShader(meta, (const char*)code, 0, false))
     {
@@ -4058,7 +4105,7 @@ namespace drv3d_metal
     G_ASSERT(thread_group_y);
     G_ASSERT(thread_group_z);
 
-    if (!cur_prog || !cur_prog->cshader)
+    if (!cur_prog || !cur_prog->cshader || !cur_prog->csPipeline)
       return;
 
     ensureHaveEncoderExceptRenderFrontend(Render::EncoderType::Compute);
@@ -4094,7 +4141,7 @@ namespace drv3d_metal
       return;
     }
 
-    if (!cur_prog || !cur_prog->cshader)
+    if (!cur_prog || !cur_prog->cshader || !cur_prog->csPipeline)
       return;
 
     ensureHaveEncoderExceptRenderFrontend(Render::EncoderType::Compute);
@@ -4129,7 +4176,7 @@ namespace drv3d_metal
 
     G_ASSERT(tex);
     ensureHaveEncoderExceptRenderFrontend(Render::EncoderType::Blit);
-    command_encoder.write(CommandType::GenerateMips).write(tex).write(tex->apiTex->texture);
+    command_encoder.write(CommandType::GenerateMips).write(tex->apiTex).write(tex->apiTex->texture);
   }
 
   static inline bool is_depth_format(unsigned int f)
@@ -4261,7 +4308,7 @@ namespace drv3d_metal
   {
     acquireOwnership();
 
-    doClear(tex, level, layer, 0.0f, 0, (float *)val, true, true, false, false);
+    doClear(tex, nullptr, level, layer, 0.0f, 0, (float *)val, true, true, false, false);
 
     releaseOwnership();
   }
@@ -4270,7 +4317,7 @@ namespace drv3d_metal
   {
     acquireOwnership();
 
-    doClear(tex, level, layer, 0.0f, 0, (float *)val, true, true, false, false);
+    doClear(tex, nullptr, level, layer, 0.0f, 0, (float *)val, true, true, false, false);
 
     releaseOwnership();
   }
@@ -4279,7 +4326,17 @@ namespace drv3d_metal
   {
     acquireOwnership();
 
-    doClear(tex, level, layer, 0.0f, 0, (float *)val, false, true, false, false);
+    doClear(tex, nullptr, level, layer, 0.0f, 0, (float *)val, false, true, false, false);
+
+    releaseOwnership();
+  }
+
+  void Render::clearDepthStencil(Texture *tex, float z, uint8_t stencil, int level, int layer)
+  {
+    acquireOwnership();
+
+    float col[4] = {};
+    doClear(nullptr, tex, level, layer, z, stencil, col, false, false, true, true);
 
     releaseOwnership();
   }
@@ -4306,6 +4363,10 @@ namespace drv3d_metal
     G_ASSERT(dst);
     G_ASSERTF(dst->getDynamicOffset() == 0, "Buffer %s should have zero dynamic offset, but got %d", dst->getName(),
               dst->getDynamicOffset());
+    // blit copy needs 4 byte aligned offsets and size
+    D3D_CONTRACT_ASSERTF_AND_DO((srcOffset & 3) == 0, return, "unaligned copy src offset %d of buffer %s", srcOffset, src->getName());
+    D3D_CONTRACT_ASSERTF_AND_DO((dstOffset & 3) == 0, return, "unaligned copy dst offset %d of buffer %s", dstOffset, dst->getName());
+    D3D_CONTRACT_ASSERTF_AND_DO((size & 3) == 0, return, "unaligned copy size %d of buffer %s", size, src->getName());
 
     ensureHaveEncoderExceptRenderFrontend(Render::EncoderType::Blit);
     command_encoder.write(CommandType::CopyBuf).write(src).write(src_metal).write(dst).write(dst_metal).write(srcOffset).write(dstOffset).write(size);
@@ -4364,10 +4425,10 @@ namespace drv3d_metal
     setDepth({ .texture = nullptr }, { .texture = nullptr });
   }
 
-  void Render::doClear(Texture* dst, int dst_level, int dst_layer, float z, uint8_t stencil, float color[4],
+  void Render::doClear(Texture *dst_col, Texture *dst_depth, int dst_level, int dst_layer, float z, uint8_t stencil, float color[4],
                        bool clear_int, bool color_write, bool depth_write, bool stencil_write)
   {
-    StateSaver saver(*this, false, dst != nullptr, color_write, depth_write, stencil_write, stencil);
+    StateSaver saver(*this, false, dst_col != nullptr || dst_depth != nullptr, color_write, depth_write, stencil_write, stencil);
 
     StageBinding& vs_stage = stages[STAGE_VS];
     StageBinding& ps_stage = stages[STAGE_PS];
@@ -4375,9 +4436,17 @@ namespace drv3d_metal
     vs_stage.setBuf(storages[STAGE_VS], cur_prog ? cur_prog->shaders[STAGE_VS] : nullptr, 0, (Buffer*)clear_mesh_buffer);
     cur_rstate.vbuffer_stride[0] = 8;
 
-    setProgram(clear_int ? (is_signed_int_format(dst) ? clear_progi : clear_progui) : clear_progf);
-    if (dst)
-      setRenderTarget(dst, dst_level, dst_layer);
+    setProgram(clear_int ? (is_signed_int_format(dst_col) ? clear_progi : clear_progui) : clear_progf);
+    if (dst_col)
+      setRenderTarget(dst_col, dst_level, dst_layer);
+    else if (dst_depth)
+    {
+      for (int i = 0; i < Program::MAX_SIMRT; i++)
+        rt.colors[i] = {};
+
+      RenderAttachment depth_attach {.texture = dst_depth, .level = uint32_t(dst_level), .layer = uint32_t(dst_layer)};
+      setDepth(depth_attach, depth_attach);
+    }
 
     setConstants(vs_stage, z);
     setConstants(ps_stage, color);
@@ -4428,7 +4497,8 @@ namespace drv3d_metal
         cur_depthstate.depth_write_on = 0;
 
       }
-      if (!rt.stencil.texture || rt.stencil.texture->metal_format != MTLPixelFormatDepth32Float_Stencil8)
+      bool has_stencil = rt.stencil.texture && rt.stencil.texture->metal_format == MTLPixelFormatDepth32Float_Stencil8;
+      if (!has_stencil)
         cur_depthstate.stencil_enable = false;
 
       updateDepthState();
@@ -4438,7 +4508,7 @@ namespace drv3d_metal
         cur_depthstate.zenable = prev_zenable;
         cur_depthstate.depth_write_on = prev_depth_write_on;
       }
-      if (!rt.stencil.texture)
+      if (!has_stencil)
         cur_depthstate.stencil_enable = prev_stencil;
 
       command_encoder.write(CommandType::SetDepthState).write(cur_depthstate.depthState);
@@ -4778,7 +4848,7 @@ namespace drv3d_metal
 
     if (!fullscreen_vp && render_pass && clear_mask)
     {
-      render.doClear(nullptr, 0, 0, clear_depth, clear_stencil, clear_color, false, clear_mask & CLEAR_TARGET, clear_mask & CLEAR_ZBUFFER, clear_mask & CLEAR_STENCIL);
+      render.doClear(nullptr, nullptr, 0, 0, clear_depth, clear_stencil, clear_color, false, clear_mask & CLEAR_TARGET, clear_mask & CLEAR_ZBUFFER, clear_mask & CLEAR_STENCIL);
     }
   }
 
@@ -4853,7 +4923,6 @@ namespace drv3d_metal
     G_ASSERT(acquire_depth > 0);
     if (acquire_depth == 1)
     {
-      cur_thread = main_thread;
       ensureHaveEncoderExceptRenderFrontend(Render::EncoderType::None);
 
       cur_prog = nullptr;
@@ -4873,7 +4942,6 @@ namespace drv3d_metal
     {
       G_ASSERT(acquire_depth <= 1);
       acquire_depth = 0;
-      cur_thread = main_thread;
       return ::full_leave_critical_section(acquireSec);
     }
     return -1;
@@ -4928,10 +4996,7 @@ namespace drv3d_metal
 
     queries.lock();
     query->status = Query::Status::Queued;
-    query->submit = submits_scheduled;
-    uint32_t generation = query->generation;
     queries.unlock();
-    command_encoder.write(CommandType::DoQuery).write(query).write(generation).write(submits_scheduled);
 
     cur_query_offset = query->index*sizeof(uint64_t);
     dirty_state |= DirtyFlags::Query;
@@ -4941,8 +5006,17 @@ namespace drv3d_metal
   {
     checkRenderAcquired();
 
+    G_ASSERT(query);
     G_ASSERT(query->type == Query::Type::Visibility);
+
+    queries.lock();
+    query->submit = submits_scheduled;
+    uint32_t generation = query->generation;
+    queries.unlock();
+    command_encoder.write(CommandType::DoQuery).write(query).write(generation).write(submits_scheduled);
+
     cur_query_offset = -1;
+    dirty_state |= DirtyFlags::Query;
   }
 
   void Render::setRenderPass(bool set)
@@ -5154,6 +5228,10 @@ namespace drv3d_metal
       residency_set_dirty = true;
     }
 
+    for (const auto& s : sampler_states)
+      [s.sampler release];
+    sampler_states.clear();
+
     debug("[METAL_INIT] render released at frame %llu", frame);
     frame = 0;
     submits_scheduled = 1;
@@ -5188,8 +5266,7 @@ namespace drv3d_metal
   {
     std::lock_guard<std::mutex> scopedLock(copy_tex_lock);
     G_ASSERT(tex_ptr);
-    textures2upload.push_back( {tex_ptr, tex, buf, (uint32_t)pitch, (uint32_t)imageSize, (uint16_t)x, (uint16_t)y, (uint16_t)z, (uint16_t)w, (uint16_t)h, (uint16_t)d,
-        (uint8_t)level, (uint8_t)layer} );
+    textures2upload.push_back( {tex_ptr->apiTex, tex, buf, (uint32_t)pitch, (uint32_t)imageSize, (uint16_t)x, (uint16_t)y, (uint16_t)z, (uint16_t)w, (uint16_t)h, (uint16_t)d, (uint8_t)level, (uint8_t)layer} );
   }
 
   void Render::queueResourceForDeletion(id<MTLResource> buf)
@@ -5210,6 +5287,21 @@ namespace drv3d_metal
 
     std::lock_guard<std::mutex> scopedLock(delete_lock);
     resources2delete.push_back({ .type = DeletedResource::Type::Buffer, .submit = submits_scheduled, .buffer = buff });
+
+    if (buff && isRenderAcquiredInThisThread())
+    {
+      for (uint32_t i = 0; i < STAGE_MAX; ++i)
+      {
+        for (uint32_t j = 0; j < BUFFER_POINT_COUNT; ++j)
+        {
+          if (stages[i].buffers[j] == buff)
+          {
+            stages[i].buffers[j] = nullptr;
+            stages[i].buffers_offset[j] = 0;
+          }
+        }
+      }
+    }
   }
 
   void Render::deleteTexture(Texture* tex)
@@ -5230,7 +5322,7 @@ namespace drv3d_metal
     id<MTLTexture> mtlTex = tex->apiTex ? tex->apiTex->texture : nil;
     for (uint32_t i = 0; i < STAGE_MAX; ++i)
     {
-      for (uint32_t j = 0; j < StageBinding::MAX_STAGE_TEXTURES; ++j)
+      for (uint32_t j = 0; j < MAX_STAGE_TEXTURES; ++j)
       {
         if (stages[i].textures[j].texture == tex)
           stages[i].textures[j] = {};
@@ -5258,6 +5350,9 @@ namespace drv3d_metal
   {
     checkRenderAcquired();
     G_ASSERT(dst_buf);
+    G_ASSERTF((src_offset & 3) == 0, "unaligned src offset %d of buffer %s", src_offset, dst_buf->getName());
+    G_ASSERTF((dst_offset & 3) == 0, "unaligned dst offset %d of buffer %s", dst_offset, dst_buf->getName());
+    G_ASSERTF((size & 3) == 0, "unaligned size %d of buffer %s", size, dst_buf->getName());
 
     id<MTLBuffer> dst = dst_buf->getBuffer();
     G_ASSERT(dst);
@@ -5444,43 +5539,41 @@ namespace drv3d_metal
 
   void Render::deleteAccelerationStructure(RaytraceAccelerationStructure *as)
   {
-    if (as)
+    if (!as)
+      return;
+
+    bool is_blas = as->index >= 0;
+    if (is_blas)
     {
-      bool is_blas = as->index >= 0;
-      if (is_blas)
+      blases.lock();
+      if (nativeBlases.size() > as->index)
+        nativeBlases[as->index] = defaultBlas;
+      blases.freeIndex(as->index);
+      blases.unlock();
+      as->index = -1;
+    }
+    else
+    {
+      bool from_thread = !isRenderAcquiredInThisThread();
+      if (!from_thread)
       {
-        blases.lock();
-        if (nativeBlases.size() > as->index)
-          nativeBlases[as->index] = defaultBlas;
-        blases.freeIndex(as->index);
-        blases.unlock();
-        as->index = -1;
-      }
-      else
-      {
-        bool from_thread = !isRenderAcquiredInThisThread();
-        if (!from_thread)
+        for (uint32_t i = 0; i < STAGE_MAX; ++i)
         {
-          for (uint32_t i = 0; i < STAGE_MAX; ++i)
+          for (uint32_t j = 0; j < MAX_SHADER_ACCELERATION_STRUCTURES; ++j)
           {
-            for (uint32_t j = 0; j < MAX_SHADER_ACCELERATION_STRUCTURES; ++j)
-            {
-              if (stages[i].acceleration_structures[j] == as)
-                stages[i].acceleration_structures[j] = nullptr;
-            }
+            if (stages[i].acceleration_structures[j] == as)
+              stages[i].acceleration_structures[j] = nullptr;
           }
         }
       }
-
-      std::lock_guard<std::mutex> scopedLock(delete_lock);
-      if (is_blas)
-        residency2delete.push_back({ .type = DeletedResource::Type::RemoveFromResidency, .submit = submits_scheduled, .native_resource = as->acceleration_struct });
-      resources2delete.push_back({ .type = DeletedResource::Type::NativeResource, .submit = submits_scheduled, .native_resource = as->acceleration_struct });
-
-      TEXQL_ON_PERSISTENT_RELEASE_SZ(as->acceleration_struct.allocatedSize);
-
-      delete as;
     }
+
+    TEXQL_ON_PERSISTENT_RELEASE_SZ(as->acceleration_struct.allocatedSize);
+
+    std::lock_guard<std::mutex> scopedLock(delete_lock);
+    if (is_blas)
+      residency2delete.push_back({ .type = DeletedResource::Type::RemoveFromResidency, .submit = submits_scheduled, .native_resource = as->acceleration_struct });
+    resources2delete.push_back({ .type = DeletedResource::Type::AccelerationStructure, .submit = submits_scheduled, .as = as });
   }
 
   void Render::setTLAS(RaytraceTopAccelerationStructure *tlas, ShaderStage rstage, int slot)
@@ -5653,14 +5746,19 @@ namespace drv3d_metal
     command_encoder.write(CommandType::BuildAccelerationStructure).write(blas).write([accDesc retain]).write(info).write(count).write(resources.data(), resources.size()*sizeof(Buffer *));
   }
 
-  void Render::prepareBindlessResources(uint32_t requestedTypes)
+  void Render::prepareBindlessResources(uint32_t requestedTypes, bool is_from_vs)
   {
     if (!d3d::get_driver_desc().caps.hasBindless || requestedTypes == 0)
       return;
 
     applyQueuedBindlessUpdates();
 
-    if ((requestedTypes & bindless_resources_bound) == requestedTypes)
+    // a fence before the fragment stage does not cover a vertex stage read
+    uint32_t tracked = bindless_resources_bound;
+    if (is_from_vs)
+      tracked &= bindless_resources_bound_vs;
+    uint32_t mask = requestedTypes & ~tracked;
+    if (mask == 0)
       return;
 
     TIME_PROFILE(prepareBindlessResources);
@@ -5686,10 +5784,9 @@ namespace drv3d_metal
       buffer_stub = stub_buffer.gpuAddress;
     }
 
-    uint32_t mask = (requestedTypes ^ bindless_resources_bound) & requestedTypes;
     if (mask & (BindlessTypeTexture2D))
     {
-      command_encoder.write(CommandType::TrackBindless).write(BindlessTypeTexture2D);
+      command_encoder.write(CommandType::TrackBindless).write(BindlessTypeTexture2D).write(uint8_t(is_from_vs));
       if (bindlessTextures2D.id_cache.empty())
         bindlessTexture2DIdBuffer->updateDataWithLock(0, sizeof(uint64_t), &tex_2d, VBLOCK_DISCARD);
       else
@@ -5697,7 +5794,7 @@ namespace drv3d_metal
     }
     if (mask & (BindlessTypeTextureCube))
     {
-      command_encoder.write(CommandType::TrackBindless).write(BindlessTypeTextureCube);
+      command_encoder.write(CommandType::TrackBindless).write(BindlessTypeTextureCube).write(uint8_t(is_from_vs));
       if (bindlessTexturesCube.id_cache.empty())
         bindlessTextureCubeIdBuffer->updateDataWithLock(0, sizeof(uint64_t), &tex_cube, VBLOCK_DISCARD);
       else
@@ -5705,7 +5802,7 @@ namespace drv3d_metal
     }
     if (mask & (BindlessTypeTexture2DArray))
     {
-      command_encoder.write(CommandType::TrackBindless).write(BindlessTypeTexture2DArray);
+      command_encoder.write(CommandType::TrackBindless).write(BindlessTypeTexture2DArray).write(uint8_t(is_from_vs));
       if (bindlessTextures2DArray.id_cache.empty())
         bindlessTexture2DArrayIdBuffer->updateDataWithLock(0, sizeof(uint64_t), &tex_2dArray, VBLOCK_DISCARD);
       else
@@ -5713,7 +5810,7 @@ namespace drv3d_metal
     }
     if (mask & (BindlessTypeTexture3D))
     {
-      command_encoder.write(CommandType::TrackBindless).write(BindlessTypeTexture3D);
+      command_encoder.write(CommandType::TrackBindless).write(BindlessTypeTexture3D).write(uint8_t(is_from_vs));
       if (bindlessTextures3D.id_cache.empty())
         bindlessTexture3DIdBuffer->updateDataWithLock(0, sizeof(uint64_t), &tex_3d, VBLOCK_DISCARD);
       else
@@ -5721,7 +5818,7 @@ namespace drv3d_metal
     }
     if (mask & (BindlessTypeTextureCubeArray))
     {
-      command_encoder.write(CommandType::TrackBindless).write(BindlessTypeTextureCubeArray);
+      command_encoder.write(CommandType::TrackBindless).write(BindlessTypeTextureCubeArray).write(uint8_t(is_from_vs));
       if (bindlessTexturesCubeArray.id_cache.empty())
         bindlessTextureCubeArrayIdBuffer->updateDataWithLock(0, sizeof(uint64_t), &tex_cubeArray, VBLOCK_DISCARD);
       else
@@ -5729,7 +5826,7 @@ namespace drv3d_metal
     }
     if (mask & BindlessTypeBuffer)
     {
-      command_encoder.write(CommandType::TrackBindless).write(BindlessTypeBuffer);
+      command_encoder.write(CommandType::TrackBindless).write(BindlessTypeBuffer).write(uint8_t(is_from_vs));
       if (bindlessBuffers.cache.empty())
           bindlessBufferIdBuffer->updateDataWithLock(0, sizeof(uint64_t), &buffer_stub, VBLOCK_DISCARD);
       else
@@ -5753,6 +5850,10 @@ namespace drv3d_metal
     }
 
     bindless_resources_bound |= requestedTypes;
+    if (is_from_vs)
+      bindless_resources_bound_vs |= requestedTypes;
+    else // types fenced here for the first time got a fragment stage fence only
+      bindless_resources_bound_vs &= ~mask;
   }
 
   void Render::pushAsyncPsoCompilation(bool enable)
@@ -5800,6 +5901,8 @@ namespace drv3d_metal
       }
     }
 
+    G_ASSERT_RETURN(sampler_states.size() < sampler_states.capacity(), 0);
+
     MTLSamplerDescriptor *samplerDescriptor = [[MTLSamplerDescriptor alloc] init];
     samplerDescriptor.sAddressMode = getAddressMode(sampler_state.addrU, caps.hasClampToBorder);
     samplerDescriptor.tAddressMode = getAddressMode(sampler_state.addrV, caps.hasClampToBorder);
@@ -5819,6 +5922,10 @@ namespace drv3d_metal
     if (sampler_state.mipmap == d3d::MipMapMode::Point)
     {
       samplerDescriptor.mipFilter = MTLSamplerMipFilterNearest;
+    }
+    else if (sampler_state.mipmap == d3d::MipMapMode::Disabled)
+    {
+      samplerDescriptor.mipFilter = MTLSamplerMipFilterNotMipmapped;
     }
     else
     {

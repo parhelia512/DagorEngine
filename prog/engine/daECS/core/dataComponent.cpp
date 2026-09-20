@@ -98,8 +98,7 @@ component_index_t DataComponents::createComponent(const HashedConstString name_,
     G_ASSERT(components.get<component_index_t>()[base] == INVALID_COMPONENT_INDEX);
     components.get<component_index_t>()[base] = components.size();
     usedName = getComponentNameById(base);
-    ECS_VERBOSE_LOG(" %d ecs component <%s> hash<0x%X> of component_type %d<%s> is a copy of %d (%s|0x%X)", components.size(),
-      usedName, nameHash, component_type, types.getTypeNameById(component_type), base, usedName, baseNameHash);
+    ECS_VERBOSE_LOG(" %d ecs component <%s> is a copy of %d (0x%X)", components.size(), usedName, base, baseNameHash);
 
     for (LTComponentList *lt = componentToLT.findOr(baseNameHash, NULL); lt; lt = lt->next)
       lt->info.canTrack = true;

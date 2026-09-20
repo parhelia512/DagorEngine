@@ -5,6 +5,7 @@ include "bvh.dshl"
 include "rt_pipeline.dshl"
 include "rtsm_sun_dir.dshl"
 include "blue_noise.dshl"
+include "white_noise.dshl"
 include "bvh_common_includes.dshl"
 include "contact_shadows.dshl"
 include "camera_in_camera.dshl"
@@ -226,6 +227,7 @@ shader rt_shadows, rt_shadows_fill_high
   }
   INIT_BLUE_NOISE(cs)
   USE_BLUE_NOISE(cs)
+  USE_WHITE_NOISE(cs)
   USE_EMISSION_DECODE_COLOR_MAP_STUB(cs)
   INIT_PACK_UNPACK_DYNSTCODE(cs)
   PACK_UNPACK_GBUFFER_BASE(cs)
@@ -383,6 +385,9 @@ shader rt_shadows, rt_shadows_fill_high
 
       ##if rtsm_render_mode == hard
         float3 direction = -sun_dir_for_shadows;
+      ##elif rtsm_render_mode == rr
+        float2 rnd = GetWhiteNoise(dtid, frame_index);
+        float3 direction = get_sun_direction(rnd);
       ##else
         float2 rnd = GetBlueNoise(dtid, false, 0);
         float3 direction = get_sun_direction(rnd);
@@ -446,6 +451,9 @@ shader rt_shadows, rt_shadows_fill_high
       ##if rtsm_pipeline_mode == inline
         bool isHit = trace_ray(bvhMain, relPos.xyz, direction, minT, maxTrace, w, groupMask, hitInfo, rayColor, translucentT, extraFlags);
         float hitDistance = hitInfo.t;
+        // a hit occluder must stay in the TLAS, or its shadow disappears
+        if (isHit)
+          bvh_voxel_activity_mark(hitInfo.position);
       ##else
         RayPayload payload = (RayPayload)0;
 
@@ -782,6 +790,7 @@ shader rt_direct_lights
       float w;
       uint groupMask;
       float2 screenpos;
+      bool isMuzzleFlash;
     };
 
     float noise(float2 n) {
@@ -837,7 +846,15 @@ shader rt_direct_lights
       }
 
 
-      bool isObstructed = is_obstructed(bvhMain, context.relPos, normalizedDir, context.minT, rayLength, context.w, context.groupMask);
+      uint groupMask = context.groupMask;
+      ##if bvh_use_group_cannon_barrel == yes
+        // A muzzle flash light sits at the barrel mouth: the barrel would shadow almost
+        // the whole flash. Other lights keep the barrel as a regular occluder.
+        if (context.isMuzzleFlash)
+          groupMask &= ~bvhGroupGunBarrel;
+      ##endif
+
+      bool isObstructed = is_obstructed(bvhMain, context.relPos, normalizedDir, context.minT, rayLength, context.w, groupMask);
       if (isObstructed)
         result = 0;
     }
@@ -880,8 +897,9 @@ shader rt_direct_lights
 
       context.relPos = calc_camera_relative_pos(dtid, w, inv_resolution);
       context.minT = 0;
-      context.groupMask = bvhGroupHardShadow;
       context.w = w;
+      context.groupMask = bvhGroupHardShadow;
+      context.isMuzzleFlash = false;
       if (isImpostor)
         context.groupMask &= ~bvhGroupImpostor;
       else if (gbuffer.isGrass)

@@ -26,7 +26,8 @@ enum class DebugMode
   Instances,
   NaN,
   Lod,
-  LruCollision
+  LruCollision,
+  VoxelActivity
 };
 
 // Real RT-only memory overhead, computed from the ground up (every GPU resource the BVH context

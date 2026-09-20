@@ -464,7 +464,7 @@ struct TextureFetchState
     G_STATIC_ASSERT(MAX_PS_SAMPLERS <= sizeof(decltype(samplersModifiedMask)) * CHAR_BIT);
     G_STATIC_ASSERT(MAX_VS_SAMPLERS <= sizeof(decltype(samplersModifiedMask)) * CHAR_BIT);
 
-    static constexpr uint32_t SAMPLERS_SLOT_MASK = 0xFFFF;
+    static constexpr uint32_t SAMPLERS_SLOT_MASK = (1u << dx11::MAX_S_REGISTERS) - 1;
 
     bool flush(unsigned shader_stage, bool force, ID3D11ShaderResourceView **views, ID3D11SamplerState **states,
       SlotRange &view_range_out, SlotRange &state_range_out);

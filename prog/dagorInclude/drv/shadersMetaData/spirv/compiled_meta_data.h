@@ -136,6 +136,11 @@ const uint32_t WORK_GROUP_SIZE_X_CONSTANT_ID = 1;
 const uint32_t WORK_GROUP_SIZE_Y_CONSTANT_ID = 2;
 const uint32_t WORK_GROUP_SIZE_Z_CONSTANT_ID = 3;
 
+// immediate const dwords are baked as push constants: the VS range starts at offset 0 and
+// reserves this many dwords, the FS range starts right after; the shader compiler, the driver
+// pipeline layouts and pipeline tools must agree on this split
+const uint32_t MAX_IMMEDIATE_CONST_WORDS = 4;
+
 const uint32_t B_CONST_BUFFER_OFFSET_V7 = 0;
 const uint32_t T_SAMPLED_IMAGE_OFFSET_V7 = B_CONST_BUFFER_OFFSET_V7 + B_REGISTER_INDEX_MAX_V7;
 const uint32_t T_BUFFER_SAMPLED_IMAGE_OFFSET_V7 = T_SAMPLED_IMAGE_OFFSET_V7 + T_REGISTER_INDEX_MAX;
@@ -269,7 +274,7 @@ struct ShaderHeader
   uint8_t registerCount;
   uint8_t pushConstantsCount;
   uint8_t bindlessSetsUsed;
-  uint32_t maxConstantCount;
+  uint32_t implicitCbufRegCount;
   uint32_t tRegisterUseMask;
   uint32_t uRegisterUseMask;
   uint32_t bRegisterUseMask;
@@ -320,7 +325,7 @@ struct ShaderHeaderPrev
   uint8_t registerCount;
   uint8_t pushConstantsCount;
   uint8_t bindlessSetsUsed;
-  uint32_t maxConstantCount;
+  uint32_t implicitCbufRegCount;
   uint32_t tRegisterUseMask;
   uint32_t uRegisterUseMask;
   uint32_t bRegisterUseMask;
@@ -355,7 +360,7 @@ struct ShaderHeaderPrevV7
   VkDescriptorType descriptorTypes[REGISTER_ENTRIES_V7];
   VkImageViewType imageViewTypes[REGISTER_ENTRIES_V7];
   VkDescriptorPoolSize descriptorCounts[SHADER_HEADER_DECRIPTOR_COUNT_SIZE];
-  uint32_t maxConstantCount;
+  uint32_t implicitCbufRegCount;
   uint32_t bonesConstantsUsed;
   uint32_t tRegisterUseMask;
   uint32_t uRegisterUseMask;
@@ -449,6 +454,13 @@ constexpr uint32_t SAMPLER_DESCRIPTOR_SET_META_INDEX = FIRST_DESCRIPTOR_SET_META
 constexpr uint32_t BUFFER_DESCRIPTOR_SET_META_INDEX = FIRST_DESCRIPTOR_SET_META_INDEX + BUFFER_DESCRIPTOR_SET_ACTUAL_INDEX;
 constexpr uint32_t MAX_DESCRIPTOR_SET_META_INDEX = BUFFER_DESCRIPTOR_SET_META_INDEX;
 
+// descriptor type of each bindless set, indexed by the *_DESCRIPTOR_SET_ACTUAL_INDEX values
+constexpr VkDescriptorType SET_DESCRIPTOR_TYPES[MAX_SETS] = {
+  VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, // TEXTURE_DESCRIPTOR_SET_ACTUAL_INDEX
+  VK_DESCRIPTOR_TYPE_SAMPLER,       // SAMPLER_DESCRIPTOR_SET_ACTUAL_INDEX
+  VK_DESCRIPTOR_TYPE_STORAGE_BUFFER // BUFFER_DESCRIPTOR_SET_ACTUAL_INDEX
+};
+
 } // namespace bindless
 
 // required to be 256 byte aligned on nvidia
@@ -488,8 +500,6 @@ enum class ChunkType : uint32_t
   HLSL_AND_RECONSTRUCTED_HLSL_XDIF, // unsupported right now
                                     // that what the shader compiler gets
   UNPROCESSED_HLSL,
-  // Name of the shader for better debug info, should be always exported by the compiler
-  SHADER_NAME,
 };
 
 // Some notes:

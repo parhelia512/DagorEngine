@@ -26,6 +26,8 @@ Sources =
   lightsResources.cpp
   dstReadbackLights.cpp
   lightsRenderer.cpp
+  dynamicLightShadows.cpp
+  lightsVisibilityChecker.cpp
 ;
 
 include $(Root)/prog/_jBuild/build.jam ;

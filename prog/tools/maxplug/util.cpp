@@ -22,6 +22,7 @@
 #include <fstream>
 #include <memory>
 #include <algorithm>
+#include <locale>
 #include <unordered_set>
 #include <filesystem>
 
@@ -42,8 +43,6 @@ namespace fs = std::filesystem;
 
 #define ERRMSG_DELAY 3000
 
-#define MAX_CLSNAME 64
-
 static const wchar_t *ENUMERATE_MATERIALS_FILENAME = L"d:/materials.txt";
 static const wchar_t *CONVERT_MATERIALS_FILENAME = L"d:/materials_conv.txt";
 
@@ -58,13 +57,11 @@ std::vector<std::wstring> get_blk_shader_list(const DataBlock *dataBlk);
 class Dag2DagnewCB : public ENodeCB
 {
 public:
-  Interface *ip;
-  TimeValue time;
   bool onImport;
 
   std::map<Mtl *, Mtl *> convertedMat;
 
-  Dag2DagnewCB(Interface *iptr, bool on_import) : ip(iptr), time(iptr->GetTime()), onImport(on_import) {}
+  explicit Dag2DagnewCB(bool on_import) : onImport(on_import) {}
 
   ~Dag2DagnewCB() override = default;
 
@@ -169,7 +166,7 @@ void convertnew(Interface *ip, bool on_import)
   if (!ip)
     return;
 
-  Dag2DagnewCB cbv(ip, on_import);
+  Dag2DagnewCB cbv(on_import);
   enum_nodes(ip->GetRootNode(), &cbv);
   ip->RedrawViews(ip->GetTime());
 }
@@ -199,10 +196,7 @@ struct MappingInfo
   }
 };
 
-typedef int FaceNGr[3];
-#define INLINE   __forceinline
-#define MAX_REAL FLT_MAX
-#define MIN_REAL (-FLT_MAX)
+#define INLINE __forceinline
 
 template <typename To, typename From>
 To bitwise_cast(const From &from)
@@ -268,7 +262,7 @@ public:
   float gs_xydiap[2], gs_zdiap[2];
   float gs_slope;
   int gs_seed, gs_objnum;
-  TCHAR gs_sname[512];
+  WStr gs_sname;
 
   // splines & smooth
   HWND splinesAndSmoothRoll;
@@ -283,7 +277,7 @@ public:
 
   // materials
   HWND materialsRoll;
-  TCHAR clsname[MAX_CLSNAME];
+  WStr clsname;
   ICustEdit *eclsname;
 
   // export to json (UE5)
@@ -376,9 +370,6 @@ protected:
 
 static DagUtil util;
 
-// Compute per-vertex normal in 3dsMax way
-void ComputeVertexNormals(Mesh *mesh, Tab<Point3> &vnrm, Tab<FaceNGr> &fngr, Point3 *trvert = NULL);
-
 
 class DagUtilDesc : public ClassDesc
 {
@@ -445,7 +436,7 @@ IOResult DagUtilDesc::Save(ISave *io)
     return IO_ERROR;
   if (io->Write(&util.gs_objnum, 4, &nw) != IO_OK)
     return IO_ERROR;
-  if (io->Write(util.gs_sname, (int)_tcslen(util.gs_sname), &nw) != IO_OK)
+  if (io->Write(util.gs_sname.data(), ULONG((util.gs_sname.length() + 1) * sizeof(wchar_t)), &nw) != IO_OK)
     return IO_ERROR;
   io->EndChunk();
   io->BeginChunk(CH_GS2);
@@ -512,8 +503,10 @@ IOResult DagUtilDesc::Load(ILoad *io)
           return IO_ERROR;
         if (io->Read(&util.gs_objnum, 4, &nr) != IO_OK)
           return IO_ERROR;
-        if (io->Read(util.gs_sname, sizeof(util.gs_sname), &nr) != IO_OK)
+        wchar_t name[512] = {};
+        if (io->Read(name, (_countof(name) - 1) * sizeof(wchar_t), &nr) != IO_OK)
           return IO_ERROR;
+        util.gs_sname = name;
       }
       break;
       case CH_GS2:
@@ -765,7 +758,6 @@ BOOL DagUtil::selection_brightness_dlg_proc(HWND hWnd, UINT msg, WPARAM wParam, 
       }
       ReleaseICustEdit(iEdit);
       EndPaint(hWnd, &ps);
-      ReleaseDC(hWnd, hdc);
     }
     break;
 
@@ -952,7 +944,7 @@ BOOL DagUtil::materials_dlg_proc(HWND hw, UINT msg, WPARAM wParam, LPARAM lParam
         }
         case IDC_CLSNAME:
         {
-          eclsname->GetText(clsname, MAX_CLSNAME);
+          eclsname->GetText(clsname);
           break;
         }
       }
@@ -1342,7 +1334,6 @@ DagUtil::DagUtil()
 
   // materials
   materialsRoll = NULL;
-  _tcscpy(clsname, _T(""));
   eclsname = NULL;
 
   // export to json
@@ -1394,13 +1385,13 @@ void DagUtil::dagor_util_update_ui(HWND hw)
 void DagUtil::materials_update_ui(HWND hw)
 {
   if (eclsname)
-    eclsname->SetText(clsname);
+    eclsname->SetText(clsname.data());
 }
 
 void DagUtil::materials_update_vars(HWND hw)
 {
   if (eclsname)
-    eclsname->GetText(clsname, sizeof(clsname));
+    eclsname->GetText(clsname);
 }
 
 
@@ -1513,7 +1504,7 @@ void DagUtil::splines_and_smooth_update_vars(HWND hw)
 void DagUtil::scatter_update_ui(HWND hw)
 {
   if (egs_sname)
-    egs_sname->SetText(gs_sname);
+    egs_sname->SetText(gs_sname.data());
   if (egs_objnum)
     egs_objnum->SetText(gs_objnum);
   if (egs_slope)
@@ -1543,7 +1534,7 @@ void DagUtil::scatter_update_ui(HWND hw)
 void DagUtil::scatter_update_vars(HWND hw)
 {
   if (egs_sname)
-    egs_sname->GetText(gs_sname, sizeof(gs_sname));
+    egs_sname->GetText(gs_sname);
   get_edfloat(egs_xydiap[0], gs_xydiap[0]);
   get_edfloat(egs_xydiap[1], gs_xydiap[1]);
   get_edfloat(egs_zdiap[0], gs_zdiap[0]);
@@ -1742,7 +1733,7 @@ public:
         d->set_emis(Color(1, 1, 1) * si);
         dm->SetSubTexmap(0, tex);
       }
-      d->set_classname(util.clsname);
+      d->set_classname(util.clsname.data());
       dm->ReleaseInterface(I_DAGORMAT, d);
       cm.nm = dm;
       mat.Append(1, &cm);
@@ -1912,26 +1903,13 @@ void DagUtil::dagmat_to_stdmat()
 
 ////////////////////////////////////////////////////////////
 
-typedef std::vector<std::wstring> StrVec;
 typedef std::map<std::wstring, std::wstring> StrMap;
 
 
 class Dag2EnumeratorCB : public ENodeCB
 {
 public:
-  StrVec materials;
-  StrVec scripts;
-
   StrMap mats;
-
-  Interface *ip;
-  TimeValue time;
-
-  Dag2EnumeratorCB(Interface *iptr)
-  {
-    ip = iptr;
-    time = ip->GetTime();
-  }
 
   ~Dag2EnumeratorCB() override = default;
 
@@ -1948,8 +1926,6 @@ public:
       script = replace_all(script, L"\n", L"\\n");
 
 
-      materials.push_back(name);
-      scripts.push_back(script);
       std::wstring mat;
 
       mat += _T("cn=\"");
@@ -2000,18 +1976,7 @@ public:
 class Dag2UniqueCB : public ENodeCB
 {
 public:
-  CfgShader *cfg;
-
   Tab<Mtl *> mats;
-
-  Interface *ip;
-  TimeValue time;
-
-  Dag2UniqueCB(Interface *iptr)
-  {
-    ip = iptr;
-    time = ip->GetTime();
-  }
 
   ~Dag2UniqueCB() override = default;
 
@@ -2052,7 +2017,7 @@ public:
 
       if (d->get_2sided() == c->get_2sided() && d->get_amb() == c->get_amb() && named.compare(namec) == 0 &&
           d->get_diff() == c->get_diff() && d->get_emis() == c->get_emis() && scriptd.compare(scriptc) == 0 &&
-          d->get_spec() == d->get_spec() && (fabs(d->get_power()) - fabs(c->get_power())) < 0.000001f)
+          d->get_spec() == c->get_spec() && fabs(d->get_power() - c->get_power()) < (0.000001f * fabs(d->get_power())))
       {
         return mats[pos];
       }
@@ -2072,7 +2037,6 @@ public:
     if (!n)
       return ECB_CONT;
     Mtl *m = n->GetMtl();
-    char cnv = 0;
     if (m)
     {
       if (m->IsMultiMtl())
@@ -2109,7 +2073,7 @@ void collapse_materials(Interface *ip)
   if (!ip)
     return;
 
-  Dag2UniqueCB cbv(ip);
+  Dag2UniqueCB cbv;
   enum_nodes(ip->GetRootNode(), &cbv);
   ip->RedrawViews(ip->GetTime());
 }
@@ -2123,14 +2087,8 @@ public:
   StrMap mats_name;
   StrMap mats_script;
 
-  Interface *ip;
-  TimeValue time;
-
-  Dag2DagCB(Interface *iptr)
+  Dag2DagCB()
   {
-    ip = iptr;
-    time = ip->GetTime();
-
     cfg = new CfgShader(get_cfg_filename(_T("DagorConvert.cfg")).native());
 
     cfg->GetShaderNames();
@@ -2198,7 +2156,6 @@ public:
     if (!n)
       return ECB_CONT;
     Mtl *m = n->GetMtl();
-    char cnv = 0;
     if (m)
     {
       if (m->IsMultiMtl())
@@ -2230,21 +2187,15 @@ bool DagUtil::enumerate()
   std::ofstream os(ENUMERATE_MATERIALS_FILENAME);
   if (!os)
     return false;
+  os.imbue(std::locale::classic());
 
-  Dag2EnumeratorCB cb(ip);
+  Dag2EnumeratorCB cb;
   enum_nodes(ip->GetRootNode(), &cb);
   ip->RedrawViews(ip->GetTime());
-  int pos = 0;
-
-  for (pos = 0; pos < cb.materials.size(); ++pos)
-  {
-    std::wstring str1 = cb.materials.at(pos);
-    std::wstring str2 = cb.scripts.at(pos);
-  }
 
   StrMap::iterator itr = cb.mats.begin();
 
-  pos = 0;
+  int pos = 0;
   while (itr != cb.mats.end())
   {
     os << "[" << pos << "]\n\n";
@@ -2263,7 +2214,7 @@ void DagUtil::collapse()
   if (!ip)
     return;
 
-  Dag2UniqueCB cbv(ip);
+  Dag2UniqueCB cbv;
   enum_nodes(ip->GetRootNode(), &cbv);
   ip->RedrawViews(ip->GetTime());
 }
@@ -2276,25 +2227,19 @@ bool DagUtil::convert()
   std::ofstream os(CONVERT_MATERIALS_FILENAME);
   if (!os)
     return false;
+  os.imbue(std::locale::classic());
 
-  Dag2DagCB cbv(ip);
+  Dag2DagCB cbv;
   enum_nodes(ip->GetRootNode(), &cbv);
   ip->RedrawViews(ip->GetTime());
 
-  Dag2EnumeratorCB cb(ip);
+  Dag2EnumeratorCB cb;
   enum_nodes(ip->GetRootNode(), &cb);
   ip->RedrawViews(ip->GetTime());
-  int pos = 0;
-
-  for (pos = 0; pos < cb.materials.size(); ++pos)
-  {
-    std::wstring str1 = cb.materials.at(pos);
-    std::wstring str2 = cb.scripts.at(pos);
-  }
 
   StrMap::iterator itr = cb.mats.begin();
 
-  pos = 0;
+  int pos = 0;
   while (itr != cb.mats.end())
   {
     os << "[" << pos << "]\n\n";
@@ -2362,7 +2307,7 @@ public:
   std::vector<Mtl *> sorted_materials() const
   {
     std::vector<Mtl *> res(materials.begin(), materials.end());
-    std::sort(res.begin(), res.end(), [](Mtl *a, Mtl *b) {
+    std::ranges::sort(res, [](Mtl *a, Mtl *b) {
       int cmp = _tcscmp(a->GetName().data(), b->GetName().data());
       return cmp != 0 ? cmp < 0 : Animatable::GetHandleByAnim(a) < Animatable::GetHandleByAnim(b);
     });
@@ -2376,7 +2321,7 @@ public:
 
     if (util.exp_selected && !n->Selected())
     {
-      if (_tcsicmp(n->GetName(), _T("ORIGIN")) == 0)
+      if (iequal(n->GetName(), L"ORIGIN"))
         explog(_T("skip non-selected origin\r\n" ));
 
       return ECB_CONT;
@@ -2691,7 +2636,8 @@ struct ExpEnumTexCB : IDagorMat2::EnumTexCB
   {
     if (count++)
       os << ',';
-    os << "\"" << wideToStr(name) << "\":\"" << escape_string(wideToStr(fs::path(path).stem().c_str())) << '\"';
+    os << "\"" << escape_json_string(wideToStr(name)) << "\":\"" << escape_json_string(wideToStr(fs::path(path).stem().c_str()))
+       << '\"';
     return ECB_CONT;
   }
 };
@@ -2711,7 +2657,9 @@ struct ExpEnumParamCB : IDagorMat2::EnumParamCB
     if (count++)
       os << ',';
 
-    os << "\"" << wideToStr(name) << "\":";
+    os << "\"" << escape_json_string(wideToStr(name)) << "\":";
+
+    const std::string narrow = wideToStr(value);
 
     switch (t)
     {
@@ -2721,12 +2669,19 @@ struct ExpEnumParamCB : IDagorMat2::EnumParamCB
         break;
 
       case DataBlock::ParamType::TYPE_INT:
-      case DataBlock::ParamType::TYPE_REAL: os << "{\"type\":\"scalar\",\"value\":" << parse_param_value<float>(value) << '}'; break;
+      case DataBlock::ParamType::TYPE_REAL:
+      {
+        float f = 0;
+        parse_nums(narrow, f);
+        os << "{\"type\":\"scalar\",\"value\":" << f << '}';
+      }
+      break;
 
       case DataBlock::ParamType::TYPE_IPOINT2:
       case DataBlock::ParamType::TYPE_POINT2:
       {
-        Point2 p2 = parse_param_value<Point2, 2>(value);
+        Point2 p2(0.f, 0.f);
+        parse_nums(narrow, p2.x, p2.y);
         os << "{\"type\":\"vector\",\"value\":" << "{\"x\":" << p2.x << ",\"y\": " << p2.y << ",\"z\": 0,\"w\": 0}}";
       }
       break;
@@ -2734,7 +2689,8 @@ struct ExpEnumParamCB : IDagorMat2::EnumParamCB
       case DataBlock::ParamType::TYPE_IPOINT3:
       case DataBlock::ParamType::TYPE_POINT3:
       {
-        Point3 p3 = parse_param_value<Point3, 3>(value);
+        Point3 p3(0.f, 0.f, 0.f);
+        parse_nums(narrow, p3.x, p3.y, p3.z);
         os << "{\"type\":\"vector\",\"value\": " << "{\"x\":" << p3.x << ",\"y\": " << p3.y << ",\"z\": " << p3.z << ",\"w\":0}}";
       }
       break;
@@ -2742,7 +2698,8 @@ struct ExpEnumParamCB : IDagorMat2::EnumParamCB
       case DataBlock::ParamType::TYPE_POINT4:
       case DataBlock::ParamType::TYPE_E3DCOLOR:
       {
-        Point4 p4 = parse_param_value<Point4, 4>(value);
+        Point4 p4(0.f, 0.f, 0.f, 0.f);
+        parse_nums(narrow, p4.x, p4.y, p4.z, p4.w);
         os << "{\"type\":\"vector\",\"value\":" << "{\"x\":" << p4.x << ",\"y\": " << p4.y << ",\"z\": " << p4.z << ",\"w\": " << p4.w
            << "}}";
       }
@@ -2766,6 +2723,7 @@ void DagUtil::exportToJson()
     explog(_T("cant open '%s' file for writing"), exp_fname.c_str());
     return;
   }
+  os.imbue(std::locale::classic());
 
   Dag2EnumMatCB cb;
   enum_nodes(ip->GetRootNode(), &cb);
@@ -2782,8 +2740,8 @@ void DagUtil::exportToJson()
     if (count++)
       os << ',';
 
-    os << "\"" << escape_string(wideToStr(m->GetName().data())) << "\":{";
-    os << "\"class\":\"" << wideToStr(d->get_classname()) << "\",";
+    os << "\"" << escape_json_string(wideToStr(m->GetName().data())) << "\":{";
+    os << "\"class\":\"" << escape_json_string(wideToStr(d->get_classname())) << "\",";
 
     Color cold = m->GetDiffuse();
     os << "\"diff\":{\"x\":" << cold.r << ",\"y\": " << cold.g << ",\"z\": " << cold.b << ",\"w\":0},";
@@ -2803,23 +2761,6 @@ void DagUtil::exportToJson()
 }
 
 //////////////////////////////////////////////////////////////////////////////
-
-static int intersects(const Box3 &a, const Box3 &b)
-{
-  if (a.Max().x < b.Min().x)
-    return 0;
-  if (a.Max().y < b.Min().y)
-    return 0;
-  if (a.Max().z < b.Min().z)
-    return 0;
-  if (a.Min().x > b.Max().x)
-    return 0;
-  if (a.Min().y > b.Max().y)
-    return 0;
-  if (a.Min().z > b.Max().z)
-    return 0;
-  return 1;
-}
 
 bool DagUtil::copy_tch_buf(Mesh &m, MappingInfo &mi, int c)
 {
@@ -2895,7 +2836,6 @@ bool DagUtil::copy_tch1(Mesh &m, TCCOPY tc, int src, int dst, int mapa, bool sel
     dstfcs.Append(m.getNumFaces(), m.mapFaces(dst));
     Tab<UVVert> dstvrts;
     dstvrts.Append(m.getNumMapVerts(dst), m.mapVerts(dst));
-    TVFace *srctf = m.mapFaces(src);
     m.setNumMapVerts(dst, m.getNumMapVerts(src));
     m.setNumMapFaces(dst, m.getNumFaces());
     memcpy(m.mapVerts(dst), m.mapVerts(src), sizeof(Point3) * m.getNumMapVerts(src));
@@ -3070,40 +3010,6 @@ public:
   void copyVertex(unsigned int from, unsigned int to) override { mesh->verts[to] = mesh->verts[from]; }
 
   bool countRemovedVertices() override { return true; }
-};
-
-
-class TextureTopologyAdapter : public TopologyAdapter
-{
-  int channel;
-
-public:
-  TextureTopologyAdapter(Mesh *in_mesh, int ch) : TopologyAdapter(in_mesh), channel(ch) {}
-
-  unsigned int getNumVerts() override { return mesh->getNumMapVerts(channel); }
-
-  void setNumVerts(unsigned int num_verts) override { mesh->setNumMapVerts(channel, num_verts, TRUE); }
-
-  unsigned int getIndex(unsigned int face_no, unsigned int index_no) override
-  {
-    TVFace *tvFace = mesh->mapFaces(channel);
-    assert(tvFace);
-    return tvFace[face_no].t[index_no];
-  }
-
-  void setIndex(unsigned int face_no, unsigned int index_no, unsigned int index) override
-  {
-    TVFace *tvFace = mesh->mapFaces(channel);
-    assert(tvFace);
-    tvFace[face_no].t[index_no] = index;
-  }
-
-  void copyVertex(unsigned int from, unsigned int to) override
-  {
-    TVFace *tvFace = mesh->mapFaces(channel);
-    assert(tvFace);
-    tvFace[to] = tvFace[from];
-  }
 };
 
 
@@ -4840,13 +4746,12 @@ void DagUtil::mesh_smooth()
   ip->RedrawViews(time);
 }
 
-void put_meshes_on_mesh(Interface *ip, TCHAR *selsname, Tab<INode *> &snode, int objnum, int seed, bool set_to_norm, bool use_smgr,
-  bool rotatez, float slope, bool selfaces, float xydiap[2], float zdiap[2], bool xys, char zs);
+void put_meshes_on_mesh(Interface *ip, const wchar_t *selsname, Tab<INode *> &snode, int objnum, int seed, bool set_to_norm,
+  bool use_smgr, bool rotatez, float slope, bool selfaces, float xydiap[2], float zdiap[2], bool xys, char zs);
 
 void DagUtil::genobjonsurf()
 {
   update_vars();
-  TimeValue time = ip->GetTime();
   int nc = ip->GetSelNodeCount();
   if (!nc)
     return;
@@ -4854,8 +4759,8 @@ void DagUtil::genobjonsurf()
   snode.SetCount(nc);
   for (int i = 0; i < nc; ++i)
     snode[i] = ip->GetSelNode(i);
-  put_meshes_on_mesh(ip, gs_sname, snode, gs_objnum, gs_seed, bool(gs_set2norm != 0), bool(gs_usesmgr != 0), bool(gs_rotatez != 0),
-    DegToRad(gs_slope), bool(gs_selfaces != 0), gs_xydiap, gs_zdiap, bool(gs_scalexy != 0), gs_scalez);
+  put_meshes_on_mesh(ip, gs_sname.data(), snode, gs_objnum, gs_seed, bool(gs_set2norm != 0), bool(gs_usesmgr != 0),
+    bool(gs_rotatez != 0), DegToRad(gs_slope), bool(gs_selfaces != 0), gs_xydiap, gs_zdiap, bool(gs_scalexy != 0), gs_scalez);
 }
 
 Matrix3 get_scaled_stretch_node_tm(INode *node, TimeValue time)

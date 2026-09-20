@@ -5,8 +5,9 @@
 #pragma once
 
 #include "dag_driverDesc.inl"
+#include <drv/3d/dag_multi_interface.h>
 
-namespace d3d
+namespace d3d _MULTI_INTERFACE
 {
 
 /**
@@ -15,7 +16,7 @@ namespace d3d
  */
 const DriverDesc &get_driver_desc();
 
-} // namespace d3d
+} // namespace d3d _MULTI_INTERFACE
 
 #if _TARGET_D3D_MULTI
 #include <drv/3d/dag_interface_table.h>

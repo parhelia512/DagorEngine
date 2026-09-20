@@ -51,7 +51,7 @@ macro USE_OBSTACLES(code)
         norm = (float3(insideDist == dist.x, insideDist == dist.y, insideDist == dist.z));
       else
         norm = ptOnBox/(outsideDist+1e-6);
-      norm = (localPos < 0 ? -norm : norm);
+      norm = select(localPos < 0, -norm, norm);
       return float4(signedDist, norm);
     }
 

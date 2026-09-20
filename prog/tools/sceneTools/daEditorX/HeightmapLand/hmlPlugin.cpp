@@ -180,7 +180,6 @@ HmapLandPlugin::HmapLandPlugin() :
   sunZenith(DegToRad(45)),
   numDetailTextures(0),
   // detailTexOffset(midmem),
-  calculating_shadows(false),
   detailTexBlkName(midmem),
   colorGenParams(midmem_ptr()),
   scriptImages(midmem_ptr()),
@@ -1334,22 +1333,6 @@ void HmapLandPlugin::fillPanel(PropPanel::ContainerPropertyControl &panel)
              subGrp->createEditFloat(PID_SHADOW_DENSITY, "Shadow density %", shadowDensity*100);
 
              panel.setBool(PID_SHADOW_GRP, true);
-
-             subGrp = grp->createGroup(PID_SHADOW_CASTERS_GRP, "Shadow casters");
-
-             const int colCnt = DAGORED2->getCustomCollidersCount();
-
-             G_ASSERT(colCnt < PID_SHADOW_CASTER_LAST - PID_SHADOW_CASTER_FIRST);
-
-             for (int i = 0; i < colCnt; ++i)
-             {
-               const IDagorEdCustomCollider* collider = DAGORED2->getCustomCollider(i);
-
-               if (collider)
-                 subGrp->createCheckBox(PID_SHADOW_CASTER_FIRST + i, collider->getColliderName(),
-                   DAGORED2->isCustomShadowEnabled(collider));
-             }
-             panel.setBool(PID_SHADOW_CASTERS_GRP, true);
            }*/
     }
     landOptionsGrp->setBool(PID_LIGHTING_GRP, true);
@@ -2158,7 +2141,14 @@ void HmapLandPlugin::onChange(int pcb_id, PropPanel::ContainerPropertyControl *p
 
 
   render.useMetricsHM = panel->getBool(PID_RENDER_HM_METRICS);
+
+  const bool prevUseHm2Mirror = render.useHm2Mirror;
   render.useHm2Mirror = panel->getBool(PID_RENDER_HM_MIRROR);
+  if (render.useHm2Mirror != prevUseHm2Mirror)
+    if (auto *dngRender = EDITORCORE->queryEditorInterface<IDynRenderService>())
+      if (dngRender->getRenderType() == IDynRenderService::RTYPE_DNG_BASED)
+        dngRender->setEditorHmapMirroring(render.useHm2Mirror);
+
   bool newShowHm = panel->getInt(PID_RENDER_RADIOGROUP_HM) == PID_RENDER_FINAL_HM;
   if (newShowHm != render.showFinalHM)
   {
@@ -2573,20 +2563,6 @@ void HmapLandPlugin::onChange(int pcb_id, PropPanel::ContainerPropertyControl *p
       vertDetTexYOffset = panel->getFloat(pcb_id);
       updateVertTex();
       break;
-  }
-
-  if (pcb_id >= PID_SHADOW_CASTER_FIRST && pcb_id < PID_SHADOW_CASTER_LAST)
-  {
-    const int shadowIdx = pcb_id - PID_SHADOW_CASTER_FIRST;
-    const IDagorEdCustomCollider *collider = DAGORED2->getCustomCollider(shadowIdx);
-
-    if (collider)
-    {
-      if (panel->getBool(pcb_id))
-        DAGORED2->enableCustomShadow(collider->getColliderName());
-      else
-        DAGORED2->disableCustomShadow(collider->getColliderName());
-    }
   }
 
   if (pcb_id >= PID_GRASS_MASK_START && pcb_id <= PID_GRASS_MASK_END)
@@ -3335,10 +3311,7 @@ void HmapLandPlugin::onClick(int pcb_id, PropPanel::ContainerPropertyControl *pa
       new_detDivisor = gridCellSize / csz;
       new_detRect[0] = b0;
       new_detRect[1] = b1;
-      new_detRectC[0].set_xy((new_detRect[0] - heightMapOffset) / gridCellSize);
-      new_detRectC[0] *= new_detDivisor;
-      new_detRectC[1].set_xy((new_detRect[1] - heightMapOffset) / gridCellSize);
-      new_detRectC[1] *= new_detDivisor;
+      new_detRectC = calcDetRectC(new_detRect, new_detDivisor);
     }
 
     // Classify the edit to decide whether existing det-hmap data can be
@@ -3469,7 +3442,9 @@ void HmapLandPlugin::onClick(int pcb_id, PropPanel::ContainerPropertyControl *pa
   else if (pcb_id == PID_NAVMESH_BUILD)
   {
     BinDumpSaveCB cwr(1 << 10, _MAKE4C('PC'), false);
+    objEd.showHiddenObjectsForBuild();
     buildAndWriteSingleNavMesh(cwr, shownExportedNavMeshIdx, false);
+    objEd.restoreHiddenObjectsAfterBuild();
   }
   gpuGrassPanel.onClick(
     pcb_id, panel, [this]() { loadGPUGrassFromLevelBlk(); },

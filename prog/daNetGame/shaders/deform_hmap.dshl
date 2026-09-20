@@ -7,6 +7,13 @@ include "invalidate_hmap_displacement_inc.dshl"
 
 texture deform_hmap_postfx_source_tex;
 texture deform_hmap_info_tex;
+sampler deform_hmap_border_sampler
+{
+  address_u = border;
+  address_v = border;
+  address_w = border;
+  border_color = (0, 0, 0, 0);
+};
 int deform_hmap_tex_size = 1024;
 float4 deform_hmap_reproject_uv_offset;
 float4 deform_hmap_world_to_uv_scale_bias;
@@ -83,8 +90,8 @@ shader deform_hmap_clearmask_cs
 shader deform_hmap_deform_cs
 {
   (cs) {
-    source_tex@smp = deform_hmap_postfx_source_tex hlsl { Texture2D<float> source_tex@smp; };
-    hmap_info_tex@smp = deform_hmap_info_tex hlsl { Texture2D<float> hmap_info_tex@smp; };
+    source_tex@tex = deform_hmap_postfx_source_tex hlsl { Texture2D<float> source_tex@tex; };
+    hmap_info_tex@tex = deform_hmap_info_tex hlsl { Texture2D<float> hmap_info_tex@tex; };
     tex_size__texel_size@f2 = (deform_hmap_tex_size, 1.0 / deform_hmap_tex_size, 0, 0);
     deform_hmap_uv_to_world_scale_bias@f4 = (
       1 / deform_hmap_world_to_uv_scale_bias.x,
@@ -340,7 +347,8 @@ shader deform_hmap_dispatcher_cs
 shader deform_hmap_edge_detect_cs, deform_hmap_blur_cs
 {
   (cs) {
-    source_tex@smp = deform_hmap_postfx_source_tex hlsl { Texture2D<float> source_tex@smp; };
+    source_tex@tex = deform_hmap_postfx_source_tex hlsl { Texture2D<float> source_tex@tex; };
+    source_tex_samplerstate@sampler = deform_hmap_border_sampler;
     tex_size__texel_size__edge_strength@f3 = (
       deform_hmap_tex_size,
       1.0 / deform_hmap_tex_size,

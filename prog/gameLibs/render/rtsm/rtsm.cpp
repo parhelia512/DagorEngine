@@ -36,7 +36,7 @@ static int rtsm_valueVarId = -1;
 static int rtsm_translucencyVarId = -1;
 static int rtsm_denoisedVarId = -1;
 static int precomputed_dynamic_lightsVarId = -1;
-static int precomputed_dynamic_lights_maskVarId = -1;
+static int render_direct_lights_use_tilingVarId = -1;
 static int use_precomputed_dynamic_lightsVarId = -1;
 static int rtsm_has_nukeVarId = -1;
 static int rtsm_bindless_slotVarId = -1;
@@ -77,7 +77,7 @@ void initialize(RenderMode rm, bool have_dynamic_light_shadows)
   rtsm_translucencyVarId = get_shader_variable_id("rtsm_translucency", true);
   rtsm_denoisedVarId = get_shader_variable_id("rtsm_denoised");
   precomputed_dynamic_lightsVarId = get_shader_variable_id("precomputed_dynamic_lights");
-  precomputed_dynamic_lights_maskVarId = get_shader_variable_id("precomputed_dynamic_lights_mask", true);
+  render_direct_lights_use_tilingVarId = get_shader_variable_id("render_direct_lights_use_tiling", true);
   use_precomputed_dynamic_lightsVarId = get_shader_variable_id("use_precomputed_dynamic_lights", true);
   rtsm_has_nukeVarId = get_shader_variable_id("rtsm_has_nuke");
   rtsm_bindless_slotVarId = get_shader_variable_id("rtsm_bindless_slot");
@@ -340,7 +340,7 @@ void render_dynamic_light_shadows(bvh::ContextId context_id, const Point3 &view_
     return;
 
   ShaderGlobal::set_texture(precomputed_dynamic_lightsVarId, dynamic_lighting_texture);
-  ShaderGlobal::set_texture(precomputed_dynamic_lights_maskVarId, BAD_TEXTUREID);
+  ShaderGlobal::set_int(render_direct_lights_use_tilingVarId, 0);
   ShaderGlobal::set_int(use_precomputed_dynamic_lightsVarId, 1);
   G_ASSERT(traceDynamic);
 

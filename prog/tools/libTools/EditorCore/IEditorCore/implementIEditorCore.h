@@ -135,7 +135,6 @@ public:
   const char *geomObjectGetShaderName(const GeomObject &go, int idx) const override;
   ShaderMesh *geomObjectGetShaderMesh(const GeomObject &go, int idx) const override;
 
-  bool geomObjectShadowRayHitTest(GeomObject &go, const Point3 &p, const Point3 &dir, real maxt, int trace_flags) const override;
   bool geomObjectTraceRay(GeomObject &go, const Point3 &p, const Point3 &dir, real &maxt, Point3 *norm) const override;
   bool geomObjectReloadRayTracer(GeomObject &go) const override;
   StaticSceneRayTracer *geomObjectGetRayTracer(GeomObject &go) const override;
@@ -363,19 +362,8 @@ public:
 class EcScene : public IDagorScene
 {
 public:
-  // StaticSceneRayTracer
-  int staticSceneRayTracerTraceRay(StaticSceneRayTracer &rt, const Point3 &p, const Point3 &wdir2, real &mint2,
-    int from_face) const override;
-
   // FastRtDump
   int fastRtDumpTraceRay(FastRtDump &frt, int custom, const Point3 &p, const Point3 &dir, real &t, int &out_pmid) const override;
-
-  // BuildableStaticSceneRayTracer
-  BuildableStaticSceneRayTracer *createBuildableStaticmeshsceneRaytracer(const Point3 &lsz, int lev) const override;
-  bool buildableStaticSceneRayTracerAddmesh(BuildableStaticSceneRayTracer &rt, const Point3 *vert, int vcount, const unsigned *face,
-    unsigned stride, int fn, const unsigned *face_flags, bool rebuild) const override;
-  bool buildableStaticSceneRayTracerReserve(BuildableStaticSceneRayTracer &rt, int face_count, int vert_count) const override;
-  bool buildableStaticSceneRayTracerRebuild(BuildableStaticSceneRayTracer &rt) const override;
 
   // StaticSceneBuilder::StdTonemapper
   StaticSceneBuilder::StdTonemapper *newStdTonemapper(IMemAlloc *alloc) const override;

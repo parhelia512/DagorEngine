@@ -69,6 +69,11 @@ static void on_global_batch_exit()
   if (batch_exit_done)
     return;
   batch_exit_done = true;
+
+  // batch runs inside onInit(), before the work cycle loop starts, so nothing ever drained the delayed actions that back
+  // threads post to append their console lines; drain them or the report misses them
+  flush_delayed_actions();
+
   CoolConsole &con = DAGORED2->getConsole();
 
   bool ok = (!global_batch->numErrors && !con.getGlobalErrorsCounter() && !con.getGlobalFatalsCounter());
@@ -95,6 +100,18 @@ static void quiet_report_fatal_error(const char *, const char *msg, const char *
   _exit(13);
 }
 
+// path-kind: application.blk, .level.blk
+static void use_blk_argument(const char *&dst, const char *path, const char *path_kind, String &refused_arguments)
+{
+  if (!::dd_file_exist(path))
+    refused_arguments.aprintf(0, "\n- The %s file \"%s\" does not exist.", path_kind, path);
+  else if (dst)
+    refused_arguments.aprintf(0, "\n- The %s file \"%s\" comes after \"%s\", and daEditorX uses only the first one.", path_kind, path,
+      dst);
+  else
+    dst = path;
+}
+
 
 class AppManager : public IWndManagerEventHandler
 {
@@ -107,6 +124,8 @@ public:
     const char *batchFname = NULL;
     bool asyncBatch = false;
     const char *useWorkspace = NULL;
+    const char *openAppBlk = nullptr;
+    String refusedArguments;
 
     // test switches
     for (int i = 1; i < dgs_argc; ++i)
@@ -124,9 +143,16 @@ public:
         }
       }
       if (strnicmp(dgs_argv[i], "-ws:", 4) == 0)
+      {
         useWorkspace = dgs_argv[i] + 4;
-      else if (!openFname && trail_strcmp(dgs_argv[i], ".level.blk") && ::dd_file_exist(dgs_argv[i]))
-        openFname = dgs_argv[i];
+        if (*useWorkspace == 0) // Treat a bare "-ws:" as not specified.
+          useWorkspace = nullptr;
+      }
+      else if (trail_stricmp(dgs_argv[i], ".level.blk"))
+        use_blk_argument(openFname, dgs_argv[i], ".level.blk", refusedArguments);
+      // A path to application.blk, an alternative to -ws:<name>.
+      else if (trail_stricmp(dgs_argv[i], "application.blk"))
+        use_blk_argument(openAppBlk, dgs_argv[i], "application.blk", refusedArguments);
       else if (stricmp(dgs_argv[i], "-async_batch") == 0)
         asyncBatch = true;
     }
@@ -170,7 +196,7 @@ public:
     else
     {
       SplashScreen::kill();
-      DAGOR_TRY { DAGORED2->startWithWorkspace(useWorkspace); }
+      DAGOR_TRY { DAGORED2->startWithWorkspace(useWorkspace, openAppBlk, refusedArguments); }
       DAGOR_CATCH(...)
       {
         if (DAGORED2)

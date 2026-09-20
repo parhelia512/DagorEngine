@@ -20,8 +20,6 @@
 namespace bvh
 {
 
-Sbuffer *alloc_scratch_buffer(uint32_t size, uint32_t &offset);
-
 namespace fx
 {
 
@@ -40,6 +38,8 @@ static UniqueBuf billboard_ib;
 
 static uint32_t bindless_indices_index;
 static uint32_t bindless_vertices_index;
+
+static float min_screen_height = 0;
 
 void create_billboard_blases()
 {
@@ -161,6 +161,7 @@ struct BVHConnection : public bvh::BVHConnection
 
     static int dafx_modfx_bvh_max_countVarId = get_shader_variable_id("dafx_modfx_bvh_max_count");
     static int dafx_modfx_bvh_blas_addressVarId = get_shader_variable_id("dafx_modfx_bvh_blas_address");
+    static int dafx_modfx_bvh_min_screen_heightVarId = get_shader_variable_id("dafx_modfx_bvh_min_screen_height");
 
     static int dafx_modfx_bvh_instance_buffer_regno =
       ShaderGlobal::get_int(get_shader_variable_id("dafx_modfx_bvh_instance_buffer_regno"));
@@ -180,6 +181,8 @@ struct BVHConnection : public bvh::BVHConnection
     ShaderGlobal::set_int(dafx_modfx_bvh_max_countVarId, min(fxInstancesCap, particles::get_fx_capacity()));
     ShaderGlobal::set_int4(dafx_modfx_bvh_blas_addressVarId, blasAddress & GPU_ADDRESS_LOW_MASK, blasAddress >> GPU_ADDRESS_HIGH_SHIFT,
       shadowBlasAddress & GPU_ADDRESS_LOW_MASK, shadowBlasAddress >> GPU_ADDRESS_HIGH_SHIFT);
+
+    ShaderGlobal::set_float(dafx_modfx_bvh_min_screen_heightVarId, min_screen_height);
 
     return true;
   }
@@ -206,8 +209,9 @@ void on_unload_scene(ContextId context_id)
   context_id->particleMeta.clear();
 }
 
-void init()
+void init(const AdditionalSettings &settings)
 {
+  min_screen_height = settings.fxMinScreenHeight;
   bvhConnection.init();
   create_billboard_blases();
 }
@@ -256,8 +260,6 @@ void teardown(ContextId context_id)
   context_id->releaseBuffer(billboard_ib.getBuf());
   context_id->releaseBuffer(billboard_vb.getBuf());
   bvh::fx::on_unload_scene(context_id);
-
-  bvhConnection.contexts.erase(context_id);
 }
 
 void connect(fx_connect_callback callback) { callback(&bvhConnection); }

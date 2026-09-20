@@ -24,6 +24,10 @@ float4 blood_wound_skin_color_high_intensity = (0.05, 0, 0, 1);
 float4 blood_wound_skin_color_low_intensity = (0.3, 0.02, 0, 1);
 
 float bloody_time = 0.25;
+float wound_hole_cut_radius = 0.35;
+float wound_hole_edge_reach = 1.5;
+float wound_hole_splatter_cut_threshold = 0.85;
+float wound_hole_vertex_cut_ratio = 0.5;
 float blood_tex_discard_threshold = 0.85;
 float sample_tex_inside_of = 0.9;
 float blood_brightness = 2.0;
@@ -47,10 +51,16 @@ macro INIT_PROJECTIVE_WOUNDS()
   sample_tex_inside_of@f1 = sample_tex_inside_of;
   blood_brightness@f1 = blood_brightness;
   blood_edge_fade_inv_width@f1 = (1.0 / max(blood_edge_fade_width, 1e-4));
+  wound_hole_cut_radius@f1 = wound_hole_cut_radius;
+  wound_hole_edge_reach@f1 = max(wound_hole_edge_reach, 1.0001);
+  wound_hole_splatter_cut_threshold@f1 = wound_hole_splatter_cut_threshold;
 }
 
 (vs) {
   wounds_time@f1 = time_phase(0,0);
+  wound_hole_cut_radius@f1 = wound_hole_cut_radius;
+  wound_hole_edge_reach@f1 = max(wound_hole_edge_reach, 1.0001);
+  wound_hole_vertex_cut_ratio@f1 = wound_hole_vertex_cut_ratio;
 }
 
 local float blood_wound_flesh_begin_thickness = 1.0 - blood_wound_flesh_intensity_border;

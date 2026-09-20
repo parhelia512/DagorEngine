@@ -33,43 +33,43 @@ inline bool is_flag(ContextId context_id, ShaderMesh::RElem &elem)
   return context_id->hasAny(Features::RIFull) && strncmp(elem.mat->getShaderClassName(), "rendinst_flag", 13) == 0;
 }
 
-using map_tree_fn = ReferencedTransformData *(ContextId, uint64_t, uint64_t, int, void *, bool &, int &);
+using map_rendinst_fn = ReferencedTransformData *(ContextId, uint64_t, uint64_t, int, void *, bool &, int &);
 
-inline ReferencedTransformData *map_tree_stationary(ContextId, uint64_t, uint64_t, int, void *, bool &, int &anim_index)
+inline ReferencedTransformData *map_rendinst_stationary(ContextId, uint64_t, uint64_t, int, void *, bool &, int &anim_index)
 {
   anim_index = -1;
   return nullptr;
 }
 
-struct MapTreePointers
+struct MapRendinstPointers
 {
-  dag::Span<eastl::unordered_map<uint64_t, ReferencedTransformDatasForInstance>> uniqueTreeBuffers;
-  dag::Span<eastl::unordered_map<uint64_t, ReferencedTransformDatasForInstance>> newUniqueTreeBuffers;
+  dag::Span<eastl::unordered_map<uint64_t, ReferencedTransformDatasForInstance>> uniqueBuffers;
+  dag::Span<eastl::unordered_map<uint64_t, ReferencedTransformDatasForInstance>> newUniqueBuffers;
   ContextId contextId = nullptr;
-  eastl::unordered_map<uint64_t, BLASesWithAtomicCursor> *freeUniqueTreeBLASes = nullptr;
+  eastl::unordered_map<uint64_t, BLASesWithAtomicCursor> *freeUniqueBLASes = nullptr;
 };
 
 template <bool do_animation_index>
-inline ReferencedTransformData *map_tree_base(uint64_t object_id, uint64_t id, int lod_ix, bool &recycled, int &anim_index,
-  MapTreePointers &pointers)
+inline ReferencedTransformData *map_rendinst_base(uint64_t object_id, uint64_t id, int lod_ix, bool &recycled, int &anim_index,
+  MapRendinstPointers &pointers)
 {
   recycled = false;
 
   // No need to have a lock here to access the containers. While this function is called from multiple threads,
-  // the uniqueTreeBuffers is only read from all threads. All new items are added to the newUniqueTreeBuffers,
-  // which is thread local. Then later it will be merged into the uniqueTreeBuffers on the main thread.
+  // the uniqueBuffers is only read from all threads. All new items are added to the newUniqueBuffers,
+  // which is thread local. Then later it will be merged into the uniqueBuffers on the main thread.
 
   G_ASSERT(lod_ix < Context::maxUniqueLods);
-  auto &uniqueContainer = pointers.uniqueTreeBuffers[lod_ix];
+  auto &uniqueContainer = pointers.uniqueBuffers[lod_ix];
 
-  ReferencedTransformDatasForInstance *tree = nullptr;
+  ReferencedTransformDatasForInstance *instance = nullptr;
   if (auto instanceIter = uniqueContainer.find(id); instanceIter != uniqueContainer.end())
   {
-    tree = &instanceIter->second;
+    instance = &instanceIter->second;
   }
   else
   {
-    tree = &pointers.newUniqueTreeBuffers[lod_ix][id];
+    instance = &pointers.newUniqueBuffers[lod_ix][id];
 
     if constexpr (do_animation_index)
     {
@@ -80,28 +80,27 @@ inline ReferencedTransformData *map_tree_base(uint64_t object_id, uint64_t id, i
         if (pointers.contextId->treeAnimIndexCount[i] < pointers.contextId->treeAnimIndexCount[leastIndices])
           leastIndices = i;
 
-      tree->animIndex = leastIndices;
+      instance->animIndex = leastIndices;
       ++pointers.contextId->treeAnimIndexCount[leastIndices];
     }
   }
 
   if constexpr (do_animation_index)
-    anim_index = tree->animIndex;
+    anim_index = instance->animIndex;
   else
     anim_index = -1;
 
-  auto &data = tree->elems[object_id];
+  auto &data = instance->elems[object_id];
 
   data.age = -1;
 
-  if (!data.buffer && ri_enable_caching)
+  if (!data.buffer && !data.blas && ri_enable_caching)
   {
-    if (auto iter = pointers.freeUniqueTreeBLASes->find(object_id); iter != pointers.freeUniqueTreeBLASes->end())
+    if (auto iter = pointers.freeUniqueBLASes->find(object_id); iter != pointers.freeUniqueBLASes->end())
     {
       if (int index = iter->second.cursor.sub_fetch(1); index >= 0)
       {
-        auto &blas = iter->second.blases[index];
-        data.blas.swap(blas);
+        take_blas_from_pool(data, iter->second.blases[index]);
         recycled = true;
       }
     }
@@ -110,7 +109,7 @@ inline ReferencedTransformData *map_tree_base(uint64_t object_id, uint64_t id, i
   return &data;
 }
 
-template <map_tree_fn mapper, bool ri_ex>
+template <map_rendinst_fn mapper, bool ri_ex>
 inline bool handle_tree(ContextId context_id, ShaderMesh::RElem &elem, uint64_t object_id, int lod_ix, bool is_pos_inst,
   mat44f_cref tm, vec4f_const originalPos, const E3DCOLOR *colors, uint64_t id, eastl::optional<TMatrix4> &inv_world_tm,
   TreeInfo &treeInfo, MeshMetaAllocator::AllocId &metaAllocId, void *user_data, bool stationary, bool is_burning, uint32_t palette_id)
@@ -176,8 +175,7 @@ inline bool handle_tree(ContextId context_id, ShaderMesh::RElem &elem, uint64_t 
   metaAllocId = data->metaAllocId;
 
   treeInfo.invWorldTm = inv_world_tm.value();
-  treeInfo.transformedBuffer = &data->buffer;
-  treeInfo.transformedBlas = &data->blas;
+  treeInfo.transformedData = data;
 
   int isPivoted;
   if (!elem.mat->getIntVariable(is_pivotedVarId, isPivoted))
@@ -241,28 +239,28 @@ inline bool handle_tree(ContextId context_id, ShaderMesh::RElem &elem, uint64_t 
   return true;
 }
 
-struct TidyUpTreePointers
+struct TidyUpRendinstPointers
 {
-  dag::Span<eastl::unordered_map<uint64_t, ReferencedTransformDatasForInstance>> uniqueTreeBuffers;
+  dag::Span<eastl::unordered_map<uint64_t, ReferencedTransformDatasForInstance>> uniqueBuffers;
   ContextId contextId = nullptr;
-  eastl::unordered_map<uint64_t, BLASesWithAtomicCursor> *freeUniqueTreeBLASes = nullptr;
+  eastl::unordered_map<uint64_t, BLASesWithAtomicCursor> *freeUniqueBLASes = nullptr;
 };
 
 template <bool do_animation_index>
-inline int tidy_up_trees_base(ContextId context_id, TidyUpTreePointers &pointers)
+inline int tidy_up_rendinsts_base(ContextId context_id, TidyUpRendinstPointers &pointers)
 {
   // We make use of the fact that resize does not shrink the vector itself, only the elem count is changed
   if (ri_enable_caching)
-    for (auto &freeTrees : *pointers.freeUniqueTreeBLASes)
+    for (auto &freeBlases : *pointers.freeUniqueBLASes)
     {
-      if (freeTrees.second.cursor.load() < 0)
-        freeTrees.second.cursor.store(0);
-      freeTrees.second.blases.resize(freeTrees.second.cursor.load());
+      if (freeBlases.second.cursor.load() < 0)
+        freeBlases.second.cursor.store(0);
+      freeBlases.second.blases.resize(freeBlases.second.cursor.load());
     }
 
   int dropCount = 0;
 
-  for (auto [index, lod] : enumerate(pointers.uniqueTreeBuffers))
+  for (auto [index, lod] : enumerate(pointers.uniqueBuffers))
     for (auto iter = lod.begin(); iter != lod.end();)
     {
       auto &elems = iter->second.elems;
@@ -279,8 +277,7 @@ inline int tidy_up_trees_base(ContextId context_id, TidyUpTreePointers &pointers
 
         if (ri_enable_caching)
         {
-          auto &storage = (*pointers.freeUniqueTreeBLASes)[meshId].blases.push_back();
-          storage.swap(elem.blas);
+          give_blas_to_pool((*pointers.freeUniqueBLASes)[meshId].blases.push_back(), elem);
         }
 
         context_id->freeMetaRegion(elem.metaAllocId);
@@ -311,8 +308,8 @@ inline int tidy_up_trees_base(ContextId context_id, TidyUpTreePointers &pointers
     }
 
   if (ri_enable_caching)
-    for (auto &freeTrees : *pointers.freeUniqueTreeBLASes)
-      freeTrees.second.cursor.store(freeTrees.second.blases.size());
+    for (auto &freeBlases : *pointers.freeUniqueBLASes)
+      freeBlases.second.cursor.store(freeBlases.second.blases.size());
 
   return dropCount;
 }

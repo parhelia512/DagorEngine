@@ -10,6 +10,8 @@
 #include <math/dag_Point2.h>
 #include <util/dag_string.h>
 
+#include <float.h>
+
 namespace PropPanel
 {
 
@@ -30,6 +32,17 @@ enum
 class DialogWindow : public ControlEventHandler
 {
 public:
+  // Helper context structure used between beforeUpdateImguiDialog() and updateImguiDialog().
+  struct DialogFrameSizing
+  {
+    // Use this instead of "autoSizingRequestedForFrames > 0".
+    bool autoSize = false;
+
+    // The panel's limit from autoSize(). Only valid when autoSize is set.
+    float maxContentWidth = FLT_MAX;
+    float maxContentHeight = FLT_MAX;
+  };
+
   DialogWindow(void *phandle, hdpi::Px w, hdpi::Px h, const char caption[], bool hide_panel = false);
   DialogWindow(void *phandle, int x, int y, hdpi::Px w, hdpi::Px h, const char caption[], bool hide_panel = false);
   ~DialogWindow() override;
@@ -86,7 +99,12 @@ public:
 
   virtual void dockTo(unsigned dock_node_id);
 
-  virtual void autoSize(bool auto_center = true);
+  // Fits the dialog to its content once, over the next couple of frames. The dialog grows up to a fixed fraction of the
+  // screen (AUTO_SIZE_MAX_DISPLAY_FRACTION) in either dimension. Past that point the content can be scrolled, keeping
+  // the buttons in view.
+  // use_preferred_size: set the dialog's minimum size based on the panel's PropertyControlBase::getPreferredSize().
+  //   Off by default because getPreferredSize() support is still limited across controls.
+  virtual void autoSize(bool auto_center = true, bool use_preferred_size = false);
 
   // Check if the dialog has ever been shown. "Ever" also includes previous sessions.
   // For example in that case setting the window position and size can be skipped and the dialog will be displayed at
@@ -131,8 +149,10 @@ public:
   void setModalBackgroundDimmingEnabled(bool enabled) { modalBackgroundDimmingEnabled = enabled; }
   bool isModalBackgroundDimmingEnabled() const { return modalBackgroundDimmingEnabled; }
 
-  virtual void beforeUpdateImguiDialog(bool &use_auto_size_for_the_current_frame);
-  virtual void updateImguiDialog();
+  // Pass the result to updateImguiDialog().
+  // content_frame_padding: the ImGuiStyleVar_FramePadding that is used for the content in updateImguiDialog()
+  virtual DialogFrameSizing beforeUpdateImguiDialog(const Point2 &content_frame_padding);
+  virtual void updateImguiDialog(const DialogFrameSizing &sizing);
 
 protected:
   void create(unsigned w, unsigned h, bool hide_panel);
@@ -162,6 +182,7 @@ protected:
   bool modalBackgroundDimmingEnabled = false; // Off by default, artists wanted to see the viewport without dimming.
 
   int autoSizingRequestedForFrames = 0;
+  bool autoSizeUsePreferredSize = false;
   bool moveRequested = false;
   Point2 moveRequestPosition = Point2::ZERO;
   Point2 moveRequestPivot = Point2::ZERO;

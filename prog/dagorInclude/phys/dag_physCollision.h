@@ -52,7 +52,7 @@ public:
   }
   static bool normalizeBox(Point3 &inout_box_extents, TMatrix &inout_tm)
   {
-    if (memcmp(&inout_tm, &TMatrix::IDENT, sizeof(Point3) * 3) == 0) //-V1014 //-V512
+    if (memcmp(&inout_tm, &TMatrix::IDENT, sizeof(Point3) * 3) == 0) //-V1014 //-V512 //-V1086
       return false;
     Matrix3 atm;
     unsigned zeroes_cnt = 0;

@@ -121,6 +121,8 @@ bool TreeBaseWindow::isOpen(TLeafHandle item) const { return mTree->isExpanded(i
 
 bool TreeBaseWindow::isSelected(TLeafHandle item) const { return mTree->isLeafSelected(item); }
 
+bool TreeBaseWindow::isContextMenuOpen() const { return mTree->isContextMenuOpen(); }
+
 void *TreeBaseWindow::getItemData(TLeafHandle item) const { return mTree->getUserData(item); }
 
 void TreeBaseWindow::startFilter() { mTree->filter(); }

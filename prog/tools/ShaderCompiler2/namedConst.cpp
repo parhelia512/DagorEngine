@@ -25,14 +25,14 @@
 #include <drvCommonConsts.h>
 
 NamedConstBlock::CstHandle NamedConstBlock::addConst(int stage, const char *name, Terminal *decl_term, Lexer &lexer,
-  HlslRegisterSpace reg_space, int sz, int hardcoded_reg, bool is_dynamic, bool is_global_const_block)
+  HlslRegisterSpace reg_space, int sz, int hardcoded_reg, bool is_dynamic)
 {
   G_ASSERT(sz > 0);
   G_ASSERT(is_dynamic || hardcoded_reg == -1);
 
   RegisterProperties NamedConstBlock::*propsField = nullptr;
   HlslRegAllocator *regAlloc = nullptr;
-  if (reg_space == HLSL_RSPACE_C && (!is_dynamic || is_global_const_block))
+  if (reg_space == HLSL_RSPACE_C && !is_dynamic)
   {
     propsField = &NamedConstBlock::bufferedConstProps;
     regAlloc = &bufferedConstsRegAllocator;
@@ -299,8 +299,6 @@ bool NamedConstBlock::hasExplicitBindlessDecls(ShaderStage stage) const
 {
   if (anyExplicitBindless(stage == STAGE_VS ? vertexProps : pixelProps))
     return true;
-  if (globConstBlk && globConstBlk->shConst.bufferedConstsHaveExplicitBindless)
-    return true;
   const StageGroup group = stage == STAGE_VS ? StageGroup::VS : StageGroup::PS_CS;
   for (const ShaderStateBlock *sb : suppBlk)
   {
@@ -322,7 +320,6 @@ bool NamedConstBlock::anyExplicitBindless(const RegisterProperties &props)
 
 void NamedConstBlock::cacheExplicitBindlessSubtree()
 {
-  bufferedConstsHaveExplicitBindless = anyExplicitBindless(bufferedConstProps);
   explicitBindlessSubtree.set(size_t(StageGroup::VS), hasExplicitBindlessDecls(STAGE_VS));
   explicitBindlessSubtree.set(size_t(StageGroup::PS_CS), hasExplicitBindlessDecls(STAGE_PS)); // PS group also covers CS
 }
@@ -330,7 +327,7 @@ void NamedConstBlock::cacheExplicitBindlessSubtree()
 void NamedConstBlock::emitBindlessArraysIfNeeded(String &out_text, ShaderStage stage) const
 {
   // Keep in sync with the array-emitting paths: buildStaticConstBufHlslDecl,
-  // buildRefinedBlockBufHlslDecl, buildGlobalConstBufHlslDecl, preprocessHlslDecls.
+  // buildRefinedBlockBufHlslDecl, preprocessHlslDecls.
   bool needed =
     shc::config().enableBindless && (!bufferedConstProps.sc.empty() || (mRefinedBlockLayout && !mRefinedBlockLayout->empty()));
   if (!needed)
@@ -508,7 +505,7 @@ void NamedConstBlock::buildRefinedBlockBufHlslDecl(String &out_text, ShaderStage
       if (!v.slot[stage].has_value())
         continue;
       const eastl::string regSpecification =
-        assembly::build_placement_specifier(v.slot[stage].value(), false, 1, v.space, ShaderBlockLevel::GLOBAL_CONST, false);
+        assembly::build_placement_specifier(v.slot[stage].value(), false, 1, v.space, true, false);
       if (v.hlslDecl.empty())
       {
         out_text.aprintf(0, "%s %s %s;\n", varTypeStr, v.varName.c_str(), regSpecification.c_str());
@@ -524,28 +521,6 @@ void NamedConstBlock::buildRefinedBlockBufHlslDecl(String &out_text, ShaderStage
   }
 }
 
-void NamedConstBlock::buildGlobalConstBufHlslDecl(String &out_text) const
-{
-  if (!bufferedConstProps.sc.empty())
-  {
-    out_text += "cbuffer global_const_block : register(b2) {\n";
-    for (const NamedConst &nc : bufferedConstProps.sc)
-    {
-      G_ASSERT(nc.isDynamic);
-      if (const char *hlsl = nc.hlslDecl.c_str())
-        out_text.append(hlsl);
-    }
-    out_text += "\n};\n\n";
-
-    for (const NamedConst &nc : bufferedConstProps.sc)
-    {
-      if (const char *post = nc.hlslPostfix.c_str())
-        out_text.append(post);
-    }
-    out_text += "\n\n";
-  }
-}
-
 void NamedConstBlock::preprocessHlslDecls(String &out_text, ShaderStage stage,
   eastl::vector_set<const NamedConstBlock *> &built_blocks, eastl::vector<const NamedConst *> &out_gathered_consts) const
 {
@@ -553,12 +528,6 @@ void NamedConstBlock::preprocessHlslDecls(String &out_text, ShaderStage stage,
     return;
 
   built_blocks.insert(this);
-
-  if (globConstBlk && built_blocks.find(&globConstBlk->shConst) == built_blocks.end())
-  {
-    globConstBlk->shConst.buildGlobalConstBufHlslDecl(out_text);
-    built_blocks.insert(&globConstBlk->shConst);
-  }
 
   for (const ShaderStateBlock *sb : suppBlk)
     sb->shConst.preprocessHlslDecls(out_text, stage, built_blocks, out_gathered_consts);
@@ -674,9 +643,9 @@ static void process_hardcoded_register_declarations(const char *hlsl_src, TF &&p
 
 // TODO: rename pixel_shader to pixel_or_compute_shader everywhere applicable in this file. Or just pass shader stage instead.
 void NamedConstBlock::patchHlsl(String &src, ShaderStage stage, const CompiledPreshader &preshader, Lexer &lexer,
-  int &max_const_no_used, eastl::string_view hw_defines, bool uses_dual_source_blending)
+  int &implicit_cbuf_size, eastl::string_view hw_defines, bool uses_dual_source_blending)
 {
-  max_const_no_used = 0;
+  implicit_cbuf_size = 0;
   String res;
   res.reserve(src.length() + hw_defines.length());
 
@@ -690,7 +659,7 @@ void NamedConstBlock::patchHlsl(String &src, ShaderStage stage, const CompiledPr
     if (auto res = regAllocators[rspace].reserve(HlslSlotSemantic::HARDCODED, regt_id); !res)
     {
       // @HACK: avoid false conflict on immediate cbuf
-      if (IMMEDIATE_CB_REGISTER >= 0 && rspace == HLSL_RSPACE_B && regt_id == IMMEDIATE_CB_REGISTER &&
+      if (IMMEDIATE_CB_REGISTER >= 0 && rspace == HLSL_RSPACE_B && regt_id == IMMEDIATE_CB_REGISTER && //-V560 -1 on some targets
           fragment.find("immediate_const_buffer:register(b") != eastl::string::npos)
       {
         return;
@@ -770,7 +739,7 @@ void NamedConstBlock::patchHlsl(String &src, ShaderStage stage, const CompiledPr
   // @TODO: validate other namespaces: s u b
 
   if (regAllocators[HLSL_RSPACE_C].hasRegs())
-    max_const_no_used = regAllocators[HLSL_RSPACE_C].getRange().cap - 1;
+    implicit_cbuf_size = regAllocators[HLSL_RSPACE_C].getRange().cap;
 }
 
 ShaderStateBlock::ShaderStateBlock(const char *nm, ShaderBlockLevel lev, NamedConstBlock &&ncb, dag::Span<int> stcode,
@@ -783,18 +752,14 @@ ShaderStateBlock::ShaderStateBlock(const char *nm, ShaderBlockLevel lev, NamedCo
   }
   if (cpp_stcode->hasCode())
   {
-    const bool isGlobCbuf = lev == ShaderBlockLevel::GLOBAL_CONST;
-    const HlslRegRange vsRegRange = isGlobCbuf ? cpp_stcode->collectSetRegistersRange(STAGE_VS)
-                                               : shConst.vertexRegAllocators[HLSL_RSPACE_C].getRange(HlslSlotSemantic::ALLOCATED);
-    const HlslRegRange psOrCsRegRange = isGlobCbuf
-                                          ? cpp_stcode->collectSetRegistersRange(STAGE_PS /* STAGE_CS has the same effect */)
-                                          : shConst.pixelOrComputeRegAllocators[HLSL_RSPACE_C].getRange(HlslSlotSemantic::ALLOCATED);
+    const HlslRegRange vsRegRange = shConst.vertexRegAllocators[HLSL_RSPACE_C].getRange(HlslSlotSemantic::ALLOCATED);
+    const HlslRegRange psOrCsRegRange = shConst.pixelOrComputeRegAllocators[HLSL_RSPACE_C].getRange(HlslSlotSemantic::ALLOCATED);
     cppStcodeId = a_ctx.cppStcode().addCode(eastl::move(*cpp_stcode), psOrCsRegRange, vsRegRange);
   }
   if (shc::config().generateCppStcodeValidationData && cpp_stcode)
     add_stcode_validation_mask(stcodeId, cpp_stcode->constMask.release(), a_ctx);
 
-  // shConst (moved in above) already has its consts and supp/glob links; supp blocks are
+  // shConst (moved in above) already has its consts and supp links; supp blocks are
   // lower-level and were cached when they were constructed, so this aggregates bottom-up.
   shConst.cacheExplicitBindlessSubtree();
 }

@@ -1,19 +1,70 @@
 include "bvh.dshl"
+include "project_base_hmap.dshl"
+include "heightmap_max_grid.dshl"
 
 int use_hw_rt_gi;
 interval use_hw_rt_gi : off < 1, on;
+
+// the max grid march over the base heightmap: the height, texel size and up
+// cull providers the lib macro needs. Self sufficient: the heightmap base
+// macros are once guarded, shaders that already hold them lose nothing
+macro TESTGI_HEIGHTMAP_MAX_GRID(code)
+  INIT_WORLD_HEIGHTMAP_BASE(code)
+  USE_HEIGHTMAP_COMMON_BASE(code)
+  if (tex_hmap_low != NULL)
+  {
+    // stcode: texel size in meters and the up cull, the sine of the worst
+    // slope (sqrt2 covers the diagonal; tex_hmap_inv_sizes is repurposed)
+    local float hmap_grid_texel = 1.0 / max(get_dimensions(tex_hmap_low, 0).x * world_to_hmap_low.x, 1e-9);
+    local float hmap_grid_grad = 1.4142136 * min(heightmap_scale.x / hmap_grid_texel, hmap_max_gradient);
+    (code) {
+      heightmap_max_grid_texel_upcull@f2 = (hmap_grid_texel, hmap_grid_grad / sqrt(1 + hmap_grid_grad * hmap_grid_grad));
+    }
+  }
+  hlsl(code) {
+    ##if tex_hmap_low != NULL
+    #define HEIGHTMAP_MAX_GRID_HAS_HEIGHT 1
+    float heightmap_max_grid_get_height(float3 world_pos)
+    {
+      return decode_height(getHeightLowLod(calcTcLow(world_pos.xz), 0));
+    }
+    float heightmap_max_grid_get_texel_size()
+    {
+      return heightmap_max_grid_texel_upcull.x;
+    }
+    float heightmap_max_grid_get_up_cull()
+    {
+      return heightmap_max_grid_texel_upcull.y;
+    }
+    ##endif
+  }
+  USE_HEIGHTMAP_MAX_GRID(code)
+endmacro
 
 macro PROJECT_TRACE(code, supports_raygen)
   bool dagi_project_use_rt = use_hw_rt_gi == on;
   bool dagi_project_use_raygen = false;
   if (dagi_project_use_rt)
   {
-    INIT_MAIN_BVH(code, 0, true) //fixme 32 waves support
-    USE_MAIN_BVH(code, 1, 1, 1, 0, 1, 0, 1, 1)
+    (code) {
+      bvhLruCollision@tlas = bvh_lru_collision;
+      bvhLruCollisionValid@u1 = bvh_lru_collision_valid;
+      bvh_origin@f3 = bvh_origin;
+    }
+    INIT_BVH_LRU_COLLISION_NORMALS(code)
+    USE_BVH_LRU_COLLISION_NORMALS(code)
+    // the collision tlas carries no terrain: the heightfield march completes
+    // the trace, a closer terrain hit replaces the committed one
+    TESTGI_HEIGHTMAP_MAX_GRID(code)
 
     hlsl (code) {
       #define DAGI_PROJECT_TRACE_HAS_RADIANCE 0
-      #define DAGI_PROJECT_TRACE_HAS_ALBEDO 1
+      // no albedo: collision geometry has no materials, consumers shade hits
+      // from the albedo scene
+      #define DAGI_PROJECT_TRACE_HAS_ALBEDO 0
+      // collision models solids, so the far side of a face means the ray
+      // started inside geometry; the heightfield is solid ground the same way
+      #define DAGI_PROJECT_TRACE_HAS_BACKFACE 1
       #define DAGI_HAS_PROJECT_TRACE 1
       //#define DAGI_PROJECT_DOES_NOT_NEED_SCREEN_TRACE 1
       #define USE_TRACE_TO_INF 1
@@ -22,28 +73,70 @@ macro PROJECT_TRACE(code, supports_raygen)
         float3 hitCamPos, hitNormal;
         float3 hitAlbedo, hitRadiance;
         float hitAt; bool hasRadiance;
+        bool hitBackFace;
       };
-      bool dagi_project_trace_surface(float3 cam_from, float3 origin, float3 worldDir, float maxT, inout DaGiProjectHitRes hit)
+      bool dagi_project_trace_collision(float3 cam_from, float3 origin, float3 worldDir, float maxT, inout DaGiProjectHitRes hit)
       {
-        HitInfo hitInfo;
+        if (!bvhLruCollisionValid)
+          return false;
         //fixme: (sp_world_view_pos - bvh_origin) is constant that should be calculated in doubles!
         float3 bvhFrom = (origin - bvh_origin) + cam_from;
-        if (trace_ray(bvhMain, bvhFrom, worldDir, 0, maxT, 0, bvhGroupAll, hitInfo))
-        {
-          hit.hitAt = hitInfo.t;
-          hit.hitCamPos = cam_from + worldDir*hit.hitAt;
-          hit.hitNormal = hitInfo.normal;
-          hit.hitAlbedo = hitInfo.vertexColor;
-          if (get_material_type(hitInfo.material) == bvhMaterialTerrain)
-            hit.hitAlbedo = 0.5; // fixme: should be material color
-          else if (hitInfo.albedoTextureIndex != 0xFFFF)
-          {
-            float4 texel = bvh_textures[hitInfo.albedoTextureIndex].SampleLevel(bvh_wrap_sampler, hitInfo.texcoord, 0);
-            hit.hitAlbedo = texel.rgb;
-          }
-          return true;
-        }
+
+        // two-sided closest hit: collision is a single sheet, so a ray from
+        // inside geometry must hit the back face and keep buried probes occluded
+        const uint flags = RAY_FLAG_FORCE_OPAQUE | RAY_FLAG_SKIP_PROCEDURAL_PRIMITIVES;
+        RayQuery<flags> query;
+
+        RayDesc ray;
+        ray.Origin    = bvhFrom;
+        ray.Direction = worldDir;
+        ray.TMin      = 0;
+        ray.TMax      = maxT;
+
+        query.TraceRayInline(bvhLruCollision, flags, 0xFF, ray);
+        query.Proceed();
+        if (query.CommittedStatus() != COMMITTED_TRIANGLE_HIT)
+          return false;
+
+        hit.hitAt = query.CommittedRayT();
+        hit.hitCamPos = cam_from + worldDir * hit.hitAt;
+        hit.hitBackFace = !query.CommittedTriangleFrontFace();
+        // the collision TLAS carries no mesh meta: the per-triangle pool is the
+        // only hit attribute, the geometric face normal oriented toward the ray
+        hit.hitNormal = bvh_lru_collision_hit_normal(query.CommittedInstanceID(), query.CommittedPrimitiveIndex(),
+          query.CommittedWorldToObject3x4(), worldDir);
+        return true;
+      }
+      // a closer heightfield hit replaces the committed collision hit; the
+      // limit keeps the march inside the span the tlas left open
+      bool dagi_project_trace_hmap(float3 cam_from, float3 origin, float3 dir, float max_t, inout DaGiProjectHitRes hit, bool has_hit)
+      {
+        #if HAS_HEIGHTMAP_MAX_GRID_TRACE
+        float t;
+        bool backFace;
+        if (!heightmap_max_grid_trace(cam_from + origin, dir, has_hit ? hit.hitAt : max_t, true, t, backFace))
+          return false;
+        hit.hitAt = t;
+        hit.hitCamPos = cam_from + dir*t;
+        hit.hitBackFace = backFace;
+        float3 pos = cam_from + origin + dir*t;
+        const float e = 1.0;
+        float2 dh = float2(
+          heightmap_max_grid_get_height(pos + float3(e, 0, 0)) - heightmap_max_grid_get_height(pos - float3(e, 0, 0)),
+          heightmap_max_grid_get_height(pos + float3(0, 0, e)) - heightmap_max_grid_get_height(pos - float3(0, 0, e)));
+        float3 n = normalize(float3(-dh.x, 2*e, -dh.y));
+        // faces the ray origin like the collision hit normal: a buried origin
+        // shooting up must see the far side of the ground sheet
+        hit.hitNormal = dot(n, dir) > 0 ? -n : n;
+        return true;
+        #else
         return false;
+        #endif
+      }
+      bool dagi_project_trace_surface(float3 cam_from, float3 origin, float3 worldDir, float maxT, inout DaGiProjectHitRes hit)
+      {
+        bool hasHit = dagi_project_trace_collision(cam_from, origin, worldDir, maxT, hit);
+        return dagi_project_trace_hmap(cam_from, origin, worldDir, maxT, hit, hasHit) || hasHit;
       }
     }
 

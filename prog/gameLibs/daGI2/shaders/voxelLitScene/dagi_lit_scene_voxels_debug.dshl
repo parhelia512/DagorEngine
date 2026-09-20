@@ -13,7 +13,7 @@ shader dagi_lit_scene_voxels_debug
   supports global_frame;
   supports none;
   cull_mode = none;
-  z_write = true;
+  z_write = false;
   z_test = true;
 
   READ_WORLD_SDF(ps)

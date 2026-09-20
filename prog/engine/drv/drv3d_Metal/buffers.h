@@ -61,6 +61,7 @@ protected:
   Buffer();
 
 public:
+  uint32_t bufSizeUnaligned = 0;
   uint32_t bufSize;
   uint32_t bufFlags;
   uint16_t structSize;

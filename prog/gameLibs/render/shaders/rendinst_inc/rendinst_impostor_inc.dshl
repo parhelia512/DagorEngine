@@ -519,6 +519,7 @@ macro INIT_IMPOSTOR_PROPERTIES()
       half invsmoothness;
       half shadowing;
       float depthSq;
+      float3 colorMul;
     };
   }
 endmacro
@@ -536,31 +537,50 @@ macro INIT_AND_USE_RUNTIME_IMPOSTOR_PROPERTIES()
       ret.invsmoothness = ao_shadowing.y;
       ret.shadowing = ao_shadowing.z;
       ret.depthSq = 10*ao_shadowing.w;
+      ret.colorMul = float3(1, 1, 1);
       return ret;
     }
   }
 endmacro
 macro INIT_AND_USE_BAKED_IMPOSTOR_PROPERTIES()
   INIT_IMPOSTOR_PROPERTIES()
+
+  hlsl
+  {
+    #include <rendInst/rotation_palette_consts.hlsli>
+
+    static const float MAX_COLOR_MUL = 8.0;
+  }
   hlsl (vs)
   {
-    float encode_impostor_vertex_output(uint palette_id, bool has_preshadow)
+    uint encode_impostor_vertex_output(float3 color_mul, uint palette_id, bool has_preshadow)
     {
-      float value = palette_id + 1;
-      if (!has_preshadow)
-        value = -value;
-      return value;
+      uint result = 0;
+      color_mul = saturate(color_mul * (1.0 / MAX_COLOR_MUL)); // gamma corrected, can be above 1
+      result |= (uint)(color_mul.r * 255 + 0.5) << 24;
+      result |= (uint)(color_mul.g * 255 + 0.5) << 16;
+      result |= (uint)(color_mul.b * 255 + 0.5) << 8;
+      ##if palette_rotation_mode == palette_rotation_on
+        result |= (palette_id & ((1 << PALETTE_ID_BIT_COUNT) - 1)) << 1;
+      ##endif
+      result |= (has_preshadow ? 1 : 0);
+      return result;
     }
   }
   hlsl (ps)
   {
-    void decode_impostor_vertex_output(float value, out uint palette_id, out bool has_preshadow)
+    void decode_impostor_vertex_output(uint value, out float3 color_mul, out uint palette_id, out bool has_preshadow)
     {
-      palette_id = (uint)abs(value) - 1;
-      has_preshadow = value > 0;
+      color_mul = float3((value >> 24) & 0xFF, (value >> 16) & 0xFF, (value >> 8) & 0xFF) / (256.0 / MAX_COLOR_MUL);
+      ##if palette_rotation_mode == palette_rotation_on
+        palette_id = (value >> 1) & ((1 << PALETTE_ID_BIT_COUNT) - 1);
+      ##else
+        palette_id = 0;
+      ##endif
+      has_preshadow = (value & 1) != 0;
     }
 
-    ImpostorProperties read_impostor_properties(float2 tc1, float2 tc2, float2 ds, float impostor_data)
+    ImpostorProperties read_impostor_properties(float2 tc1, float2 tc2, float2 ds, uint impostor_data)
     {
       ImpostorProperties ret;
       ret.normal_translucency = sample_impostor_tex_norm(get_impostor_normal_translucency(), tc1, tc2, ds);
@@ -569,7 +589,7 @@ macro INIT_AND_USE_BAKED_IMPOSTOR_PROPERTIES()
       ret.invsmoothness = ao_smoothness.y;
       uint paletteId;
       bool hasPreshadow;
-      decode_impostor_vertex_output(impostor_data, paletteId, hasPreshadow);
+      decode_impostor_vertex_output(impostor_data, ret.colorMul, paletteId, hasPreshadow);
 ##if baked_impostor_preshadows == preshadow_off
       ret.shadowing = 1;
 ##elif baked_impostor_preshadows == preshadow_dynamic

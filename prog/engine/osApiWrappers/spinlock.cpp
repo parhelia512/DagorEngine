@@ -9,7 +9,7 @@
 #include <pthread.h>
 #define USE_NATIVE_PTHREAD_API 1
 #else
-#if _TARGET_PC_WIN || _TARGET_XBOX || _TARGET_C2
+#if DAG_SPINLOCK_IS_FUTEX_MUTEX
 #include <osApiWrappers/dag_addressWait.h>
 #endif
 using namespace dag::spinlock_internal;
@@ -35,7 +35,7 @@ void os_spinlock_destroy(os_spinlock_t *lock)
 #endif
 }
 
-#if _TARGET_PC_WIN || _TARGET_XBOX || _TARGET_C2
+#if DAG_SPINLOCK_IS_FUTEX_MUTEX
 void os_spinlock_unlock_contended(os_spinlock_t *lock) { os_wake_on_address_one((uint32_t *)lock); }
 #endif
 
@@ -44,7 +44,7 @@ void os_spinlock_lock_contended(os_spinlock_t *lock, da_profiler::desc_id_t toke
   ScopeLockProfiler<da_profiler::NoDesc, /*usec_threshold*/ 0> lp(token);
 #if USE_NATIVE_PTHREAD_API
   pthread_spin_lock(lock);
-#elif _TARGET_PC_WIN || _TARGET_XBOX || _TARGET_C2
+#elif DAG_SPINLOCK_IS_FUTEX_MUTEX
   // Phase 1: short spin, in case the holder is about to release
   for (int i = 0, ny = 1; i < 32; ++i) // Note: ~8-10us on 3.5GHz Zen2
   {

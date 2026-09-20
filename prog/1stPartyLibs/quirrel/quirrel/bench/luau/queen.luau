@@ -55,10 +55,14 @@ local function addqueen (a, n)
 end
 
 
+local REPEATS = 50
+
 function test()
+  for r = 1, REPEATS do
     solutions_count = 0
     addqueen({},1);
     if ( solutions_count~=92 ) then print("failed\n", solutions_count ); end
+  end
 end
 
 function profile_it(profiles, fn)
@@ -72,4 +76,4 @@ function profile_it(profiles, fn)
   return res
 end
 
-print(string.format("\"queen\", %.8f, 20", profile_it(20, test)))
+print(string.format("\"queen\", %.8f, %d", profile_it(20, test) / REPEATS, 20 * REPEATS))

@@ -190,7 +190,7 @@ shader gen_motion_statistics
       const float2 motion = calc_fragment_motion(dtId, depth);
       const float2 predictedPos = float2(dtId) + motion;
       const uint2 resultResolution = (resolution + TILE_HALFRES_SIZE - 1) / TILE_HALFRES_SIZE;
-      const bool valid = all(predictedPos > 0 && predictedPos < resolution);
+      const bool valid = all(and(predictedPos > 0, predictedPos < resolution));
 
       const uint2 targetTile = uint2(predictedPos / TILE_HALFRES_SIZE);
       const uint maxIndex = resultResolution.x * resultResolution.y;

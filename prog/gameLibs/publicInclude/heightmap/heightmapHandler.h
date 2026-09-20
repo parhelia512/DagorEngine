@@ -61,7 +61,7 @@ public:
   void afterDeviceReset();
   void close();
   bool loadDump(IGenLoad &loadCb, bool load_render_data, float water_level = HeightmapHeightCulling::NO_WATER_ON_LEVEL,
-    float shore_error = 2.0f);
+    float shore_error = 2.0f, int metrics_min_calc_level = -1, int metrics_max_calc_level = -1);
   void fillHmapTextures();
   bool fillHmapRegion(int region_index, bool NVworkaround_applyOnNextFrame = false);
 
@@ -100,8 +100,13 @@ public:
   {
     G_ASSERT(cell.x >= 0 && cell.y >= 0 && cell.x < hmapWidth.x && cell.y < hmapWidth.y);
     int index = cell.x + cell.y * hmapWidth.x;
-    return visualHeights.emplace(index, ht).second;
+    bool inserted = visualHeights.emplace(index, ht).second;
+    if (inserted)
+      maxGradientDirty += cell;
+    return inserted;
   }
+  // folds the edit-deferred bound: re-measures the dirty pairs
+  void updateMaxGradientDirty();
   void clearHeightmapHeightsVisual() { visualHeights.clear(); }
   void changedHeightmapCellUnsafe(const IPoint2 &cell)
   {
@@ -115,15 +120,18 @@ public:
   int getTerrainStateVersion() const { return terrainStateVersion; }
 
   eastl::unique_ptr<HeightmapHeightCulling> heightmapHeightCulling;
-  void initRender(bool clamp = true, float water_level = HeightmapHeightCulling::NO_WATER_ON_LEVEL, float shore_error = 2.0f);
+  void initRender(bool clamp = true, float water_level = HeightmapHeightCulling::NO_WATER_ON_LEVEL, float shore_error = 2.0f,
+    int metrics_min_calc_level = -1, int metrics_max_calc_level = -1);
   const UniqueTex *getTexture() const { return renderData ? &renderData->heightmap : nullptr; }
   void setTexture(UniqueTex &&);
   void setSampler(d3d::SamplerHandle &&);
+  void setMirroring(bool);
   void setVars() const;
   void makeBookKeeping();
   bool isMirror() const { return mirror; }
   const MetricsErrors *getMetricsRaw() const { return metrics; }
-  void initMetrics(float water_level, float shore_error_meters = 2.0f);
+  void initMetrics(float water_level, float shore_error_meters = 2.0f, int metrics_min_calc_level = -1,
+    int metrics_max_calc_level = -1);
 
 protected:
   // applies one pending visual-height-modified region per call; only makeBookKeeping() should call this
@@ -142,6 +150,7 @@ protected:
   UniqueTex hmapUploadTex;
   int lastRegionUpdated_NVworkaround = -1;
   float shoreErrorMeters = 2.0f;
+  int metricsMinCalcLevel = -1, metricsMaxCalcLevel = -1;
   bool enabledMipsUpdating = true;
   int terrainStateVersion = 0;
   // Stable between bookkeeping points: written by initRender()/makeBookKeeping() only, read-only

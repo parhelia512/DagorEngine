@@ -165,7 +165,7 @@ ECS_REQUIRE(const FFTWater &water)
 static void disable_water_ripples_es(const ecs::Event &, ecs::EntityManager &manager) { destroy_water_ripples_entity(manager); }
 
 ECS_TAG(render)
-ECS_ON_EVENT(AfterDeviceReset)
+ECS_ON_EVENT(EventAfterDeviceReset)
 static void reset_water_ripples_es(const ecs::Event &, WaterRipples &water_ripples) { water_ripples.reset(); }
 
 static BBox3 get_origin_box(const Point3 &camera_position, const WaterRipples &water_ripples)

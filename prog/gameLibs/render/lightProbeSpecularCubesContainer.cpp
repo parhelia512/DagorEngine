@@ -2,6 +2,7 @@
 
 #include <drv/3d/dag_rwResource.h>
 #include <drv/3d/dag_driver.h>
+#include <drv/3d/dag_texture.h>
 #include <3d/dag_textureIDHolder.h>
 #include <gui/dag_visualLog.h>
 #include <math/dag_adjpow2.h>
@@ -264,8 +265,8 @@ void LightProbeSpecularCubesContainer::compressMips(int cube_index, int face_sta
       for (int faceNumber = face_start; faceNumber < face_start + face_count; ++faceNumber)
       {
         const int destCubeFace = mip + specularMips * (faceNumber + cube_index * 6);
-        arrayTex->updateSubRegion(light_probe::getManagedTex(rtCube.get())->getCubeTex(),
-          BaseTexture::calcSubResIdx(mip, faceNumber, specularMips), 0, 0, 0, max(1, cubeMipSide), max(1, cubeMipSide), 1,
+        d3d::update_sub_region(light_probe::getManagedTex(rtCube.get())->getCubeTex(),
+          BaseTexture::calcSubResIdx(mip, faceNumber, specularMips), 0, 0, 0, max(1, cubeMipSide), max(1, cubeMipSide), 1, arrayTex,
           destCubeFace, 0, 0, 0);
       }
       continue;
@@ -297,9 +298,9 @@ void LightProbeSpecularCubesContainer::compressMips(int cube_index, int face_sta
 
       d3d::resource_barrier({lastMipsBc6HTarget.getArrayTex(), RB_RO_COPY_SOURCE,
         (unsigned)(compressedMips * faceNumber + min(mip, compressedMips - 1)), 1});
-      arrayTex->updateSubRegion(lastMipsBc6HTarget.getArrayTex(),
+      d3d::update_sub_region(lastMipsBc6HTarget.getArrayTex(),
         BaseTexture::calcSubResIdx(min(mip, compressedMips - 1), faceNumber, compressedMips), 0, 0, 0, max(1, cubeMipSide),
-        max(1, cubeMipSide), 1, destCubeFace, 0, 0, 0);
+        max(1, cubeMipSide), 1, arrayTex, destCubeFace, 0, 0, 0);
     }
   }
 }

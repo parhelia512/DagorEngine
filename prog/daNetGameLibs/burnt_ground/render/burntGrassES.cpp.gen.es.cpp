@@ -57,7 +57,7 @@ static ecs::EntitySystemDesc burnt_grass_renderer_set_up_biomes_es_es_desc
   make_span(burnt_grass_renderer_set_up_biomes_es_comps+1, 1)/*ro*/,
   empty_span(),
   empty_span(),
-  ecs::EventSetBuilder<OnLevelLoaded,
+  ecs::EventSetBuilder<EventRenderSceneLoaded,
                        ecs::EventEntityCreated,
                        ecs::EventComponentsAppear>::build(),
   0

@@ -9,7 +9,7 @@
 #include "frontend.h"
 #include "global_lock.h"
 #include "global_const_buffer.h"
-#include "translate_d3d_to_vk.h"
+#include <drv/shadersMetaData/spirv/translate_d3d_to_vk.h>
 #include "device_context.h"
 #include "buffer.h"
 #include "frontend_pod_state.h"
@@ -95,7 +95,7 @@ bool d3d::multi_draw_indirect(int prim_type, Sbuffer *args, uint32_t draw_count,
   D3D_CONTRACT_ASSERTF(args != nullptr, "multi_draw_indirect with nullptr buffer is invalid");
   D3D_CONTRACT_ASSERTF(args->getFlags() & SBCF_MISC_DRAWINDIRECT, "multi_draw_indirect buffer is not usable as indirect buffer");
   VkPrimitiveTopology topology = before_draw(prim_type);
-  GenericBufferInterface *buffer = (GenericBufferInterface *)args;
+  GenericBufferInterface *buffer = static_cast<GenericBufferInterface *>(args);
 
   Globals::ctx.dispatchPipeline<CmdDrawIndirect>({topology, draw_count, buffer->getBufferRef(), byte_offset, stride_bytes},
     "multi_draw_indirect");
@@ -109,7 +109,7 @@ bool d3d::multi_draw_indexed_indirect(int prim_type, Sbuffer *args, uint32_t dra
   D3D_CONTRACT_ASSERTF(args->getFlags() & SBCF_MISC_DRAWINDIRECT,
     "multi_draw_indexed_indirect buffer is not usable as indirect buffer");
   VkPrimitiveTopology topology = before_draw(prim_type);
-  GenericBufferInterface *buffer = (GenericBufferInterface *)args;
+  GenericBufferInterface *buffer = static_cast<GenericBufferInterface *>(args);
 
   Globals::ctx.dispatchPipeline<CmdDrawIndexedIndirect>({topology, draw_count, buffer->getBufferRef(), byte_offset, stride_bytes},
     "multi_draw_indexed_indirect");

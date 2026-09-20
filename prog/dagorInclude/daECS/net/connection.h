@@ -19,6 +19,8 @@
 #include <EASTL/fixed_vector.h>
 #include <EASTL/unique_ptr.h>
 #include <EASTL/fixed_function.h>
+#include <EASTL/string.h>
+#include <generic/dag_functionRef.h>
 #include "object.h" // for CompVersMap
 #include "sequence.h"
 #include "connid.h"
@@ -43,7 +45,9 @@ namespace net
 
 class Connection;
 static constexpr uint32_t NET_EID_INDEX_BITS = 20; // widest eid index the 4-byte form of write_server_eid() can carry
-bool write_server_eid(ecs::entity_id_t eid, danet::BitStream &bs);
+// ctx_err_cb says what holds the eid and runs only when the eid does not fit, so it may format freely. Without it, or on
+// an empty result, the logerr names the eid alone. Returns false when INVALID_ENTITY_ID was written in place of the eid.
+bool write_server_eid(ecs::entity_id_t eid, danet::BitStream &bs, dag::FunctionRef<eastl::string() const> ctx_err_cb = {});
 bool read_server_eid(ecs::entity_id_t &eid, const danet::BitStream &bs);
 
 // Key and value of Connection::entityIndexToReplicaIndex. Both are byte arrays to keep alignof(pair) == 1: a ska entry is a 1-byte
@@ -150,13 +154,14 @@ public:
     return entityIndexToReplicaIndex.count(EidIndex24(eid.index())) != 0;
   }
 
-  void disconnect(DisconnectionCause) override { connected = false; }
+  void disconnect(DisconnectionCause) override { addFlags(CF_DISCONNECTING); }
+
+  void addFlags(ConnFlags f) override final { connFlags |= f; }
+  void clearFlags(ConnFlags f) override final { connFlags &= ~f; }
+  bool hasAnyFlags(ConnFlags f) const override final { return (connFlags & f) != 0; }
 
   void setUserPtr(void *ptr) override final { userPtr = ptr; }
   void *getUserPtr() const override final { return userPtr; }
-
-  uint32_t getConnFlags() const override final { return connFlags; }
-  uint32_t &getConnFlagsRW() override final { return connFlags; }
 
   ObjectReplica *getReplicaByEid(ecs::EntityId eid);
   const ObjectReplica *getReplicaByEid(ecs::EntityId eid) const;
@@ -194,7 +199,6 @@ private:
   mutable InternedStringsShared objectKeysLocal;
 
   ecs::EntityManager &mgr;
-  bool connected = true; // might be false when disconnect requested, but not confirmed yet
   ConnectionId id;
 
   ska::flat_hash_map<EidIndex24, ReplicaIdx, EidIndex24Hash> entityIndexToReplicaIndex;
@@ -254,7 +258,7 @@ private:
   Tab<ObjectReplica *> replicas;  // empty if replicating to; split onto 3 segments: dirty, in scope & free
   eastl::conditional_t<MaxReplicas <= USHRT_MAX, uint16_t, uint32_t> numReplicas = 0, // num used replicas in 'replicas' array
     numDirtyReplicas = 0; // num dirty replicas in 'replicas' array (<= numReplicas)
-  uint32_t connFlags = 0;
+  uint32_t connFlags = CF_NONE;
   void *userPtr = NULL;
   EncryptionCtx *encryptionCtx = nullptr;
 

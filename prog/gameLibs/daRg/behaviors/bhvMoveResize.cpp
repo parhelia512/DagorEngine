@@ -208,8 +208,9 @@ int BhvMoveResize::pointingEvent(ElementTree *etree, Element *elem, InputDevice 
       if (!onMoveResize.IsNull())
       {
         auto optRhRes = onMoveResize.Eval<Sqrat::Table>(dPos.x, dPos.y, dSize.x, dSize.y);
-        G_ASSERT(optRhRes);
-        if (optRhRes && !optRhRes.value().IsNull())
+        if (!optRhRes)
+          darg_assert_trace_var("Failed to call onMoveResize handler", scriptDesc, Sqrat::Object("onMoveResize", vm));
+        else if (!optRhRes.value().IsNull())
         {
           Sqrat::Table &rhRes = optRhRes.value();
           Sqrat::Object newPos = rhRes.RawGetSlot(elem->csk->pos);

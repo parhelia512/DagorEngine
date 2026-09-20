@@ -4,6 +4,7 @@
 #include <osApiWrappers/dag_atomic_types.h>
 #include <osApiWrappers/dag_atomic.h>
 #include <3d/dag_resPtr.h>
+#include <3d/dag_ringCPUQueryLock.h>
 #include <3d/dag_eventQueryHolder.h>
 #include <drv/3d/dag_bindless.h>
 #include <util/dag_multicastEvent.h>
@@ -18,6 +19,7 @@
 #include <generic/dag_enumerate.h>
 #include <memory/dag_linearHeapAllocator.h>
 #include <shaders/dag_linearSbufferAllocator.h>
+#include <EASTL/fixed_vector.h>
 #include <EASTL/unordered_map.h>
 #include <EASTL/unordered_set.h>
 #include <EASTL/optional.h>
@@ -31,6 +33,7 @@
 #include <math/dag_bits.h>
 #include <generic/dag_span.h>
 #include <math/dag_hlsl_floatx.h>
+#include <vecmath/dag_vecMath.h>
 #include "shaders/bvh_mesh_meta.hlsli"
 
 #include <render/omm.h>
@@ -219,7 +222,10 @@ struct BVHHeapAllocator
     return eastl::nullopt;
   }
 
-  static constexpr uint32_t get_occupancy_mask(AllocId allocation) { return ((1 << allocation.size) - 1) << allocation.offset; }
+  static constexpr uint32_t get_occupancy_mask(AllocId allocation)
+  {
+    return uint32_t(((uint64_t(1) << allocation.size) - 1) << allocation.offset);
+  }
   static constexpr bool is_valid(AllocId allocation) { return allocation.offset < SlabSize && allocation.size <= SlabSize; }
   static constexpr int decode(AllocId allocation)
   {
@@ -421,6 +427,7 @@ struct MeshMeta : public BVHMeta
   static constexpr uint32_t bvhMaterialMonochrome = 7;
   static constexpr uint32_t bvhMaterialSmokeTracer = 8;
 
+  static constexpr uint32_t bvhMaterialPaintedByMask = 1 << 13;
   static constexpr uint32_t bvhMaterialDynrend = 1 << 14;
   static constexpr uint32_t bvhMaterialAnimcharDecals = 1 << 15;
   static constexpr uint32_t bvhMaterialAlphaTest = 1 << 16;
@@ -449,7 +456,7 @@ struct MeshMeta : public BVHMeta
     initialized = 0;
     materialType = 0;
     alphaTextureIndex = INVALID_TEXTURE;
-    padding1 = 0;
+    secondaryMaskTextureIndex = INVALID_TEXTURE;
     ahsVertexBufferIndex = BVH_BINDLESS_BUFFER_MAX;
     padding2 = 0;
     colorOffset = 0xFFu;
@@ -479,7 +486,7 @@ struct MeshMeta : public BVHMeta
 
   void setIndexBit(uint32_t index_format)
   {
-    G_ASSERT(index_format == 2 || index_format == 4);
+    G_ASSERT(index_format == 2);
     indexBit = index_format == 4 ? 1 : 0;
   }
   void setTexcoordFormat(uint32_t texcoord_format)
@@ -515,6 +522,7 @@ struct MeshMeta : public BVHMeta
   TextureHandle holdNormalTex(Context *context_id, TEXTUREID texture_id);
   TextureHandle holdAlphaTex(Context *context_id, TEXTUREID texture_id);
   TextureHandle holdExtraTex(Context *context_id, TEXTUREID texture_id);
+  TextureHandle holdSecondaryMaskTex(Context *context_id, TEXTUREID texture_id);
 };
 static_assert(sizeof(MeshMeta) == sizeof(BVHMeta));
 
@@ -584,6 +592,79 @@ private:
   dag::Span<MeshMeta> metas;
 };
 
+enum class OmmState : uint8_t
+{
+  None,
+  Baking,
+  Ready,
+  Built,
+  Failed
+};
+
+enum class OmmFailure : uint8_t
+{
+  None,
+  UnsupportedTexcoordFormat,
+  NoAlphaSource,
+  AlphaTextureNeverLoaded,
+  BakeStartFailed,
+  ReadbackInvalid,
+  NoOutputBuffers,
+  NoDescriptors,
+  ZeroArraySize,
+  // Applies to one instance, thus it never fails the shared slot; here only to share the text table.
+  InstanceAlphaSourceOverride,
+  // Not an asset problem: the mesh has no cutout, thus it enters the BVH as opaque geometry.
+  AllTrianglesOpaque,
+  // Not an asset problem outside strict checks: the raster draws nothing for it, thus the BVH skips it.
+  AllTrianglesTransparent,
+};
+
+struct OmmCacheEntry;
+
+// Move-only owner of one OMM cache reference. The entry itself lives in the context's OMM cache and
+// outlives the ref; only the refcount, and thus the eviction age, moves with this type, so no holder can
+// leak a reference or drop one twice.
+class OmmEntryRef
+{
+public:
+  OmmEntryRef() = default;
+  // Render thread only: it counts up in place, where reset() only queues the drop.
+  OmmEntryRef(Context *context, OmmCacheEntry *entry);
+  OmmEntryRef(const OmmEntryRef &) = delete;
+  OmmEntryRef &operator=(const OmmEntryRef &) = delete;
+  OmmEntryRef(OmmEntryRef &&other) : context(other.context), entry(other.entry)
+  {
+    other.context = nullptr;
+    other.entry = nullptr;
+  }
+  OmmEntryRef &operator=(OmmEntryRef &&other)
+  {
+    if (this != &other)
+    {
+      reset();
+      context = other.context;
+      entry = other.entry;
+      other.context = nullptr;
+      other.entry = nullptr;
+    }
+    return *this;
+  }
+  ~OmmEntryRef() { reset(); }
+
+  // Callable off the render thread: the drop only queues the entry, it touches no accounting.
+  void reset();
+
+  OmmCacheEntry *get() const { return entry; }
+  OmmCacheEntry *operator->() const { return entry; }
+  OmmCacheEntry &operator*() const { return *entry; }
+  explicit operator bool() const { return entry != nullptr; }
+
+private:
+  Context *context = nullptr;
+  OmmCacheEntry *entry = nullptr;
+};
+
 struct Mesh
 {
   void teardown(ContextId context_id);
@@ -594,12 +675,17 @@ struct Mesh
   TEXTUREID alphaTextureId = BAD_TEXTUREID;
   TEXTUREID normalTextureId = BAD_TEXTUREID;
   TEXTUREID extraTextureId = BAD_TEXTUREID;
+  TEXTUREID secondaryMaskTextureId = BAD_TEXTUREID;
   TEXTUREID ppPositionTextureId = BAD_TEXTUREID;
   TEXTUREID ppDirectionTextureId = BAD_TEXTUREID;
   TEXTUREID clothNoiseCombinedTexTextureId = BAD_TEXTUREID;
+  TEXTUREID faceMorphAtlasTextureId = BAD_TEXTUREID;
   uint32_t ppPositionBindless = MeshMeta::INVALID_TEXTURE;
   uint32_t ppDirectionBindless = MeshMeta::INVALID_TEXTURE;
   uint32_t clothNoiseCombinedTexBindless = MeshMeta::INVALID_TEXTURE;
+  uint32_t faceMorphAtlasBindless = MeshMeta::INVALID_TEXTURE;
+  uint32_t faceMorphUvOffset = MeshInfo::invalidOffset;
+  uint32_t faceMorphUvSize = 0;
   uint32_t indexCount = 0;
   uint32_t indexFormat = 0;
   uint32_t vertexCount = 0;
@@ -624,69 +710,12 @@ struct Mesh
   BVHGeometryBufferWithOffset geometry;
   UniqueBVHBufferWithOffset ahsVertices;
 
-  enum class OmmState : uint8_t
-  {
-    None,
-    Baking,
-    Ready,
-    Built,
-    Failed
-  };
-
-  enum class OmmFailure : uint8_t
-  {
-    None,
-    UnsupportedTexcoordFormat,
-    NoAlphaSource,
-    AlphaTextureNeverLoaded,
-    BakeStartFailed,
-    ReadbackInvalid,
-    NoOutputBuffers,
-    NoDescriptors,
-    ZeroArraySize,
-    // Applies to one instance, thus it never fails the shared slot; here only to share the text table.
-    InstanceAlphaSourceOverride,
-    // Not an asset problem: the mesh has no cutout, thus it enters the BVH as opaque geometry.
-    AllTrianglesOpaque,
-    // Not an asset problem outside strict checks: the raster draws nothing for it, thus the BVH skips it.
-    AllTrianglesTransparent,
-  };
-
-  // Bake-state fields are unsynchronized: the build pipeline that mutates them and the debug memory
-  // stats that read them both run on the render thread, never concurrently. Moving either off that
-  // thread requires adding synchronization here.
-  struct OmmSlot
-  {
-    static constexpr uint8_t NO_BAKE_STARTED = 0xFFu;
-
-    OmmState state = OmmState::None;
-    // Frame of the last bake poll. A Baking slot with a stale stamp belongs to an object that is no
-    // longer processed, and its bake is discarded to free the pending bake slot.
-    uint32_t lastPollFrame = 0;
-    render::omm::BakeHandle bakeHandle;
-    render::omm::BakeResult bakeResult;
-    UniqueOMM omm;
-
-    OmmFailure failure = OmmFailure::None;
-    // add_instances examines each instance of each object in each frame; report a cause only once. Two
-    // flags, because a condition of one instance does not fail the shared slot and must stay reportable.
-    bool failureLogged = false;
-    bool alphaSourceOverrideLogged = false;
-    uint32_t textureWaitAttempts = 0;
-    uint32_t textureWaitFrame = 0;
-
-    // Bake parameters for the diagnostics. The format is the bake source's, not always mesh.texcoordFormat.
-    uint32_t bakeTexcoordFormat = 0;
-    uint8_t bakeSubdivisionLevel = NO_BAKE_STARTED;
-    bool bakeUvCutout = false;
-    render::omm::BakeStats bakeStats;
-
-#if DAGOR_DBGLEVEL > 0
-    render::omm::DebugBakeSource debugBakeSource;
-#endif
-  };
-
-  OmmSlot ommSlots[2];
+  // An empty slot means no bake ran for it.
+  OmmEntryRef ommEntries[2];
+  // Mesh-level: these conditions have no cache entry to live on, or must not touch the shared entry.
+  bool noAlphaSourceLogged = false;
+  bool alphaSourceOverrideLogged = false;
+  bool notOmmCandidateLogged = false;
 
   uint32_t piBindlessIndex = -1;
   uint32_t pvBindlessIndex = -1;
@@ -697,16 +726,22 @@ struct Mesh
   Point4 posAdd;
 
   bool isHeliRotor = false;
+  bool isGunBarrel = false;
   bool isPaintedHeightLocked = false;
   bool isCamoNet = false;
   bool hasColorMod = false;
   // Captured at mesh setup because vertexProcessor is nulled after the first build pass, while
   // the BLAS descriptor layout must stay stable across the frames an OMM bake keeps the mesh waiting.
   bool hasSecondaryGeometry = false;
+  // Index of the mesh's first geometry desc in its object's BLAS; a mesh with secondary geometry takes two.
+  uint32_t firstGeometryIndex = 0;
+  // Hash of the mesh fields that shape the bake, part of this mesh's OMM cache keys. Vdata offsets stay
+  // out of it: a re-add lands at a new offset over the same triangles.
+  uint32_t ommLayoutHash = 0;
 
   // Progress of a half-baked mesh through process_meshes. Each stage runs exactly once; a mesh can
-  // linger in ResolvingOmm for several frames while its bake completes. OmmSlot::state remains the
-  // authoritative record of OMM progress; this only tracks which processing loop owns the mesh.
+  // linger in ResolvingOmm for several frames while its bake completes. The OmmCacheEntry bake state is
+  // the authoritative record of OMM progress; this only tracks which processing loop owns the mesh.
   enum class BuildStage : uint8_t
   {
     NeedsProcessing,
@@ -714,8 +749,6 @@ struct Mesh
     NeedsBlasBuild
   };
   BuildStage buildStage = BuildStage::NeedsProcessing;
-
-  eastl::optional<bool> needWindingFlip;
 
   float impostorHeightOffset = 0;
   Point4 impostorScale;
@@ -736,6 +769,8 @@ struct Object
   bool hasVertexProcessor = false;
   const char *tag = nullptr;
   AssetNameRef assetName;
+  // Bumped on every create or re-create of the object: the previous build inputs are freed then.
+  uint32_t buildInputsGeneration = 0;
 
   void teardown(ContextId context_id, uint64_t object_id);
 
@@ -790,12 +825,136 @@ struct TerrainLOD
   dag::Vector<TerrainPatch> patches;
 };
 
+struct OmmCacheKey
+{
+  uint64_t objectId = 0;
+  uint32_t slotId = 0;
+  TEXTUREID bakeTexId = BAD_TEXTUREID;
+  // Hash of the mesh fields that shape the bake, so a content change under a reused object id resolves
+  // to a new entry.
+  uint32_t layoutHash = 0;
+
+  bool operator==(const OmmCacheKey &) const = default;
+};
+
+struct OmmCacheKeyHash
+{
+  size_t operator()(const OmmCacheKey &key) const
+  {
+    uint64_t hash = key.objectId * 0x9E3779B97F4A7C15ull;
+    hash = (hash ^ key.slotId) * 0x100000001B3ull;
+    hash = (hash ^ unsigned(key.bakeTexId)) * 0x100000001B3ull;
+    hash = (hash ^ key.layoutHash) * 0x100000001B3ull;
+    return size_t(hash ^ (hash >> 32));
+  }
+};
+
+// Bake state is unsynchronized: every reader and writer runs on the render thread.
+//
+// A bake walks None -> Baking -> Ready -> Built, or ends in Failed. A transient Failed goes back to
+// None on the next object add, so a retry costs one add and not one frame.
+// These fields track lifetimes that the state does not, each with its own owner:
+//   refCount - the meshes and the BLASes that link the entry;
+//   lastPollFrame with bakeObjectId - the object that waits for an in-flight bake, judged against
+//     the half-baked object list;
+//   zeroRefFrame - the age a zero-ref entry is evicted by.
+struct OmmCacheEntry
+{
+  static constexpr uint8_t NO_BAKE_STARTED = 0xFFu;
+
+  OmmState state = OmmState::None;
+  uint32_t lastPollFrame = 0;
+  render::omm::BakeHandle bakeHandle;
+  render::omm::BakeResult bakeResult;
+  UniqueOMM omm;
+
+  OmmFailure failure = OmmFailure::None;
+  // Frame the failure was recorded in; the override resolve times its retry of a transient failure from it.
+  uint32_t failFrame = 0;
+  bool failureLogged = false;
+  // The override resolve publishes to the debug viewer itself, because no Mesh owns its entry; this
+  // keeps each bake attempt published once.
+  bool debugPublished = false;
+  uint32_t textureWaitAttempts = 0;
+  uint32_t textureWaitFrame = 0;
+
+  // Bake parameters for the diagnostics. The format is the bake source's, not always mesh.texcoordFormat.
+  uint32_t bakeTexcoordFormat = 0;
+  uint8_t bakeSubdivisionLevel = NO_BAKE_STARTED;
+  bool bakeUvCutout = false;
+  render::omm::BakeStats bakeStats;
+
+  uint32_t refCount = 0;
+  uint32_t zeroRefFrame = 0;
+  uint64_t bakeObjectId = 0;
+
+#if DAGOR_DBGLEVEL > 0
+  render::omm::DebugBakeSource debugBakeSource;
+#endif
+
+  // Clears the wait budget and the diagnostics with the state: the next user of the entry must not
+  // inherit a spent budget or a suppressed log. The result buffers are the caller's to clear or recycle.
+  void resetBakeState()
+  {
+    state = OmmState::None;
+    bakeHandle = {};
+    omm.reset();
+    failure = OmmFailure::None;
+    failureLogged = false;
+    debugPublished = false;
+    textureWaitAttempts = 0;
+    textureWaitFrame = 0;
+    bakeTexcoordFormat = 0;
+    bakeSubdivisionLevel = NO_BAKE_STARTED;
+    bakeUvCutout = false;
+    bakeStats = {};
+#if DAGOR_DBGLEVEL > 0
+    debugBakeSource = {};
+#endif
+  }
+};
+
+using OmmCache = eastl::unordered_map<OmmCacheKey, OmmCacheEntry, OmmCacheKeyHash>;
+
+// One reference for each mesh of a blas, in mesh order; an empty slot links no OMM. The ownership is all
+// OmmEntryRef's, thus the references travel with the blas through the recycle pools as moves and exactly
+// one holder ever gives them back.
+struct OmmEntryLinks
+{
+  void assign(Context *context, dag::ConstSpan<OmmCacheEntry *> desired)
+  {
+    refs.clear();
+    for (OmmCacheEntry *entry : desired)
+      refs.push_back(OmmEntryRef(context, entry));
+  }
+
+  void reset() { refs.clear(); }
+
+  void swap(OmmEntryLinks &other) { refs.swap(other.refs); }
+
+  bool operator==(dag::ConstSpan<OmmCacheEntry *> desired) const
+  {
+    if (refs.size() != desired.size())
+      return false;
+    for (uint32_t i = 0; i < refs.size(); ++i)
+      if (refs[i].get() != desired[i])
+        return false;
+    return true;
+  }
+
+  // Two inline: one of these is retained per pooled blas, thus the resident cost outweighs the spill.
+  eastl::fixed_vector<OmmEntryRef, 2, true> refs;
+};
+
 struct ReferencedTransformData
 {
   BVHBufferReference buffer;
   UniqueBLAS blas;
   MeshMetaAllocator::AllocId metaAllocId = MeshMetaAllocator::INVALID_ALLOC_ID;
   int age = 0;
+  // Object generation this blas was built from; a mismatch means those inputs are freed: rebuild, never refit.
+  uint32_t builtGeneration = 0;
+  OmmEntryLinks linkedOmms;
 };
 
 struct ReferencedTransformDatasForInstance
@@ -804,10 +963,30 @@ struct ReferencedTransformDatasForInstance
   int animIndex = 0;
 };
 
+struct PooledBLAS
+{
+  UniqueBLAS blas;
+  uint32_t builtGeneration = 0;
+  OmmEntryLinks linkedOmms;
+};
+
+// The blas, its generation and its OMM references travel as one group: a partial transfer would leave
+// references behind, and eviction could then free an OMM a pooled blas still links.
+inline void swap_blas_with_pool(ReferencedTransformData &data, PooledBLAS &pooled)
+{
+  data.blas.swap(pooled.blas);
+  eastl::swap(data.builtGeneration, pooled.builtGeneration);
+  data.linkedOmms.swap(pooled.linkedOmms);
+}
+
+inline void take_blas_from_pool(ReferencedTransformData &data, PooledBLAS &pooled) { swap_blas_with_pool(data, pooled); }
+
+inline void give_blas_to_pool(PooledBLAS &pooled, ReferencedTransformData &data) { swap_blas_with_pool(data, pooled); }
+
 struct BLASesWithAtomicCursor
 {
   dag::AtomicInteger<int> cursor = 0;
-  dag::Vector<UniqueBLAS> blases;
+  dag::Vector<PooledBLAS> blases;
 };
 
 struct DECLSPEC_ALIGN(16) HWInstance
@@ -820,7 +999,27 @@ struct DECLSPEC_ALIGN(16) HWInstance
   uint64_t blasGpuAddress;
 } ATTRIBUTE_ALIGN(16);
 
+__forceinline bool VECTORCALL need_winding_flip(mat43f transform)
+{
+  /* So this need explanation. From the DXR specification:
+   * Since these winding direction rules are defined in object space, they are unaffected by instance
+   * transforms. For example, an instance transform matrix with negative determinant (e.g. mirroring
+   * some geometry) does not change the facing of the triangles within the instance. Per-geometry
+   * transforms, by contrast, (defined in D3D12_RAYTRACING_GEOMETRY_TRIANGLES_DESC), get combined with
+   * the associated vertex data in object space, so a negative determinant matrix there does flip triangle
+   * winding.
+   *
+   * BUT. Some of our models are modelled in a way that the actual triangles are flipped, and expected to be
+   * flipped during rasterization by the model matrix, which has 1 or 3 axes flipped. So as the instance
+   * transform is not flipping the winding, we need to do it here to match the rasterized output.
+   */
+
+  mat33f transposedBasis = {transform.row0, transform.row1, transform.row2};
+  return v_test_vec_x_lt_0(v_mat33_det(transposedBasis));
+}
+
 #if _TARGET_C2
+
 
 
 
@@ -872,7 +1071,13 @@ struct DECLSPEC_ALIGN(16) HWInstance
 #else
 using NativeInstance = HWInstance;
 
-inline NativeInstance convert_instance(const HWInstance &src) { return src; }
+inline NativeInstance convert_instance(const HWInstance &src)
+{
+  NativeInstance out = src;
+  if (need_winding_flip(src.transform))
+    out.flags |= RaytraceGeometryInstanceDescription::Flags::TRIANGLE_CULL_FLIP_WINDING;
+  return out;
+}
 #endif
 
 
@@ -885,6 +1090,35 @@ static constexpr int ri_extra_thread_count = 8;
 
 inline int get_ri_gen_worker_count() { return max(min(ri_gen_thread_count, threadpool::get_num_workers()), 1); }
 inline int get_ri_extra_worker_count() { return max(min(ri_extra_thread_count, threadpool::get_num_workers()), 1); }
+
+// BVH allocates GPU memory under objectsLock, and the lock is non-reentrant; the OOM
+// report probes ownsWrite instead of re-acquiring. ownsWrite is not a reentrancy mechanism.
+// Write acquisitions must go through this type, or ownsWrite misses them and the report skips.
+struct WriteOwnerRwSpinLock : NoWritersSpinLockReadWriteLock
+{
+  void lockWrite(::da_profiler::desc_id_t profile_token = ::da_profiler::DescWriteLock) DAG_TS_ACQUIRE()
+  {
+    NoWritersSpinLockReadWriteLock::lockWrite(profile_token);
+    interlocked_relaxed_store(writerTid, get_current_thread_id());
+  }
+  void unlockWrite() DAG_TS_RELEASE()
+  {
+    interlocked_relaxed_store(writerTid, 0);
+    NoWritersSpinLockReadWriteLock::unlockWrite();
+  }
+  bool tryLockWrite() DAG_TS_TRY_ACQUIRE(true)
+  {
+    if (!NoWritersSpinLockReadWriteLock::tryLockWrite())
+      return false;
+    interlocked_relaxed_store(writerTid, get_current_thread_id());
+    return true;
+  }
+
+  bool ownsWrite() const { return interlocked_relaxed_load(writerTid) == get_current_thread_id(); }
+
+private:
+  volatile int64_t writerTid = 0;
+};
 
 struct Context
 {
@@ -907,8 +1141,7 @@ struct Context
     eastl::function<void(Point4 &, Point4 &)> getHeliParamsFn;
     eastl::function<void(float &, Point2 &)> getDeformParamsFn;
     eastl::function<Sbuffer *(uint32_t &)> getSplineDataFn;
-    BVHBufferReference *uniqueTransformedBuffer;
-    UniqueBLAS *uniqueBlas;
+    ReferencedTransformData *uniqueData;
     AnimationUpdateMode animationUpdateMode;
     MeshMetaAllocator::AllocId metaAllocId;
     eastl::optional<PerInstanceData> perInstanceData;
@@ -1050,10 +1283,10 @@ struct Context
     static constexpr uint32_t ringSize = 3;
 #endif
 
-    inline static int ringIndex = 0;
+    int ringIndex = 0;
     eastl::array<UniqueBuf, ringSize> buffers = {};
 
-    static void step() { ringIndex = (ringIndex + 1) % ringSize; }
+    void step() { ringIndex = (ringIndex + 1) % ringSize; }
 
     operator bool() const { return !!buffers[0]; }
 
@@ -1089,11 +1322,14 @@ struct Context
 
   UniqueBuf tlasUploadParticles;
 
-  using BvhObjectReadLock = ScopedLockReadTemplate<NoWritersSpinLockReadWriteLock>;
-  using BvhObjectWriteLock = ScopedLockWriteTemplate<NoWritersSpinLockReadWriteLock>;
-  NoWritersSpinLockReadWriteLock objectsLock;
+  using BvhObjectReadLock = ScopedLockReadTemplate<WriteOwnerRwSpinLock>;
+  using BvhObjectWriteLock = ScopedLockWriteTemplate<WriteOwnerRwSpinLock>;
+
+  WriteOwnerRwSpinLock objectsLock;
   ObjectMap objects DAG_TS_GUARDED_BY(objectsLock);
   ObjectMap impostors DAG_TS_GUARDED_BY(objectsLock);
+  // Starts at 1: builtGeneration 0 means "never built for any live object".
+  uint32_t nextBuildInputsGeneration DAG_TS_GUARDED_BY(objectsLock) = 1;
   UniqueTLAS tlasMain;
   UniqueTLAS tlasTerrain;
   UniqueTLAS tlasParticles;
@@ -1119,9 +1355,18 @@ struct Context
     uint32_t attempts = 0;
   };
   eastl::unordered_map<uint64_t, OmmTextureWaits> ommTextureWaitsByObject;
-  // Objects that may hold a slot in OmmState::Baking. Lazily cleaned while discarding inactive
-  // bakes. Unsynchronized under the same render-thread contract as Mesh::OmmSlot.
-  eastl::unordered_set<uint64_t> objectsWithBakingOmm;
+  // Keyed by bake inputs, so a re-added object resolves to its old entry. Node-based: entry pointers
+  // stay valid across a rehash, which every holder of an entry pointer relies on.
+  // Render thread only: objectsLock read mode does not make an off-thread read of it safe.
+  OmmCache ommCache;
+  // Every member is in OmmState::Baking and owns a pending bake slot, and every such entry is a member.
+  // A state change out of Baking must remove the entry in the same step. Render thread only, under the
+  // same contract as ommCache.
+  dag::Vector<OmmCacheEntry *> bakingOmmEntries;
+  // Every dropped reference queues here: the refcount stays render thread only, thus a drop from a tidy
+  // job is legal; the render thread drains the queue before it evicts.
+  OSSpinlock deferredOmmReleaseLock;
+  dag::Vector<OmmCacheEntry *> deferredOmmReleases DAG_TS_GUARDED_BY(deferredOmmReleaseLock);
   eastl::unordered_map<TEXTUREID, BindlessTexture, TextureIdHash> usedTextures;
   eastl::unordered_map<Sbuffer *, BindlessBuffer> usedBuffers;
 
@@ -1146,9 +1391,65 @@ struct Context
   bool compactedSizeQueryRunning = false;
   eastl::array<uint64_t, compactedSizeBufferSize> compactedSizeBufferValues = {};
 
+  struct VoxelActivity
+  {
+    // Everything here is render thread only, except the atomic job counters and the cpu
+    // snapshot below, which state their own rules.
+    // Ping-pong pair: a scroll copies current into the other one and swaps; decay and the ray
+    // shaders' marks write current in place.
+    eastl::array<UniqueTex, 2> tex = {};
+    int current = 0;
+    IPoint3 dims = IPoint3::ZERO;
+    float voxelSize = 16;
+    int activeValue = 0;                 // 0 while the feature is off for this context
+    IPoint3 originVoxel = IPoint3::ZERO; // world voxel coordinate of texel (0,0,0)
+    Point3 gridOriginRel = Point3::ZERO; // grid origin (texel 0,0,0 corner) relative to the build camera, for rebinds
+    bool needsFill = true;
+
+    // The decay kernel packs the aged volume into this ring, four voxels per uint. The ring
+    // keeps at most readbackDepth frames in flight, so the origins need as many slots.
+    static constexpr uint32_t readbackDepth = 4;
+    RingCPUBufferLock readback;
+    eastl::array<IPoint3, readbackDepth> pendingOrigin = {}; // readback frame -> grid origin at dispatch time
+
+    // Snapshot for keep_instance, read by the placement jobs; the spawn/wait frame ordering is
+    // the synchronization. Written in update() after the frame's jobs are waited, and by
+    // set_voxel_activity / close_textures, which must stay outside the update_instances..build
+    // job window.
+    struct Cpu
+    {
+      dag::Vector<uint8_t> ages;     // x-major voxel lives
+      vec4i originVoxel = v_zeroi(); // world voxel coordinate of texel (0,0,0); w = 0
+      vec4i dimsMinus1 = v_zeroi();  // per axis voxel count - 1; w = INT_MAX, so it never fails the bounds test
+      vec4f invVoxelSize = v_zero(); // splatted
+      int rowStride = 0;             // dims.x
+      int sliceStride = 0;           // dims.x * dims.y
+      uint32_t frameSalt = 0;        // reshuffles the dead voxel keep set every frame
+      uint32_t keepThreshold = 0;    // dead voxel keep chance in 1/65536 units
+      bool cull = false;             // per frame copy of the debug kill switch
+      bool valid = false;
+    } cpu;
+
+    // Placement statistics: the placement jobs count locally and add their totals once per job.
+    dag::AtomicInteger<uint32_t> riGenConsidered = 0;
+    dag::AtomicInteger<uint32_t> riGenCulled = 0;
+    dag::AtomicInteger<uint32_t> riExConsidered = 0;
+    dag::AtomicInteger<uint32_t> riExCulled = 0;
+    dag::AtomicInteger<uint32_t> dynConsidered = 0;
+    dag::AtomicInteger<uint32_t> dynCulled = 0;
+    uint32_t statRiGenConsidered = 0, statRiGenCulled = 0;
+    uint32_t statRiExConsidered = 0, statRiExCulled = 0;
+    uint32_t statDynConsidered = 0, statDynCulled = 0;
+  };
+  VoxelActivity voxelActivity;
+
   HeightProvider *heightProvider = nullptr;
   dag::Vector<TerrainLOD> terrainLods;
   Point2 terrainMiddlePoint = Point2(-1000000, -1000000);
+  // The terrain TLAS transforms are relative to this anchor, not the camera, so the TLAS only
+  // needs a rebuild when a patch BLAS changes. The bvh_terrain_offset shader var moves the rays.
+  Point2 terrainAnchorPoint = Point2(-1000000, -1000000);
+  bool terrainDirty = false;
 
   eastl::vector<eastl::pair<eastl::optional<LinearHeapAllocatorSbuffer>, uint32_t>> sourceGeometryAllocators;
 
@@ -1168,13 +1469,14 @@ struct Context
   eastl::unordered_map<uint32_t, eastl::unordered_map<uint64_t, ReferencedTransformData>> uniqueHeliRotorBuffers;
   eastl::unordered_map<uint32_t, eastl::unordered_map<uint64_t, ReferencedTransformData>> uniqueDeformedBuffers;
   eastl::unordered_map<uint64_t, ReferencedTransformDatasForInstance> uniqueRiExtraTreeBuffers[maxUniqueLods];
-  eastl::unordered_map<uint64_t, eastl::unordered_map<uint64_t, ReferencedTransformData>> uniqueRiExtraFlagBuffers;
+  eastl::unordered_map<uint64_t, ReferencedTransformDatasForInstance> uniqueRiExtraFlagBuffers[maxUniqueLods];
   eastl::unordered_map<uint64_t, ReferencedTransformData> uniqueSplinegenBuffers;
   eastl::unordered_map<uint64_t, ReferencedTransformDatasForInstance> uniqueTreeBuffers[maxUniqueLods];
   eastl::unordered_map<uint32_t, ReferencedTransformDatasForInstance> uniqueSkinBuffers;
 
   eastl::unordered_map<uint64_t, BLASesWithAtomicCursor> freeUniqueTreeBLASes;
   eastl::unordered_map<uint64_t, BLASesWithAtomicCursor> freeUniqueRiExtraTreeBLASes;
+  eastl::unordered_map<uint64_t, BLASesWithAtomicCursor> freeUniqueRiExtraFlagBLASes;
   eastl::unordered_map<uint64_t, BLASesWithAtomicCursor> freeUniqueSkinBLASes;
 
   WinCritSec processBufferAllocatorLock;
@@ -1194,6 +1496,14 @@ struct Context
   eastl::vector_set<const RenderableInstanceLodsResource *> pendingStaticBLASRequestActions;
   dag::AtomicInteger<bool> hasPendingObjectAddActions = false;
   dag::AtomicInteger<uint32_t> pendingObjectActionOrderCounter = 0;
+
+  struct DynModelUsage
+  {
+    int lastUsedMsec = 0;
+    eastl::vector_set<uint64_t> objectIds;
+  };
+  OSSpinlock dynrendObjectsWithTimeoutLock;
+  eastl::unordered_map<uint32_t, DynModelUsage> dynrendObjectsWithTimeout DAG_TS_GUARDED_BY(dynrendObjectsWithTimeoutLock);
 
   struct ParticleMeta
   {
@@ -1218,7 +1528,7 @@ struct Context
 #endif
   eastl::unordered_map<MeshMetaAllocator::AllocId, const char *, BVHHeapAllocatorAllocIdHash> metaOriginTracker;
 
-  WinCritSec tidyUpTreesLock;
+  WinCritSec tidyUpRendinstsLock;
   WinCritSec tidyUpSkinsLock;
 
   UniqueBuf cableVertices;
@@ -1253,8 +1563,7 @@ struct Context
   struct BindlessTexHolder
   {
     TEXTUREID texId = BAD_TEXTUREID;
-    uint32_t bindlessTexture = 0;
-
+    uint32_t bindlessTexture = MeshMeta::INVALID_TEXTURE;
 
     void close(bvh::ContextId context_id)
     {
@@ -1263,6 +1572,7 @@ struct Context
         G_VERIFY(context_id->releaseTexture(texId));
         texId = BAD_TEXTUREID;
       }
+      bindlessTexture = MeshMeta::INVALID_TEXTURE;
     }
   };
 
@@ -1283,13 +1593,13 @@ struct Context
     uint32_t indexBufferBindless = BVH_BINDLESS_BUFFER_MAX;
     uint32_t ahsBufferBindless = BVH_BINDLESS_BUFFER_MAX;
 
-    // Only the render thread uses the bake state, as with Mesh::OmmSlot.
+    // Only the render thread uses the bake state, as with OmmCacheEntry.
     struct TextureSlot
     {
       TEXTUREID alphaTexId = BAD_TEXTUREID;
       TEXTUREID diffuseTexId = BAD_TEXTUREID; // for the bake diagnostics
       UniqueBLAS blas;
-      Mesh::OmmState ommState = Mesh::OmmState::None;
+      OmmState ommState = OmmState::None;
       uint32_t ommWaitAttempts = 0;
       render::omm::BakeHandle ommBakeHandle;
       render::omm::BakeResult ommBakeResult;
@@ -1349,6 +1659,7 @@ struct Context
     E3DCOLOR lossValues[atmTexWidth * atmTexHeight];
   } atmData;
 
+  void releaseGameTextureHolds();
   void releaseAllBindlessTexHolders();
 
   void moveToDeathrow(BVHGeometryBufferWithOffset &&buf);
@@ -1400,7 +1711,7 @@ inline String ccn(ContextId context_id, const char *name)
 
 Object *find_half_baked_object(ContextId context_id, uint64_t object_id) DAG_TS_REQUIRES_SHARED(context_id->objectsLock);
 
-void bvh_yield();
+Sbuffer *alloc_scratch_buffer(uint32_t size, uint32_t &offset);
 
 // Helper functions because we can't pass the address of bitfields
 inline TextureHandle MeshMeta::holdAlbedoTex(Context *context_id, TEXTUREID texture_id)
@@ -1429,6 +1740,13 @@ inline TextureHandle MeshMeta::holdExtraTex(Context *context_id, TEXTUREID textu
   uint32_t textureIndex;
   auto tex = context_id->holdTexture(texture_id, textureIndex);
   extraTextureIndex = textureIndex;
+  return tex;
+}
+inline TextureHandle MeshMeta::holdSecondaryMaskTex(Context *context_id, TEXTUREID texture_id)
+{
+  uint32_t textureIndex;
+  auto tex = context_id->holdTexture(texture_id, textureIndex);
+  secondaryMaskTextureIndex = textureIndex;
   return tex;
 }
 

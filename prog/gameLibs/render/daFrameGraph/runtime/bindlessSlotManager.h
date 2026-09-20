@@ -3,16 +3,13 @@
 
 #include <util/dag_stdint.h>
 #include <dag/dag_vector.h>
+#include <id/idIndexedMapping.h>
+#include <backend/intermediateRepresentation.h>
 
 class D3dResource;
 
 namespace dafg
 {
-
-namespace intermediate
-{
-struct Graph;
-}
 
 // Owns the bindless descriptor ranges for bindlessShaderVar requests (separate
 // driver heaps for textures and buffers). Each resource gets SCHEDULE_FRAME_WINDOW
@@ -24,9 +21,9 @@ class BindlessSlotManager
 public:
   static constexpr uint32_t INVALID_SLOT = static_cast<uint32_t>(-1);
 
-  // Reassigns all slots from scratch, writing each resource's base slot into
-  // Resource::baseBindlessSlot and resetting the per-slot descriptor cache.
-  void rebuild(intermediate::Graph &graph);
+  void rebuild(const intermediate::Graph &graph);
+
+  uint32_t baseSlot(intermediate::ResourceIndex res_idx) const { return baseSlots[res_idx]; }
 
   // Forgets cached descriptor->resource associations (forcing a refresh on next
   // bind) without freeing ranges. Call after a reschedule that kept the same slots.
@@ -41,6 +38,7 @@ public:
   ~BindlessSlotManager();
 
 private:
+  IdIndexedMapping<intermediate::ResourceIndex, uint32_t> baseSlots;
   uint32_t texRangeBase = INVALID_SLOT;
   uint32_t texRangeCount = 0;
   uint32_t bufRangeBase = INVALID_SLOT;

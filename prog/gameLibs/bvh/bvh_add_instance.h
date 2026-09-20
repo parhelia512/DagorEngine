@@ -3,7 +3,7 @@
 
 #include "util/dag_compilerDefs.h"
 #include <bvh/bvh.h>
-#include <math/dag_dxmath.h>
+#include <vecmath/dag_vecMath.h>
 #include <osApiWrappers/dag_threadSafety.h>
 
 #define BVH_INLINE __forceinline
@@ -17,26 +17,6 @@ void start_frame(ContextId context_id);
 void before_job_start(ContextId context_id);
 void after_job_end(ContextId context_id);
 } // namespace parallel_instance_processing
-
-BVH_INLINE bool VECTORCALL need_winding_flip(mat43f transform)
-{
-  /* So this need explanation. From the DXR specification:
-   * Since these winding direction rules are defined in object space, they are unaffected by instance
-   * transforms. For example, an instance transform matrix with negative determinant (e.g. mirroring
-   * some geometry) does not change the facing of the triangles within the instance. Per-geometry
-   * transforms, by contrast, (defined in D3D12_RAYTRACING_GEOMETRY_TRIANGLES_DESC), get combined with
-   * the associated vertex data in object space, so a negative determinant matrix there does flip triangle
-   * winding.
-   *
-   * BUT. Some of our models are modelled in a way that the actual triangles are flipped, and expected to be
-   * flipped during rasterization by the model matrix, which has 1 or 3 axes flipped. So as the instance
-   * transform is not flipping the winding, we need to do it here to match the rasterized output.
-   */
-
-  XMMATRIX xmtransform = XMLoadFloat3x4(reinterpret_cast<const XMFLOAT3X4 *>(&transform));
-  float determinant = XMVectorGetX(XMMatrixDeterminant(xmtransform));
-  return determinant < 0;
-}
 
 BVH_INLINE void VECTORCALL add_instance(ContextId context_id, Context::InstanceMap &instanceMap, uint64_t object_id, mat43f transform,
   const PerInstanceData *per_instance_data, bool no_shadow, Context::Instance::AnimationUpdateMode animation_update_mode,
@@ -72,8 +52,7 @@ BVH_INLINE void VECTORCALL add_instance(ContextId context_id, Context::InstanceM
   {
     instance.invWorldTm = skinning_info->invWorldTm;
     instance.setTransformsFn = skinning_info->setTransformsFn;
-    instance.uniqueTransformedBuffer = skinning_info->skinningBuffer;
-    instance.uniqueBlas = skinning_info->skinningBlas;
+    instance.uniqueData = skinning_info->transformedData;
     instance.metaAllocId = meta_alloc_id;
     instance.skin = skinning_info->data;
   }
@@ -81,15 +60,13 @@ BVH_INLINE void VECTORCALL add_instance(ContextId context_id, Context::InstanceM
   {
     instance.invWorldTm = heli_rotor_info->invWorldTm;
     instance.getHeliParamsFn = heli_rotor_info->getParamsFn;
-    instance.uniqueTransformedBuffer = heli_rotor_info->transformedBuffer;
-    instance.uniqueBlas = heli_rotor_info->transformedBlas;
+    instance.uniqueData = heli_rotor_info->transformedData;
     instance.metaAllocId = meta_alloc_id;
   }
   else if (tree_info)
   {
     instance.invWorldTm = tree_info->invWorldTm;
-    instance.uniqueTransformedBuffer = tree_info->transformedBuffer;
-    instance.uniqueBlas = tree_info->transformedBlas;
+    instance.uniqueData = tree_info->transformedData;
     instance.tree = tree_info->data;
     instance.metaAllocId = meta_alloc_id;
     instance.hasInstanceColor = true;
@@ -103,8 +80,7 @@ BVH_INLINE void VECTORCALL add_instance(ContextId context_id, Context::InstanceM
   else if (leaves_info)
   {
     instance.invWorldTm = leaves_info->invWorldTm;
-    instance.uniqueTransformedBuffer = leaves_info->transformedBuffer;
-    instance.uniqueBlas = leaves_info->transformedBlas;
+    instance.uniqueData = leaves_info->transformedData;
     instance.metaAllocId = meta_alloc_id;
     instance.uniqueIsRecycled = leaves_info->recycled;
     instance.uniqueIsStationary = leaves_info->stationary;
@@ -112,24 +88,22 @@ BVH_INLINE void VECTORCALL add_instance(ContextId context_id, Context::InstanceM
   else if (flag_info)
   {
     instance.invWorldTm = flag_info->invWorldTm;
-    instance.uniqueTransformedBuffer = flag_info->transformedBuffer;
-    instance.uniqueBlas = flag_info->transformedBlas;
+    instance.uniqueData = flag_info->transformedData;
     instance.flag = flag_info->data;
     instance.metaAllocId = meta_alloc_id;
+    instance.uniqueIsRecycled = flag_info->recycled;
   }
   else if (deformed_info)
   {
     instance.invWorldTm = deformed_info->invWorldTm;
     instance.getDeformParamsFn = deformed_info->getParamsFn;
-    instance.uniqueTransformedBuffer = deformed_info->transformedBuffer;
-    instance.uniqueBlas = deformed_info->transformedBlas;
+    instance.uniqueData = deformed_info->transformedData;
     instance.metaAllocId = meta_alloc_id;
   }
   else if (splinegen_info)
   {
     instance.getSplineDataFn = splinegen_info->getSplineDataFn;
-    instance.uniqueTransformedBuffer = splinegen_info->transformedBuffer;
-    instance.uniqueBlas = splinegen_info->transformedBlas;
+    instance.uniqueData = splinegen_info->transformedData;
     instance.metaAllocId = meta_alloc_id;
   }
   else

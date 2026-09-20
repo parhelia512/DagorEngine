@@ -23,6 +23,7 @@
 #include <drv/3d/dag_shader.h>
 #include <drv/3d/dag_bindless.h>
 #include <drv/3d/dag_texture.h>
+#include <texResizeGeneric.h>
 #include <drv/3d/dag_driver.h>
 #include <drv/3d/dag_info.h>
 #include <drv/3d/dag_query.h>
@@ -489,11 +490,6 @@ public:
   int level_count() const override { return ti.mipLevels; }
   virtual int texmiplevel(int /*minlevel*/, int /*maxlevel*/) { return 0; }
   virtual int update(BaseTexture * /*src*/) { return 1; }
-  virtual int updateSubRegion(BaseTexture * /*src*/, int /*src_subres_idx*/, int /*src_x*/, int /*src_y*/, int /*src_z*/,
-    int /*src_w*/, int /*src_h*/, int /*src_d*/, int /*dest_subres_idx*/, int /*dest_x*/, int /*dest_y*/, int /*dest_z*/)
-  {
-    return 1;
-  }
 
   //// D3dResource ////
   virtual void destroy() { dispose(this); }
@@ -568,11 +564,6 @@ public:
   int level_count() const override { return ti.mipLevels; }
   virtual int texmiplevel(int /*minlevel*/, int /*maxlevel*/) { return 0; }
   virtual int update(BaseTexture * /*src*/) { return 1; }
-  virtual int updateSubRegion(BaseTexture * /*src*/, int /*src_subres_idx*/, int /*src_x*/, int /*src_y*/, int /*src_z*/,
-    int /*src_w*/, int /*src_h*/, int /*src_d*/, int /*dest_subres_idx*/, int /*dest_x*/, int /*dest_y*/, int /*dest_z*/)
-  {
-    return 1;
-  }
   bool isCubeArray() const override { return ti.type == D3DResourceType::CUBEARRTEX; }
 
   //// D3dResource ////
@@ -649,11 +640,6 @@ public:
   int level_count() const override { return ti.mipLevels; }
   virtual int texmiplevel(int /*min_lev*/, int /*max_lev*/) { return 0; }
   virtual int update(BaseTexture * /*src*/) { return 1; }
-  virtual int updateSubRegion(BaseTexture * /*src*/, int /*src_subres_idx*/, int /*src_x*/, int /*src_y*/, int /*src_z*/,
-    int /*src_w*/, int /*src_h*/, int /*src_d*/, int /*dest_subres_idx*/, int /*dest_x*/, int /*dest_y*/, int /*dest_z*/)
-  {
-    return 1;
-  }
 
   //// D3dResource ////
   virtual void destroy() { dispose(this); }
@@ -701,11 +687,6 @@ public:
   // from  BaseTexture
   virtual int generateMips() { return 1; }
   virtual int update(BaseTexture * /*src*/) { return 1; } // update texture from
-  virtual int updateSubRegion(BaseTexture * /*src*/, int /*src_subres_idx*/, int /*src_x*/, int /*src_y*/, int /*src_z*/,
-    int /*src_w*/, int /*src_h*/, int /*src_d*/, int /*dest_subres_idx*/, int /*dest_x*/, int /*dest_y*/, int /*dest_z*/)
-  {
-    return 1;
-  }
   int level_count() const override { return ti.mipLevels; }
   virtual int texmiplevel(int /*min_lev*/, int /*max_lev*/) { return 0; }
 
@@ -1063,6 +1044,8 @@ int d3d::driver_command(Drv3dCommand command, void *par1, void * /*par2*/, void 
 
     return gpuMaxAvailableKb;
   }
+  else if (command == Drv3dCommand::GET_PRESENTED_FRAME_COUNT)
+    return 1;
   return 0;
 }
 
@@ -1209,16 +1192,19 @@ bool d3d::stretch_rect(BaseTexture * /*src*/, BaseTexture * /*dst*/, const RectI
 }
 bool d3d::copy_from_current_render_target(BaseTexture * /*to_tex*/) { return true; }
 
+int d3d::update_sub_region(BaseTexture *, int, int, int, int, int, int, int, BaseTexture *, int, int, int, int) { return 1; }
+int d3d::update_sub_region_no_order(BaseTexture *, int, int, int, int, int, int, int, BaseTexture *, int, int, int, int) { return 1; }
+
+IMPLEMENT_D3D_TEX_RESIZE_API_USING_GENERIC()
+
 // Texture states setup
-VPROG d3d::create_vertex_shader(const ShaderSource & /*native_code*/) { return 1; }
+VPROG d3d::create_vertex_shader(const ShaderSourceExt & /*native_code*/) { return 1; }
 void d3d::delete_vertex_shader(VPROG /*vs*/) {}
 
 bool d3d::set_const(unsigned, unsigned /*reg_base*/, const void * /*data*/, unsigned /*num_regs*/) { return true; }
 bool d3d::set_immediate_const(unsigned, const uint32_t *, unsigned) { return true; }
 
-int d3d::set_cs_constbuffer_register_count(int required_count) { return required_count; }
-int d3d::set_vs_constbuffer_register_count(int required_count) { return required_count > 0 ? required_count : 256; }
-FSHADER d3d::create_pixel_shader(const ShaderSource & /*native_code*/) { return 1; }
+FSHADER d3d::create_pixel_shader(const ShaderSourceExt & /*native_code*/) { return 1; }
 void d3d::delete_pixel_shader(FSHADER /*ps*/) {}
 
 #if _TARGET_PC_WIN
@@ -1234,7 +1220,7 @@ PROGRAM d3d::create_program(VPROG, FSHADER, VDECL, unsigned *, unsigned) { retur
 // if strides & streams are unset, will get them from VDECL
 //  should be deleted externally
 
-PROGRAM d3d::create_program_cs(const ShaderSource & /*cs_native*/, CSPreloaded) { return 1; }
+PROGRAM d3d::create_program_cs(const ShaderSourceExt & /*cs_native*/, CSPreloaded) { return 1; }
 
 bool d3d::set_program(PROGRAM) { return true; }
 void d3d::delete_program(PROGRAM) {}

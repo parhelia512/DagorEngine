@@ -7,6 +7,7 @@
 #include <libTools/shaderResBuilder/processMat.h>
 #include <libTools/shaderResBuilder/validateLods.h>
 #include <3d/dag_materialData.h>
+#include <gameRes/dag_collResDecl.h>
 #include <math/dag_bounds3.h>
 #include <generic/dag_tab.h>
 #include <util/dag_simpleString.h>
@@ -50,6 +51,22 @@ public:
   static bool sepMatToBuildResultsBlk;
   static const DataBlock *warnTwoSided;
 
+  // Values ARE the authored lod{ proxy:i= } ints, so they cannot be renumbered.
+  enum class ProxyType
+  {
+    None = 0,
+    Skin = 1,
+  };
+
+  // The cloth sim proxy setup of one lod, authored in its lod{} block.
+  struct ProxyLodProps
+  {
+    ProxyType type = ProxyType::None;
+    // Falloff of the render-to-cage binding, in SQUARED metres: a cage vertex d away from a render vertex weighs
+    // exp(-d*d / this), so sqrt(this) is the distance at which it keeps 1/e. Authored on the RENDER lod.
+    float clothBindFalloffSq = 0.01f;
+  };
+
   struct RigidObj
   {
     int nodeId = -1, szPos = 0;
@@ -84,6 +101,7 @@ public:
     float texScale = 0;
     Tab<RigidObj> rigids;
     Tab<SkinnedObj> skins;
+    ProxyLodProps proxy;
 
     String fileName;
 
@@ -115,10 +133,10 @@ public:
 
   DynamicRenderableSceneLodsResSrc(IProcessMaterialData *pm = nullptr);
 
-  void addNode(Lod &, Node *, LodsEqualMaterialGather &mat_gather);
+  void addNode(int lod_no, Lod &, Node *, LodsEqualMaterialGather &mat_gather);
 
   bool addLod(const char *filename, real range, LodsEqualMaterialGather &mat_gather, Tab<AScene *> &scene_list, bool all_animated,
-    const DataBlock &props, bool need_reset_nodes_tm_scale, const DataBlock &material_overrides);
+    const DataBlock &props, bool need_reset_nodes_tm_scale, const DataBlock &material_overrides, const ProxyLodProps &proxy);
 
   bool build(const DataBlock &blk);
   bool save(mkbindump::BinDumpSaveCB &cwr, const LodValidationSettings *lvs, ILogWriter &log);
@@ -143,10 +161,10 @@ private:
   void calcSkinNodeBbox(Node *n);
 
   // add mesh node, if mesh found
-  void addMeshNode(Lod &lod, Node *n, LodsEqualMaterialGather &mat_gather);
+  void addMeshNode(int lod_no, Lod &lod, Node *n, LodsEqualMaterialGather &mat_gather, const CollisionResource *ao_occluders);
 
   // add skin node, if skin found
-  void addSkinNode(Lod &lod, Node *n, LodsEqualMaterialGather &mat_gather);
+  void addSkinNode(int lod_no, Lod &lod, Node *n, LodsEqualMaterialGather &mat_gather);
 
   void splitRealTwoSided(Mesh &m, Bitarray &is_material_real_two_sided_array, int side_channel_id);
 };

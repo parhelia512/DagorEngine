@@ -13,14 +13,111 @@
 #include <math/dag_bounds2.h>
 #include <math/dag_TMatrix4.h>
 #include <image/dag_texPixel.h>
+#include <memory/dag_framemem.h>
 #include <rendInst/rendInstGenRender.h>
 #include <rendInst/clipmapShadow.h>
 
 static constexpr float CLIPMAP_SHADOW_DELTA_MUL = 1.f / 16.f;
+static constexpr int CLIPMAP_SHADOW_SCROLL_TEXELS = 128;
+
 static int clipmap_shadow_near_far_tc_offsetVarId = -1;
 static int clipmap_shadowsBlockId = -1;
 static int clipmapShadowTexVarId = -1;
 static int clipmapShadowFadeOutVarId = -1;
+
+static constexpr int DRAW_ESTIMATION_RECURSION_DEPTH_STEP = 2;
+
+static BBox2 clipmap_shadow_query_box(const ToroidalQuadRegion &reg, float texel_size)
+{
+  BBox2 boxReg(point2(reg.texelsFrom) * texel_size, point2(reg.texelsFrom + reg.wd) * texel_size);
+  const float boxExpand = 100.0f;
+  boxReg[0] -= Point2(1, 1) * boxExpand;
+  boxReg[1] += Point2(1, 1) * boxExpand;
+  return boxReg;
+}
+
+static bool is_toroidal_region_indivisible(const ToroidalQuadRegion &reg) { return reg.wd.x <= 1 && reg.wd.y <= 1; }
+
+static void split_region_by_draw_budget(Tab<ToroidalQuadRegion> &dest, const ToroidalQuadRegion &reg, float texel_size, int cascade_no,
+  int budget, int current_depth = 0)
+{
+  bool indivisible = is_toroidal_region_indivisible(reg);
+  bool checkpoint = current_depth != 0 && current_depth % DRAW_ESTIMATION_RECURSION_DEPTH_STEP == 0;
+
+  if (indivisible || checkpoint)
+  {
+    int regionRequiredDraws = 0;
+    rendinst::render::tryRenderRIGenShadowsToClipmap(clipmap_shadow_query_box(reg, texel_size), cascade_no, 0, regionRequiredDraws);
+    if (indivisible || regionRequiredDraws <= budget)
+    {
+      append_items(dest, 1, &reg);
+      return;
+    }
+  }
+
+  bool splitX = reg.wd.x >= reg.wd.y;
+  int half = (splitX ? reg.wd.x : reg.wd.y) / 2;
+  IPoint2 wdA = splitX ? IPoint2(half, reg.wd.y) : IPoint2(reg.wd.x, half);
+  IPoint2 wdB = splitX ? IPoint2(reg.wd.x - half, reg.wd.y) : IPoint2(reg.wd.x, reg.wd.y - half);
+  IPoint2 ofs = splitX ? IPoint2(half, 0) : IPoint2(0, half);
+  split_region_by_draw_budget(dest, ToroidalQuadRegion(reg.lt, wdA, reg.texelsFrom), texel_size, cascade_no, budget,
+    current_depth + 1);
+  split_region_by_draw_budget(dest, ToroidalQuadRegion(reg.lt + ofs, wdB, reg.texelsFrom + ofs), texel_size, cascade_no, budget,
+    current_depth + 1);
+}
+
+static int subtract_drawn_area_from_region(const ToroidalQuadRegion &region, const ToroidalQuadRegion &drawn_area,
+  ToroidalQuadRegion out[4])
+{
+  int ox0 = max(region.lt.x, drawn_area.lt.x);
+  int oy0 = max(region.lt.y, drawn_area.lt.y);
+  int ox1 = min(region.lt.x + region.wd.x, drawn_area.lt.x + drawn_area.wd.x);
+  int oy1 = min(region.lt.y + region.wd.y, drawn_area.lt.y + drawn_area.wd.y);
+  if (ox0 >= ox1 || oy0 >= oy1)
+    return -1;
+
+  // region minus the [ox0,ox1)x[oy0,oy1) hole, as up to 4 non-overlapping strips: full-width top
+  // and bottom, then left and right narrowed to the hole's own row band so the four never overlap.
+  int n = 0;
+  if (region.lt.y < oy0)
+    out[n++] = ToroidalQuadRegion(region.lt, IPoint2(region.wd.x, oy0 - region.lt.y), region.texelsFrom);
+  if (oy1 < region.lt.y + region.wd.y)
+    out[n++] = ToroidalQuadRegion(IPoint2(region.lt.x, oy1), IPoint2(region.wd.x, region.lt.y + region.wd.y - oy1),
+      region.texelsFrom + IPoint2(0, oy1 - region.lt.y));
+  if (region.lt.x < ox0)
+    out[n++] = ToroidalQuadRegion(IPoint2(region.lt.x, oy0), IPoint2(ox0 - region.lt.x, oy1 - oy0),
+      region.texelsFrom + IPoint2(0, oy0 - region.lt.y));
+  if (ox1 < region.lt.x + region.wd.x)
+    out[n++] = ToroidalQuadRegion(IPoint2(ox1, oy0), IPoint2(region.lt.x + region.wd.x - ox1, oy1 - oy0),
+      region.texelsFrom + IPoint2(ox1 - region.lt.x, oy0 - region.lt.y));
+  return n;
+}
+
+static void remove_drawn_area(Tab<ToroidalQuadRegion> &regions, const ToroidalQuadRegion &drawn_area)
+{
+  for (int i = 0; i < regions.size();)
+  {
+    ToroidalQuadRegion region = regions[i]; // copy: append_items below may reallocate regions
+    ToroidalQuadRegion remainder[4];
+    int numRemainder = subtract_drawn_area_from_region(region, drawn_area, remainder);
+
+    if (numRemainder < 0)
+    {
+      ++i;
+      continue;
+    }
+    if (numRemainder == 0)
+    {
+      erase_items(regions, i, 1);
+      continue;
+    }
+
+    regions[i] = remainder[0];
+    for (int r = 1; r < numRemainder; ++r)
+      append_items(regions, 1, &remainder[r]);
+    ++i;
+  }
+}
 
 void ClipmapShadow::setUpSampler() const
 {
@@ -31,8 +128,10 @@ void ClipmapShadow::setUpSampler() const
   ShaderGlobal::set_sampler(get_shader_variable_id("clipmap_shadow_tex_samplerstate", true), d3d::request_sampler(smpInfo));
 }
 
-void ClipmapShadow::init(int shadowSize)
+void ClipmapShadow::init(int shadowSize, int async_update_draws_budget)
 {
+  asyncUpdateDrawsBudget = async_update_draws_budget;
+
   lookDownVtm.setcol(0, 1, 0, 0);
   lookDownVtm.setcol(1, 0, 0, 1);
   lookDownVtm.setcol(2, 0, 1, 0);
@@ -71,8 +170,7 @@ void ClipmapShadow::init(int shadowSize)
 
     worldToToroidal[j] = Color4(0, 0, 0, 0);
     uvOffset[j] = Point2(0, 0);
-    regions[j].clear();
-    quadRegions[j].clear();
+    deferredRegions[j].clear();
   }
 
   invalidate();
@@ -150,7 +248,7 @@ void ClipmapShadow::invalidate()
 {
   for (int j = 0; j < NUM_CLIPMAP_SHADOW_CASCADES; ++j)
   {
-    quadRegions[j].clear();
+    deferredRegions[j].clear();
     torHelpers[j].curOrigin = IPoint2(-10000000, -1000000);
   }
 }
@@ -167,6 +265,15 @@ bool ClipmapShadow::getBBox(BBox2 &box) const
 }
 
 
+static bool clipmap_shadow_cascade_crossed_threshold(const ToroidalHelper &tor_helper, const Point3 &view_pos, float texel_size)
+{
+  IPoint2 center_pos;
+  center_pos.x = 4 * floorf(view_pos.x / (4.0f * texel_size));
+  center_pos.y = 4 * floorf(view_pos.z / (4.0f * texel_size));
+  return !((abs(tor_helper.curOrigin.x - center_pos.x) < CLIPMAP_SHADOW_SCROLL_TEXELS) &&
+           (abs(tor_helper.curOrigin.y - center_pos.y) < CLIPMAP_SHADOW_SCROLL_TEXELS));
+}
+
 bool ClipmapShadow::update(float min_height, float max_height, const Point3 &view_pos)
 {
   if (!clipmapShadowTex.getTex2D() || !RendInstGenData::renderResRequired)
@@ -177,107 +284,140 @@ bool ClipmapShadow::update(float min_height, float max_height, const Point3 &vie
   if (!(ti.cflg & TEXCF_RTARGET))
     return false;
 
-  bool changed = false;
+  bool anyWork = false;
+  for (int cascadeNo = 0; cascadeNo < NUM_CLIPMAP_SHADOW_CASCADES; ++cascadeNo)
+  {
+    float texelSize = clipmapShadowWorldSize[cascadeNo] / (float)clipmapShadowSize;
+    if (clipmap_shadow_cascade_crossed_threshold(torHelpers[cascadeNo], view_pos, texelSize) || !deferredRegions[cascadeNo].empty())
+    {
+      anyWork = true;
+      break;
+    }
+  }
+  if (!anyWork)
+    return false;
 
-  // start from the largest cascade
+  SCOPE_RENDER_TARGET;
+  SCOPE_VIEW_PROJ_MATRIX;
+
+  int currentBudget = asyncUpdateDrawsBudget;
   for (int cascadeNo = NUM_CLIPMAP_SHADOW_CASCADES - 1; cascadeNo >= 0; cascadeNo--)
   {
-    regions[cascadeNo].clear();
-
-    // vars
     ToroidalHelper &torHelper = torHelpers[cascadeNo];
-    float toroidalWorldSize = clipmapShadowWorldSize[cascadeNo];
     float texelSize = clipmapShadowWorldSize[cascadeNo] / (float)clipmapShadowSize;
 
-    IPoint2 newTexelOrigin = torHelpers[cascadeNo].curOrigin;
+    ToroidalGatherCallback::RegionTab immediateRegions;
 
-    IPoint2 center_pos;
-    center_pos.x = 4 * floorf(view_pos.x / (4.0f * texelSize));
-    center_pos.y = 4 * floorf(view_pos.z / (4.0f * texelSize));
-
-    const int pixelTreshold = 128;
-
-    if ((abs(torHelpers[cascadeNo].curOrigin.x - center_pos.x) < pixelTreshold) &&
-        (abs(torHelpers[cascadeNo].curOrigin.y - center_pos.y) < pixelTreshold))
-      continue;
-    else
+    if (clipmap_shadow_cascade_crossed_threshold(torHelper, view_pos, texelSize))
     {
-      if (abs(torHelpers[cascadeNo].curOrigin.x - center_pos.x) > abs(torHelpers[cascadeNo].curOrigin.y - center_pos.y))
+      IPoint2 center_pos;
+      center_pos.x = 4 * floorf(view_pos.x / (4.0f * texelSize));
+      center_pos.y = 4 * floorf(view_pos.z / (4.0f * texelSize));
+
+      const int pixelTreshold = CLIPMAP_SHADOW_SCROLL_TEXELS;
+      IPoint2 newTexelOrigin = torHelper.curOrigin;
+      if (abs(torHelper.curOrigin.x - center_pos.x) > abs(torHelper.curOrigin.y - center_pos.y))
         newTexelOrigin.x = center_pos.x;
       else
         newTexelOrigin.y = center_pos.y;
+
+      if (max(abs(torHelper.curOrigin.x - newTexelOrigin.x), abs(torHelper.curOrigin.y - newTexelOrigin.y)) > pixelTreshold * 2)
+        newTexelOrigin = center_pos;
+
+      IPoint2 prevMainOrigin = torHelper.mainOrigin;
+      ToroidalGatherCallback cb(immediateRegions);
+      toroidal_update(newTexelOrigin, torHelper, 0.33f * clipmapShadowSize, cb);
+
+      if (torHelper.mainOrigin != prevMainOrigin)
+        deferredRegions[cascadeNo].clear();
+
+      float toroidalWorldSize = clipmapShadowWorldSize[cascadeNo];
+      Point2 worldSpaceOrigin = point2(torHelper.curOrigin) * texelSize;
+      worldToToroidal[cascadeNo] = Color4(1.f / toroidalWorldSize, 1.f / toroidalWorldSize,
+        0.5f - worldSpaceOrigin.x / toroidalWorldSize, 0.5f - worldSpaceOrigin.y / toroidalWorldSize);
+      ShaderGlobal::set_float4(worldToClipmapShadowVarId[cascadeNo], worldToToroidal[cascadeNo]);
+
+      uvOffset[cascadeNo] = -point2((torHelper.mainOrigin - torHelper.curOrigin) % torHelper.texSize) / torHelper.texSize;
     }
 
-    // if change of postion is dramatic, update both axes
-    if (max(abs(torHelpers[cascadeNo].curOrigin.x - newTexelOrigin.x), abs(torHelpers[cascadeNo].curOrigin.y - newTexelOrigin.y)) >
-        pixelTreshold * 2)
-      newTexelOrigin = center_pos;
+    if (immediateRegions.empty() && deferredRegions[cascadeNo].empty())
+      continue;
 
-    ToroidalGatherCallback cb(regions[cascadeNo]);
-    toroidal_update(newTexelOrigin, torHelper, 0.33f * clipmapShadowSize, cb);
+    d3d::set_render_target({}, DepthAccess::RW, {{clipmapShadowTex.getTex2D(), 0, 0}});
+    d3d::settm(TM_VIEW, lookDownVtm);
 
-    Point2 worldSpaceOrigin = point2(torHelper.curOrigin) * texelSize;
+    auto clearQuad = [&](const ToroidalQuadRegion &reg) {
+      d3d::setview(clipmapShadowSize * cascadeNo + reg.lt.x, reg.lt.y, reg.wd.x, reg.wd.y, 0, 1);
+      d3d::clearview(CLEAR_TARGET, 0xFFFFFFFF, 1.f, 0);
+    };
 
-    worldToToroidal[cascadeNo] = Color4(1.f / toroidalWorldSize, 1.f / toroidalWorldSize,
-      0.5f - worldSpaceOrigin.x / toroidalWorldSize, 0.5f - worldSpaceOrigin.y / toroidalWorldSize);
+    auto tryRenderQuad = [&](const ToroidalQuadRegion &reg, int budget, int &draws) {
+      clearQuad(reg);
+      BBox2 boxReg(point2(reg.texelsFrom) * texelSize, point2(reg.texelsFrom + reg.wd) * texelSize);
+      TMatrix4 proj = matrix_ortho_off_center_lh(boxReg[0].x, boxReg[1].x, boxReg[1].y, boxReg[0].y, min_height, max_height);
+      d3d::settm(TM_PROJ, &proj);
 
-    ShaderGlobal::set_float4(worldToClipmapShadowVarId[cascadeNo], worldToToroidal[cascadeNo]);
+      ShaderGlobal::setBlock(clipmap_shadowsBlockId, ShaderGlobal::LAYER_FRAME);
 
-    uvOffset[cascadeNo] = -point2((torHelper.mainOrigin - torHelper.curOrigin) % torHelper.texSize) / torHelper.texSize;
+      return rendinst::render::tryRenderRIGenShadowsToClipmap(clipmap_shadow_query_box(reg, texelSize), cascadeNo, budget, draws);
+    };
 
-    for (int i = 0; i < regions[cascadeNo].size(); ++i)
+    auto drainQuadRegions = [&](Tab<ToroidalQuadRegion> &regs, int &budget) {
+      int numProcessed = 0;
+      int lastRequiredDraws = 0;
+
+      while (numProcessed < regs.size() && budget > 0)
+      {
+        int actualDraws = tryRenderQuad(regs[numProcessed], budget, lastRequiredDraws);
+        budget -= actualDraws;
+        if (actualDraws != lastRequiredDraws)
+          break;
+        ++numProcessed;
+      }
+
+      if (numProcessed == 0 && regs.size() > 0 && lastRequiredDraws > asyncUpdateDrawsBudget)
+      {
+        const auto reg = regs[numProcessed];
+
+        if (is_toroidal_region_indivisible(reg))
+        {
+          int requiredDraws = 0;
+          int actualDraws = tryRenderQuad(reg, INT_MAX, requiredDraws);
+          logwarn("clipmapShadow: too tight region, cascade %d forced %d draws over budget %d", cascadeNo, requiredDraws,
+            asyncUpdateDrawsBudget);
+          budget -= actualDraws;
+          erase_items(regs, 0, 1);
+        }
+        else
+        {
+          erase_items(regs, 0, 1);
+          Tab<ToroidalQuadRegion> resplit(framemem_ptr());
+          split_region_by_draw_budget(resplit, reg, texelSize, cascadeNo, asyncUpdateDrawsBudget);
+          insert_items(regs, 0, resplit.size(), resplit.data());
+        }
+      }
+
+      erase_items(regs, 0, numProcessed);
+    };
+
+    for (int i = 0; i < immediateRegions.size(); ++i)
     {
-      const ToroidalQuadRegion &reg = regions[cascadeNo][i];
-      append_items(quadRegions[cascadeNo], 1, &reg);
-      changed = true;
+      int requiredDraws = 0;
+      int actualDraws = tryRenderQuad(immediateRegions[i], currentBudget, requiredDraws);
+      currentBudget -= actualDraws;
+      if (actualDraws == requiredDraws)
+        remove_drawn_area(deferredRegions[cascadeNo], immediateRegions[i]);
+      else if (requiredDraws > asyncUpdateDrawsBudget)
+        split_region_by_draw_budget(deferredRegions[cascadeNo], immediateRegions[i], texelSize, cascadeNo, asyncUpdateDrawsBudget);
+      else
+        append_items(deferredRegions[cascadeNo], 1, &immediateRegions[i]);
     }
+
+    drainQuadRegions(deferredRegions[cascadeNo], currentBudget);
   }
 
   ShaderGlobal::set_texture(clipmapShadowTexVarId, clipmapShadowTex.getTexId());
   ShaderGlobal::set_float4(clipmap_shadow_near_far_tc_offsetVarId, Color4(uvOffset[1].x, uvOffset[1].y, uvOffset[0].x, uvOffset[0].y));
-
-  if (!changed)
-    return false;
-  else
-  {
-    // save states
-    SCOPE_RENDER_TARGET;
-    SCOPE_VIEW_PROJ_MATRIX;
-
-    // update all generated regions for all cascades
-    for (int cascadeNo = NUM_CLIPMAP_SHADOW_CASCADES - 1; cascadeNo >= 0; cascadeNo--)
-    {
-      // vars
-      float texelSize = clipmapShadowWorldSize[cascadeNo] / (float)clipmapShadowSize;
-
-      if (quadRegions[cascadeNo].size() == 0)
-        continue;
-
-      d3d::set_render_target({}, DepthAccess::RW, {{clipmapShadowTex.getTex2D(), 0, 0}});
-      d3d::settm(TM_VIEW, lookDownVtm);
-
-      for (int i = 0; i < quadRegions[cascadeNo].size(); ++i)
-      {
-        ToroidalQuadRegion &reg = quadRegions[cascadeNo][i];
-        d3d::setview(clipmapShadowSize * cascadeNo + reg.lt.x, reg.lt.y, reg.wd.x, reg.wd.y, 0, 1);
-
-        d3d::clearview(CLEAR_TARGET, 0xFFFFFFFF, 1.f, 0);
-        BBox2 boxReg(point2(reg.texelsFrom) * texelSize, point2(reg.texelsFrom + reg.wd) * texelSize);
-        TMatrix4 proj = matrix_ortho_off_center_lh(boxReg[0].x, boxReg[1].x, boxReg[1].y, boxReg[0].y, min_height, max_height);
-        d3d::settm(TM_PROJ, &proj);
-
-        ShaderGlobal::setBlock(clipmap_shadowsBlockId, ShaderGlobal::LAYER_FRAME);
-
-        // increase box size for culling to avoid absent shadows from ri outside original box
-        const float boxExpand = 100.0;
-        boxReg[0] -= Point2(1, 1) * boxExpand;
-        boxReg[1] += Point2(1, 1) * boxExpand;
-
-        rendinst::render::renderRIGenShadowsToClipmap(boxReg, cascadeNo);
-      }
-      quadRegions[cascadeNo].clear();
-    }
-  }
 
   d3d::resource_barrier({clipmapShadowTex.getTex2D(), RB_RO_SRV | RB_STAGE_PIXEL, 0, 0});
 

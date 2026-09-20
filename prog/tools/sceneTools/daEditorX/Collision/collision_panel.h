@@ -16,7 +16,7 @@ struct E3DCOLOR;
 class CollisionPropPanelClient : public PropPanel::ControlEventHandler
 {
 public:
-  CollisionPropPanelClient(CollisionPlugin *_plg, CollisionBuildSettings &_stg, int &phys_eng_type);
+  CollisionPropPanelClient(CollisionPlugin *_plg, CollisionBuildSettings &_stg);
   void setPanelParams();
   bool showPropPanel(bool show);
 
@@ -29,7 +29,6 @@ private:
   PropPanel::PanelWindowPropertyControl *mPanelWindow;
   CollisionPlugin *plugin;
   CollisionBuildSettings &stg;
-  int &curPhysEngType;
 
   // ControlEventHandler
 

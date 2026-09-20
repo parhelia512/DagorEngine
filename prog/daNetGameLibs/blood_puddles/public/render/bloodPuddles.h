@@ -149,7 +149,6 @@ public:
   template <class F>
   void erasePuddles(const F &pred)
   {
-    eastl::vector<int, framemem_allocator> queryIndices;
     const int oldSize = puddles.size();
     int removedCount = 0;
     for (int i = 0, j = 0; i < oldSize; ++i)

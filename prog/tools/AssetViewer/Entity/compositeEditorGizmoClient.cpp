@@ -15,20 +15,23 @@ void CompositeEditorGizmoClient::setEntity(IObjEntity *in_entity) { entity = in_
 Point3 CompositeEditorGizmoClient::getPt()
 {
   const CompositeEditorTreeDataNode *node = get_app().getCompositeEditor().getSelectedTreeDataNode();
-  if (!node || !node->canTransform())
+  if (!node)
     return Point3::ZERO;
 
+  if (expectedPositionSet && get_app().isGizmoOperationStarted())
+    return expectedPosition;
+
   const IEditorCoreEngine::CenterType centerType = IEditorCoreEngine::get()->getGizmoCenterType();
-  if (centerType == IEditorCoreEngine::CENTER_Selection)
+  if (centerType == IEditorCoreEngine::CENTER_Selection || !node->canTransform())
   {
     CompositeEditor &compositeEditor = get_app().getCompositeEditor();
     Point3 selectionCenter = Point3::ZERO;
     int validCount = 0;
-    for (const EffectedNode &en : effectedNodes)
+    for (const AffectedNode &an : affectedNodes)
     {
-      if (!en.canTransform)
+      if (!an.canTransform)
         continue;
-      IObjEntity *subEntity = compositeEditor.getSubEntityByDataBlockId(en.node->dataBlockId);
+      IObjEntity *subEntity = compositeEditor.getSubEntityByDataBlockId(an.node->dataBlockId);
       if (subEntity)
       {
         TMatrix tm;
@@ -39,6 +42,8 @@ Point3 CompositeEditorGizmoClient::getPt()
     }
     if (validCount > 0)
       return selectionCenter / float(validCount);
+    if (!node->canTransform())
+      return Point3::ZERO;
   }
 
   if (entity)
@@ -46,9 +51,6 @@ Point3 CompositeEditorGizmoClient::getPt()
     IObjEntity *selectedSubEntity = CompositeEditorViewport::getSelectedSubEntity(entity);
     if (selectedSubEntity)
     {
-      if (expectedPositionSet && get_app().isGizmoOperationStarted())
-        return expectedPosition;
-
       TMatrix tm;
       selectedSubEntity->getTm(tm);
       return tm.getcol(3);
@@ -131,30 +133,30 @@ bool CompositeEditorGizmoClient::getAxes(Point3 &ax, Point3 &ay, Point3 &az)
   return true;
 }
 
-void CompositeEditorGizmoClient::refreshEffectedNodes(const dag::Vector<CompositeEditorTreeDataNode *> &selected_nodes)
+void CompositeEditorGizmoClient::refreshAffectedNodes(const dag::Vector<CompositeEditorTreeDataNode *> &selected_nodes)
 {
-  effectedNodes.clear();
+  affectedNodes.clear();
   for (CompositeEditorTreeDataNode *node : selected_nodes)
   {
-    EffectedNode en;
-    en.node = node;
-    en.canTransform = node && node->canTransform();
-    effectedNodes.push_back(en);
+    AffectedNode an;
+    an.node = node;
+    an.canTransform = node && node->canTransform();
+    affectedNodes.push_back(an);
   }
 
   // Disable nodes that are descendants of another transformable node in the selection
   // (the ancestor's transform will propagate to the descendant automatically).
-  for (int i = 0; i < (int)effectedNodes.size(); ++i)
+  for (int i = 0; i < (int)affectedNodes.size(); ++i)
   {
-    if (!effectedNodes[i].canTransform)
+    if (!affectedNodes[i].canTransform)
       continue;
-    for (int j = 0; j < (int)effectedNodes.size(); ++j)
+    for (int j = 0; j < (int)affectedNodes.size(); ++j)
     {
-      if (i == j || !effectedNodes[j].canTransform)
+      if (i == j || !affectedNodes[j].canTransform)
         continue;
-      if (effectedNodes[j].node->isAncestorOfNode(effectedNodes[i].node->dataBlockId))
+      if (affectedNodes[j].node->isAncestorOfNode(affectedNodes[i].node->dataBlockId))
       {
-        effectedNodes[i].canTransform = false;
+        affectedNodes[i].canTransform = false;
         break;
       }
     }
@@ -163,8 +165,8 @@ void CompositeEditorGizmoClient::refreshEffectedNodes(const dag::Vector<Composit
 
 bool CompositeEditorGizmoClient::hasAnyTransformableNode() const
 {
-  for (const EffectedNode &en : effectedNodes)
-    if (en.canTransform)
+  for (const AffectedNode &an : affectedNodes)
+    if (an.canTransform)
       return true;
   return false;
 }
@@ -199,10 +201,10 @@ void CompositeEditorGizmoClient::changed(const Point3 &delta)
     center == IEditorCoreEngine::CENTER_Selection && (mode == IEditorCoreEngine::MODE_Rotate || mode == IEditorCoreEngine::MODE_Scale))
   {
     int count = 0;
-    for (const EffectedNode &en : effectedNodes)
-      if (en.canTransform)
+    for (const AffectedNode &an : affectedNodes)
+      if (an.canTransform)
       {
-        selectionCenter += en.originalWorldTm.getcol(3);
+        selectionCenter += an.originalWorldTm.getcol(3);
         ++count;
       }
     if (count > 0)
@@ -212,47 +214,46 @@ void CompositeEditorGizmoClient::changed(const Point3 &delta)
   pendingNodes.clear();
   pendingLocalTms.clear();
 
-  const CompositeEditorTreeDataNode *primaryNode = compositeEditor.getSelectedTreeDataNode();
   bool primaryChanged = false;
 
-  for (const EffectedNode &en : effectedNodes)
+  for (const AffectedNode &an : affectedNodes)
   {
-    if (!en.canTransform)
+    if (!an.canTransform)
       continue;
 
     TMatrix worldTm;
     if (mode == IEditorCoreEngine::MODE_Move)
     {
       // Move delta is incremental (per-frame), so start from the current position.
-      worldTm = en.parentWorldTm * en.node->getTransformationMatrix();
+      worldTm = an.parentWorldTm * an.node->getTransformationMatrix();
       moveNode(worldTm, delta);
     }
     else if (mode == IEditorCoreEngine::MODE_Rotate)
     {
-      rotateNode(worldTm, en.originalWorldTm, rot);
+      rotateNode(worldTm, an.originalWorldTm, rot);
       if (center == IEditorCoreEngine::CENTER_Selection)
-        worldTm.setcol(3, selectionCenter + rot * (en.originalWorldTm.getcol(3) - selectionCenter));
+        worldTm.setcol(3, selectionCenter + rot * (an.originalWorldTm.getcol(3) - selectionCenter));
       else
-        worldTm.setcol(3, en.originalWorldTm.getcol(3));
+        worldTm.setcol(3, an.originalWorldTm.getcol(3));
     }
     else if (mode == IEditorCoreEngine::MODE_Scale)
     {
-      scaleNode(worldTm, en.originalWorldTm, scaleMtx);
+      scaleNode(worldTm, an.originalWorldTm, scaleMtx);
       if (center == IEditorCoreEngine::CENTER_Selection)
       {
-        const Point3 offset = en.originalWorldTm.getcol(3) - selectionCenter;
+        const Point3 offset = an.originalWorldTm.getcol(3) - selectionCenter;
         worldTm.setcol(3, selectionCenter + Point3(offset.x * delta.x, offset.y * delta.y, offset.z * delta.z));
       }
     }
     else
       continue;
 
-    const TMatrix newLocalTm = inverse(en.parentWorldTm) * worldTm;
-    if (newLocalTm != en.node->getTransformationMatrix())
+    const TMatrix newLocalTm = inverse(an.parentWorldTm) * worldTm;
+    if (newLocalTm != an.node->getTransformationMatrix())
     {
-      pendingNodes.push_back(en.node);
+      pendingNodes.push_back(an.node);
       pendingLocalTms.push_back(newLocalTm);
-      if (en.node == primaryNode)
+      if (an.movesExpectedPosition)
         primaryChanged = true;
     }
   }
@@ -280,8 +281,7 @@ void CompositeEditorGizmoClient::gizmoStarted()
 
   expectedPosition = getPt();
   expectedPositionSet = true;
-  cloning = primaryNode && primaryNode->canTransform() && ec_is_shift_key_down() &&
-            IEditorCoreEngine::get()->getGizmoModeType() == IEditorCoreEngine::MODE_Move;
+  cloning = ec_is_shift_key_down() && IEditorCoreEngine::get()->getGizmoModeType() == IEditorCoreEngine::MODE_Move;
 
   compositeEditor.beginUndo(/*save_selection = */ cloning);
 
@@ -289,14 +289,14 @@ void CompositeEditorGizmoClient::gizmoStarted()
   compositeEditor.setPreventUiUpdatesWhileUsingGizmo(true);
 
   // Cache world transforms now so changed() can work in world space.
-  for (EffectedNode &en : effectedNodes)
+  for (AffectedNode &an : affectedNodes)
   {
-    if (!en.canTransform)
+    if (!an.canTransform)
       continue;
     int nodeIndex = -1;
-    CompositeEditorTreeDataNode *parent = compositeEditor.getTreeDataNodeParent(en.node, nodeIndex);
-    en.parentWorldTm = parent ? compositeEditor.calcParentMatrix(parent) : TMatrix::IDENT;
-    en.originalWorldTm = en.parentWorldTm * en.node->getTransformationMatrix();
+    CompositeEditorTreeDataNode *parent = compositeEditor.getTreeDataNodeParent(an.node, nodeIndex);
+    an.parentWorldTm = parent ? compositeEditor.calcParentMatrix(parent) : TMatrix::IDENT;
+    an.originalWorldTm = an.parentWorldTm * an.node->getTransformationMatrix();
   }
 
   // Cache gizmo axes for rotation so changed() rotates around the correct axes throughout the drag,
@@ -305,11 +305,11 @@ void CompositeEditorGizmoClient::gizmoStarted()
   const IEditorCoreEngine::BasisType basis = IEditorCoreEngine::get()->getGizmoBasisType();
   if (basis == IEditorCoreEngine::BASIS_Local || basis == IEditorCoreEngine::BASIS_Parent)
   {
-    for (const EffectedNode &en : effectedNodes)
+    for (const AffectedNode &an : affectedNodes)
     {
-      if (!en.canTransform || en.node != primaryNode)
+      if (!an.canTransform || an.node != primaryNode)
         continue;
-      const TMatrix &src = (basis == IEditorCoreEngine::BASIS_Local) ? en.originalWorldTm : en.parentWorldTm;
+      const TMatrix &src = (basis == IEditorCoreEngine::BASIS_Local) ? an.originalWorldTm : an.parentWorldTm;
       rotationAxesTm.setcol(0, normalize(src.getcol(0)));
       rotationAxesTm.setcol(1, normalize(src.getcol(1)));
       rotationAxesTm.setcol(2, normalize(src.getcol(2)));
@@ -320,21 +320,48 @@ void CompositeEditorGizmoClient::gizmoStarted()
 
   if (cloning)
   {
-    cloneStartPosition = getPt();
-    compositeEditor.cloneSelectedNode();
-
-    // The clone is now the selected node; update the primary node's entry to point to it.
-    const unsigned cloneId = compositeEditor.getSelectedTreeNodeDataBlockId();
-    CompositeEditorTreeDataNode *cloneNode = compositeEditor.getTreeNodeByDataBlockId(cloneId);
-    for (EffectedNode &en : effectedNodes)
+    // clones[i] matches affectedNodes[i] by selection index (see cloneSelectedNodes contract).
+    dag::Vector<CompositeEditorTreeDataNode *> clones;
+    compositeEditor.cloneSelectedNodes(clones);
+    for (int i = 0; i < (int)clones.size() && i < (int)affectedNodes.size(); ++i)
     {
-      if (en.node == primaryNode)
+      if (!clones[i])
+        continue;
+      affectedNodes[i].node = clones[i];
+      if (!affectedNodes[i].canTransform && clones[i]->canTransform())
       {
-        en.node = cloneNode;
-        break;
+        // The clone of a selected node's descendant stays in the old hierarchy when its direct parent wasn't selected.
+        int nodeIndex = -1;
+        CompositeEditorTreeDataNode *parent = compositeEditor.getTreeDataNodeParent(clones[i], nodeIndex);
+        if (eastl::find(clones.begin(), clones.end(), parent) == clones.end())
+        {
+          affectedNodes[i].canTransform = true;
+          affectedNodes[i].parentWorldTm = parent ? compositeEditor.calcParentMatrix(parent) : TMatrix::IDENT;
+          affectedNodes[i].originalWorldTm = affectedNodes[i].parentWorldTm * clones[i]->getTransformationMatrix();
+        }
       }
     }
+    cloneStartPosition = expectedPosition;
   }
+
+  primaryNode = compositeEditor.getSelectedTreeDataNode();
+  const bool primaryCanTransform = primaryNode && primaryNode->canTransform();
+  for (AffectedNode &an : affectedNodes)
+    an.movesExpectedPosition = !primaryCanTransform || an.node == primaryNode || an.node->isAncestorOfNode(primaryNode->dataBlockId);
+}
+
+static bool has_transformable_clone_ancestor(CompositeEditorTreeDataNode *start_node,
+  const dag::Vector<CompositeEditorTreeDataNode *> &clones, CompositeEditor &composite_editor)
+{
+  CompositeEditorTreeDataNode *ancestor = start_node;
+  while (ancestor)
+  {
+    if (ancestor->canTransform() && eastl::find(clones.begin(), clones.end(), ancestor) != clones.end())
+      return true;
+    int ancestorIdx = -1;
+    ancestor = composite_editor.getTreeDataNodeParent(ancestor, ancestorIdx);
+  }
+  return false;
 }
 
 void CompositeEditorGizmoClient::gizmoEnded(bool apply)
@@ -347,18 +374,34 @@ void CompositeEditorGizmoClient::gizmoEnded(bool apply)
       const int cloneCount = copyDlg.execute();
       if (cloneCount > 1)
       {
-        Point3 clonePosition = getPt();
-        const Point3 delta = clonePosition - cloneStartPosition;
+        const Point3 delta = expectedPosition - cloneStartPosition;
 
         for (int cloneIndex = 1; cloneIndex < cloneCount; ++cloneIndex)
         {
-          clonePosition += delta;
+          CompositeEditor &compositeEditor = get_app().getCompositeEditor();
 
-          get_app().getCompositeEditor().cloneSelectedNode();
+          dag::Vector<CompositeEditorTreeDataNode *> newClones;
+          compositeEditor.cloneSelectedNodes(newClones);
 
-          TMatrix tm = get_app().getCompositeEditor().getSelectedTreeDataNode()->getTransformationMatrix();
-          tm.setcol(3, clonePosition);
-          get_app().getCompositeEditor().updateSelectedNodeTransform(tm);
+          dag::Vector<CompositeEditorTreeDataNode *> nodesToUpdate;
+          dag::Vector<TMatrix> newTms;
+          for (int ci = 0; ci < (int)newClones.size(); ++ci)
+          {
+            CompositeEditorTreeDataNode *clone = newClones[ci];
+            if (!clone || !clone->canTransform())
+              continue;
+            // Skip clones that have a transformable ancestor clone; that ancestor carries them via the hierarchy.
+            int nodeIndex = -1;
+            CompositeEditorTreeDataNode *parent = compositeEditor.getTreeDataNodeParent(clone, nodeIndex);
+            if (has_transformable_clone_ancestor(parent, newClones, compositeEditor))
+              continue;
+            const TMatrix parentWorldTm = parent ? compositeEditor.calcParentMatrix(parent) : TMatrix::IDENT;
+            TMatrix worldTm = parentWorldTm * clone->getTransformationMatrix();
+            worldTm.setcol(3, worldTm.getcol(3) + delta);
+            nodesToUpdate.push_back(clone);
+            newTms.push_back(inverse(parentWorldTm) * worldTm);
+          }
+          compositeEditor.updateMultipleNodesTransforms(nodesToUpdate, newTms);
         }
       }
       else if (cloneCount < 1)

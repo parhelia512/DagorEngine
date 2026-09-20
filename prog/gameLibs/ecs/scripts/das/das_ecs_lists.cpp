@@ -30,6 +30,10 @@ namespace bind_dascript
     {                                                                                                                            \
       return context.code->makeNode<das::SimNode_CloneRefValueT<ecs::T>>(at, l, r);                                              \
     }                                                                                                                            \
+    /* JIT counterpart of simulateClone: without it a clone of this type sends the whole */                                      \
+    /* enclosing function back to the interpreter (the JIT asks the annotation, per type). */                                    \
+    static void jit_clone_list(void *dst, const void *src) { *(ecs::T *)dst = *(const ecs::T *)src; }                            \
+    virtual void *jitGetClone() const override { return (void *)&jit_clone_list; }                                               \
     virtual void gc_collect(das::gc_root *target, das::gc_root *from) override                                                   \
     {                                                                                                                            \
       das::ManagedVectorAnnotation<ecs::T>::gc_collect(target, from);                                                            \

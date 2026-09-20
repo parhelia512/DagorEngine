@@ -38,7 +38,8 @@ int global_mutex_enter(void *mutex, int timeout_msec)
   ScopeLockProfiler<da_profiler::DescGlobalMutex> lp;
   G_UNUSED(lp);
 #if _TARGET_PC_WIN
-  int ret = WaitForSingleObject(mutex, timeout_msec < 0 ? INFINITE : timeout_msec) == WAIT_OBJECT_0 ? 0 : -1;
+  DWORD waitRes = WaitForSingleObject(mutex, timeout_msec < 0 ? INFINITE : timeout_msec);
+  int ret = waitRes == WAIT_OBJECT_0 || waitRes == WAIT_ABANDONED ? 0 : -1;
 #elif _TARGET_PC_MACOSX | _TARGET_PC_LINUX
   sem_t *sem = (sem_t *)mutex;
   int ret = sem && timeout_msec < 0 ? sem_wait(sem) : -1;
@@ -69,26 +70,30 @@ int global_mutex_leave(void *mutex)
 #endif
 }
 
-int global_mutex_destroy(void *mutex, const char *mutex_name)
+int global_mutex_close(void *mutex)
 {
 #if _TARGET_PC_WIN
   return CloseHandle(mutex) ? 0 : -1;
-  G_UNUSED(mutex_name);
 #elif _TARGET_PC_MACOSX | _TARGET_PC_LINUX
   sem_t *sem = (sem_t *)mutex;
-  if (sem)
-  {
-    int ret = sem_close(sem);
-    if (ret)
-      return ret;
-    char name[260];
-    SNPRINTF(name, sizeof(name), "/%s", mutex_name);
-    return sem_unlink(name);
-  }
-  else
-    return -1;
+  return sem ? sem_close(sem) : -1;
 #else
   (void)(mutex);
+  return -1;
+#endif
+}
+
+int global_mutex_unlink(const char *mutex_name)
+{
+#if _TARGET_PC_WIN
+  (void)(mutex_name);
+  return 0;
+#elif _TARGET_PC_MACOSX | _TARGET_PC_LINUX
+  char name[260];
+  G_ASSERT(strchr(mutex_name, '/') == NULL);
+  SNPRINTF(name, sizeof(name), "/%s", mutex_name);
+  return sem_unlink(name);
+#else
   (void)(mutex_name);
   return -1;
 #endif

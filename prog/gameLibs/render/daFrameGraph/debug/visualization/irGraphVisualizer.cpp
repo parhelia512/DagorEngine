@@ -579,14 +579,14 @@ void Visualizer::drawNodes(ImDrawList *draw_list, const CanvasLayout &layout)
         }
 
         uint32_t vtxBufDeltas = 0;
-        for (const auto optBuf : stateDelta.vertexSources)
+        for (const auto &optBuf : stateDelta.vertexSources)
           vtxBufDeltas += bool(optBuf) ? 1 : 0;
         if (vtxBufDeltas > 0)
         {
           startSDBlock(lineHeight * (1 + vtxBufDeltas) + 2.f * STATE_DELTA_BLOCK_BORDER_PADDING.y);
           {
             ImGui::TextUnformatted("Set Vervex Buffers:");
-            for (const auto optBuf : stateDelta.vertexSources)
+            for (const auto &optBuf : stateDelta.vertexSources)
               if (optBuf && optBuf->buffer)
               {
                 const auto irBufIndex = *(optBuf->buffer);
@@ -1002,7 +1002,7 @@ void Visualizer::drawResources(ImDrawList *draw_list, const CanvasLayout &layout
 
           if (irResType == ResourceType::Texture)
           {
-            const auto &resDescr = eastl::get<ResourceDescription>(scheduledRes.description);
+            const auto &resDescr = scheduledRes.getGpuDescription();
 
             {
               SUBBLOCK_SCOPED
@@ -1048,7 +1048,7 @@ void Visualizer::drawResources(ImDrawList *draw_list, const CanvasLayout &layout
           {
             SUBBLOCK_SCOPED
 
-            const auto &bufferDescr = eastl::get<ResourceDescription>(scheduledRes.description).asBufferRes;
+            const auto &bufferDescr = scheduledRes.getGpuDescription().asBufferRes;
 
             ImGui::Text("%d byte x %d", bufferDescr.elementSizeInBytes, bufferDescr.elementCount);
             ImGui::Text("size: %d byte", bufferDescr.elementSizeInBytes * bufferDescr.elementCount);
@@ -1077,8 +1077,7 @@ void Visualizer::drawResources(ImDrawList *draw_list, const CanvasLayout &layout
             SUBBLOCK_SCOPED
 
             if (irResType == ResourceType::Texture || irResType == ResourceType::Buffer)
-              ImGui::Text("activation: %s",
-                activation_action_name(eastl::get<ResourceDescription>(scheduledRes.description).asBasicRes.activation));
+              ImGui::Text("activation: %s", activation_action_name(scheduledRes.getGpuDescription().asBasicRes.activation));
             ImGui::Text("clear stage: %s", clear_stage_name(scheduledRes.clearStage));
             if (scheduledRes.clearStage != intermediate::ClearStage::None)
             {
@@ -1628,7 +1627,7 @@ void Visualizer::placeNodesByPasses(CanvasLayout &layout)
         deltaBlocksHeight += 2.f * lineHeight + betweenLines;
 
       uint32_t vtxBufDeltas = 0;
-      for (const auto optBuf : stateDelta.vertexSources)
+      for (const auto &optBuf : stateDelta.vertexSources)
         vtxBufDeltas += bool(optBuf) ? 1 : 0;
       if (vtxBufDeltas > 0)
         deltaBlocksHeight += lineHeight * (1 + vtxBufDeltas) + betweenLines;

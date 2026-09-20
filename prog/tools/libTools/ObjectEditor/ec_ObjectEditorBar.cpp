@@ -10,6 +10,8 @@
 #include <debug/dag_debug.h>
 #include <de3_interface.h>
 
+namespace
+{
 enum
 {
   ID_NAME = 10000,
@@ -23,11 +25,26 @@ enum
   ID_TRANSFORM_LAST = ID_TRANSFORM_SCA + 3
 };
 
+
+const char *edit_gesture_name(int pcb_id)
+{
+  if (pcb_id >= ID_TRANSFORM_SCA && pcb_id < ID_TRANSFORM_LAST)
+    return "Scale";
+  if (pcb_id >= ID_TRANSFORM_ROT)
+    return "Rotate";
+  if (pcb_id >= ID_TRANSFORM_LOC)
+    return "Move";
+  return "Params change";
+}
+
+
 template <class T>
 inline dag::Span<T *> mk_slice(PtrTab<T> &t)
 {
   return make_span<T *>(reinterpret_cast<T **>(t.data()), t.size());
 }
+} // namespace
+
 
 ObjectEditorPropPanelBar::ObjectEditorPropPanelBar(ObjectEditor *obj_ed, void *hwnd, const char *caption) :
   objEd(obj_ed), objects(midmem)
@@ -38,6 +55,8 @@ ObjectEditorPropPanelBar::ObjectEditorPropPanelBar(ObjectEditor *obj_ed, void *h
 
 ObjectEditorPropPanelBar::~ObjectEditorPropPanelBar()
 {
+  endEditGesture();
+
   if (objects.size())
     objects[0]->onPPClose(*propPanel, mk_slice(objects));
 
@@ -55,8 +74,56 @@ void ObjectEditorPropPanelBar::getObjects()
 }
 
 
+void ObjectEditorPropPanelBar::beginEditGesture(int pcb_id)
+{
+  if (editGestureOpen && editGesturePid == pcb_id)
+    return;
+
+  // A gesture that could not be closed keeps this change, rather than nesting a second one inside it.
+  if (!endEditGesture())
+    return;
+
+  objEd->getUndoSystem()->begin(true);
+  editGesturePid = pcb_id;
+  editGestureOpen = true;
+  editGestureDepth = objEd->getUndoSystem()->open_operation_count();
+}
+
+
+bool ObjectEditorPropPanelBar::endEditGesture()
+{
+  if (!editGestureOpen)
+    return true;
+
+  UndoSystem *undo = objEd->getUndoSystem();
+  const int openNow = undo->open_operation_count();
+
+  // Accepting now would close what was opened inside the gesture instead of the gesture itself, and
+  // leave the gesture open for good. Whoever opened that one still has to close it, and the next
+  // attempt here gets the gesture once they have.
+  if (openNow > editGestureDepth)
+    return false;
+
+  const int pid = editGesturePid;
+  editGestureOpen = false;
+
+  // Fewer open than the gesture itself opened means its operation is gone: loading a level clears the
+  // undo system without telling anyone. Accepting would commit an unrelated operation under this name.
+  if (openNow < editGestureDepth)
+    return true;
+
+  // An empty operation is dropped by accept(), so a gesture that changed nothing leaves no record.
+  undo->accept(edit_gesture_name(pid));
+  return true;
+}
+
+
 void ObjectEditorPropPanelBar::onChange(int pcb_id, PropPanel::ContainerPropertyControl *panel)
 {
+  // A dragged spin box or slider changes every frame, so the per-change operations below are nested
+  // in one operation per edit. Undo then reverts the whole drag instead of its last frame.
+  beginEditGesture(pcb_id);
+
   if (pcb_id == ID_NAME)
   {
     objEd->renameObject(objEd->getSelected(0), panel->getText(pcb_id).str());
@@ -75,10 +142,22 @@ void ObjectEditorPropPanelBar::onChange(int pcb_id, PropPanel::ContainerProperty
   }
   else if (objects.size())
   {
+    // No onPPChange cancels the operation it is given, so this never needs can_cancel.
     objEd->getUndoSystem()->begin();
     objects[0]->onPPChange(pcb_id, true, *panel, mk_slice(objects));
     objEd->getUndoSystem()->accept("Params change");
   }
+}
+
+
+void ObjectEditorPropPanelBar::onChangeFinished(int pcb_id, PropPanel::ContainerPropertyControl *panel)
+{
+  G_UNUSED(panel);
+
+  // The value already arrived through onChange. The id has to match, a gesture another control
+  // opened in between is still being edited.
+  if (editGestureOpen && editGesturePid == pcb_id)
+    endEditGesture();
 }
 
 
@@ -171,6 +250,8 @@ void ObjectEditorPropPanelBar::setObjectTransform(int mode, Point3 val)
 
 void ObjectEditorPropPanelBar::onClick(int pcb_id, PropPanel::ContainerPropertyControl *panel)
 {
+  endEditGesture();
+
   if (objects.size())
   {
     objEd->getUndoSystem()->begin();
@@ -197,6 +278,9 @@ void ObjectEditorPropPanelBar::refillPanel()
 void ObjectEditorPropPanelBar::fillPanel()
 {
   G_ASSERT(propPanel && "ObjectEditorPropPanelBar::fillPanel: ppanel is NULL!");
+
+  // The controls are about to be destroyed, so no finish event will arrive for a gesture in progress.
+  endEditGesture();
 
   if (objects.size() && objects[0].get() && propPanel && propPanel->getById(ID_NAME))
     objects[0]->onPPClear(*propPanel, mk_slice(objects));

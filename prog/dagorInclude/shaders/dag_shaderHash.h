@@ -26,6 +26,10 @@ struct ShaderHashValue
 
   friend bool operator!=(const ShaderHashValue &l, const ShaderHashValue &r) { return !(l == r); }
 
+  friend bool operator<(const ShaderHashValue &l, const ShaderHashValue &r) { return memcmp(l.value, r.value, sizeof(ValueType)) < 0; }
+
+  friend bool operator>(const ShaderHashValue &l, const ShaderHashValue &r) { return memcmp(l.value, r.value, sizeof(ValueType)) > 0; }
+
   template <typename T>
   static ShaderHashValue calculate(dag::ConstSpan<T> data)
   {

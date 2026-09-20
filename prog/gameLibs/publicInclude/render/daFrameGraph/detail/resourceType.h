@@ -19,7 +19,9 @@ enum class ResourceType : uint8_t
   Invalid,
   Texture,
   Buffer,
-  Blob
+  Blob,
+
+  MAX_VAL = Blob,
 };
 
 // Tags used for validating resource types on requests

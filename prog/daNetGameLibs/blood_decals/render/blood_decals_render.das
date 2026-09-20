@@ -37,10 +37,6 @@ def blood_decals_init(evt : Event;
 
   let depthAtlasFlags = int(TEXFMT_DEPTH16 | TEXCF_RTARGET)
   blood_decals_depth_atlas |> create_tex(DEPTH_ATLAS_SIZE, DEPTH_ATLAS_SIZE, depthAtlasFlags, 1, "blood_decals_depth_atlas_tex")
-  let sampler = d3d_request_sampler() <| $(var smpInfo : SamplerInfo#)
-    smpInfo.filter_mode = FilterMode Compare
-  DagorShaders::set_sampler(get_shader_variable_id("blood_decals_depth_atlas_tex_samplerstate", true), sampler)
-
 
   set_float4(get_shader_variable_id("blood_decal_timings", true),
     safeinv(blood_decals_splash_appear_time),
@@ -90,7 +86,7 @@ def blood_decals_render(evt : OnRenderDecals; var blood_decals_manager : RingBuf
 
 
 [es(tag=gameClient)]
-def blood_decals_after_reset(evt : AfterDeviceReset; var blood_decals_manager : RingBufferDecalManager; var blood_decals_decals_count : int&)
+def blood_decals_after_reset(evt : EventAfterDeviceReset; var blood_decals_manager : RingBufferDecalManager; var blood_decals_decals_count : int&)
 
   blood_decals_decals_count = 0
   blood_decals_manager |> clear()

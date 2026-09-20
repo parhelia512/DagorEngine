@@ -27,7 +27,7 @@ shader trees2d_clear
       {
         int2 rmin = trees2d_clear_regions_arr[i].xy;
         int2 rmax = trees2d_clear_regions_arr[i].zw;
-        inside = inside || all(pos >= rmin && pos <= rmax);
+        inside = inside || all(and(pos >= rmin, pos <= rmax));
       }
       if (!inside) discard;
       return 0;

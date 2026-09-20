@@ -25,7 +25,7 @@
 #include <math/dag_hlsl_floatx.h>
 #include <daECS/core/coreEvents.h>
 #include <render/daFrameGraph/ecs/frameGraphNode.h>
-#include <render/world/cameraParams.h>
+#include <render/cameraParams.h>
 #include <render/world/frameGraphHelpers.h>
 
 

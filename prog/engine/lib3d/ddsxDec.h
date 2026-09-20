@@ -90,7 +90,7 @@ struct DDSxDecodeCtx : DDSxDecodeCtxBase
       return true;
     }
 
-    const char *getJobName(bool &) const override { return "TexCreateJob"; }
+    const char *getJobName(bool &) const override { return DAPROFILER_STRING("TexCreateJob"); }
 
     virtual void doJob()
     {

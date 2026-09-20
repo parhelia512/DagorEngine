@@ -30,8 +30,10 @@ DynamicResolution::DynamicResolution(int target_width, int target_height)
 
   targetResolutionWidth = target_width;
   targetResolutionHeight = target_height;
-  currentResolutionWidth = target_width;
-  currentResolutionHeight = target_height;
+  currentResolutionWidth = targetResolutionWidth * resolutionScale;
+  currentResolutionHeight = targetResolutionHeight * resolutionScale;
+  currentResolutionWidth &= ~1;
+  currentResolutionHeight &= ~1;
 
   timestamps.resize(MIN_TIMESTAMPGET_DELAY);
   uint64_t gpuFreq;
@@ -90,6 +92,7 @@ void DynamicResolution::applySettings(bool target_only)
   // This curve allows for more granular change at higher framerate, while adapts at a similar speed at low fps.
   resolutionScaleStep = 0.01f * clamp<float>(round(200.0f / targetFrameRate), 1, 5);
   minResolutionScale = settingsBlk.getReal("minResolutionScale", 0.5);
+  maxResolutionScale = settingsBlk.getReal("maxResolutionScale", 1.0);
   resolutionScale = clamp(resolutionScale, minResolutionScale, maxResolutionScale);
   maxThresholdToChange = settingsBlk.getReal("thresholdToDecreaseResolution", 0.95);
   minThresholdToChange = settingsBlk.getReal("thresholdToIncreaseResolution", 0.85);

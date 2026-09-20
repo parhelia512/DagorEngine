@@ -13,6 +13,10 @@ interval blood_decals_debug_mode: off<1, boxes<2, depth_cmp;
 
 texture blood_decals_diff_tex;
 texture blood_decals_depth_atlas_tex;
+sampler blood_decals_depth_atlas_tex_samplerstate
+{
+  comparison_func = less;
+};
 texture perlin_noise3d;
 
 buffer blood_decals_traces_result;
@@ -85,7 +89,8 @@ shader blood_projective_decal_decals
     blood_decal_begin_color@f4 = blood_begin_color;
     blood_decal_end_color@f4 = blood_end_color;
     blood_decal_timings@f4 = blood_decal_timings;
-    blood_decals_depth_atlas_tex@shd = blood_decals_depth_atlas_tex;
+    blood_decals_depth_atlas_tex@tex2d = blood_decals_depth_atlas_tex;
+    blood_decals_depth_atlas_tex_cmpSampler@cmpSampler = blood_decals_depth_atlas_tex_samplerstate;
   }
 
   hlsl {

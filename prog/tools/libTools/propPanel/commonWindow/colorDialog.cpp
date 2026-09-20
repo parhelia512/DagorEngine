@@ -577,9 +577,9 @@ void ColorDialog::customControlUpdate(int id)
   }
 }
 
-void ColorDialog::updateImguiDialog()
+void ColorDialog::updateImguiDialog(const PropPanel::DialogWindow::DialogFrameSizing &sizing)
 {
-  DialogWindow::updateImguiDialog();
+  DialogWindow::updateImguiDialog(sizing);
 
   if (!pickingFromScreen)
     return;

@@ -27,6 +27,7 @@
 #include <math/dag_math3d.h>
 #include <math/dag_capsule.h>
 #include "riCollisionCallback.h"
+#include "collisionLibPrivate.h"
 #include "collisionGlobals.h"
 
 namespace dacoll
@@ -39,10 +40,12 @@ typedef CollisionInstances CollisionInstancesType;
 G_STATIC_ASSERT(!eastl::is_polymorphic<CollisionInstances>::value); // Don't need it (for perfomance reasons)
 #endif
 static dag::Vector<CollisionInstancesType> ri_instances;
-static constexpr int NON_EMPTY_HEAD_INDEX = -2;
+static constexpr int NON_EMPTY_HEAD_INDEX = -2; // prevNotEmpty of list head: in list, but without prev (unlike NOT_IN_LIST)
 static int last_non_empty_ri_instance = NON_EMPTY_HEAD_INDEX; // Tail of list
 static int num_non_empty_ri_instances = 0;
 static float ri_instances_time = 0;
+#define HANDLE_TO_RI_INSTANCE_IDX(h) (int((uintptr_t)(h)) - 1)
+ska::flat_hash_map<rendinst::RendInstDesc, int, RendInstDescHash> disabled_ri_instances;
 
 struct PairCollisionCB
 {
@@ -347,13 +350,19 @@ void unregister_collision_cb(void *&handle)
   CollisionInstances *ci = get_collision_instances_by_handle(handle);
   G_ASSERT_RETURN(ci, );
 
-#ifndef ENABLE_APEX
-  if (!ci->empty())
+  if (ci->prevNotEmpty != CollisionInstances::NOT_IN_LIST)
   {
+    G_ASSERT((!eastl::is_same_v<CollisionInstancesType, CollisionInstances> || ci->hasPhysBodyInstances())); // APEX unlinks lazily
     ci->clearInstances();
     remove_empty_ri_instance_list(*ci);
   }
-#endif
+
+  const int riIdx = HANDLE_TO_RI_INSTANCE_IDX(handle);
+  for (auto it = disabled_ri_instances.begin(); it != disabled_ri_instances.end();)
+    if (it->second == riIdx)
+      it = disabled_ri_instances.erase(it);
+    else
+      ++it;
 
   if (ci == &ri_instances.back())
     ri_instances.pop_back();
@@ -366,7 +375,7 @@ CollisionInstances *get_collision_instances_by_handle(void *handle)
 {
   if (!handle)
     return nullptr;
-  int ri = int((uintptr_t)handle) - 1;
+  int ri = HANDLE_TO_RI_INSTANCE_IDX(handle);
   G_ASSERTF_RETURN((unsigned)ri < ri_instances.size(), nullptr, "%d >= %d", ri, ri_instances.size());
   return &ri_instances[ri];
 }
@@ -385,6 +394,8 @@ void flush_ri_instances()
 void clear_ri_instances()
 {
   clear_and_shrink(ri_instances);
+  disabled_ri_instances.clear();
+  disabled_ri_instances.shrink_to_fit();
   flush_ri_instances();
   ri_instances_time = 0;
 }
@@ -400,13 +411,17 @@ void clear_ri_apex_instances()
 void enable_disable_ri_instance(const rendinst::RendInstDesc &desc, bool flag)
 {
   void *handle = rendinst::getCollisionResourceHandle(desc);
-  if (CollisionInstances *instance = handle ? get_collision_instances_by_handle(handle) : nullptr)
-    instance->enableDisableCollisionObject(desc, flag);
+  if (!get_collision_instances_by_handle(handle))
+    return;
+  if (!flag)
+    disabled_ri_instances.emplace(desc, HANDLE_TO_RI_INSTANCE_IDX(handle));
+  else
+    disabled_ri_instances.erase(desc);
 }
 
-bool is_ri_instance_enabled(const CollisionInstances *instance, const rendinst::RendInstDesc &desc)
+bool is_ri_instance_disabled_outofline(const rendinst::RendInstDesc &desc)
 {
-  return instance->isCollisionObjectEnabled(desc);
+  return disabled_ri_instances.find(desc) != disabled_ri_instances.end();
 }
 
 
@@ -456,14 +471,21 @@ bool check_ri_collision_filtered(const rendinst::RendInstDesc &desc, const TMatr
 
 float get_ri_instances_time() { return ri_instances_time; }
 
-#ifndef ENABLE_APEX
+static size_t get_ri_instance_index(const CollisionInstances &ci)
+{
+  return (uintptr_t(&ci) - uintptr_t(ri_instances.data())) / sizeof(CollisionInstancesType);
+}
+
 void push_non_empty_ri_instance_list(CollisionInstances &ci)
 {
-  G_ASSERT(size_t(&ci - ri_instances.data()) < ri_instances.size());
-  G_ASSERT(ci.prevNotEmpty < 0 && ci.nextNotEmpty < 0);
-  G_ASSERT(!ci.empty());
+  if (ci.prevNotEmpty != CollisionInstances::NOT_IN_LIST)
+    return;
+  size_t i = get_ri_instance_index(ci);
+  if (i >= ri_instances.size())
+    return;
+  G_ASSERT(ci.nextNotEmpty < 0);
   ci.prevNotEmpty = last_non_empty_ri_instance;
-  last_non_empty_ri_instance = &ci - ri_instances.data();
+  last_non_empty_ri_instance = int(i);
   if (ci.prevNotEmpty >= 0)
     ri_instances[ci.prevNotEmpty].nextNotEmpty = last_non_empty_ri_instance;
   num_non_empty_ri_instances++;
@@ -471,9 +493,9 @@ void push_non_empty_ri_instance_list(CollisionInstances &ci)
 
 void remove_empty_ri_instance_list(CollisionInstances &ci)
 {
-  G_ASSERT(size_t(&ci - ri_instances.data()) < ri_instances.size());
-  G_ASSERT(ci.empty());
-  int i = &ci - ri_instances.data();
+  G_ASSERT(get_ri_instance_index(ci) < ri_instances.size());
+  G_ASSERT(!ci.hasPhysBodyInstances());
+  int i = int(get_ri_instance_index(ci));
   if (ci.nextNotEmpty >= 0)
   {
     G_ASSERT(ri_instances[ci.nextNotEmpty].prevNotEmpty == i);
@@ -493,34 +515,31 @@ void remove_empty_ri_instance_list(CollisionInstances &ci)
     G_ASSERT(ci.prevNotEmpty == NON_EMPTY_HEAD_INDEX);
   G_ASSERT(last_non_empty_ri_instance != i);
   G_UNUSED(i);
-  ci.prevNotEmpty = ci.nextNotEmpty = -1;
+  ci.unlink();
   num_non_empty_ri_instances--;
   G_ASSERT(num_non_empty_ri_instances >= 0);
 }
-#endif
 
 void update_ri_instances(float dt)
 {
   TIME_PROFILE_DEV(update_ri_instances);
+
   ri_instances_time += dt;
-#if ENABLE_APEX // TODO: implement for apex code path
-  for (auto &ri : ri_instances)
-    ri.update(ri_instances_time);
-#else
-  int n = 0;
+  [[maybe_unused]] int numNonEmpty = 0;
   for (int i = last_non_empty_ri_instance; i >= 0;)
   {
-    G_ASSERT(!ri_instances[i].empty());
+#if !ENABLE_APEX // With APEX listed instance might have only PhysX instances or none (removal doesn't unlink, update() does)
+    G_ASSERT(ri_instances[i].hasPhysBodyInstances());
+#endif
     int pi = ri_instances[i].prevNotEmpty;
     if (!ri_instances[i].update(ri_instances_time))
       remove_empty_ri_instance_list(ri_instances[i]);
     else
-      ++n;
+      ++numNonEmpty;
     i = pi;
   }
-  G_UNUSED(n);
-  G_ASSERTF(n == num_non_empty_ri_instances, "%d != %d", n, num_non_empty_ri_instances); // Broken list?
-#endif
+  G_ASSERTF(numNonEmpty == num_non_empty_ri_instances, "%d != %d", numNonEmpty, num_non_empty_ri_instances); // Broken list?
+  TIME_PROFILE_TAG_DEV(update_ri_instances, ": %d non empty", numNonEmpty);
 }
 
 } // namespace dacoll

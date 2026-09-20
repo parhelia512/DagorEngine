@@ -39,6 +39,7 @@
 #include <3d/dag_texPackMgr2.h>
 #include <drv/3d/dag_resetDevice.h>
 #include <3d/dag_texMgrTags.h>
+#include <3d/dag_texMgr.h>
 
 #include "test_main.h"
 #include <shaders/dag_computeShaders.h>
@@ -93,7 +94,7 @@
 #include <osApiWrappers/dag_files.h>
 #include <render/deferredRenderer.h>
 #include <render/downsampleDepth.h>
-#include <render/screenSpaceReflections.h>
+#include <screenSpaceReflections_api.h>
 #include <render/preIntegratedGF.h>
 #include <render/viewVecs.h>
 #include <render/voxelization_target.h>
@@ -101,7 +102,6 @@
 #include <daSkies2/daSkiesToBlk.h>
 #include "de3_gui.h"
 #include <render/giVerifierCapture.h>
-#include <image/dag_exr.h>
 #include "de3_gui_dialogs.h"
 #include "de3_hmapTex.h"
 #include <render/motionVectorAccess.h>
@@ -119,7 +119,9 @@
 
 #include <math/dag_hlsl_floatx.h>
 #include <daGI2/daGI2.h>
-#include <daGI2/treesAboveDepth.h>
+#include <voxelizedMedia/voxelizedMedia.h>
+#include <voxelizedMedia/vegetationMediaVoxelizer.h>
+#include <heightmapTrace/heightmapMaxGrid.h>
 #include <render/voxelization_target.h>
 #include <shaders/dag_overrideStates.h>
 #include <EASTL/functional.h>
@@ -196,12 +198,9 @@ typedef StrmSceneHolder scene_type_t;
   VAR(rasterize_collision_type)                      \
   VAR(downsample_depth_type)                         \
   VAR(local_light_probe_tex)                         \
-  VAR(envi_probe_specular)                           \
-  VAR(local_light_probe_tex_samplerstate)            \
-  VAR(envi_probe_specular_samplerstate)
+  VAR(envi_probe_specular)
 
 #define GLOBAL_VARS_OPT_LIST                           \
-  VAR(gbuffer_for_treesabove)                          \
   VAR(downsampled_checkerboard_depth_tex)              \
   VAR(downsampled_checkerboard_depth_tex_samplerstate) \
   VAR(sphere_time)                                     \
@@ -211,6 +210,7 @@ typedef StrmSceneHolder scene_type_t;
   VAR(lmesh_height_encoding)                           \
   VAR(world_to_lmesh_height)                           \
   VAR(gi_debug_froxels)                                \
+  VAR(media_shadow_dist)                               \
   VAR(swrt_shadow_target)                              \
   VAR(swrt_shadow_target_size)                         \
   VAR(prev_globtm_psf_0)                               \
@@ -228,7 +228,8 @@ typedef StrmSceneHolder scene_type_t;
   VAR(globtm_no_ofs_psf_0)                             \
   VAR(globtm_no_ofs_psf_1)                             \
   VAR(globtm_no_ofs_psf_2)                             \
-  VAR(globtm_no_ofs_psf_3)
+  VAR(globtm_no_ofs_psf_3)                             \
+  VAR(use_hw_rt_gi)
 
 #define VAR(a) static ShaderVariableInfo a##VarId(#a, true);
 GLOBAL_VARS_OPT_LIST
@@ -283,7 +284,7 @@ static void init_webui(const DataBlock *debug_block)
 
 void add_dynrend_resource_to_bvh(bvh::ContextId context_id, const DynamicRenderableSceneLodsResource *resource, uint64_t bvhId);
 void add_dynrend_instance_to_bvh(bvh::ContextId context_id, const DynamicRenderableSceneInstance *resource, uint64_t bvh_id, int count,
-  const Point3 &view_pos);
+  const Point3 &view_pos, float cull_radius);
 
 void set_test_tm(int inst, TMatrix &tm) { tm.setcol(3, Point3(20 + (inst / 10) * 14, 0, 20 + (inst % 10) * 14)); }
 
@@ -298,6 +299,11 @@ enum
 };
 
 CONSOLE_BOOL_VAL("render", sw_rt, false);
+CONSOLE_BOOL_VAL("render", hw_rt_gi, true);
+CONSOLE_BOOL_VAL("render", debug_hmap_trace, false); // traced heightfield into the gbuffer
+// hides raster trees only; the media volume instances stay = the destroyed tree look for GI.
+// the land panel checkbox also invalidates the media, this convar deliberately does not
+CONSOLE_BOOL_VAL("render", trees, true);
 CONSOLE_FLOAT_VAL_MINMAX("render", swrt_rebuild_around, -0.001, -0.001, 1024);
 CONSOLE_BOOL_VAL("render", swrt_shadow_use_checkerboard, true);
 
@@ -318,6 +324,8 @@ CONSOLE_BOOL_VAL("render", taa_halton, true);
 CONSOLE_BOOL_VAL("render", rasterize_sdf_prims, true);
 CONSOLE_BOOL_VAL("render", rasterize_sdf_level, true);
 CONSOLE_FLOAT_VAL_MINMAX("hshd", hmapShadowsDist, 1024, 128, 32768);
+// how far the sun ray is traced through the media scene for canopy shadows, 0 turns them off
+CONSOLE_FLOAT_VAL_MINMAX("render", media_shadow_dist, 64, 0, 512);
 CONSOLE_FLOAT_VAL_MINMAX("hshd", hmapShadowsScale, 4, 2, 16);
 CONSOLE_FLOAT_VAL_MINMAX("hshd", hmapShadowsSize, 384, 128, 2048);
 CONSOLE_FLOAT_VAL_MINMAX("hshd", hmapShadowsCascades, 4, 1, 4);
@@ -337,7 +345,7 @@ CONSOLE_FLOAT_VAL_MINMAX("render", taa_clamping_gamma, 1.2f, 0.1, 3.f);
 CONSOLE_INT_VAL("render", taa_subsamples, 4, 1, 16);
 CONSOLE_BOOL_VAL("shadows", render_static_shadows_every_frame, false);
 
-CONSOLE_FLOAT_VAL_MINMAX("render", bvh_radius, 10000, 10, 10000);
+CONSOLE_FLOAT_VAL_MINMAX("render", bvh_radius, 0, 0, 10000); // 0 = match world SDF far distance
 
 ConVarI sleep_msec_val("sleep_msec", 0, 0, 1000, NULL);
 
@@ -481,22 +489,6 @@ void add_mesh(ContextId context_id, uint64_t mesh_id, const MeshInfo &info)
 }
 } // namespace bvh
 
-
-// giVerifierCapture hands the env plane over rather than encoding it, so the
-// EXR dependency stays with the app that wants EXRs (see render/giVerifierCapture.h)
-static bool write_verify_env_exr(const char *path, const uint16_t *rgba16f, int w, int h)
-{
-  Tab<uint16_t> planes[3];
-  for (int c = 0; c < 3; ++c)
-    planes[c].resize(w * h);
-  for (int i = 0; i < w * h; ++i)
-    for (int c = 0; c < 3; ++c)
-      planes[c][i] = rgba16f[i * 4 + c];
-  uint8_t *planePtrs[3] = {(uint8_t *)planes[2].data(), (uint8_t *)planes[1].data(), (uint8_t *)planes[0].data()};
-  const char *planeNames[3] = {"B", "G", "R"};
-  return save_exr(path, planePtrs, w, h, 3, w * sizeof(uint16_t), planeNames, String("verify env"));
-}
-
 class DemoGameScene final : public DagorGameScene, public IRenderDynamicCubeFace2, public ICascadeShadowsClient
 {
 public:
@@ -630,8 +622,8 @@ public:
       swrt_shadow_target.close();
       swrt_shadow_target = dag::create_tex(NULL, halfW, halfH, TEXFMT_R8 | TEXCF_RTARGET | TEXCF_UNORDERED, 1, "swrt_shadow_target");
     }
-    if (isRtEnabled())
-      bvh::bind_resources(bvhCtx, target->getWidth());
+    if (bvhCtx != bvh::InvalidContextId)
+      bvh::bind_resources(bvhCtx, target->getWidth()); // swrt hw rt mode traces the context's main TLAS (render meshes, RTSM only)
     swrt.renderShadows(dir_to_sun, sun_size, shadow_frame, swrt_shadow_use_checkerboard ? shadow_frame : 0, srcW,
       swrt_shadow_mask.getBuf(), swrt_shadow_target.getTex2D(), true);
   }
@@ -644,14 +636,24 @@ public:
     combined_shadows.setVar();
   }
 
+  // a device reset loses every gpu resource: the gi history, and the baked media bricks the
+  // volumes keep across an ordinary invalidation
+  void giAfterDeviceReset()
+  {
+    if (daGI2)
+      daGI2->afterReset();
+    mediaVolumes.afterReset();
+  }
+
   void invalidateGI()
   {
     reloadCube(true);
     if (daGI2)
     {
       d3d::GpuAutoLock gpu_al;
-      daGI2->afterReset();
+      daGI2->afterReset(); // the baked media bricks survive this: only giAfterDeviceReset rebakes
     }
+    giHmapMaxGrid.close(); // the per frame init/update recreates and refills
     validAmbientHistory = false;
     // daGI2.reset(create_dagi());
   }
@@ -780,7 +782,23 @@ public:
   LRUCollision lruColl;
 
   eastl::unique_ptr<DaGI> daGI2;
-  TreesAboveDepth treesAbove;
+  HeightmapMaxGrid giHmapMaxGrid;
+  DynamicShaderHelper debugHmapTraceShader;
+  // the traced heightfield into the gbuffer: correct tracing lands exactly on
+  // the rasterized landmesh
+  void renderDebugHmapTrace()
+  {
+    if (!debug_hmap_trace.get())
+      return;
+    if (!debugHmapTraceShader.shader)
+      debugHmapTraceShader.init("testgi_hmap_trace_debug", NULL, 0, "testgi_hmap_trace_debug", true);
+    if (!debugHmapTraceShader.shader)
+      return;
+    TIME_D3D_PROFILE(debug_hmap_trace);
+    debugHmapTraceShader.shader->setStates(0, true);
+    d3d::setvsrc(0, nullptr, 0);
+    d3d::draw(PRIM_TRILIST, 0, 1);
+  }
   void ensurePrevFrame()
   {
     TextureInfo frameInfo;
@@ -1003,25 +1021,33 @@ public:
     }
     clusteredLights->changeResolution(w, h);
 
-    if (isRtsmEnabled())
-    {
-      rtsm::teardown();
-      denoiser::teardown();
-
-      denoiser::initialize(w, h, false, false);
-      rtsm::initialize(rtsm::RenderMode::Hard, false);
-
-      denoiser::TexInfoMap textures;
-
-      ::denoiser::get_required_persistent_texture_descriptors(textures, false, false, false);
-      ::rtsm::get_required_persistent_texture_descriptors(textures);
-      ::rtsm::get_required_transient_texture_descriptors(textures);
-
-      for (auto &tex : textures)
-        rt_textures[tex.first] = dag::create_tex(nullptr, tex.second.w, tex.second.h, tex.second.cflg | TEXCF_CLEAR_ON_CREATE,
-          tex.second.mipLevels, tex.first);
-    }
+    initRtsmDenoiser(w, h);
   }
+
+  // rtsm/denoiser state does not survive a device reset: this is the recovery too
+  void initRtsmDenoiser(int w, int h)
+  {
+    if (!isRtsmEnabled() || !w || !h)
+      return;
+    rtsm::teardown();
+    denoiser::teardown();
+
+    denoiser::initialize(w, h, false, false);
+    rtsm::initialize(rtsm::RenderMode::Hard, false);
+
+    denoiser::TexInfoMap textures;
+
+    ::denoiser::get_required_persistent_texture_descriptors(textures, false, false, false);
+    ::rtsm::get_required_persistent_texture_descriptors(textures);
+    ::rtsm::get_required_transient_texture_descriptors(textures);
+
+    for (auto &tex : textures)
+      rt_textures[tex.first] =
+        dag::create_tex(nullptr, tex.second.w, tex.second.h, tex.second.cflg | TEXCF_CLEAR_ON_CREATE, tex.second.mipLevels, tex.first);
+    rtsmResW = w;
+    rtsmResH = h;
+  }
+  int rtsmResW = 0, rtsmResH = 0;
 
   DepthAround depthAround;
   HeightmapShadows hmapShadows;
@@ -1255,12 +1281,9 @@ public:
     cube_pov_data = eastl::unique_ptr<SkiesData, SkiesDataDeleter>(daSkies.createSkiesData("cube"), SkiesDataDeleter{&daSkies});
 
     initBvh();
-    enforceLruCache();
-    globalConstBlockId = ShaderGlobal::getBlockId("global_const_block");
     if ((useShaderAsserts = dgs_get_settings()->getBlockByNameEx("graphics")->getBool("enableShaderAsserts", false)))
       shader_assert::init();
   }
-  int globalConstBlockId = -1;
   PostFxRenderer taaRender;
   SnapdragonSuperResolution snapdragonSuperResolutionRender;
   enum
@@ -1289,10 +1312,10 @@ public:
   ~DemoGameScene()
   {
     del_it(occlusion_map);
+    // joins the collision gather worker before the level data it culls goes
+    teardownBvh(false);
     the_scene = nullptr;
     close_voxelization();
-
-    teardownBvh();
 
     ssr.reset();
     del_it(csm);
@@ -1483,7 +1506,15 @@ public:
     TMatrix itm;
     curCamera->getInvViewMatrix(itm);
     // todo: clamp itm.getcol(3) with shrinked sceneBox - there is nothing interesting outside scene
-    updateSSGIPos(itm.getcol(3)); // we can frustum cull here as well, to reduce latency
+    updateSSGIPos(itm.getcol(3));               // we can frustum cull here as well, to reduce latency
+    if (land_panel.trees != treesInGI && daGI2) // trees appeared or went away, as a game does on destruction
+    {
+      treesInGI = land_panel.trees;
+      if (test) // no model = empty box, and an empty BBox3 is +/-FLT_MAX
+        daGI2->invalidateBox(treesWorldBox());
+      else // a toggle while the model reloads has no box: setModel runs the clear when it returns
+        treesMediaClearPending = true;
+    }
     static int64_t time0 = ref_time_ticks();
     int current_time_usec = get_time_usec(time0);
     double realTime = current_time_usec / 1000000.0;
@@ -1576,8 +1607,8 @@ public:
       // occlusion z-slice cull reads downsampled_far_depth_tex and must see this
       // frame's depth, otherwise lights are mis-culled while the camera moves.
 
-      dynamic_shadow_render::VolumesVector volumesToRender;
-      clusteredLights->framePrepareShadows(volumesToRender, itm.getcol(3), globtm, p.hk, make_span_const(&dynBox, 1), nullptr);
+      dynamic_shadow_render::FrameVolumeData volumesToRender;
+      clusteredLights->framePrepareShadows(volumesToRender, itm.getcol(3), globtm, p.hk, make_span_const(&dynBox, 1), false);
 
       auto globalFrameId = ShaderGlobal::getBlockId("global_frame");
       ShaderGlobal::setBlock(globalFrameId, ShaderGlobal::LAYER_FRAME);
@@ -1590,16 +1621,61 @@ public:
           renderOpaque(current, (mat44f_cref)globTm, false, true);
           ShaderGlobal::setBlock(globalFrameId, ShaderGlobal::LAYER_FRAME);
         },
-        [](const TMatrix &view_itm, const mat44f &view_tm, const mat44f &proj_tm) {
+        [](const TMatrix &view_itm, const mat44f &view_tm, const mat44f &proj_tm, int, int) {
           G_UNUSED(view_itm);
           G_UNUSED(view_tm);
           G_UNUSED(proj_tm);
         });
       ShaderGlobal::setBlock(-1, ShaderGlobal::LAYER_FRAME);
     }
+    // the on variant of use_hw_rt_gi exists only in the dx12 dump, and needs a built TLAS
+#if _TARGET_PC
+    const bool hwRtGiInDump = d3d::get_driver_code().is(d3d::dx12);
+#else
+    constexpr bool hwRtGiInDump = false;
+#endif
+    // no resident collision (still gathering, or a level without a collision
+    // dump) stays on the SDF path: the collision trace would resolve to sky
+    const bool hwRtGi = hwRtGiInDump && bvhBuilt && hw_rt_gi.get() && bvhCtx != bvh::InvalidContextId &&
+                        bvh::get_lru_collision_stats(bvhCtx).residentInstances > 0;
+    ShaderGlobal::set_int(use_hw_rt_giVarId, hwRtGi ? 1 : 0);
+    hwRtGiActive = hwRtGi;
+    bvhBindWidth = w;
+    if (hwRtGi)
+      bvh::bind_resources(bvhCtx, w); // the collision TLAS and its normals pool ride the regular bind
+
+    // the collision tlas carries no terrain: the gi trace completes with the
+    // heightfield max grid window, filled once the level provides a heightfield
+    giHmapMaxGrid.init(128, 8.f);
+    if (binScene && land_panel.level)
+      giHmapMaxGrid.update(itm.getcol(3));
     auto ru = gi_panel.update_radiance && giUpdatePosFrameCounter == 0 ? DaGI::RadianceUpdate::On : DaGI::RadianceUpdate::Off;
     daGI2->beforeRender(sw, sh, w, h, itm, projTm, p.zn, p.zf, ru);
-    treesAbove.init(256.f, 1.f); // fixme
+    // media volumes own the tree canopy density: append the instances a box touches, and bake
+    // a pending type through the VegetationMediaVoxelizer bake shader (see voxelizedMedia.h)
+    auto gatherMediaInstances = [&](const BBox3 &box, Tab<DaGIMediaVolumeInstance> &out) {
+      if (!land_panel.trees || treeMediaVolType < 0)
+        return;
+      foreachTreeInstance([&](const TMatrix &tm, const BBox3 &world) {
+        if (box & world)
+          out.push_back({tm.getcol(3), Point3(1, 1, 1), Quat(0, 0, 0, 1), (uint32_t)treeMediaVolType});
+      });
+    };
+    auto bakeMediaType = [&](int type) -> bool {
+      if (!test || !test->getLodsResource()->lods[0].scene)
+        return false; // no mesh in lod0 yet (a stub still streaming): retry later
+      // the lib draws the mesh with its own vegetation bake shader, at the model origin:
+      // neither the node transforms nor the model's own shaders take part
+      bool streamed = true;
+      test->getLodsResource()->lods[0].scene->getMeshes(
+        [&](const ShaderMesh *mesh, int, float, int) {
+          streamed &= mediaVegVoxelizer.voxelize(*mesh) != VegetationMediaVoxelizer::Status::NotStreamed;
+        },
+        [&](const ShaderSkinnedMesh *, int, int) {}); // a skinned part has no rest pose to bake
+      return streamed;
+    };
+    if (mediaVolumes.bakePending(bakeMediaType)) // the bake wave settled: refill for the new bricks
+      daGI2->invalidateInitialMedia();
     {
       bool lightsInsideFrustum = true;
       daGI2->updatePosition(
@@ -1685,10 +1761,13 @@ public:
             renderVoxelsMediaGeom(box, Point3(voxelSize, voxelSize, voxelSize), SCENE_MODE_VOXELIZE_ALBEDO);
           }
           return UpdateGiQualityStatus::RENDERED;
-        });
+        },
+        [&](const BBox3 &region, float voxelSize) { mediaVolumes.setRegionInstances(region, voxelSize, gatherMediaInstances); });
       if (!lightsInsideFrustum)
         clusteredLights->setInsideOfFrustumLightsToShader();
     }
+    // gather the closest source instances for the media volume debug trace (gi_media_vols_debug)
+    mediaVolumes.debugPrepare(itm.getcol(3), gatherMediaInstances);
 
     d3d::set_render_target({target->getDepth(), 0, 0}, DepthAccess::RW, {{frame.getTex2D(), 0, 0}});
     render(projTm, p);
@@ -1704,6 +1783,7 @@ public:
     d3d::set_render_target({target->getDepth(), 0, 0}, DepthAccess::RW, {{frame.getTex2D(), 0, 0}});
     renderTrans();
     daGI2->debugRenderTrans();
+    mediaVolumes.debugRender(); // the debug pass view vars are set by debugRenderTrans above
     ShaderGlobal::set_int(dynamic_lights_countVarId, 0);
 
     if (::grs_draw_wire)
@@ -1747,7 +1827,7 @@ public:
       // need to ask the driver for state the frame owns
       bool ok = gi_verify::save_capture(dir, itm, p, target->getWidth(), target->getHeight(), dir_to_sun,
         df_get_real_name(dgs_get_settings()->getStr("ri_collisions", "ri_collisions.bin")),
-        df_get_real_name(dgs_get_settings()->getStr("level", "")), &write_verify_env_exr);
+        df_get_real_name(dgs_get_settings()->getStr("level", "")), &gi_verify::write_env_exr);
       console::print_d("save_verify_capture: %s -> %s", ok ? "saved" : "FAILED", dir);
       verifyCaptureDir.clear();
     }
@@ -1869,6 +1949,7 @@ public:
     s.sdf.texWidth = sdf_panel.texWidth;
     s.sdf.yResScale = sdf_panel.yResScale;
     ShaderGlobal::set_int(gi_debug_froxelsVarId, (gi_panel.gi_mode != ONLY_AO && volumetric_gi.debugUse) ? 1 : 0);
+    ShaderGlobal::set_float(media_shadow_distVarId, media_shadow_dist.get());
     if (gi_panel.gi_mode != ENVI_PROBE)
       daGI2->setSettings(s);
   }
@@ -1965,6 +2046,7 @@ public:
         }
 
         // binScene->heightmap.setTexture((UniqueTex &&) heightmap);
+        giHmapMaxGrid.close(); // the content changed in place: refill the window
         rerender_hmap = 0;
       }
     }
@@ -1972,7 +2054,8 @@ public:
     giQualitySet();
     if (gi_reset)
     {
-      daGI2->afterReset();
+      daGI2->afterReset(); // the media bricks stay baked, the refill re-injects them
+      giHmapMaxGrid.close();
       gi_reset = false;
     }
     static float prev_pre_exposure = 1.f;
@@ -2010,7 +2093,6 @@ public:
       }
     }
     setDirToSun();
-    ShaderGlobal::setBlock(globalConstBlockId, ShaderGlobal::LAYER_GLOBAL_CONST);
     current_sphere_time += land_panel.spheres_speed * gametime_elapsed_sec / 100.;
     if (current_sphere_time > 1e5)
       current_sphere_time = 0;
@@ -2160,23 +2242,6 @@ public:
     d3d::gettm(TM_PROJ, &projTm);
     csm->prepareShadowCascades(mode, dir_to_sun, orthonormalized_inverse(itm), itm.getcol(3), projTm, Frustum(globtm),
       Point2(p.zn, p.zf), p.zn);
-    treesAbove.prepare(itm.getcol(3), sceneBox[0].y, sceneBox[1].y, [&](const BBox3 &box, bool depth_min) {
-      TMatrix4 proj = matrix_ortho_off_center_lh(box[0].x, box[1].x, box[1].z, box[0].z, box[depth_min].y, box[!depth_min].y);
-      d3d::settm(TM_PROJ, &proj);
-
-      TMatrix4 view;
-      view.setcol(0, 1, 0, 0, 0);
-      view.setcol(1, 0, 0, 1, 0);
-      view.setcol(2, 0, 1, 0, 0);
-      view.setcol(3, 0, 0, 0, 1);
-      d3d::settm(TM_VIEW, &view);
-
-      TMatrix4 globtm_ = view * proj;
-      mat44f globtm;
-      v_mat44_make_from_44cu(globtm, globtm_.m[0]);
-      STATE_GUARD_0(ShaderGlobal::set_int(gbuffer_for_treesaboveVarId, VALUE), depth_min ? 0 : 1);
-      renderTrees();
-    });
     de3_imgui_before_render();
 
     buildBvh();
@@ -2248,7 +2313,7 @@ public:
   // IRenderWorld interface
   void renderTrees()
   {
-    if (!land_panel.trees || !test)
+    if (!land_panel.trees || !trees.get() || !test)
       return;
     TIME_D3D_PROFILE(tree);
 
@@ -2446,8 +2511,9 @@ public:
       hmapShadows.setMinMax(htMinMax);
     }
     clusteredLights->invalidateAllShadows();
-    treesAbove.invalidate();
     depthAround.invalidate();
+    // the first collision window saw a partial level: refill it whole
+    bvh::invalidate_lru_collision(bvhCtx);
     invalidateGI();
     reloadCube(true);
     renderLmeshDepthAbove();
@@ -2644,6 +2710,7 @@ public:
       if (!stop_camera)
         gtm = globtm;
       renderOpaque(current, gtm, true, true);
+      renderDebugHmapTrace();
     }
 
     if (::grs_draw_wire)
@@ -2713,6 +2780,9 @@ public:
       rtsm::render(bvhCtx, itm.getcol(3), -dir_to_sun, projTm, textures);
     }
 
+    // swrt/rtsm above unbind; the GI relight below traces the collision TLAS
+    if (hwRtGiActive && bvhCtx != bvh::InvalidContextId)
+      bvh::bind_resources(bvhCtx, bvhBindWidth);
     daGI2->beforeFrameLit(gi_panel.dynamic_gi_quality);
 
     ShaderGlobal::set_int(get_shader_variable_id("deferred_lighting_mode"), gi_panel.onscreen_mode);
@@ -2772,8 +2842,6 @@ public:
     //   draw_cached_debug_box(b, E3DCOLOR(0xff,0x80, 0xff, 0xff));
     // end_draw_cached_debug_lines();
 
-    buildBvhRiColl();
-
     if (binScene && land_panel.level)
       binScene->renderTrans();
     if (rasterize_debug_collision)
@@ -2816,8 +2884,6 @@ public:
   UniqueTex enviProbe0;
   void initEnviProbe()
   {
-    local_light_probe_tex_samplerstateVarId.set_sampler(d3d::request_sampler({}));
-    envi_probe_specular_samplerstateVarId.set_sampler(d3d::request_sampler({}));
     enviProbe0.close();
     enviProbe0 = dag::create_cubetex(64, TEXCF_RTARGET | TEXFMT_A16B16G16R16F | TEXCF_GENERATEMIPS | TEXCF_CLEAR_ON_CREATE, 1,
       "envi_probe_specular0");
@@ -2923,6 +2989,35 @@ public:
 
 protected:
   DynamicRenderableSceneInstance *test = nullptr;
+  DaGIMediaVolumes mediaVolumes;
+  VegetationMediaVoxelizer mediaVegVoxelizer;
+  int treeMediaVolType = -1;
+  const DynamicRenderableSceneLodsResource *mediaVolTypeRes = nullptr; // the res treeMediaVolType was baked for
+  bool treesInGI = false;
+  bool treesMediaClearPending = false; // an uncheck raced a model reload, its media clear is owed
+
+  BBox3 treesWorldBox() const
+  {
+    BBox3 box;
+    foreachTreeInstance([&](const TMatrix &, const BBox3 &world) { box += world; });
+    return box;
+  }
+
+  // the sample places its trees with set_test_tm: the media gather and the world box walk it
+  // here, so a placement change cannot move one and leave the other behind
+  template <typename Cb>
+  void foreachTreeInstance(Cb cb) const
+  {
+    if (!test)
+      return;
+    const BBox3 local = test->getLocalBoundingBox();
+    TMatrix tm = TMatrix::IDENT; // set_test_tm writes the translation only: the basis is ours
+    for (int i = 0; i < testCount; ++i)
+    {
+      set_test_tm(i, tm);
+      cb(tm, tm * local);
+    }
+  }
   scene_type_t *binScene = nullptr;
 
   const int testCount = 100;
@@ -3242,6 +3337,8 @@ protected:
     bool reproject = true;
     bool angleFiltering;
   } screen_probes;
+  bool hwRtGiActive = false; // last frame's runtime hw RT GI state
+  int bvhBindWidth = 1920;   // the relight rebind runs outside beforeRender: keep its width
   struct
   {
     int tileSize = 64, slices = 16;
@@ -3294,7 +3391,23 @@ protected:
   void setModel(DynamicRenderableSceneInstance *s)
   {
     test = s;
-    treesAbove.invalidate();
+    // a type is baked from the model, so it can only be reused for the same resource, and the
+    // lib has no per type eviction: clear the whole set on a swap. this sample gathers one
+    // type, so keeping the old ones would only empty bake bricks nothing ever injects
+    auto *res = test ? test->getLodsResource() : nullptr;
+    if (res != mediaVolTypeRes)
+    {
+      mediaVolTypeRes = res;
+      mediaVolumes.clear();
+      treeMediaVolType = res ? mediaVolumes.addType(test->getLocalBoundingBox()) : -1;
+    }
+    // a latched checkbox refilled these regions empty already, and an uncheck while no model
+    // was loaded skipped its clear: both leave the box regions wrong until this refill
+    if ((treesInGI || treesMediaClearPending) && treeMediaVolType >= 0)
+    {
+      daGI2->invalidateBox(treesWorldBox());
+      treesMediaClearPending = false;
+    }
 
     if (test && bvhCtx)
     {
@@ -3314,7 +3427,7 @@ protected:
       LoadJob(DemoGameScene *sc, const char *_name, const char *_skel_name, const Point3 &_pos) :
         s(sc), name(_name), skelName(_skel_name), pos(_pos)
       {}
-      const char *getJobName(bool &) const override { return "LoadJob_scheduleDynModelLoad"; }
+      const char *getJobName(bool &) const override { return DAPROFILER_STRING("LoadJob_scheduleDynModelLoad"); }
       virtual void doJob()
       {
         DynamicRenderableSceneInstance *val = NULL;
@@ -3394,7 +3507,7 @@ protected:
       LoadJob(const char *_fn, const char *hmap_fn, scene_type_t **scn, float cell, float h_min, float h_max) :
         fn(_fn), hmap_fn(hmap_fn), destScn(scn), cellSize(cell), hMin(h_min), hMax(h_max)
       {}
-      const char *getJobName(bool &) const override { return "LoadJob_scheduleLevelBinLoad"; }
+      const char *getJobName(bool &) const override { return DAPROFILER_STRING("LoadJob_scheduleLevelBinLoad"); }
       virtual void doJob()
       {
         scene_type_t *scn = new scene_type_t;
@@ -3439,50 +3552,17 @@ protected:
     cpujobs::add_job(loading_job_mgr_id, new LoadJob(level_bindump_fn, hmap_fn, &binScene, cell, hMin, hMax));
   }
 
+  // one context: the collision TLAS the GI traces, plus the RTSM meshes when on
   bvh::ContextId bvhCtx = bvh::InvalidContextId;
   eastl::vector<uint64_t> bvhMeshes;
   uint64_t bvhIdGen = 0;
-  uint64_t bvhLruMeshBase = 0;
-  bool bvhLruIndexUnsupported = false;
+  bool bvhLruConnected = false;
+  float bvhLruRadius = 0;
+  uint32_t bvhBuildCount = 0;
+  bool bvhBuilt = false;
   uint64_t bvhMeshBase = 0;
   uint64_t bvhMeshCount = 0;
   uint64_t testId = 0;
-
-  struct BvhHeightProvider final : public bvh::HeightProvider
-  {
-    scene_type_t *binScene = nullptr;
-
-    bool embedNormals() const override final { return true; }
-    void getHeight(void *data, const Point2 &origin, int cell_size, int cell_count) const override final
-    {
-      struct TerrainVertex
-      {
-        Point3 position;
-        uint32_t normal;
-      };
-
-      TerrainVertex *scratch = (TerrainVertex *)data;
-
-      auto float_to_uchar = [](float a) { return uint32_t(floorf((a * 255) + 0.5f)); };
-
-      for (int z = 0; z <= cell_count; ++z)
-        for (int x = 0; x <= cell_count; ++x)
-        {
-          Point2 loc(x * cell_size, z * cell_size);
-
-          TerrainVertex &v = scratch[z * (cell_count + 1) + x];
-          v.position.x = loc.x;
-          v.position.z = loc.y;
-
-          Point3 normal;
-          if (binScene->getHeight(loc + origin, v.position.y, &normal))
-            v.normal = (float_to_uchar(normal.x * 0.5f + 0.5f) << 16) | (float_to_uchar(normal.y * 0.5f + 0.5f) << 8) |
-                       float_to_uchar(normal.z * 0.5f + 0.5f);
-          else
-            v.normal = 0;
-        }
-    }
-  } heightProvider;
 
   struct ElemCallback : public RenderScene::ElemCallback
   {
@@ -3536,29 +3616,57 @@ protected:
 
   void initBvh()
   {
-    if (isRtEnabled())
-    {
-      bvh::init();
-      bvhCtx = bvh::create_context("GI", bvh::ForGI, static_cast<bvh::Features>(0));
-    }
+    if (!isRtEnabled())
+      return;
+    bvh::init();
+    const bvh::Features features = isRtsmEnabled() ? static_cast<bvh::Features>(bvh::ForGI | bvh::LruCollision) : bvh::LruCollision;
+    bvhCtx = bvh::create_context("GI", features, static_cast<bvh::Features>(0));
   }
-  void teardownBvh()
+
+public:
+  // BLAS/TLAS handles die with the device: torn down before a reset, rebuilt after
+  void teardownBvh(bool for_device_reset)
   {
     if (bvhCtx == bvh::InvalidContextId)
       return;
-
-    bvh::teardown(bvhCtx);
-    bvh::teardown(false, true);
-
-    rt_textures.clear();
-    if (rtsmIsOn)
-      rtsm::teardown();
-    denoiser::teardown();
+    bvh::teardown(bvhCtx); // joins the collision gather worker
+    bvh::teardown(for_device_reset, true);
+    bvhLruConnected = false;
+    bvhLruRadius = 0;
+    if (for_device_reset)
+    {
+      bvhBuilt = false;
+      bvhIdGen = bvhMeshBase = bvhMeshCount = testId = 0;
+    }
+    else
+    {
+      rt_textures.clear();
+      if (rtsmIsOn)
+        rtsm::teardown();
+      denoiser::teardown();
+    }
+  }
+  void reinitBvhAfterReset()
+  {
+    initBvh();
+    initRtsmDenoiser(rtsmResW, rtsmResH);
+    // the collision streamer reconnects lazily; only the RTSM meshes need re-adding
+    if (bvhCtx == bvh::InvalidContextId || !rtsmIsOn)
+      return;
+    if (binScene)
+      addBvhMeshes(binScene);
+    if (test)
+    {
+      testId = ++bvhIdGen;
+      add_dynrend_resource_to_bvh(bvhCtx, test->getLodsResource(), testId);
+    }
   }
 
+protected:
   void addBvhMeshes(scene_type_t *bin_scene)
   {
-    if (bvhCtx)
+    // rendering meshes serve RTSM only
+    if (bvhCtx && rtsmIsOn)
     {
       d3d::GpuAutoLock gpu_al;
       elemCallback.bvhCtx = bvhCtx;
@@ -3579,86 +3687,64 @@ protected:
     }
   }
 
-  void enforceLruCache()
+  float effectiveBvhRadius() const
   {
-    // load all instances to BVH. not optimal, but ok for debug purposes
-    // in real game we use streaming
-    if (bvhCtx != bvh::InvalidContextId && lruColl.lruColl)
+    if (bvh_radius > 0)
+      return bvh_radius;
+    // the world SDF far distance: the TLAS replaces it, so it covers the same range
+    return sdf_panel.voxel0Size * float(1 << (sdf_panel.clips - 1)) * sdf_panel.texWidth * 0.5f;
+  }
+  static float bvhBorder(float radius) { return clamp(radius * 0.25f, 16.f, 128.f); }
+
+  void updateCollisionBvhStreaming()
+  {
+    if (!bvhLruConnected && lruColl.lruColl && lruColl.size())
     {
-      dag::Vector<rendinst::riex_handle_t, framemem_allocator> ri;
-      ri.resize(lruColl.collRes.size());
-      for (size_t i = 0, ie = ri.size(); i < ie; ++i)
-        ri[i] = uint64_t(i) << 32UL;
-      lruColl.lruColl->updateLRU(ri);
+      bvh::LruCollisionSettings s;
+      s.radius = bvhLruRadius = effectiveBvhRadius();
+      s.border = bvhBorder(s.radius);
+      bvh::connect_lru_collision(
+        bvhCtx, lruColl.lruColl.get(),
+        [this](bbox3f_cref box, dag::Vector<rendinst::riex_handle_t> &out, dag::Vector<mat43f> &out_tms) {
+          // boxCull takes the scene read lock itself; no outer lock, a second
+          // acquire deadlocks if the lock ever stops being reentrant
+          lruColl.boxCull(box, [&](scene::node_index, mat44f_cref node) {
+            out.push_back((uint64_t(scene::get_node_pool(node)) << 32UL) | uint64_t(scene::get_node_flags(node)));
+            // the w components carry pool/flags/bsphere, the transpose drops them
+            mat43f tm;
+            v_mat44_transpose_to_mat43(tm, node);
+            out_tms.push_back(tm);
+          });
+        },
+        s);
+      bvhLruConnected = true;
+    }
+    const float radius = effectiveBvhRadius();
+    if (bvhLruConnected && radius != bvhLruRadius)
+    {
+      bvhLruRadius = radius;
+      bvh::set_lru_collision_range(bvhCtx, radius, bvhBorder(radius));
     }
   }
 
-  void buildBvhRiColl()
+  void buildBvh()
   {
-    static int countdown = 100;
-    if (bvhCtx != bvh::InvalidContextId && !bvhLruMeshBase && !bvhLruIndexUnsupported)
+    if (bvhCtx == bvh::InvalidContextId)
+      return;
+
+    TMatrix itm;
+    curCamera->getInvViewMatrix(itm);
+    const Point3 viewPos = itm.getcol(3);
+
+    bvh::start_frame();
+    updateCollisionBvhStreaming();
+    bvh::process_meshes(bvhCtx);
+
+    if (rtsmIsOn)
     {
-      if (countdown-- > 0)
-        return;
-
-      bvhLruMeshBase = bvhIdGen + 1;
-
-      for (auto [modelIx, instances] : enumerate(lruColl.instances))
-      {
-        uint64_t meshId = ++bvhIdGen;
-
-        auto data = lruColl.getModelData(modelIx);
-        if (!data.has_value())
-          continue;
-
-        if (data->vertexCount == 0 || data->indexCount == 0)
-          continue;
-
-        // lruCollision shares a 32-bit index heap, but bvh::add_mesh only handles
-        // 16-bit indices; disable this demo path instead of asserting/under-copying.
-        if (data->indexStride != sizeof(uint16_t))
-        {
-          logerr("testGI: BVH-from-LRU collision disabled: lruCollision uses 32-bit indices, "
-                 "bvh::add_mesh supports only 16-bit");
-          bvhLruIndexUnsupported = true;
-          bvhLruMeshBase = 0;
-          return;
-        }
-
-        bvh::MeshInfo meshInfo;
-        meshInfo.indices = data->indices;
-        meshInfo.indexCount = data->indexCount;
-        meshInfo.startIndex = data->startIndex;
-        meshInfo.vertices = data->vertices;
-        meshInfo.vertexCount = data->vertexCount;
-        meshInfo.baseVertex = data->baseVertex;
-        meshInfo.vertexSize = data->vertexStride;
-        meshInfo.positionOffset = data->positionOffset;
-        meshInfo.positionFormat = data->positionFormat;
-        meshInfo.posMul = Point4::ONE;
-        meshInfo.posAdd = Point4::ZERO;
-
-        bvh::add_mesh(bvhCtx, meshId, meshInfo);
-      }
-    }
-
-    if (bvhLruMeshBase)
-    {
+      // RTSM meshes re-emitted per frame; collision proxies must not cast rt shadows
       bvh::update_instances(bvhCtx, Point3::ZERO, Point3::ZERO, Point3(0, -1, 0), TMatrix::IDENT, TMatrix4::IDENT, Frustum(),
         Frustum(), nullptr, nullptr, nullptr, {}, threadpool::PRIO_HIGH);
-
-      auto accept = [](auto) { return LRUCollision::ObjectClass::Accept; };
-      auto addInstance = [this](size_t i, mat43f_cref tm, bbox3f_cref, bbox3f_cref) {
-        bvh::add_instance(bvhCtx, bvhLruMeshBase + i, tm);
-      };
-
-      TMatrix itm;
-      curCamera->getInvViewMatrix(itm);
-      auto viewPos = itm.getcol(3);
-
-      bbox3f bbox;
-      v_bbox3_init_by_bsph(bbox, v_ldu(&viewPos.x), v_make_vec3f(bvh_radius, bvh_radius, bvh_radius));
-      lruColl.gatherBox(bbox, addInstance, accept);
 
       mat43f instanceTransform;
       instanceTransform.row0 = v_make_vec4f(1, 0, 0, 0);
@@ -3669,33 +3755,53 @@ protected:
         bvh::add_instance(bvhCtx, bvhMeshBase + meshIx, instanceTransform);
 
       if (test)
-        add_dynrend_instance_to_bvh(bvhCtx, test, testId, testCount, viewPos);
+      {
+        // re-emitted per frame, not streamed: not bound to the collision window
+        constexpr float rtsmDynCullRadius = 10000.f;
+        add_dynrend_instance_to_bvh(bvhCtx, test, testId, testCount, viewPos, rtsmDynCullRadius);
+      }
     }
+
+    // every frame: the collision streaming window advances inside build
+    bvh::build(bvhCtx, itm, TMatrix4::IDENT, viewPos, Point3::ZERO);
+    bvhBuilt = true;
+    ++bvhBuildCount;
   }
-  void buildBvh()
+
+public:
+  void printBvhStats()
   {
-    if (bvhCtx == bvh::InvalidContextId)
-      return;
-
-    bvh::start_frame();
-
-    TMatrix itm;
-    curCamera->getInvViewMatrix(itm);
-
-    bvh::process_meshes(bvhCtx);
-
-    heightProvider.binScene = binScene;
-    if (binScene && binScene->lMesh)
-    {
-      bvh::add_terrain(bvhCtx, &heightProvider);
-      bvh::update_terrain(bvhCtx, Point2::xz(itm.getcol(3)));
-    }
-
-    bvh::build(bvhCtx, itm, TMatrix4::IDENT, itm.getcol(3), Point3::ZERO);
+    const auto s = bvh::get_lru_collision_stats(bvhCtx);
+    console::print_d("bvh: %d builds, collision revision %u, %d resident instances, %d built models, cache %dK of %dK, settled %d",
+      bvhBuildCount, s.revision, s.residentInstances, s.builtModels, int(s.cachedBytes >> 10), int(s.cacheLimit >> 10),
+      int(s.settled));
   }
+
+protected:
 };
 
 DemoGameScene *DemoGameScene::the_scene = nullptr;
+
+static void testgi_bvh_before_reset(bool full_reset)
+{
+  if (full_reset && DemoGameScene::the_scene)
+    DemoGameScene::the_scene->teardownBvh(true);
+}
+REGISTER_D3D_BEFORE_RESET_FUNC(testgi_bvh_before_reset);
+
+static void testgi_bvh_after_reset(bool full_reset)
+{
+  if (full_reset && DemoGameScene::the_scene)
+    DemoGameScene::the_scene->reinitBvhAfterReset();
+}
+REGISTER_D3D_AFTER_RESET_FUNC(testgi_bvh_after_reset);
+
+static void testgi_gi_after_reset(bool full_reset)
+{
+  if (full_reset && DemoGameScene::the_scene)
+    DemoGameScene::the_scene->giAfterDeviceReset();
+}
+REGISTER_D3D_AFTER_RESET_FUNC(testgi_gi_after_reset);
 // headers needed for startup only
 // #include <fx/dag_fxInterface.h>
 // #include <fx/dag_commonFx.h>
@@ -3767,6 +3873,28 @@ bool TestConsole::processCommand(const char *argv[], int argc)
     ((DemoGameScene *)dagor_get_current_game_scene())->reinitCube(atoi(argv[1]));
   }
   CONSOLE_CHECK_NAME("app", "dflush", 1, 1) { debug_flush(false); }
+  CONSOLE_CHECK_NAME("app", "reset_device", 1, 1) { dagor_d3d_force_driver_reset = true; }
+  static bool profilerFileServerStarted = false;
+  CONSOLE_CHECK_NAME("app", "profiler_start", 1, 1)
+  {
+    if (!profilerFileServerStarted)
+      profilerFileServerStarted = da_profiler::start_file_dump_server(".logs");
+    da_profiler::add_mode(da_profiler::CONTINUOUS);
+    if (profilerFileServerStarted)
+      console::print_d("profiler: continuous capture started");
+    else
+      console::print_d("profiler: file dump server did not start (profiler compiled out?), nothing will be captured");
+  }
+  CONSOLE_CHECK_NAME("app", "profiler_stop", 1, 1)
+  {
+    da_profiler::request_dump();
+    da_profiler::remove_mode(da_profiler::CONTINUOUS);
+    if (profilerFileServerStarted)
+      console::print_d("profiler: capture dump saved to .logs");
+    else
+      console::print_d("profiler: no file dump server, nothing was captured");
+  }
+  CONSOLE_CHECK_NAME("render", "bvh_stats", 1, 1) { ((DemoGameScene *)dagor_get_current_game_scene())->printBvhStats(); }
   CONSOLE_CHECK_NAME("camera", "save", 1, 2)
   {
     TMatrix camTm;
@@ -4021,7 +4149,7 @@ void add_dynrend_resource_to_bvh(bvh::ContextId context_id, const DynamicRendera
 }
 
 void add_dynrend_instance_to_bvh(bvh::ContextId context_id, const DynamicRenderableSceneInstance *resource, uint64_t bvh_id, int count,
-  const Point3 &view_pos)
+  const Point3 &view_pos, float cull_radius)
 {
   resource->getCurSceneResource()->getMeshes(
     [&](const ShaderMesh *mesh, int node_id, float radius, int rigid_no) {
@@ -4035,7 +4163,7 @@ void add_dynrend_instance_to_bvh(bvh::ContextId context_id, const DynamicRendera
         TMatrix tm = TMatrix::IDENT;
         set_test_tm(treeIx, tm);
 
-        if ((view_pos - tm.getcol(3)).lengthSq() > sqr(bvh_radius.getBaseValue()))
+        if ((view_pos - tm.getcol(3)).lengthSq() > sqr(cull_radius))
           continue;
 
         mat44f tm44;

@@ -17,9 +17,11 @@ int rtr_probe_debug_display_back = 0;
 
 int blue_noise_frame_index;
 
-int rtr_probes_use_csm_shadows = 0;
 
 int rtr_probe_randomize_rays = 1;
+
+// probes trace from scattered positions: 0 stops their hits from keeping content alive
+int rtr_probes_mark_voxel_activity = 1;
 float rtr_back_probes_max_range = 50;
 float rtr_back_front_diff_threshold = 0.5;
 
@@ -236,7 +238,10 @@ shader rt_reflection_probe_color
 {
   if (compatibility_mode == compatibility_mode_on || !use_hw_raytracing) { dont_render; }
 
-  supports global_const_block;
+  (cs) {
+    from_sun_direction@f3 = from_sun_direction;
+    sun_color_0@f3 = sun_color_0;
+  }
 
   USE_EMISSION_DECODE_COLOR_MAP_STUB(cs)
   INIT_PACK_UNPACK_DYNSTCODE(cs)
@@ -263,9 +268,10 @@ shader rt_reflection_probe_color
     frame_index@u1 = blue_noise_frame_index;
     randomize_rays@u1 = rtr_probe_randomize_rays;
     rtr_probes_filter_nans@i1 = rtr_probes_filter_nans;
+    mark_voxel_activity@u1 = rtr_probes_mark_voxel_activity;
   }
 
-  INIT_RT_LIGHTING(cs, false, true, true, false, rtr_probes_use_csm_shadows, false)
+  INIT_RT_LIGHTING(cs, false, true, true, false, false)
   USE_RT_LIGHTING(cs, 0, true)
 
   INIT_BVH_ATMOSPHERE(cs)
@@ -372,6 +378,8 @@ shader rt_reflection_probe_color
         float w = length(relPos);
         HitInfo hitInfo;
         bool isHit = trace_ray(bvhMain, relPos, direction, 0, 1000, w, bvhGroupProbe, hitInfo);
+        if (isHit && mark_voxel_activity != 0)
+          bvh_voxel_activity_mark(hitInfo.position);
 
         BRANCH
         if (isHit)
@@ -399,30 +407,30 @@ shader rt_reflection_probe_color
         result = all(isfinite(result)) ? result : 0;
       texture2DAt(probes, tci) = result;
 
-##if hardware.ps5
-      GroupMemoryBarrierWithGroupSync();
-##else
-      DeviceMemoryBarrierWithGroupSync();
-##endif
+      // Border texels mirror the interior so bilinear taps wrap the octahedron.
+      // Each thread writes the border texels it is the mirror source of.
+      bool onLeft = gtid.x == 0;
+      bool onRight = gtid.x == PROBE_RESOLUTION - 1;
+      bool onTop = gtid.y == 0;
+      bool onBottom = gtid.y == PROBE_RESOLUTION - 1;
+      uint2 mir = PROBE_RESOLUTION - 1 - gtid;
 
-      if (all(gtid == 0))
+      if (onTop)
+        texture2DAt(probes, uint2(tciBase.x + mir.x, tciBase.y - 1)) = result;
+      if (onBottom)
+        texture2DAt(probes, uint2(tciBase.x + mir.x, tciBase.y + PROBE_RESOLUTION)) = result;
+      if (onLeft)
+        texture2DAt(probes, uint2(tciBase.x - 1, tciBase.y + mir.y)) = result;
+      if (onRight)
+        texture2DAt(probes, uint2(tciBase.x + PROBE_RESOLUTION, tciBase.y + mir.y)) = result;
+
+      // A corner replicates the edge border texel next to it, which mirrors x only,
+      // so its source is the interior corner on the opposite x and the same y side.
+      if ((onLeft || onRight) && (onTop || onBottom))
       {
-        for (uint x = 0; x < PROBE_RESOLUTION; ++x)
-        {
-          uint mir = PROBE_RESOLUTION - 1 - x;
-          texture2DAt(probes, uint2(tciBase.x + x, tciBase.y - 1)) = texture2DAt(probes, uint2(tciBase.x + mir, tciBase.y));
-          texture2DAt(probes, uint2(tciBase.x + x, tciBase.y + PROBE_RESOLUTION)) = texture2DAt(probes, uint2(tciBase.x + mir, tciBase.y + PROBE_RESOLUTION - 1));
-        }
-        for (uint y = 0; y < PROBE_RESOLUTION; ++y)
-        {
-          uint mir = PROBE_RESOLUTION - 1 - y;
-          texture2DAt(probes, uint2(tciBase.x - 1, tciBase.y + y)) = texture2DAt(probes, uint2(tciBase.x, tciBase.y + mir));
-          texture2DAt(probes, uint2(tciBase.x + PROBE_RESOLUTION, tciBase.y + y)) = texture2DAt(probes, uint2(tciBase.x + PROBE_RESOLUTION - 1, tciBase.y + mir));
-        }
-        texture2DAt(probes, uint2(tciBase.x - 1, tciBase.y - 1)) = texture2DAt(probes, uint2(tciBase.x, tciBase.y - 1));
-        texture2DAt(probes, uint2(tciBase.x + PROBE_RESOLUTION, tciBase.y - 1)) = texture2DAt(probes, uint2(tciBase.x + PROBE_RESOLUTION - 1, tciBase.y - 1));
-        texture2DAt(probes, uint2(tciBase.x - 1, tciBase.y + PROBE_RESOLUTION)) = texture2DAt(probes, uint2(tciBase.x, tciBase.y + PROBE_RESOLUTION));
-        texture2DAt(probes, uint2(tciBase.x + PROBE_RESOLUTION, tciBase.y + PROBE_RESOLUTION)) = texture2DAt(probes, uint2(tciBase.x + PROBE_RESOLUTION - 1, tciBase.y + PROBE_RESOLUTION));
+        uint cornerX = onLeft ? tciBase.x + PROBE_RESOLUTION : tciBase.x - 1;
+        uint cornerY = onTop ? tciBase.y - 1 : tciBase.y + PROBE_RESOLUTION;
+        texture2DAt(probes, uint2(cornerX, cornerY)) = result;
       }
     }
   }

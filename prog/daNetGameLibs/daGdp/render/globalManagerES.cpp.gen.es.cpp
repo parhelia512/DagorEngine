@@ -38,9 +38,9 @@ static constexpr ecs::ComponentDesc dagdp_after_device_reset_es_comps[] =
 };
 static void dagdp_after_device_reset_es_all_events(const ecs::Event &__restrict evt, const ecs::QueryView &__restrict components)
 {
-  G_FAST_ASSERT(evt.is<AfterDeviceReset>());
+  G_FAST_ASSERT(evt.is<EventAfterDeviceReset>());
   auto comp = components.begin(), compE = components.end(); G_ASSERT(comp!=compE); do
-    dagdp::dagdp_after_device_reset_es(static_cast<const AfterDeviceReset&>(evt)
+    dagdp::dagdp_after_device_reset_es(static_cast<const EventAfterDeviceReset&>(evt)
         , ECS_RW_COMP(dagdp_after_device_reset_es_comps, "dagdp__global_manager", dagdp::GlobalManager)
     );
   while (++comp != compE);
@@ -54,7 +54,7 @@ static ecs::EntitySystemDesc dagdp_after_device_reset_es_es_desc
   empty_span(),
   empty_span(),
   empty_span(),
-  ecs::EventSetBuilder<AfterDeviceReset>::build(),
+  ecs::EventSetBuilder<EventAfterDeviceReset>::build(),
   0
 ,"render");
 static constexpr ecs::ComponentDesc dagdp_on_render_settings_change_es_comps[] =
@@ -142,9 +142,9 @@ static constexpr ecs::ComponentDesc dagdp_on_level_unload_es_comps[] =
 };
 static void dagdp_on_level_unload_es_all_events(const ecs::Event &__restrict evt, const ecs::QueryView &__restrict components)
 {
-  G_FAST_ASSERT(evt.is<UnloadLevel>());
+  G_FAST_ASSERT(evt.is<EventRenderSceneUnload>());
   auto comp = components.begin(), compE = components.end(); G_ASSERT(comp!=compE); do
-    dagdp::dagdp_on_level_unload_es(static_cast<const UnloadLevel&>(evt)
+    dagdp::dagdp_on_level_unload_es(static_cast<const EventRenderSceneUnload&>(evt)
         , ECS_RW_COMP(dagdp_on_level_unload_es_comps, "dagdp__global_manager", dagdp::GlobalManager)
     );
   while (++comp != compE);
@@ -158,7 +158,7 @@ static ecs::EntitySystemDesc dagdp_on_level_unload_es_es_desc
   empty_span(),
   empty_span(),
   empty_span(),
-  ecs::EventSetBuilder<UnloadLevel>::build(),
+  ecs::EventSetBuilder<EventRenderSceneUnload>::build(),
   0
 ,"render");
 static constexpr ecs::ComponentDesc dagdp_track_csm_cascade_es_comps[] =
@@ -249,6 +249,32 @@ static ecs::EntitySystemDesc dagdp_level_settings_changed_es_es_desc
                        ecs::EventComponentsDisappear>::build(),
   0
 ,"render","dagdp__default_target_mesh_lod,dagdp__max_3d_tiles,dagdp__max_meshes,dagdp__max_objects,dagdp__max_tiles,dagdp__max_triangles,dagdp__max_volumes");
+static constexpr ecs::ComponentDesc dagdp_global_density_mul_settings_es_comps[] =
+{
+//start of 1 ro components at [0]
+  {ECS_HASH("render_settings__dagdpDensityMul"), ecs::ComponentTypeInfo<float>()}
+};
+static void dagdp_global_density_mul_settings_es_all_events(const ecs::Event &__restrict evt, const ecs::QueryView &__restrict components)
+{
+  auto comp = components.begin(), compE = components.end(); G_ASSERT(comp!=compE); do
+    dagdp::dagdp_global_density_mul_settings_es(evt
+        , components.manager()
+    , ECS_RO_COMP(dagdp_global_density_mul_settings_es_comps, "render_settings__dagdpDensityMul", float)
+    );
+  while (++comp != compE);
+}
+static ecs::EntitySystemDesc dagdp_global_density_mul_settings_es_es_desc
+(
+  "dagdp_global_density_mul_settings_es",
+  "prog/daNetGameLibs/daGdp/render/globalManagerES.cpp.inl",
+  ecs::EntitySystemOps(nullptr, dagdp_global_density_mul_settings_es_all_events),
+  empty_span(),
+  make_span(dagdp_global_density_mul_settings_es_comps+0, 1)/*ro*/,
+  empty_span(),
+  empty_span(),
+  ecs::EventSetBuilder<OnRenderSettingsReady>::build(),
+  0
+,"render","render_settings__dagdpDensityMul","*");
 static constexpr ecs::ComponentDesc level_settings_ecs_query_comps[] =
 {
 //start of 7 ro components at [0]

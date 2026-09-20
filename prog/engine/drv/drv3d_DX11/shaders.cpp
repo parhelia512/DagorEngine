@@ -7,6 +7,7 @@
 #include <drv/3d/dag_platform_pc.h>
 #include <drv/3d/dag_driver.h>
 #include <drv/3d/dag_resetDevice.h>
+#include <drv/shadersMetaData/dx11/unpack.h>
 #include <math/dag_TMatrix.h>
 #include <math/dag_TMatrix4.h>
 #include <debug/dag_debug.h>
@@ -138,7 +139,6 @@ int ConstantBuffers::getVsConstBufferId(int required_size)
 void ConstantBuffers::create()
 {
   vsConstsUsed = psConstsUsed = csConstsUsed = 0;
-  mem_set_0(constsRequired);
   vsCurrentBuffer = -1;
 
   D3D11_BUFFER_DESC desc;
@@ -472,13 +472,37 @@ const void *ShaderData::getBytecode(Tab<uint8_t> &tmpmem, uint32_t &size, bool u
   size = shaderBytecodeSize;
   if (shader_bin == nullptr)
   {
-    const uint32_t *metadata = (const uint32_t *)source.metadata.data();
+    const auto *header = reinterpret_cast<const dx11::SimpleHeader *>(source.metadata.data());
     shader_bin = source.uncompress(tmpmem);
-    size = *metadata;
+    size = header->bytecodeByteSize;
     if (update_constants)
-      constsUsed = (int)(((int *)metadata)[1] >= 0 ? metadata[1] + 1 : 0);
+      constsUsed = dx11::get_used_const_count(*header);
   }
   return shader_bin;
+}
+
+static void set_debug_name_to_shader_data_from_source(ShaderData &data, const ShaderSourceExt &source)
+{
+  G_UNUSED(data);
+  G_UNUSED(source);
+#if DAGOR_DBGLEVEL > 0
+  if (auto debugName = source.getDebugName(); !debugName.empty())
+  {
+    data.shaderDebugName = eastl::unique_ptr<char[]>(new char[debugName.length() + 1]);
+    memcpy(data.shaderDebugName.get(), debugName.data(), debugName.length());
+    data.shaderDebugName.get()[debugName.length()] = '\0';
+  }
+#endif
+}
+
+static void set_shader_debug_name_from_data(auto *shader, const ShaderData &data)
+{
+  G_UNUSED(shader);
+  G_UNUSED(data);
+#if DAGOR_DBGLEVEL > 0
+  if (data.shaderDebugName)
+    shader->SetPrivateData(WKPDID_D3DDebugObjectName, strlen(data.shaderDebugName.get()), data.shaderDebugName.get());
+#endif
 }
 
 static void recreate_vertex_shader(VertexShader &e, bool do_fatal)
@@ -490,12 +514,11 @@ static void recreate_vertex_shader(VertexShader &e, bool do_fatal)
     const void *shader_bin = e.ilCache->getBytecode(tmpmem, size);
     e.constsUsed = e.ilCache->constsUsed;
 
-    constexpr uint32_t SIMPLE_METADATA_SIZE = 12;
-    constexpr uint32_t COMBI_METADATA_OFFSET = SIMPLE_METADATA_SIZE / sizeof(uint32_t);
-
-    const auto &meta = e.ilCache->source.metadata;
-    const uint32_t *u32 = (const uint32_t *)shader_bin;
-    const uint32_t *metadata = meta.size() > SIMPLE_METADATA_SIZE ? (const uint32_t *)meta.data() + COMBI_METADATA_OFFSET : nullptr;
+    dx11::DecodedShader decoded;
+    // driver-embedded shaders have no metadata, but are simple and don't need the decode
+    if (!e.ilCache->source.metadata.empty())
+      G_VERIFYF(dx11::decode_metadata(e.ilCache->source.metadata, decoded), "DX11: malformed shader metadata");
+    const uint8_t *bytes = (const uint8_t *)shader_bin;
 
     enum class LastShader
     {
@@ -508,13 +531,9 @@ static void recreate_vertex_shader(VertexShader &e, bool do_fatal)
     const void *lastShaderBytecode = shader_bin;
     uint32_t lastShaderSize = size;
 
-    if (metadata && metadata[0] == _MAKE4C('DX11'))
+    if (decoded.combined)
     {
-      e.hsTopology = D3D11_PRIMITIVE_TOPOLOGY_UNDEFINED + (metadata[2] >> 24);
-      uint32_t vsOfs = 0, vsLen = metadata[1];
-      uint32_t hsOfs = vsOfs + vsLen, hsLen = metadata[2] & 0x00FFFFFF;
-      uint32_t dsOfs = hsOfs + hsLen, dsLen = metadata[3];
-      uint32_t gsOfs = dsOfs + dsLen, gsLen = metadata[4];
+      e.hsTopology = D3D11_PRIMITIVE_TOPOLOGY_UNDEFINED + decoded.hsTopology;
 
       G_ASSERT(e.shader == nullptr);
       G_ASSERT(e.hs == nullptr);
@@ -522,30 +541,30 @@ static void recreate_vertex_shader(VertexShader &e, bool do_fatal)
       G_ASSERT(e.gs == nullptr);
 
       lastShader = LastShader::Vertex;
-      lastShaderBytecode = &u32[vsOfs];
-      lastShaderSize = vsLen * sizeof(uint32_t);
-      last_hres = dx_device->CreateVertexShader(&u32[vsOfs], vsLen * sizeof(uint32_t), NULL, &e.shader);
-      e.ilCache->shaderBytecodeSize = vsLen * sizeof(uint32_t);
-      if (hsLen && SUCCEEDED(last_hres))
+      lastShaderBytecode = bytes + decoded.vs.offset;
+      lastShaderSize = decoded.vs.size;
+      last_hres = dx_device->CreateVertexShader(bytes + decoded.vs.offset, decoded.vs.size, NULL, &e.shader);
+      e.ilCache->shaderBytecodeSize = decoded.vs.size;
+      if (decoded.hs.size && SUCCEEDED(last_hres))
       {
         lastShader = LastShader::Hull;
-        lastShaderBytecode = &u32[hsOfs];
-        lastShaderSize = hsLen * sizeof(uint32_t);
-        last_hres = dx_device->CreateHullShader(&u32[hsOfs], hsLen * sizeof(uint32_t), NULL, &e.hs);
+        lastShaderBytecode = bytes + decoded.hs.offset;
+        lastShaderSize = decoded.hs.size;
+        last_hres = dx_device->CreateHullShader(bytes + decoded.hs.offset, decoded.hs.size, NULL, &e.hs);
       }
-      if (dsLen && SUCCEEDED(last_hres))
+      if (decoded.ds.size && SUCCEEDED(last_hres))
       {
         lastShader = LastShader::Domain;
-        lastShaderBytecode = &u32[dsOfs];
-        lastShaderSize = dsLen * sizeof(uint32_t);
-        last_hres = dx_device->CreateDomainShader(&u32[dsOfs], dsLen * sizeof(uint32_t), NULL, &e.ds);
+        lastShaderBytecode = bytes + decoded.ds.offset;
+        lastShaderSize = decoded.ds.size;
+        last_hres = dx_device->CreateDomainShader(bytes + decoded.ds.offset, decoded.ds.size, NULL, &e.ds);
       }
-      if (gsLen && SUCCEEDED(last_hres))
+      if (decoded.gs.size && SUCCEEDED(last_hres))
       {
         lastShader = LastShader::Geometry;
-        lastShaderBytecode = &u32[gsOfs];
-        lastShaderSize = gsLen * sizeof(uint32_t);
-        last_hres = dx_device->CreateGeometryShader(&u32[gsOfs], gsLen * sizeof(uint32_t), NULL, &e.gs);
+        lastShaderBytecode = bytes + decoded.gs.offset;
+        lastShaderSize = decoded.gs.size;
+        last_hres = dx_device->CreateGeometryShader(bytes + decoded.gs.offset, decoded.gs.size, NULL, &e.gs);
       }
       if (e.hs)
         e.hdgBits |= HAS_HS;
@@ -592,12 +611,17 @@ static void recreate_vertex_shader(VertexShader &e, bool do_fatal)
       {
         D3D_ERROR("CreateVertexShader (or hull/domain/geometry) failed: vs=0x%08X, hres=0x%08X", e.shader, last_hres);
         DAG_FATAL("dx11 error: broken driver");
+        e.shader = NULL;
       }
     }
+
+    if (e.shader)
+      set_shader_debug_name_from_data(e.shader, *e.ilCache);
   }
 }
 
-VPROG create_vertex_shader_internal(uint32_t vs_consts_count, InputLayoutCache *ilCache, bool do_fatal)
+static VPROG create_vertex_shader_internal(const ShaderSourceExt &source, uint32_t vs_consts_count, InputLayoutCache *ilCache,
+  bool do_fatal)
 {
   G_ASSERT(vs_consts_count <= g_vsbin_max_size);
   VertexShader e;
@@ -612,19 +636,20 @@ VPROG create_vertex_shader_internal(uint32_t vs_consts_count, InputLayoutCache *
   e.hsTopology = D3D11_PRIMITIVE_TOPOLOGY_UNDEFINED;
   e.hdgBits = 0;
 
+  set_debug_name_to_shader_data_from_source(*ilCache, source);
   recreate_vertex_shader(e, do_fatal);
 
   return (SUCCEEDED(last_hres) || FAILED(device_is_lost)) ? g_vertex_shaders.safeAllocAndSet(e) : BAD_VPROG;
 }
 
-VPROG create_vertex_shader_unpacked(const ShaderSource &source, const void *shader_bin, uint32_t size, uint32_t vs_consts_count,
+VPROG create_vertex_shader_unpacked(const ShaderSourceExt &source, const void *shader_bin, uint32_t size, uint32_t vs_consts_count,
   bool do_fatal)
 {
 #if SHOW_DISASM
   if (shader_bin)
     show_disasm(shader_bin, size, "VS", vs_consts_count);
 #endif
-  return create_vertex_shader_internal(vs_consts_count, new InputLayoutCache(source, shader_bin, size), do_fatal);
+  return create_vertex_shader_internal(source, vs_consts_count, new InputLayoutCache(source, shader_bin, size), do_fatal);
 }
 
 static void recreate_pixel_shader(PixelShader &e, bool do_fatal)
@@ -656,12 +681,16 @@ static void recreate_pixel_shader(PixelShader &e, bool do_fatal)
       {
         D3D_ERROR("CreatePixelShader failed: ps=0x%08X, hres=0x%08X", e.shader, last_hres);
         DAG_FATAL("dx11 error: broken driver");
+        e.shader = NULL;
       }
     }
+
+    if (e.shader)
+      set_shader_debug_name_from_data(e.shader, e);
   }
 }
 
-FSHADER create_pixel_shader_unpacked(const ShaderSource &source, const void *shader_bin, uint32_t size, uint32_t ps_consts_count,
+FSHADER create_pixel_shader_unpacked(const ShaderSourceExt &source, const void *shader_bin, uint32_t size, uint32_t ps_consts_count,
   int32_t ps_max_rtv, bool do_fatal)
 {
   G_ASSERT(ps_consts_count <= MAX_PS_CONSTS);
@@ -683,6 +712,7 @@ FSHADER create_pixel_shader_unpacked(const ShaderSource &source, const void *sha
   }
   ps->shaderBytecodeSize = size;
 
+  set_debug_name_to_shader_data_from_source(*ps, source);
   recreate_pixel_shader(*ps, do_fatal);
 
   drv3d_generic::ObjectProxyPtr<PixelShader> e;
@@ -710,17 +740,23 @@ static void recreate_compute_shader(ComputeShader &e)
 
     if (FAILED(last_hres))
       e.shader = NULL;
+
+    if (e.shader)
+      set_shader_debug_name_from_data(e.shader, e);
   }
 }
 
-SHADER_ID create_compute_shader(const ShaderSource &source, uint32_t max_const)
+static SHADER_ID create_compute_shader(const ShaderSourceExt &source)
 {
+  const auto *header = reinterpret_cast<const dx11::SimpleHeader *>(source.metadata.data());
+
   ComputeShader *cs = new ComputeShader;
   cs->shader = NULL;
-  cs->constsUsed = max_const;
+  cs->constsUsed = dx11::get_used_const_count(*header);
 
   cs->source = source;
 
+  set_debug_name_to_shader_data_from_source(*cs, source);
   recreate_compute_shader(*cs);
 
   drv3d_generic::ObjectProxyPtr<ComputeShader> e;
@@ -728,60 +764,28 @@ SHADER_ID create_compute_shader(const ShaderSource &source, uint32_t max_const)
   return (SUCCEEDED(last_hres) || FAILED(device_is_lost)) ? g_compute_shaders.safeAllocAndSet(e) : BAD_SHADER_ID;
 }
 
-void set_vertex_shader_debug_info(VPROG vpr, const char *debug_info)
-{
-  if (g_vertex_shaders.isIndexValid(vpr))
-  {
-    VertexShader &vs = g_vertex_shaders[vpr];
-    if (vs.shader)
-      vs.shader->SetPrivateData(WKPDID_D3DDebugObjectName, (int)strlen(debug_info), debug_info);
-  }
-}
-
-void set_pixel_shader_debug_info(FSHADER fsh, const char *debug_info)
-{
-  if (g_pixel_shaders.isIndexValid(fsh))
-  {
-    PixelShader &ps = *g_pixel_shaders[fsh].obj;
-    if (ps.shader)
-      ps.shader->SetPrivateData(WKPDID_D3DDebugObjectName, (int)strlen(debug_info), debug_info);
-  }
-}
-
-void set_compute_shader_debug_info(PROGRAM pcsh, const char *debug_info)
-{
-  if (!debug_info)
-    return;
-
-  if (!g_programs.isIndexValid(pcsh))
-    return;
-
-  const Program &prg = g_programs[pcsh];
-  if (prg.computeShader == BAD_SHADER_ID)
-    return;
-
-  if (!g_compute_shaders.isIndexValid(prg.computeShader))
-    return;
-
-  ComputeShader &cs = *g_compute_shaders[prg.computeShader].obj;
-  if (cs.shader)
-    cs.shader->SetPrivateData(WKPDID_D3DDebugObjectName, (int)strlen(debug_info), debug_info);
-}
-
 void init_default_shaders()
 {
-  g_default_copy_vs = create_vertex_shader_unpacked({}, g_default_copy_vs_src, sizeof(g_default_copy_vs_src), 0, true);
-  g_default_copy_ps = create_pixel_shader_unpacked({}, g_default_copy_ps_src, sizeof(g_default_copy_ps_src), 0, 1, true);
+#define DEBUG_NAME_ARGS(name) {}, c_countof(#name) - 1, #name
+  g_default_copy_vs =
+    create_vertex_shader_unpacked({DEBUG_NAME_ARGS(default_copy_vs)}, g_default_copy_vs_src, sizeof(g_default_copy_vs_src), 0, true);
+  g_default_copy_ps =
+    create_pixel_shader_unpacked({DEBUG_NAME_ARGS(default_copy_ps)}, g_default_copy_ps_src, sizeof(g_default_copy_ps_src), 0, 1, true);
   g_default_pos_vdecl = d3d::create_vdecl(simple_pos_vdecl);
 
-  g_default_clear_vs = create_vertex_shader_unpacked({}, g_default_clear_vs_src, sizeof(g_default_clear_vs_src), 0, true);
-  g_default_clear_ps = create_pixel_shader_unpacked({}, g_default_clear_ps_src, sizeof(g_default_clear_ps_src), 0, MAX_UAV - 1, true);
+  g_default_clear_vs = create_vertex_shader_unpacked({DEBUG_NAME_ARGS(default_clear_vs)}, g_default_clear_vs_src,
+    sizeof(g_default_clear_vs_src), 0, true);
+  g_default_clear_ps = create_pixel_shader_unpacked({DEBUG_NAME_ARGS(default_clear_ps)}, g_default_clear_ps_src,
+    sizeof(g_default_clear_ps_src), 0, MAX_UAV - 1, true);
   g_default_clear_vdecl = d3d::create_vdecl(clear_vdecl);
 
-  g_default_debug_vs = create_vertex_shader_unpacked({}, g_default_debug_vs_src, sizeof(g_default_debug_vs_src), 4, true);
-  g_default_debug_ps = create_pixel_shader_unpacked({}, g_default_debug_ps_src, sizeof(g_default_debug_ps_src), 0, 1, true);
+  g_default_debug_vs = create_vertex_shader_unpacked({DEBUG_NAME_ARGS(default_debug_vs)}, g_default_debug_vs_src,
+    sizeof(g_default_debug_vs_src), 4, true);
+  g_default_debug_ps = create_pixel_shader_unpacked({DEBUG_NAME_ARGS(default_debug_ps)}, g_default_debug_ps_src,
+    sizeof(g_default_debug_ps_src), 0, 1, true);
   g_default_debug_vdecl = d3d::create_vdecl(debug_vdecl);
   g_default_debug_program = d3d::create_program(g_default_debug_vs, g_default_debug_ps, g_default_debug_vdecl);
+#undef DEBUG_NAME_ARGS
 
   {
     d3d::SamplerInfo smpInfo;
@@ -853,8 +857,7 @@ void flush_cs_shaders(RenderState &rs, bool flushConsts, bool async)
 
   if (flushConsts)
   {
-    uint32_t csConstsCount = cs ? max((unsigned)rs.constants.constsRequired[STAGE_CS], (unsigned)cs->constsUsed) : 0;
-    rs.constants.flush_cs(csConstsCount, async);
+    rs.constants.flush_cs(cs ? cs->constsUsed : 0, async);
   }
 }
 
@@ -938,8 +941,7 @@ void flush_shaders(RenderState &rs, bool flushConsts)
 
   if (flushConsts)
   {
-    uint32_t vsConstsCount = vs ? max((unsigned)rs.constants.constsRequired[STAGE_VS], (unsigned)vs->constsUsed) : 0;
-    rs.constants.flush(vsConstsCount, ps ? ps->constsUsed : 0, rs.hdgBits);
+    rs.constants.flush(vs ? vs->constsUsed : 0, ps ? ps->constsUsed : 0, rs.hdgBits);
   }
 }
 
@@ -1437,11 +1439,11 @@ FSHADER d3d::create_pixel_shader_hlsl(const char * /*hlsl_text*/, unsigned /*len
   return BAD_FSHADER;
 }
 
-FSHADER d3d::create_pixel_shader(const ShaderSource &data)
+FSHADER d3d::create_pixel_shader(const ShaderSourceExt &data)
 {
-  G_ASSERT(data.metadata.size() >= 12);
-  const uint32_t *metadata = (const uint32_t *)data.metadata.data();
-  return create_pixel_shader_unpacked(data, nullptr, 0, ((int *)metadata)[1] >= 0 ? metadata[1] + 1 : 0, ((int *)metadata)[2], true);
+  G_ASSERT(data.metadata.size() >= dx11::SIMPLE_METADATA_SIZE);
+  const auto *header = reinterpret_cast<const dx11::SimpleHeader *>(data.metadata.data());
+  return create_pixel_shader_unpacked(data, nullptr, 0, dx11::get_used_const_count(*header), header->maxRtvUsed, true);
 }
 
 void d3d::delete_pixel_shader(FSHADER handle)
@@ -1458,11 +1460,11 @@ VPROG d3d::create_vertex_shader_hlsl(const char * /*hlsl_text*/, unsigned /*len*
   return BAD_VPROG;
 }
 
-VPROG d3d::create_vertex_shader(const ShaderSource &data)
+VPROG d3d::create_vertex_shader(const ShaderSourceExt &data)
 {
-  G_ASSERT(data.metadata.size() >= 12);
-  const uint32_t *metadata = (const uint32_t *)data.metadata.data();
-  return create_vertex_shader_unpacked(data, nullptr, 0, (int)(((int *)metadata)[1] >= 0 ? metadata[1] + 1 : 0), true);
+  G_ASSERT(data.metadata.size() >= dx11::SIMPLE_METADATA_SIZE);
+  const auto *header = reinterpret_cast<const dx11::SimpleHeader *>(data.metadata.data());
+  return create_vertex_shader_unpacked(data, nullptr, 0, dx11::get_used_const_count(*header), true);
 }
 
 void d3d::delete_vertex_shader(VPROG handle)
@@ -1514,19 +1516,11 @@ bool d3d::set_const(unsigned stage, unsigned reg_base, const void *data, unsigne
     D3D_CONTRACT_ASSERTF(reg_base + num_regs <= MAX_PS_CONSTS, "PS: Writing %u regs with base=%u over the limit=%u", num_regs,
       reg_base, MAX_PS_CONSTS);
   else if (stage == STAGE_CS)
-  {
     D3D_CONTRACT_ASSERTF(reg_base + num_regs <= g_csbin_max_size, "CS: Writing %u regs with base=%u over the hard limit=%u", num_regs,
       reg_base, g_csbin_max_size);
-    const unsigned limit = max<unsigned>(DEF_CS_CONSTS, cb.constsRequired[stage]);
-    D3D_CONTRACT_ASSERTF(reg_base + num_regs <= limit, "CS: Writing %u regs with base=%u over the hard limit=%u, (constsRequired=%u)",
-      num_regs, reg_base, limit, cb.constsRequired[stage]);
-  }
   else if (stage == STAGE_VS)
-  {
-    const unsigned limit = max<unsigned>(DEF_VS_CONSTS, cb.constsRequired[stage]);
-    D3D_CONTRACT_ASSERTF(reg_base + num_regs <= limit, "VS: Writing %u regs with base=%u over the hard limit=%u, (constsRequired=%u)",
-      num_regs, reg_base, limit, cb.constsRequired[stage]);
-  }
+    D3D_CONTRACT_ASSERTF(reg_base + num_regs <= g_vsbin_max_size, "VS: Writing %u regs with base=%u over the hard limit=%u", num_regs,
+      reg_base, g_vsbin_max_size);
   else
     D3D_CONTRACT_ASSERT_FAIL("Invalid stage %d", stage);
 #endif
@@ -1542,20 +1536,6 @@ bool d3d::set_const(unsigned stage, unsigned reg_base, const void *data, unsigne
   if (stage == STAGE_CS)
     cb.constantsModified[STAGE_CS_ASYNC_STATE] = true;
   return true;
-}
-
-int d3d::set_cs_constbuffer_register_count(int required_count)
-{
-  int size = required_count > 0 ? clamp(get_bigger_pow2(required_count), DEF_CS_CONSTS, g_csbin_max_size) : DEF_CS_CONSTS;
-  g_render_state.constants.constsRequired[STAGE_CS] = size;
-  return size;
-}
-
-int d3d::set_vs_constbuffer_register_count(int required_count)
-{
-  int size = required_count > 0 ? g_vsbin_sizes[g_render_state.constants.getVsConstBufferId(required_count)] : DEF_VS_CONSTS;
-  g_render_state.constants.constsRequired[STAGE_VS] = size;
-  return size;
 }
 
 
@@ -1632,9 +1612,9 @@ PROGRAM d3d::create_program(VPROG vpr, FSHADER fsh, VDECL vdecl, unsigned *strid
   return i;
 }
 
-PROGRAM d3d::create_program_cs(const ShaderSource &data, CSPreloaded)
+PROGRAM d3d::create_program_cs(const ShaderSourceExt &data, CSPreloaded)
 {
-  SHADER_ID compute_shader = drv3d_dx11::create_compute_shader(data, DEF_CS_CONSTS);
+  SHADER_ID compute_shader = drv3d_dx11::create_compute_shader(data);
   if (compute_shader == BAD_SHADER_ID)
     return BAD_PROGRAM;
 

@@ -26,6 +26,7 @@ class GenericBufferInterface final : public D3dResourceNameImpl<Sbuffer>
   AsyncCompletionState asyncCopyEvent;
   TempBufferHolder *pushAllocation = nullptr;
 
+  bool stagingIsPersistent() const { return bufFlags & SBCF_PERSISTENT_STAGING; }
   bool bufferLockedForRead() const { return lastLockFlags & VBLOCK_READONLY; }
   bool bufferLockedForWrite() const { return lastLockFlags & VBLOCK_WRITEONLY; }
   bool bufferLockedForGPUReadback() const { return (0 != (SBCF_BIND_UNORDERED & bufFlags)) && bufferLockedForRead(); }

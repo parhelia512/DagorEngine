@@ -18,6 +18,7 @@ AddIncludes =
 Sources =
 #  bentCones.cpp
   giVerifierCapture.cpp
+  giVerifierEnvExr.cpp
   cameraPositions.cpp
   bigLightsShadows.cpp
   tdrGpu.cpp
@@ -59,11 +60,14 @@ Sources =
 #  staticShadows.cpp
   lightCube.cpp
   downsampleDepth.cpp
-  screenSpaceReflections.cpp
+  screenSpaceReflection/screenSpaceReflections.cpp
+  screenSpaceReflection/screenSpaceReflectionNodes.cpp
   grassTranslucency.cpp
   globTMVars.cpp
   viewVecs.cpp
   set_reprojection.cpp
+  reprojectionTm.cpp
+  priorityManagedShadervar.cpp
   debugTexOverlay.cpp
   debugTonemapOverlay.cpp
   debugMultiTextOverlay.cpp

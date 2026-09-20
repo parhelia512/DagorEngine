@@ -61,7 +61,6 @@ static void create_gbuffer_mixing_nodes_es(const OnCameraNodeConstruction &evt)
     registry.createBlob<OrderingToken>("dagdp_decals_rendered");
 
     registry.createBlob<OrderingToken>("blood_puddles_rendered");
-    return []() {};
   }));
 
   evt.nodes->push_back(ns.registerNode("end", DAFG_PP_NODE_SRC, [](dafg::Registry registry) {

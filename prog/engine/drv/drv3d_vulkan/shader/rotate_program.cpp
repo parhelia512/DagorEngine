@@ -365,13 +365,16 @@ void ShaderProgramDatabase::initRotateProg(bool has_bindless, DeviceContext &dc)
   InputLayout il;
   auto ili = shaderDesc.layouts.add(dc, {il});
 
+  constexpr uint16_t vsImplicitRegCount = 0;
+  constexpr uint16_t fsImplicitRegCount = 4;
+
   ShaderID vs, fs90, fs180, fs270;
   {
     // configure header for vertex index only VS
     ShaderModuleHeader smh = {};
     spirv::ShaderHeader &spvHeader = smh.header;
     spvHeader.descriptorCounts[0].descriptorCount = 0;
-    spvHeader.maxConstantCount = 0;
+    spvHeader.implicitCbufRegCount = vsImplicitRegCount;
     spvHeader.bRegisterUseMask = 0;
     spvHeader.descriptorCountsCount = 0;
     spvHeader.registerCount = 0;
@@ -381,13 +384,17 @@ void ShaderProgramDatabase::initRotateProg(bool has_bindless, DeviceContext &dc)
 
     ShaderModuleBlob smb(rotate_vert_prog, rotate_vert_prog + sizeof(rotate_vert_prog));
 
+#if VULKAN_LOAD_SHADER_EXTENDED_DEBUG_DATA
+    smb.name = "rotateVS";
+#endif
+
     vs = newShader(dc, smh, smb);
 
 #if VULKAN_LOAD_SHADER_EXTENDED_DEBUG_DATA
     ShaderDebugInfo dbgInf;
-    dbgInf.name = "rotateVS"; // -V691
-    dbgInf.debugName = "rotateVS";
-    attachDebugInfo(vs, dbgInf);
+    dbgInf.name = smb.name;
+    dbgInf.debugName = smb.name;
+    attachDebugInfo(vs, dbgInf, {});
 #endif
   }
 
@@ -411,7 +418,7 @@ void ShaderProgramDatabase::initRotateProg(bool has_bindless, DeviceContext &dc)
     spvHeader.descriptorTypes[0].set(VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC);
     spvHeader.descriptorCounts[0].type.set(VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC);
     spvHeader.descriptorCounts[0].descriptorCount = 1;
-    spvHeader.maxConstantCount = 4;
+    spvHeader.implicitCbufRegCount = fsImplicitRegCount;
     spvHeader.bRegisterUseMask = 1;
     spvHeader.missingTableIndex[0] = spirv::FALLBACK_TO_C_GLOBAL_BUFFER;
     spvHeader.slotToRegisterMapping[spirv::REGISTER_MAPPING_B_OFFSET] = 0;
@@ -426,12 +433,17 @@ void ShaderProgramDatabase::initRotateProg(bool has_bindless, DeviceContext &dc)
     auto makeFS = [&](const uint8_t *fragDump, size_t fragDumpSz, const char *dbgName) {
       ShaderModuleBlob smb(fragDump, fragDump + fragDumpSz);
 
+#if VULKAN_LOAD_SHADER_EXTENDED_DEBUG_DATA
+      smb.name = dbgName;
+#endif
+
       ShaderID ret = newShader(dc, smh, smb);
+
 #if VULKAN_LOAD_SHADER_EXTENDED_DEBUG_DATA
       ShaderDebugInfo dbgInf;
       dbgInf.name = dbgName; // -V691
       dbgInf.debugName = dbgName;
-      attachDebugInfo(ret, dbgInf);
+      attachDebugInfo(ret, dbgInf, {});
 #else
       G_UNUSED(dbgName);
 #endif
@@ -457,7 +469,7 @@ void ShaderProgramDatabase::initRotateProg(bool has_bindless, DeviceContext &dc)
     }
   }
 
-  rotate90ProgId = progs.graphics.add(dc, {ili, shaders.get(vs), shaders.get(fs90)});
-  rotate180ProgId = progs.graphics.add(dc, {ili, shaders.get(vs), shaders.get(fs180)});
-  rotate270ProgId = progs.graphics.add(dc, {ili, shaders.get(vs), shaders.get(fs270)});
+  rotate90ProgId = progs.graphics.add(dc, {ili, shaders.get(vs), shaders.get(fs90), vsImplicitRegCount, fsImplicitRegCount});
+  rotate180ProgId = progs.graphics.add(dc, {ili, shaders.get(vs), shaders.get(fs180), vsImplicitRegCount, fsImplicitRegCount});
+  rotate270ProgId = progs.graphics.add(dc, {ili, shaders.get(vs), shaders.get(fs270), vsImplicitRegCount, fsImplicitRegCount});
 }

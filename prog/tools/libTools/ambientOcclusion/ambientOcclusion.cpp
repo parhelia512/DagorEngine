@@ -7,7 +7,7 @@
 #include <math/dag_Point4.h>
 #include <util/dag_bitArray.h>
 #include <gameMath/objgenPrng.h>
-#include <sceneRay/dag_sceneRay.h>
+#include <gameRes/dag_collisionResource.h>
 
 using namespace objgenerator; // prng
 
@@ -79,7 +79,7 @@ static void packPRTWeights(float prtWeights[SPHHARM_NUM3], float w)
 }
 
 static void getPrt(float prtWeights[SPHHARM_NUM3], int maxRays, const Point3 &pt, const Point3 &n, const Point3 &xAxis,
-  const Point3 &yAxis, const TMatrix &fromWorld, float offset, float maxDist, float w, StaticSceneRayTracer *theRayTracer)
+  const Point3 &yAxis, const TMatrix &fromWorld, float offset, float maxDist, float w, const CollisionResource &occluders)
 {
   for (int j = 0; j < maxRays; ++j)
   {
@@ -90,15 +90,17 @@ static void getPrt(float prtWeights[SPHHARM_NUM3], int maxRays, const Point3 &pt
       real phi = (TWOPI * k) / maxRays;
 
       Point3 norm = (cosf(phi) * sineTeta) * xAxis + (sinf(phi) * sineTeta) * yAxis + cosineTeta * n;
-      if (!theRayTracer->rayhitNormalized(pt + norm * offset, norm, maxDist))
+      // todo: the collapsed single node needs no tm, flags or node cull
+      if (!occluders.rayHit(TMatrix::IDENT, (const GeomNodeTree *)nullptr, pt + norm * offset, norm, maxDist))
         getPrtSample(prtWeights, normalize(fromWorld % norm), w);
     }
   }
 }
 
-void calculatePRT(MeshData &meshData, const TMatrix &toWorld, StaticSceneRayTracer *theRayTracer, int rays_per_point,
-  float points_per_sq_meter, int maxPointsPerFace, float maxDist, int prt1, int prt2, int prt3)
+void calculatePRT(MeshData &meshData, const TMatrix &toWorld, const CollisionResource &occluders, int rays_per_point,
+  float points_per_sq_meter, int maxPointsPerFace, int prt1, int prt2, int prt3)
 {
+  const float maxDist = occluders.getBoundingSphereRad() * 2;
   MeshData::ExtraChannel &prt1e = meshData.extra[prt1];
   MeshData::ExtraChannel &prt2e = meshData.extra[prt2];
   MeshData::ExtraChannel &prt3e = meshData.extra[prt3];
@@ -158,7 +160,7 @@ void calculatePRT(MeshData &meshData, const TMatrix &toWorld, StaticSceneRayTrac
       Point3 norm, xAxis, yAxis;
       getAxisFromNormal(n, xAxis, yAxis);
       memset(prtmap[i].samples[pti].prtWeights, 0, sizeof(float) * SPHHARM_NUM3);
-      getPrt(prtmap[i].samples[pti].prtWeights, maxRays, pt, n, xAxis, yAxis, fromWorld, offset, maxDist, 1, theRayTracer);
+      getPrt(prtmap[i].samples[pti].prtWeights, maxRays, pt, n, xAxis, yAxis, fromWorld, offset, maxDist, 1, occluders);
     }
   }
 
@@ -182,13 +184,12 @@ void calculatePRT(MeshData &meshData, const TMatrix &toWorld, StaticSceneRayTrac
       Point3 norm, xAxis, yAxis;
       getAxisFromNormal(n, xAxis, yAxis);
       float offset = 0.025f;
-      float maxDist = theRayTracer->getSphere().r * 2;
       float totalWeight = 0;
       float startW = 1;
       float startRaysMul = 2;
       totalWeight = startW;
       getPrt(prtWeights, maxRays * startRaysMul, p, n, xAxis, yAxis, fromWorld, offset, maxDist,
-        startW / (startRaysMul * startRaysMul), theRayTracer);
+        startW / (startRaysMul * startRaysMul), occluders);
       int seed1 = 115791111, seed2 = 12413137;
 
       for (int fi = 0; fi < map[meshData.face[i].v[vi]].size(); ++fi)

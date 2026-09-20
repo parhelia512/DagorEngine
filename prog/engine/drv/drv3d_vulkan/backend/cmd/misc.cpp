@@ -95,8 +95,14 @@ TSPEC void BEContext::execCmd(const CmdImgActivate &cmd)
 {
   // can't read contents of image if other resource was using its memory
   // and even if we not reading them, followup barriers can break content on some drivers
-  if (cmd.img->mayAlias())
-    cmd.img->layout.resetTo(VK_IMAGE_LAYOUT_UNDEFINED);
+  if (!cmd.img->mayAlias())
+    return;
+  // ignore repeated activation of image that is still active (not aliased out) in this work item,
+  // otherwise its contents that may be still in use will be discarded
+  if (cmd.img->lastActivationWorkId == data->id && !cmd.img->layout.allSubresInState(VK_IMAGE_LAYOUT_UNDEFINED))
+    return;
+  cmd.img->lastActivationWorkId = data->id;
+  cmd.img->layout.resetTo(VK_IMAGE_LAYOUT_UNDEFINED);
 }
 
 TSPEC void BEContext::execCmd(const CmdSetLatencyMarker &cmd)

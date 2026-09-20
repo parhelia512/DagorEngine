@@ -13,7 +13,7 @@ struct RenderOmniLight
   float4 boxR1;
   float4 boxR2;
   float4 posRelToOrigin_cullRadius;
-  float4 shadowZnZf_pad;
+  float4 shadowZnZf_flags_packedDataBits;
 };
 
 struct RenderSpotLight
@@ -83,6 +83,31 @@ struct SpotlightShadowDescriptor
 float4 get_omni_light_color(RenderOmniLight light)
 {
   return float4(abs(light.colorFlags.rgb), light.colorFlags.a);
+}
+
+uint get_omni_light_flags(RenderOmniLight light)
+{
+  return uint(light.shadowZnZf_flags_packedDataBits.z + 0.5);
+}
+
+uint get_omni_light_id(RenderOmniLight light)
+{
+  return asuint(light.shadowZnZf_flags_packedDataBits.w) & OMNI_LIGHT_ID_MASK;
+}
+
+uint get_spot_light_id(RenderSpotLight sl)
+{
+  return (asuint(sl.texId_scale_illuminatingplane_packedDataBits.w) & SPOT_LIGHT_ID_MASK) >> SPOT_LIGHT_ID_BIT_OFFSET;
+}
+
+float get_omni_light_source_radius(RenderOmniLight light)
+{
+  return float((asuint(light.shadowZnZf_flags_packedDataBits.w) >> OMNI_LIGHT_SOURCE_RADIUS_BIT_OFFSET) & LIGHT_SOURCE_RADIUS_MASK) / LIGHT_SOURCE_RADIUS_CM_PER_M;
+}
+
+float get_spot_light_source_radius(RenderSpotLight sl)
+{
+  return float((asuint(sl.texId_scale_illuminatingplane_packedDataBits.w) >> SPOT_LIGHT_SOURCE_RADIUS_BIT_OFFSET) & LIGHT_SOURCE_RADIUS_MASK) / LIGHT_SOURCE_RADIUS_CM_PER_M;
 }
 #endif
 

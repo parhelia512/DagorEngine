@@ -1,7 +1,7 @@
 from "%scripts/ui/ui_library.nut" import *
 from "%scripts/ui/widgets/style.nut" import *
 import "math" as math
-let {sound_play} = require("%dngscripts/sound_system.nut")
+from "%dngscripts/sound_system.nut" import sound_play
 
 let calcFrameColor = @(sf) (sf & S_KB_FOCUS)
     ? BtnBgFocused

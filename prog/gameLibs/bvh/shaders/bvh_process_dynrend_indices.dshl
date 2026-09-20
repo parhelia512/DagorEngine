@@ -24,7 +24,7 @@ shader bvh_process_dynrend_indices
     target_offset@u1 = bvh_process_target_offset;
     start_index@i1 = bvh_process_dynrend_indices_start;
     vertex_base@i1 = bvh_process_dynrend_indices_vertex_base;
-    item_count@i1 = bvh_process_dynrend_indices_count;
+    index_count@i1 = bvh_process_dynrend_indices_count;
     source@buf : register(bvh_process_dynrend_indices_source_const_no) hlsl { ByteAddressBuffer source@buf; };
     output@uav : register(bvh_process_dynrend_indices_output_uav_no) hlsl { RWByteAddressBuffer output@uav; };
   }
@@ -34,22 +34,31 @@ shader bvh_process_dynrend_indices
     void bvh_process_dynrend_indices(uint3 dtId : SV_DispatchThreadID)
     {
       uint indexId = dtId.x;
-      if (indexId >= item_count)
-        return;
 
       ##if bvh_process_dynrend_indices_size == four
+        if (indexId >= index_count)
+          return;
+
         uint index = loadBuffer(source, (start_index + indexId) * 4);
         storeBuffer(output, target_offset + indexId * 4, index - vertex_base);
       ##else
+        // Each thread packs a pair of 16 bit indices into one output dword.
+        if (indexId * 2 >= index_count)
+          return;
+
         int address = start_index * 2 + indexId * 4;
         ##if bvh_process_dynrend_indices_start_aligned == yes
           // Dword aligned
           uint packedIndex = loadBuffer(source, address);
           uint2 indices = uint2(packedIndex & 0xFFFF, packedIndex >> 16);
         ##else
-          // In the middle of a dword
-          uint2 packedIndex = loadBuffer2(source, address - 2);
-          uint2 indices = uint2(packedIndex.x >> 16, packedIndex.y & 0xFFFF);
+          // The pair spans over two dwords. The last pair of an odd count has no second
+          // index, and its dword can lie past the end of the source buffer: pad with 0.
+          uint first = loadBuffer(source, address - 2);
+          uint second = uint(vertex_base);
+          if (indexId * 2 + 1 < index_count)
+            second = loadBuffer(source, address + 2);
+          uint2 indices = uint2(first >> 16, second & 0xFFFF);
         ##endif
 
         indices -= vertex_base;

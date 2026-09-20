@@ -6,6 +6,7 @@
 #include <landMesh/lmeshManager.h>
 #include <render/world/global_vars.h>
 #include <render/world/wrDispatcher.h>
+#include <drv/3d/dag_matricesAndPerspective.h>
 #include <render/daFrameGraph/daFG.h>
 
 
@@ -23,6 +24,7 @@ dafg::NodeHandle create_dynamic_mirror_render_ground_node()
     return [mirrorActiveHndl, mirrorCameraHndl, shaderVarsHndl]() {
       if (!mirrorActiveHndl.ref())
         return;
+      SCOPE_VIEW_PROJ_MATRIX;
       auto *lmeshRenderer = WRDispatcher::getLandMeshRenderer();
       auto *lmeshManager = WRDispatcher::getLandMeshManager();
       if (lmeshRenderer == nullptr || lmeshManager == nullptr)

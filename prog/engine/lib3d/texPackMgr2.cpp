@@ -593,15 +593,20 @@ public:
   bool termTex()
   {
     bool has_alive_refs = false;
+    // a read pins its paired base tex, and the base can sort before the dependent
+    for (int i = 0; i < texRec.size(); i++)
+    {
+      TEXTUREID tid = texRec[i].texId;
+      if (RMGR.isValidID(tid, nullptr) && RMGR.resQS[tid.index()].isReading())
+        RMGR.cancelReading(tid.index());
+    }
     for (int i = 0; i < texRec.size(); i++)
     {
       TEXTUREID tid = texRec[i].texId;
       if (!RMGR.isValidID(tid, nullptr))
         continue;
       int idx = tid.index();
-      if (idx >= 0 && RMGR.resQS[idx].isReading())
-        RMGR.cancelReading(idx);
-      if (idx >= 0 && RMGR.getFactory(idx) == file)
+      if (RMGR.getFactory(idx) == file)
       {
         if (RMGR.getRefCount(idx) > 0 && tql::reset_texture_from_shader_vars)
           tql::reset_texture_from_shader_vars(tid);
@@ -1196,7 +1201,14 @@ void DDSxTexturePack2::Factory::releaseTexture(BaseTexture *texture, TEXTUREID i
         if (!RMGR.resQS[idx].isReading() && bt && !RMGR.getRefCount(idx))
         {
           if (RMGR.getTexMemSize4K(idx) > 8)
+          {
+            // downgradeTexQuality takes rec_lock itself; hold a ref so that a discard can not destroy bt
+            RMGR.incRefCountAndDecReadyForDiscardTexLocked(idx);
+            TEX_REC_UNLOCK();
             downgr = RMGR.downgradeTexQuality(idx, *bt, max<int>(RMGR.getLevDesc(idx, TQL_thumb), 1));
+            TEX_REC_LOCK();
+            RMGR.decRefCountAndIncReadyForDiscardTexLocked(idx);
+          }
           if (!RMGR.getBaseTexUsedCount(idx))
             RMGR.replaceTexBaseData(idx, nullptr);
         }
@@ -1546,7 +1558,7 @@ bool DDSxTexturePack2::Factory::performDelayedLoad(int prio)
         append_items(toLoadPend, localLoad.size() - i, localLoad.data() + i);
       }
       interlocked_add(pendingTexCount[prio], localLoad.size() - i);
-      debug("performDelayedLoad(%d) interrupted, pending=%d", prio, interlocked_relaxed_load(pendingTexCount[prio]));
+      debug("dxp delayedLoad(%d) interrupted, pending=%d", prio, interlocked_relaxed_load(pendingTexCount[prio]));
       break;
     }
     DDSxTexturePack2::Rec &p = *localLoad[i];
@@ -1628,22 +1640,33 @@ bool DDSxTexturePack2::Factory::performDelayedLoad(int prio)
       if (ldRet != TexLoadRes::OK)
         onCompleted(p.texId.index());
     }
-    data_sz += p.packedDataSize;
-    mem_data_sz += pack.texHdr[rec_id].memSz;
+    // seekto(p.ofs) is above and nothing else reads in between; readDdsxTex may read nothing at all
+    if (const int consumed = fastSeqCrd->tell() - p.ofs)
+    {
+      data_sz += consumed;
+      mem_data_sz += pack.texHdr[rec_id].memSz;
+    }
     last_recid = rec_id;
   }
 
   // make sure, that no aio requests left (because at least on some platforms (i.e. windows)
   // other thread won't be able receive left aio callbacks)
   fastSeqCrd->reset();
+  const uint32_t rdBytes = fastSeqCrd->getRequestedBytes();
 
   if (may_use_dctx)
     DDSxDecodeCtx::dCtx->waitAllDone(prio);
 
   int t0 = profile_time_usec(reft);
-  debug("(%s).performDelayedLoad(%d): %d usec (%dK of %dK range in %d areas), %.2f Mb/s (unp. %dM)", pack.file->name, prio, t0,
-    data_sz >> 10, (rangesBuf[num_ranges - 1].end - rangesBuf[0].start) >> 10, num_ranges, double(data_sz) / (t0 ? t0 : 1),
-    mem_data_sz >> 20);
+  const int dataKb = data_sz >> 10, rangeKb = (rangesBuf[num_ranges - 1].end - rangesBuf[0].start) >> 10;
+  char rangeStr[48] = {0}, unpStr[24] = {0};
+  if (dataKb != rangeKb || num_ranges > 1)
+    SNPRINTF(rangeStr, sizeof(rangeStr), " of %dK in %d areas", rangeKb, num_ranges);
+  if (mem_data_sz >> 20)
+    SNPRINTF(unpStr, sizeof(unpStr), ", unp %dM", mem_data_sz >> 20);
+  // Mb/s is the requested bytes over the whole load, decoding included, so it is not a device rate
+  debug("dxp %s(%d): %d usec (%dK%s; rd %dK), %.2f Mb/s%s", pack.file->name, prio, t0, dataKb, rangeStr, rdBytes >> 10,
+    double(rdBytes) / (t0 ? t0 : 1), unpStr);
   G_UNUSED(t0);
 
   if (ALWAYS_REOPEN_FILES)
@@ -1798,6 +1821,30 @@ void ddsx::restore_texq_loading(bool was_interrupted)
   if (was_interrupted)
     interlocked_release_store(texmgr_internal::texq_load_disabled, 0);
 }
+// a dump per decoded batch repeats the previous line; report a real move or a long quiet period
+static void dump_tex_mem_stats_throttled()
+{
+  // the statics are shared between concurrently streaming prios on purpose: the dump is global;
+  static OSSpinlock sl;
+  static int lastKb[4] = {-1, -1, -1, -1};
+  static int64_t lastRef = 0;
+
+  {
+    OSSpinlockScopedLock lock(sl);
+    const int kb[4] = {RMGR.getTotalUsedTexSzKB(), RMGR.getTotalAddMemNeededSzKB(), RMGR.getReadyForDiscardTexSzKB(),
+      RMGR.getTotalBdSzKB() + RMGR.getReadyForDiscardBdSzKB()};
+    auto moved = [](int v, int last) { return abs(v - last) > max(last / 8, 8 << 10); };
+    bool anyMoved = false;
+    for (int i = 0; i < countof(kb); i++)
+      anyMoved |= moved(kb[i], lastKb[i]);
+    if (!anyMoved && lastRef && !profile_usec_passed(lastRef, 30 * 1000000))
+      return;
+    memcpy(lastKb, kb, sizeof(lastKb));
+    lastRef = profile_ref_ticks();
+  }
+  RMGR.dumpMemStats();
+}
+
 bool ddsx::tex_pack2_perform_delayed_data_loading(int prio)
 {
   int64_t reft = profile_ref_ticks();
@@ -1855,8 +1902,7 @@ bool ddsx::tex_pack2_perform_delayed_data_loading(int prio)
     if (!interlocked_acquire_load(pendingTexCount[prio]) || !interlocked_acquire_load(processingTexData[prio]))
       break;
 #if DAGOR_DBGLEVEL > 0
-    logwarn("tex_pack2_perform_delayed_data_loading(%d): do another pass (%d), pending=%d", prio, pass + 1,
-      interlocked_relaxed_load(pendingTexCount[prio]));
+    logwarn("dxp delayedLoad(%d): do another pass (%d), pending=%d", prio, pass + 1, interlocked_relaxed_load(pendingTexCount[prio]));
 #endif
   }
   tex_packs_lock.unlockRead();
@@ -1866,12 +1912,12 @@ bool ddsx::tex_pack2_perform_delayed_data_loading(int prio)
   {
     const int loaded_tex_cnt = interlocked_acquire_load(ddsx_loaded_tex_cnt[prio]);
     if (DDSxDecodeCtx::getWorkerUsedMask(prio))
-      debug("%s(%d): decoded %d tex (using %d threads of %d) for %d usec", __FUNCTION__, prio, loaded_tex_cnt,
+      debug("dxp delayedLoad(%d): decoded %d tex (using %d threads of %d) for %d usec", prio, loaded_tex_cnt,
         DDSxDecodeCtx::getWorkerUsedCount(prio), DDSxDecodeCtx::dCtx ? DDSxDecodeCtx::dCtx->numWorkers : 1, t0);
     else
-      debug("%s(%d): decoded %d tex (serial mode) for %d usec", __FUNCTION__, prio, loaded_tex_cnt, t0);
+      debug("dxp delayedLoad(%d): decoded %d tex (serial mode) for %d usec", prio, loaded_tex_cnt, t0);
     if (loaded_tex_cnt)
-      RMGR.dumpMemStats();
+      dump_tex_mem_stats_throttled();
   }
   restore_texq_loading(texq_interrupted);
   return done;
@@ -1894,7 +1940,7 @@ void ddsx::tex_pack2_perform_delayed_data_loading_async(int prio, int jobmgr_id,
   {
     int prio, jmId;
     AsyncLoadPendingTexJob(int p, int id) : prio(p), jmId(id) {}
-    const char *getJobName(bool &) const override { return "AsyncLoadPendingTexJob"; }
+    const char *getJobName(bool &) const override { return DAPROFILER_STRING("AsyncLoadPendingTexJob"); }
     virtual void doJob()
     {
       ddsx::tex_pack2_perform_delayed_data_loading(prio);
@@ -2391,7 +2437,7 @@ struct DDSxArrayTextureFactory final : public TextureFactory
 
   struct ProcessQueueJob final : public cpujobs::IJob
   {
-    const char *getJobName(bool &) const override { return "ProcessQueueJob"; }
+    const char *getJobName(bool &) const override { return DAPROFILER_STRING("ProcessQueueJob"); }
     void doJob() override { process_arr_tex_load_queue(); }
     void releaseJob() override { delete this; }
   };

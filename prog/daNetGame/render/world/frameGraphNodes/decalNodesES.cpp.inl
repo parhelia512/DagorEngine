@@ -5,7 +5,7 @@
 #include <render/world/defaultVrsSettings.h>
 #include <render/renderEvent.h>
 #include <render/world/frameGraphHelpers.h>
-#include <render/world/cameraParams.h>
+#include <render/cameraParams.h>
 #include <render/world/cameraViewVisibilityManager.h>
 #include <daECS/core/entityManager.h>
 #include <daECS/core/entitySystem.h>

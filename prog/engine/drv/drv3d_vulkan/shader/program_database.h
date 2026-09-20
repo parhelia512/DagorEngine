@@ -27,7 +27,7 @@ public:
     {
       auto &target = items[i];
       if (target && !target->isRemovalPending())
-        target->removeFromContext(ctx, ItemType::makeID(i));
+        target->removeFromContext(ctx, ItemType::makeID(i, target->idPayload));
     }
   }
 
@@ -96,7 +96,7 @@ public:
       if (index < items.size())
       {
         items[index]->onDuplicateAddition();
-        return ItemType::makeID(index);
+        return ItemType::makeID(index, ItemType::createInfoToIDPayload(info));
       }
     }
 
@@ -111,8 +111,8 @@ public:
       freeIds.pop_back();
     }
 
-    auto id = ItemType::makeID(index);
     auto obj = eastl::make_unique<ItemType>(info);
+    auto id = ItemType::makeID(index, obj->idPayload);
     obj->addToContext(ctx, id, info);
     items[index] = eastl::move(obj);
 
@@ -146,7 +146,7 @@ public:
     for (auto at = from; at != to; ++at)
     {
       if (*at)
-        clb(ItemType::makeID(at - from), **at);
+        clb(ItemType::makeID(at - from, (*at)->idPayload), **at);
     }
   }
 
@@ -228,7 +228,21 @@ public:
     if (ShaderID::Null() == fs)
       fs = nullFragmentShader;
 
-    return progs.graphics.add(ctx, {vdecl, shaders.get(vs), shaders.get(fs)});
+    auto *vsShader = shaders.get(vs);
+    auto *fsShader = shaders.get(fs);
+    uint16_t implicitVsCbufRegCount = 0;
+    uint16_t implicitFsCbufRegCount = 0;
+
+    for (const ShaderInfo *shader :
+      {vsShader, vsShader->geometryShader.get(), vsShader->controlShader.get(), vsShader->evaluationShader.get()})
+    {
+      if (shader)
+        implicitVsCbufRegCount = max(implicitVsCbufRegCount, uint16_t(shader->header->header.implicitCbufRegCount));
+    }
+    if (fsShader)
+      implicitFsCbufRegCount = uint16_t(fsShader->header->header.implicitCbufRegCount);
+
+    return progs.graphics.add(ctx, {vdecl, vsShader, fsShader, implicitVsCbufRegCount, implicitFsCbufRegCount});
   }
 
   InputLayoutID getGraphicsProgInputLayout(ProgramID id)
@@ -238,6 +252,13 @@ public:
       return InputLayoutID::Null();
     return progs.graphics.get(id)->inputLayout;
   }
+
+  static void getGraphicsProgImplicitCbufRegCounts(ProgramID id, uint32_t &vs_count, uint32_t &fs_count)
+  {
+    GraphicsProgram::getImplicitCbufRegCountsFromID(id, vs_count, fs_count);
+  }
+
+  static uint32_t getComputeProgImplicitCbufRegCount(ProgramID id) { return ComputeProgram::getImplicitCbufRegCountFromID(id); }
 
   ProgramID getDebugProgram() const { return debugProgId; }
   ProgramID getStubComputeProgram() const { return stubComputeProgId; }
@@ -280,24 +301,12 @@ public:
   }
 
   ShaderID newShader(DeviceContext &ctx, VkShaderStageFlagBits stage, Tab<spirv::ChunkHeader> &chunks, Tab<uint8_t> &chunk_data,
-    const ShaderSource &source);
+    const ShaderSourceExt &source);
   ShaderID newShader(DeviceContext &ctx, dag::Vector<VkShaderStageFlagBits> stage, dag::Vector<Tab<spirv::ChunkHeader>> chunks,
-    dag::Vector<Tab<uint8_t>> chunk_data, dag::Vector<ShaderProgramData> bytecode, const ShaderSource &source);
+    dag::Vector<Tab<uint8_t>> chunk_data, dag::Vector<ShaderProgramData> bytecode, const ShaderSourceExt &source);
 
   void deleteShader(DeviceContext &ctx, ShaderID shader);
   ShaderID getNullFragmentShader() { return nullFragmentShader; }
-  void setShaderDebugName(ShaderID shader, const char *name)
-  {
-#if VULKAN_LOAD_SHADER_EXTENDED_DEBUG_DATA
-    WinAutoLock lock(dataGuard);
-    // it is called after creation in same thread
-    // should be fine to pass into debug info
-    shaders.get(shader)->setDebugName(name);
-#else
-    G_UNUSED(shader);
-    G_UNUSED(name);
-#endif
-  }
 
 private:
   struct
@@ -331,11 +340,11 @@ private:
   };
 
   bool extractShaderModules(const VkShaderStageFlagBits stage, const Tab<spirv::ChunkHeader> &chunk_header,
-    const Tab<uint8_t> &chunk_data, const ShaderSource &source, const ShaderProgramData &bytecode, ShaderModuleHeader &shader_header,
-    ShaderModuleBlob &shader_blob);
+    const Tab<uint8_t> &chunk_data, const ShaderSourceExt &source, const ShaderProgramData &bytecode,
+    ShaderModuleHeader &shader_header, ShaderModuleBlob &shader_blob);
 
   eastl::optional<ShaderInfo::CreationInfo> getShaderCreationInfo(DeviceContext &ctx, const CombinedChunkModules &modules,
-    const ShaderSource &source);
+    const ShaderSourceExt &source);
 
   void initStubComputeProg(DeviceContext &dc);
   void initDebugProg(bool has_bindless, DeviceContext &dc);
@@ -353,8 +362,8 @@ private:
   ShaderID newShader(DeviceContext &ctx, const ShaderModuleHeader &hdr, const ShaderModuleBlob &blob);
   void releaseShaderDeps(DeviceContext &ctx, ShaderInfo &item);
 #if VULKAN_LOAD_SHADER_EXTENDED_DEBUG_DATA
-  void attachDebugInfo(ShaderID shader, const CombinedChunkModules &modules);
-  void attachDebugInfo(ShaderID shader, const ShaderDebugInfo &debugInfo);
+  void attachDebugInfo(ShaderID shader, const CombinedChunkModules &modules, const ShaderSourceExt &source);
+  void attachDebugInfo(ShaderID shader, const ShaderDebugInfo &debugInfo, const ShaderSourceExt &source);
 #endif
 };
 

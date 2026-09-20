@@ -8,6 +8,7 @@
 #include <util/dag_bitFlagsMask.h>
 #include <generic/dag_span.h>
 #include <drv/3d/dag_consts.h>
+#include <drv/3d/dag_multi_interface.h>
 
 class Sbuffer;
 class BaseTexture;
@@ -61,7 +62,9 @@ enum class TextureLayout : uint32_t
   ClearDest,
 
   // VRS rate texture
-  ShadingRateSource
+  ShadingRateSource,
+
+  MAX_VAL = ShadingRateSource,
 };
 
 enum class PipelineStageFlag : uint32_t
@@ -235,13 +238,16 @@ struct BufferBarrierBatchItem
   Sbuffer *buffer;
 };
 
+} // namespace d3d
+
 #if !_TARGET_D3D_MULTI
+namespace d3d _MULTI_INTERFACE
+{
 void enhanced_texture_barrier(const TextureBarrier &barrier, BaseTexture *texture);
 void enhanced_buffer_barrier(const BufferBarrier &barrier, Sbuffer *buffer);
 // Will check performance and remove the batch versions if they don't provide any benefit.
 // Otherwise, remove the non-batch versions and use these exclusively.
 void enhanced_barrier_batch(dag::ConstSpan<TextureBarrierBatchItem> texture_barriers,
   dag::ConstSpan<BufferBarrierBatchItem> buffer_barriers);
+} // namespace d3d _MULTI_INTERFACE
 #endif
-
-} // namespace d3d

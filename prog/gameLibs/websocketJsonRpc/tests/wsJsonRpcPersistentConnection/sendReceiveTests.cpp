@@ -24,9 +24,19 @@ const auto default_ws_config_generator = [](const websocketjsonrpc::WsJsonRpcCon
 };
 
 
+const auto different_host_ws_config_generator = [](const websocketjsonrpc::WsJsonRpcConnectionPtr &optional_failed_connection,
+                                                  int connect_retry_number) {
+  auto config = eastl::make_unique<websocketjsonrpc::WsJsonRpcConnectionConfig>();
+  config->serverUrl = optional_failed_connection ? "wss://localhost:12346" : "wss://localhost:12345";
+  return config;
+};
+
+
 const auto no_incoming_requests_expected_callback = [](websocketjsonrpc::RpcRequestPtr &&incoming_request) {
   FAIL("Should not be executed here (no incoming JSON RPC requests are expected here)");
 };
+
+constexpr eastl::string_view SERVER_SHUTDOWN_NOTIFICATION = R"({"jsonrpc":"2.0","method":"sep.NotifyClient.ServerIsGoingToShutdown"})";
 
 } // namespace
 
@@ -250,6 +260,139 @@ TEST_CASE("WsJsonRpcPersistentConnection: receive server-initiated JSON RPC mess
     connectionPtr.reset();
     match_ws_mock_scenario(wsMock, WsMockScenario::CONNECT_THEN_NO_CLOSE);
   }
+}
+
+
+TEST_CASE("WsJsonRpcPersistentConnection: server shutdown notification starts graceful reconnect", suiteTags)
+{
+  WebsocketLibraryInterceptor ws;
+  const auto wsMock = ws.addFutureConnection()->shouldSucceedConnectingAtMs(1000, 999'999);
+  const auto wsMock2 = ws.addFutureConnection()->shouldSucceedConnectingAtMs(2000, 999'999);
+  const auto wsMock3 = ws.addFutureConnection()->shouldSucceedConnectingAtMs(3000, 999'999);
+
+  auto connectionPtr = websocketjsonrpc::WsJsonRpcPersistentConnection::create();
+  websocketjsonrpc::WsJsonRpcPersistentConnection &connection = *connectionPtr;
+
+  IncomingRequestHistory incomingRequests;
+  bool haveIncomingRequestCallback = true;
+
+  SECTION("Set incoming request callback")
+  {
+    connection.initialize(different_host_ws_config_generator, incomingRequests.createCallback(), nullptr);
+  }
+
+  SECTION("Skip setting incoming request callback")
+  {
+    haveIncomingRequestCallback = false;
+    connection.initialize(different_host_ws_config_generator, nullptr, nullptr);
+  }
+
+  {
+    INFO("Wait until connected");
+    connection.poll();
+    ws.timer->addTimeMs(1000);
+    connection.poll();
+    REQUIRE(connection.isCallable() == true);
+    REQUIRE(wsMock->state == WebsocketMock::CONNECTED);
+  }
+
+  {
+    INFO("Receive server shutdown notification");
+    wsMock->emulateReceivedMessage(ws.relativeMs(0), SERVER_SHUTDOWN_NOTIFICATION);
+    connection.poll();
+
+    CHECK(connection.isCallable() == true);
+    REQUIRE(wsMock2->connectCallCount == 1);
+    CHECK(wsMock2->connectUri != wsMock->connectUri);
+
+    if (haveIncomingRequestCallback)
+    {
+      REQUIRE(incomingRequests.size() == 1);
+      CHECK(incomingRequests.last().getMethod() == "sep.NotifyClient.ServerIsGoingToShutdown");
+    }
+  }
+
+  {
+    INFO("Use the old connection while connecting the new one");
+    IncomingResponseHistory incomingResponses;
+    connection.rpcCall(next_rpc_message_id++, "methodDuringHostSwitch", "", incomingResponses.createCallback(), 1000);
+
+    REQUIRE(wsMock->sendCallCount == 1);
+    REQUIRE(wsMock2->sendCallCount == 0);
+    const auto &request = wsMock->lastSentRequest();
+    wsMock->emulateReceivedMessage(ws.relativeMs(0), generate_success_response(request, "{}"));
+    connection.poll();
+    REQUIRE(incomingResponses.size() == 1);
+    CHECK(incomingResponses.last().isError() == false);
+  }
+
+  {
+    INFO("Ignore repeated shutdown notification while switching");
+    wsMock->emulateReceivedMessage(ws.relativeMs(0), SERVER_SHUTDOWN_NOTIFICATION);
+    connection.poll();
+    CHECK(wsMock2->connectCallCount == 1);
+    CHECK(wsMock3->connectCallCount == 0);
+  }
+
+  {
+    INFO("Switch to the new connection");
+    ws.timer->addTimeMs(1001);
+    connection.poll();
+    REQUIRE(wsMock2->state == WebsocketMock::CONNECTED);
+    CHECK(connection.isCallable() == true);
+  }
+
+  {
+    INFO("Ignore shutdown notification from the old connection");
+    wsMock->emulateReceivedMessage(ws.relativeMs(0), SERVER_SHUTDOWN_NOTIFICATION);
+    connection.poll();
+    CHECK(wsMock3->connectCallCount == 0);
+  }
+
+  connectionPtr.reset();
+}
+
+
+TEST_CASE("WsJsonRpcPersistentConnection: server shutdown notification arrives before the connection becomes current", suiteTags)
+{
+  WebsocketLibraryInterceptor ws;
+  const auto wsMock = ws.addFutureConnection()->shouldSucceedConnectingAtMs(1000, 999'999);
+  const auto wsMock2 = ws.addFutureConnection()->shouldSucceedConnectingAtMs(2000, 999'999);
+
+  auto connectionPtr = websocketjsonrpc::WsJsonRpcPersistentConnection::create();
+  websocketjsonrpc::WsJsonRpcPersistentConnection &connection = *connectionPtr;
+
+  IncomingRequestHistory incomingRequests;
+  connection.initialize(different_host_ws_config_generator, incomingRequests.createCallback(), nullptr);
+
+  {
+    INFO("Receive the notification in the same poll which establishes the connection");
+    connection.poll();
+    ws.timer->addTimeMs(1000);
+    wsMock->emulateReceivedMessage(ws.relativeMs(0), SERVER_SHUTDOWN_NOTIFICATION);
+    connection.poll();
+
+    REQUIRE(wsMock->state == WebsocketMock::CONNECTED);
+    REQUIRE(incomingRequests.size() == 1);
+    CHECK(incomingRequests.last().getMethod() == "sep.NotifyClient.ServerIsGoingToShutdown");
+  }
+
+  {
+    INFO("Graceful reconnect to another host starts at once");
+    CHECK(connection.isCallable() == true);
+    REQUIRE(wsMock2->connectCallCount == 1);
+    CHECK(wsMock2->connectUri != wsMock->connectUri);
+  }
+
+  {
+    INFO("Switch to the new connection");
+    ws.timer->addTimeMs(1001);
+    connection.poll();
+    REQUIRE(wsMock2->state == WebsocketMock::CONNECTED);
+    CHECK(connection.isCallable() == true);
+  }
+
+  connectionPtr.reset();
 }
 
 

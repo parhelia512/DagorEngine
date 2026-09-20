@@ -3,6 +3,7 @@
 #include <util/dag_globDef.h>
 #include <anim/dag_animChannels.h>
 #include <anim/dag_animKeyInterp.h>
+#include <math/dag_quatInterp.h>
 #include <gameRes/dag_gameResources.h>
 #include <ioSys/dag_fileIo.h>
 #include <generic/dag_tab.h>
@@ -217,6 +218,25 @@ PrsAnimNodeRef AnimData::getPrsAnim(const char *node_name)
   prs.anim = anim.rot.animTracks;
   prs.trackId = anim.rot.getTrackId(node_name);
   return prs;
+}
+
+float AnimData::getDuration() const { return anim.rot.animTracks ? anim.rot.animTracks->get_duration() : 0.0f; }
+
+bool AnimData::sampleNodeTm(dag::Index16 node_id, float time, TMatrix &tm) const
+{
+  PrsAnimNodeRef prs;
+  prs.anim = anim.rot.animTracks;
+  prs.trackId = anim.rot.getTrackId(node_id);
+  if (!prs.valid())
+    return false;
+
+  vec3f p, s;
+  quat4f r;
+  AnimV20Math::PrsAnimNodeSampler<AnimV20Math::OneShotConfig> sampler(prs, time);
+  sampler.sampleTransform(&p, &r, &s);
+
+  tm = AnimV20Math::makeTM((Point3 &)p, (Quat &)r, (Point3 &)s);
+  return true;
 }
 
 int AnimData::getLabelTime(const char *name, bool fatal_err)

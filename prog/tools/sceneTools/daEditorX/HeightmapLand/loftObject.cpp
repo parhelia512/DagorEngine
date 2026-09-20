@@ -42,6 +42,9 @@ void SplineObject::gatherLoftLandPts(Tab<Point3> &loft_pt_cloud, Tab<Point3> &wa
   bool place_on_collision = (props.modifType == MODIF_SPLINE);
   bool water_surf = HmapLandPlugin::self->hasWaterSurf();
   float water_level = HmapLandPlugin::self->getWaterSurfLevel();
+  BezierSpline2d splineXZ;
+  getSplineXZ(splineXZ); // reconciles fillets, so the counts below have to follow it
+
   int start_idx = 0;
   int end_idx = points.size() + (poly ? 1 : 0);
   int pcnt = points.size();
@@ -50,9 +53,6 @@ void SplineObject::gatherLoftLandPts(Tab<Point3> &loft_pt_cloud, Tab<Point3> &wa
   splineScales.reserve(end_idx - start_idx + 1);
   for (int i = start_idx; i <= end_idx; i++)
     splineScales.push_back(points[i % points.size()]->getProps().attr);
-
-  BezierSpline2d splineXZ;
-  getSplineXZ(splineXZ);
 
   for (int pi = start_idx + 1; pi < end_idx; pi++)
   {

@@ -13,11 +13,6 @@
 #include <render/grassInstance.hlsli>
 #include <render/omm.h>
 
-namespace bvh
-{
-Sbuffer *alloc_scratch_buffer(uint32_t size, uint32_t &offset);
-}
-
 namespace bvh::gpugrass
 {
 static const auto blas_flags = RaytraceBuildFlags::FAST_TRACE | RaytraceBuildFlags::LOW_MEMORY;
@@ -201,12 +196,12 @@ static void discard_slot_bake(ContextId context_id, TextureSlot &slot)
 {
   if (context_id->ommEnabled)
   {
-    if (slot.ommState == Mesh::OmmState::Baking)
+    if (slot.ommState == OmmState::Baking)
       render::omm::discard_bake(context_id->ommContext, slot.ommBakeHandle);
     render::omm::clear_result(slot.ommBakeResult);
   }
   slot.ommBakeHandle = {};
-  slot.ommState = Mesh::OmmState::None;
+  slot.ommState = OmmState::None;
   slot.omm.reset();
   slot.blas.reset();
 }
@@ -303,7 +298,7 @@ void make_meta(ContextId context_id, const GPUGrassBase &grass_base)
       {
         grass->textureSlots[textureIndex].alphaTexId = alphaTexId;
         grass->textureSlots[textureIndex].diffuseTexId = diffuseTexId;
-        grass->textureSlots[textureIndex].ommState = Mesh::OmmState::None;
+        grass->textureSlots[textureIndex].ommState = OmmState::None;
       }
     }
   }
@@ -412,7 +407,7 @@ static void fail_slot(TextureSlot &slot, const char *orientation, const char *re
 {
   logerr("BVH GPU grass: dropping the %s billboard of grass texture '%s' from the BVH -- %s", orientation,
     get_managed_texture_name(slot.diffuseTexId), reason);
-  slot.ommState = Mesh::OmmState::Failed;
+  slot.ommState = OmmState::Failed;
 
   const String label(0, "%s GPU grass %s billboard", get_managed_texture_name(slot.diffuseTexId), orientation);
   publish_failed_grass_omm_debug_result(slot.ommBakeResult, slot.ommDebugBakeSource, label.c_str(), reason);
@@ -425,6 +420,8 @@ void process_omm(ContextId context_id)
   if (!context_id->ommEnabled || !context_id->hasAny(Features::GPUGrass))
     return;
 
+  TIME_PROFILE(gpu_grass__process_omm);
+
   FRAMEMEM_REGION;
   bool mappingsDirty = false;
 
@@ -432,11 +429,11 @@ void process_omm(ContextId context_id)
     CHECK_LOST_DEVICE_STATE();
     for (auto [textureIndex, slot] : enumerate(grass.textureSlots))
     {
-      if (slot.ommState == Mesh::OmmState::Built || slot.ommState == Mesh::OmmState::Failed)
+      if (slot.ommState == OmmState::Built || slot.ommState == OmmState::Failed)
         continue;
       if (slot.alphaTexId == BAD_TEXTUREID)
       {
-        fail_slot(slot, orientation, grass_omm_failure_text(Mesh::OmmFailure::NoAlphaSource));
+        fail_slot(slot, orientation, grass_omm_failure_text(OmmFailure::NoAlphaSource));
         continue;
       }
 
@@ -449,21 +446,21 @@ void process_omm(ContextId context_id)
         continue;
       }
 
-      if (slot.ommState == Mesh::OmmState::None)
+      if (slot.ommState == OmmState::None)
       {
         if (!render::omm::has_free_bake_slot(context_id->ommContext))
           continue;
 
         if (!begin_slot_omm_bake(context_id, grass, slot))
         {
-          fail_slot(slot, orientation, grass_omm_failure_text(Mesh::OmmFailure::BakeStartFailed));
+          fail_slot(slot, orientation, grass_omm_failure_text(OmmFailure::BakeStartFailed));
           continue;
         }
-        slot.ommState = Mesh::OmmState::Baking;
+        slot.ommState = OmmState::Baking;
         continue;
       }
 
-      if (slot.ommState == Mesh::OmmState::Baking)
+      if (slot.ommState == OmmState::Baking)
       {
         const render::omm::ConsumeBakeResult r =
           render::omm::consume_bake(context_id->ommContext, slot.ommBakeHandle, slot.ommBakeResult, &slot.ommBakeStats);
@@ -472,35 +469,35 @@ void process_omm(ContextId context_id)
         if (r == render::omm::ConsumeBakeResult::Failed)
         {
           slot.ommBakeHandle = {};
-          fail_slot(slot, orientation, grass_omm_failure_text(Mesh::OmmFailure::ReadbackInvalid));
+          fail_slot(slot, orientation, grass_omm_failure_text(OmmFailure::ReadbackInvalid));
           continue;
         }
-        slot.ommState = Mesh::OmmState::Ready;
+        slot.ommState = OmmState::Ready;
       }
 
-      if (slot.ommState == Mesh::OmmState::Ready)
+      if (slot.ommState == OmmState::Ready)
       {
         OmmBuildInfos ommBuilds;
         OmmBuildResults ommResults;
-        const Mesh::OmmFailure failure = build_grass_omm_array(slot.ommBakeResult, slot.ommBakeStats, slot.omm, ommBuilds, ommResults);
+        const OmmFailure failure = build_grass_omm_array(slot.ommBakeResult, slot.ommBakeStats, slot.omm, ommBuilds, ommResults);
         if (is_in_lost_device_state)
           return;
-        if (failure != Mesh::OmmFailure::None)
+        if (failure != OmmFailure::None)
         {
-          // fail_slot hands the buffers to the viewer, thus it must come before clear_result.
+          // fail_slot hands the buffers to the viewer, thus it must come before the release.
           fail_slot(slot, orientation, grass_omm_failure_text(failure));
-          render::omm::clear_result(slot.ommBakeResult);
+          release_omm_result(context_id->ommContext, slot.ommBakeResult);
           continue;
         }
         // The post-build flush of the OMM array orders it before the BLAS build below.
-        build_pending_omm_arrays(ommBuilds, ommResults);
+        build_pending_omm_arrays(context_id->ommContext, ommBuilds, ommResults);
         const auto linkage = render::omm::make_geometry_linkage(slot.ommBakeResult, slot.omm.get());
         if (!create_blas(grass, slot.blas, &linkage))
         {
           fail_slot(slot, orientation, "its BLAS could not be built");
           continue;
         }
-        slot.ommState = Mesh::OmmState::Built;
+        slot.ommState = OmmState::Built;
 
         publish_blas_address(bvhConnection.metainfoMappingsCpu[grass.mappingBase + textureIndex], slot.blas);
         mappingsDirty = true;

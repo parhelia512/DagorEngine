@@ -139,6 +139,9 @@ public:
   }
 };
 
+inline constexpr IPoint2 IPoint2::ZERO(0, 0);
+inline constexpr IPoint2 IPoint2::ONE(1, 1);
+
 constexpr INLINE IPoint2 operator*(int a, const IPoint2 &p) { return IPoint2(p.x * a, p.y * a); }
 constexpr INLINE int lengthSq(const IPoint2 &a) { return a.x * a.x + a.y * a.y; }
 

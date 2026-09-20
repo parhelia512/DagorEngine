@@ -62,7 +62,7 @@ public:
   {
     uint64_t waitStart = ref_time_ticks();
     uint64_t tryNumber = 1;
-    while (State::NOT_SIGNALED == state)
+    while (State::NOT_SIGNALED == state.load())
     {
       if (ref_time_delta_to_usec(ref_time_ticks() - waitStart) >= SUBMISSION_TIMEOUT)
       {
@@ -189,6 +189,7 @@ private:
   }
 
   VulkanFenceHandle fence;
+  // TODO: use explicit load/store
   std::atomic<State> state;
 };
 

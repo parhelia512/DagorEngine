@@ -4,7 +4,6 @@
 #include <rendInst/rendInstGenRender.h>
 #include "riGen/landClassData.h"
 #include "riGen/riGenData.h"
-#include "riGen/riCollOptimize.h"
 
 #include <landMesh/riLandClass.h>
 #include <gameRes/dag_collisionResource.h>
@@ -219,10 +218,13 @@ public:
         logerr("LandClass resource %s failed to resolve ref[%d]=%d <%s>", name.str(), i, ref_ids[i * 2 + 1], name2.str());
       }
       if (ld->riCollRes[i])
-        optimize_collres_on_load(ld->riCollRes[i], [rid = ref_ids[i * 2 + 1], &name]() {
-          get_game_resource_name(rid, name);
-          return name;
-        });
+      {
+        if (!(ld->riCollRes[i]->collisionFlags & COLLISION_RES_FLAG_OPTIMIZED))
+        {
+          get_game_resource_name(ref_ids[i * 2 + 1], name);
+          logerr("collRes (%p, %s) expected to be optimized", ld->riCollRes[i], name.str());
+        }
+      }
       else if (ld->riRes[i]->hasImpostor())
         logwarn("missing tree-RI-collRes: ri=%s", ri_name);
       riPosInst[i] = ld->riRes[i]->hasImpostor();
@@ -396,7 +398,6 @@ bool rendinst::gen::land::AssetData::loadTiledEntities(const RoDataBlock &blk)
   int resNid = blk.getNameId("resources");
   int objNid = blk.getNameId("object");
   TMatrix tm;
-  OAHashNameMap<true> missingAssetNames;
 
   for (int blki = 0; blki < blk.blockCount(); ++blki)
   {
@@ -534,7 +535,6 @@ bool rendinst::gen::land::AssetData::loadPlantedEntities(const RoDataBlock &blk,
   int genNid = blk.getNameId("obj_plant_generate");
   int objNid = blk.getNameId("object");
 
-  OAHashNameMap<true> names, rNames;
 
   for (int blki = 0; blki < blk.blockCount(); ++blki)
   {

@@ -116,8 +116,6 @@ public:
   int lockimg(void **, int &stride_bytes, int level = 0, unsigned flags = TEXLOCK_DEFAULT) override;
   int lockimg(void **, int &stride_bytes, int face, int level = 0, unsigned flags = TEXLOCK_DEFAULT) override;
   int update(BaseTexture *src) override;
-  int updateSubRegion(BaseTexture *src, int src_subres_idx, int src_x, int src_y, int src_z, int src_w, int src_h, int src_d,
-    int dest_subres_idx, int dest_x, int dest_y, int dest_z) override;
   int unlockimg() override;
   int lockbox(void **data, int &row_pitch, int &slice_pitch, int level, unsigned flags = TEXLOCK_DEFAULT) override;
   int unlockbox() override;
@@ -131,11 +129,6 @@ public:
   bool updateTexResFormat(unsigned d3d_format) override;
   BaseTexture *makeTmpTexResCopy(int w, int h, int d, int l) override;
   void replaceTexResObject(BaseTexture *&other_tex) override;
-
-  BaseTexture *downSize(int new_width, int new_height, int new_depth, int new_mips, unsigned start_src_level,
-    unsigned level_offset) override;
-  BaseTexture *upSize(int new_width, int new_height, int new_depth, int new_mips, unsigned start_src_level,
-    unsigned level_offset) override;
 
   static uint32_t update_flags_for_linear_layout(uint32_t cflags, FormatStore format);
   static DeviceMemoryClass get_memory_class(uint32_t cflags);

@@ -90,14 +90,16 @@ struct FormatParams
   float indent = 0;
   float hangingIndent = 0;
   int maxWidth = 0;
+  bool breakLongWords = true;
 
-  void reset() { memset(this, 0, sizeof(*this)); }
+  void reset() { *this = FormatParams(); }
 
   bool isSameCacheKey(const FormatParams &fp) const
   {
     return maxWidth == fp.maxWidth && // most volatile
            defFontId == fp.defFontId && defFontHt == fp.defFontHt && spacing == fp.spacing && monoWidth == fp.monoWidth &&
-           lineSpacing == fp.lineSpacing && parSpacing == fp.parSpacing && indent == fp.indent && hangingIndent == fp.hangingIndent;
+           lineSpacing == fp.lineSpacing && parSpacing == fp.parSpacing && indent == fp.indent && hangingIndent == fp.hangingIndent &&
+           breakLongWords == fp.breakLongWords;
   }
 };
 
@@ -169,12 +171,15 @@ private:
   bool strToColor(const char *str, const char *end, E3DCOLOR &out_color, int &out_length);
   Point2 calcEmbeddedComponentSize(const Sqrat::Object &desc, float def_height);
   void shapeBlock(TextBlock *block, const StdGuiFontContext &fontCtx, float ascent, float descent);
+  TextBlock *allocateFragment(const TextBlock *src, int begin, int end);
+  void freeFragments();
 
   bool isFormatting = false;
 
 public:
   Tab<TextBlock *> blocks;
   Tab<TextLine> lines;
+  Tab<TextBlock *> fragments; //< pieces of split words; layout state like lines, not part of blocks
   float yOffset;
   FormatParams lastFormatParamsForCurText;
 

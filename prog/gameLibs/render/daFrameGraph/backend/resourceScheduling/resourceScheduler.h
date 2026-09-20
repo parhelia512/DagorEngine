@@ -24,6 +24,10 @@ struct FrameResource
   uint32_t frame;
 };
 
+// Applies the settings to our console variables, which the console may then
+// override, so this must only be called on startup.
+void load_resource_scheduling_settings();
+
 struct HeapSchedulingResult;
 
 class ResourceScheduler // -V730
@@ -78,7 +82,6 @@ private:
   eastl::pair<HeapRequests, ActiveHeapRequestMap> initializeHeapRequests(const ResourceProperties &resources,
     const SchedulingContext &ctx);
 
-  using AlreadyScheduled = eastl::array<IdIndexedFlags<intermediate::ResourceIndex, framemem_allocator>, SCHEDULE_FRAME_WINDOW>;
   using ReusedHeaps = IdIndexedFlags<HeapIndex, framemem_allocator>;
 
   using PreviousAllocations =
@@ -89,8 +92,9 @@ private:
     const ReusedHeaps &reused_heaps, const PreviousAllocations &previous_allocations, const SchedulingContext &ctx);
 
   HeapSchedulingResult scheduleHeap(HeapIndex heap_idx, eastl::span<const FrameResource> resources_in_heap,
-    uint32_t preserve_produced_on_frame, uint32_t timepoints_per_frame, bool allow_preservation, const ResourceProperties &resources,
-    const PreviousAllocations &previous_allocations, ResourceSchedule &result, const SchedulingContext &ctx);
+    eastl::span<const FrameResource> optional_resources_in_heap, uint32_t preserve_produced_on_frame, uint32_t timepoints_per_frame,
+    bool allow_preservation, const ResourceProperties &resources, const PreviousAllocations &previous_allocations,
+    ResourceSchedule &result, const SchedulingContext &ctx);
 
   void cacheCorrectedSizes(const ResourceProperties &resources, const SchedulingContext &ctx);
   PlacementChangedFlags computePlacementChangedFlags(const ResourceProperties &new_properties, const SchedulingContext &ctx) const;
@@ -114,9 +118,9 @@ private:
   // need to wipe it clean.
   eastl::array<IdIndexedFlags<intermediate::ResourceIndex>, SCHEDULE_FRAME_WINDOW> preservedResources;
 
-  // Keep track of history resource flags,
-  // because their change invalidates the preservation mechanism.
-  dag::FixedVectorMap<ResNameId, uint32_t, 32> historyResourceFlags;
+  // Keep track of the description of each history resource, because a change
+  // there invalidates the preservation mechanism.
+  dag::FixedVectorMap<ResNameId, ResourceDescription::HashT, 32> historyResourceKeys;
 
   // These live here so that we have a single heap allocation that we reuse
   IdIndexedMapping<HeapIndex, eastl::pair<float, float>> heapStatistics;

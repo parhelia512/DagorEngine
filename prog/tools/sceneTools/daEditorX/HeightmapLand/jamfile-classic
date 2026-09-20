@@ -32,6 +32,7 @@ Sources =
   hmlObject.cpp
   hmlLayers.cpp
   hmlSplineObject.cpp
+  hmlSplineFillet.cpp
   hmlSplinePoint.cpp
   hmlGenColorMap.cpp
   hmlGenColorMap_lcg.cpp

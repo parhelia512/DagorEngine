@@ -7,6 +7,7 @@
 #include <rendInst/impostorTextureMgr.h>
 #include <rendInst/impostor.h>
 #include <rendInst/rendInstExtraRender.h>
+#include <rendInst/rendInstGenRtTools.h>
 
 #include "riGen/riGenExtra.h"
 #include "riGen/riGenData.h"
@@ -47,6 +48,9 @@
 #include <debug/dag_debug3d.h>
 #include <drv/3d/dag_resetDevice.h>
 #include <drv/3d/dag_driverDesc.h>
+#include <util/dag_convar.h>
+
+extern ConVarB tree_horizontal_cull;
 
 
 #define debug(...) logmessage(_MAKE4C('RGEN'), __VA_ARGS__)
@@ -120,6 +124,7 @@ static bool use_bbox_in_cbuffer = false;
 bool use_tree_lod0_offset = true;
 bool use_lods_by_distance_update = true;
 float lods_by_distance_range_sq = sqr(200);
+float lods_by_distance_mul_bias_sq = 1.f;
 
 static VDECL rendinstDepthOnlyVDECL = BAD_VDECL;
 static int build_normal_type = -2;
@@ -175,6 +180,7 @@ int rendinstRenderPassVarId = -1;
 int rendinstShadowTexVarId = -1;
 int lods_shift_dist_mul_varId = -1;
 int ri_dist_mul_rcp_varId = -1;
+int ri_fade_y_scale_varId = -1;
 
 int gpuObjectDecalVarId = -1;
 int disable_rendinst_alpha_for_normal_pass_with_zprepassVarId = -1;
@@ -202,7 +208,7 @@ void update_voxel_baker_textures()
     return;
   Driver3dRenderTarget rt;
   d3d::get_render_target(rt);
-  for (int i = 0; i < 3; i++)
+  for (int i = 0; i < 4; i++)
     d3d::resource_barrier({rt.getColor(i).tex, RB_RO_COPY_SOURCE | RB_RO_BLIT_SOURCE, 0, 0});
   d3d::stretch_rect(rt.getColor(0).tex, ShaderGlobal::get_tex_ptr_fast(voxel_baker_last_rt0_varid));
   d3d::stretch_rect(rt.getColor(1).tex, ShaderGlobal::get_tex_ptr_fast(voxel_baker_last_rt1_varid));
@@ -627,13 +633,15 @@ void RendInstGenData::initRenderGlobals(bool use_color_padding, bool should_init
   rendinst::render::instancingTypeVarId = ::get_shader_glob_var_id("instancing_type");
   rendinst::render::lods_shift_dist_mul_varId = ::get_shader_glob_var_id("lods_shift_dist_mul");
   rendinst::render::ri_dist_mul_rcp_varId = ::get_shader_glob_var_id("ri_dist_mul_rcp");
+  rendinst::render::ri_fade_y_scale_varId = ::get_shader_glob_var_id("ri_fade_y_scale", true);
 
   auto graphicsBlk = ::dgs_get_settings()->getBlockByNameEx("graphics");
   rendinst::render::use_tree_lod0_offset = graphicsBlk->getBool("useTreeLod0Offset", true);
   rendinst::render::use_lods_by_distance_update = graphicsBlk->getBool("useLodsByDistanceUpdate", true);
   rendinst::render::lods_by_distance_range_sq = sqr(graphicsBlk->getReal("lodsByDistanceRange", 100));
-  debug("rendinst: lods_by_distance %s %g", (rendinst::render::use_lods_by_distance_update ? "on" : "off"),
-    sqrtf(rendinst::render::lods_by_distance_range_sq));
+  rendinst::render::lods_by_distance_mul_bias_sq = sqr(graphicsBlk->getReal("lodsByDistanceMulBias", 1));
+  debug("rendinst: lods_by_distance %s %g mulBias %g", (rendinst::render::use_lods_by_distance_update ? "on" : "off"),
+    sqrtf(rendinst::render::lods_by_distance_range_sq), sqrtf(rendinst::render::lods_by_distance_mul_bias_sq));
 
   rendinst::render::use_bbox_in_cbuffer = ::get_shader_variable_id("useBboxInCbuffer", true) >= 0;
 
@@ -729,8 +737,12 @@ void RendInstGenData::initRender(const DataBlock *level_blk)
   });
   unitedvdata::riUnitedVdata.addRes(make_span(riRes));
 
+  Tab<uint8_t> packType;
+  packType.resize(rtData->riRes.size());
+  rendinst::getPersistentPackTypes(make_span_const(rtData->riRes), 2, make_span(packType));
+
   for (int i = 0; i < rtData->riRes.size(); i++)
-    if (rtData->riRes[i] && rendinst::getPersistentPackType(rtData->riRes[i], 2) != 2 && rtData->riResHideMask[i] != 0xFF)
+    if (rtData->riRes[i] && packType[i] != 2 && rtData->riResHideMask[i] != 0xFF)
     {
       rtData->rtPoolData[i] = new rendinst::render::RtPoolData(rtData->riRes[i]);
       if (rtData->riRes[i]->hasImpostor())
@@ -1259,6 +1271,9 @@ void RendInstGenData::renderOptimizationDepthPrepass(const RiGenVisibility &visi
   ShaderGlobal::set_float(rendinst::render::lods_shift_dist_mul_varId,
     rendinst::render::lodsShiftDistMul / rtData->rendinstDistMulImpostorTrees / rtData->impostorsDistAdditionalMul);
   ShaderGlobal::set_float(rendinst::render::ri_dist_mul_rcp_varId, safediv(1.0f, visibility.riDistMul));
+  // horizontal fade matches the cull gate in prepareVisibility: convar and no forced lod
+  const bool horFade = tree_horizontal_cull.get() && rendinst::get_effective_forced_lod(visibility.forcedLod) < 0;
+  ShaderGlobal::set_float(rendinst::render::ri_fade_y_scale_varId, horFade ? 0.f : 1.f);
 
   int layerIdx = rtData->layerIdx;
   rendinst::render::setPerDrawData(rendinst::render::riGenPerDrawDataForLayer[layerIdx]);
@@ -1432,6 +1447,11 @@ void RendInstGenData::renderPreparedOpaque(rendinst::RenderPass render_pass, ren
   ShaderGlobal::set_float(rendinst::render::lods_shift_dist_mul_varId,
     rendinst::render::lodsShiftDistMul / rtData->rendinstDistMulImpostorTrees / rtData->impostorsDistAdditionalMul);
   ShaderGlobal::set_float(rendinst::render::ri_dist_mul_rcp_varId, safediv(1.0f, visibility.riDistMul));
+  // horizontal fade matches the cull gates in prepareVisibility: convar, no forced
+  // lod, and not the shadow pass (shadow cull and fade stay 3d)
+  const bool horFade = tree_horizontal_cull.get() && render_pass != rendinst::RenderPass::ToShadow &&
+                       rendinst::get_effective_forced_lod(visibility.forcedLod) < 0;
+  ShaderGlobal::set_float(rendinst::render::ri_fade_y_scale_varId, horFade ? 0.f : 1.f);
 
   const int blockToSet = (render_pass == rendinst::RenderPass::Depth) || (render_pass == rendinst::RenderPass::ToShadow)
                            ? rendinst::render::rendinstDepthSceneBlockId
@@ -1804,6 +1824,19 @@ void rendinst::set_per_instance_visibility_for_any_tree(bool on)
       rgl->applyLodRanges();
   }
 }
+
+void rendinst::setTreeLod0Offset(bool on)
+{
+  if (rendinst::render::use_tree_lod0_offset == on)
+    return;
+  rendinst::render::use_tree_lod0_offset = on;
+
+  FOR_EACH_RG_LAYER_DO (rgl)
+    if (rgl->rtData)
+      rgl->applyLodRanges();
+}
+
+void rendinst::render::setTreeHorizontalCull(bool on) { tree_horizontal_cull.set(on); }
 
 void rendinst::render::setRIGenRenderMode(int mode)
 {

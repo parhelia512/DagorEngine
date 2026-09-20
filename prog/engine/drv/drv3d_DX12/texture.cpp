@@ -975,58 +975,63 @@ void BaseTex::replaceTexResObject(BaseTexture *&other_tex)
   del_d3dres(other_tex);
 }
 
-BaseTexture *BaseTex::downSize(int new_width, int new_height, int new_depth, int new_mips, unsigned start_src_level,
+// One context transfer for the whole mip range, not a copy per subresource, so dx12 needs no
+// copy destination usage flag.
+
+BaseTexture *d3d::down_size_tex(BaseTexture *tex, int width, int height, int depth, int mips, unsigned start_src_level,
   unsigned level_offset)
 {
-  auto rep = makeTmpTexResCopy(new_width, new_height, new_depth, new_mips);
+  STORE_RETURN_ADDRESS();
+  auto self = getbasetex(tex);
+  auto rep = self->makeTmpTexResCopy(width, height, depth, mips);
   if (!rep)
   {
-    D3D_ERROR("DX12: Failed to create temporary texture for downSize for texture %p <%s>", this, getName());
+    D3D_ERROR("DX12: Failed to create temporary texture for down_size_tex for texture %p <%s>", self, self->getName());
     return nullptr;
   }
 
   auto repTex = getbasetex(rep);
-  Image *src = getDeviceImage();
+  Image *src = self->getDeviceImage();
   Image *dst = repTex->getDeviceImage();
   if (!src || !dst)
     return nullptr;
 
   unsigned sourceLevel = max<unsigned>(level_offset, start_src_level);
-  unsigned sourceLevelEnd = min<unsigned>(mipLevels, new_mips + level_offset);
+  unsigned sourceLevelEnd = min<unsigned>(self->level_count(), mips + level_offset);
 
   repTex->texmiplevel(sourceLevel - level_offset, sourceLevelEnd - level_offset - 1);
-  repTex->adoptWasUsed(this);
+  repTex->adoptWasUsed(self);
 
-  STORE_RETURN_ADDRESS();
   get_device().getContext().resizeImageMipMapTransfer(src, dst, MipMapRange::make(sourceLevel, sourceLevelEnd - sourceLevel), 0,
     level_offset);
 
   return rep;
 }
 
-BaseTexture *BaseTex::upSize(int new_width, int new_height, int new_depth, int new_mips, unsigned start_src_level,
+BaseTexture *d3d::up_size_tex(BaseTexture *tex, int width, int height, int depth, int mips, unsigned start_src_level,
   unsigned level_offset)
 {
-  auto rep = makeTmpTexResCopy(new_width, new_height, new_depth, new_mips);
+  STORE_RETURN_ADDRESS();
+  auto self = getbasetex(tex);
+  auto rep = self->makeTmpTexResCopy(width, height, depth, mips);
   if (!rep)
   {
-    D3D_ERROR("DX12: Failed to create temporary texture for upSize for texture %p <%s>", this, getName());
+    D3D_ERROR("DX12: Failed to create temporary texture for up_size_tex for texture %p <%s>", self, self->getName());
     return nullptr;
   }
 
   auto repTex = getbasetex(rep);
-  Image *src = getDeviceImage();
+  Image *src = self->getDeviceImage();
   Image *dst = repTex->getDeviceImage();
   if (!src || !dst)
     return nullptr;
 
   unsigned destinationLevel = level_offset + start_src_level;
-  unsigned destinationLevelEnd = min<unsigned>(mipLevels + level_offset, new_mips);
+  unsigned destinationLevelEnd = min<unsigned>(self->level_count() + level_offset, mips);
 
   repTex->texmiplevel(destinationLevel, destinationLevelEnd - 1);
-  repTex->adoptWasUsed(this);
+  repTex->adoptWasUsed(self);
 
-  STORE_RETURN_ADDRESS();
   get_device().getContext().resizeImageMipMapTransfer(src, dst,
     MipMapRange::make(destinationLevel, destinationLevelEnd - destinationLevel), level_offset, 0);
 
@@ -1352,20 +1357,22 @@ int BaseTex::update(BaseTexture *src)
   return 1;
 }
 
-int BaseTex::updateSubRegion(BaseTexture *src, int src_subres_idx, int src_x, int src_y, int src_z, int src_w, int src_h, int src_d,
-  int dest_subres_idx, int dest_x, int dest_y, int dest_z)
+int d3d::update_sub_region(BaseTexture *src, int src_subres_idx, int src_x, int src_y, int src_z, int src_w, int src_h, int src_d,
+  BaseTexture *dst, int dest_subres_idx, int dest_x, int dest_y, int dest_z)
 {
-  if (!can_be_copy_updated(cflg))
+  STORE_RETURN_ADDRESS();
+  auto dstBaseTex = getbasetex(dst);
+  if (!can_be_copy_updated(dstBaseTex->cflg))
   {
-    D3D_CONTRACT_ERROR("DX12: used updateSubRegion method on texture <%s> that does not support it, the texture needs either "
+    D3D_CONTRACT_ERROR("DX12: used update_sub_region on texture <%s> that does not support it, the texture needs either "
                        "TEXCF_UPDATE_DESTINATION, TEXCF_RTARGET or TEXCF_UNORDERED create flags specified",
-      getName());
+      dstBaseTex->getName());
     return 0;
   }
-  STORE_RETURN_ADDRESS();
-  if (isStub())
+  if (dstBaseTex->isStub())
   {
-    D3D_CONTRACT_ERROR("updateSubRegion() called for tex=<%s> in stub state: stubTexIdx=%d", getTexName(), stubTexIdx);
+    D3D_CONTRACT_ERROR("update_sub_region() called for tex=<%s> in stub state: stubTexIdx=%d", dstBaseTex->getTexName(),
+      dstBaseTex->stubTexIdx);
     return 0;
   }
 
@@ -1376,19 +1383,20 @@ int BaseTex::updateSubRegion(BaseTexture *src, int src_subres_idx, int src_x, in
 
   if (stex->isStub())
   {
-    D3D_CONTRACT_ERROR("DX12: updateSubRegion() called with src tex=<%s> in stub state: stubTexIdx=%d", src->getTexName(),
+    D3D_CONTRACT_ERROR("DX12: update_sub_region() called with src tex=<%s> in stub state: stubTexIdx=%d", src->getTexName(),
       stex->stubTexIdx);
     return 0;
   }
 
-  if ((D3DResourceType::TEX != type) && (D3DResourceType::CUBETEX != type) && (D3DResourceType::VOLTEX != type) &&
-      (D3DResourceType::ARRTEX != type) && (D3DResourceType::CUBEARRTEX != type))
+  if ((D3DResourceType::TEX != dstBaseTex->type) && (D3DResourceType::CUBETEX != dstBaseTex->type) &&
+      (D3DResourceType::VOLTEX != dstBaseTex->type) && (D3DResourceType::ARRTEX != dstBaseTex->type) &&
+      (D3DResourceType::CUBEARRTEX != dstBaseTex->type))
     return 0;
 
-  if (stex->image == nullptr || image == nullptr)
+  if (stex->image == nullptr || dstBaseTex->image == nullptr)
     return 0;
 
-  if (!validate_update_sub_region_params(src, src_subres_idx, src_x, src_y, src_z, src_w, src_h, src_d, this, dest_subres_idx, dest_x,
+  if (!validate_update_sub_region_params(src, src_subres_idx, src_x, src_y, src_z, src_w, src_h, src_d, dst, dest_subres_idx, dest_x,
         dest_y, dest_z))
     return 0;
 
@@ -1396,12 +1404,12 @@ int BaseTex::updateSubRegion(BaseTexture *src, int src_subres_idx, int src_x, in
   // of the texture format and round them up.
   // If we don't do that, those copies will reset the device.
   auto sfmt = stex->getFormat();
-  auto dfmt = getFormat();
+  auto dfmt = dstBaseTex->getFormat();
 
   G_ASSERT_RETURN_AND_LOG(sfmt.isCopyConvertible(dfmt), 0,
-    "DX12: BaseTex::updateSubRegion source <%s> format %s can not be copied "
+    "DX12: update_sub_region source <%s> format %s can not be copied "
     "to dest <%s> format %s",
-    stex->getTexName(), sfmt.getNameString<true>(), getTexName(), dfmt.getNameString<true>());
+    stex->getTexName(), sfmt.getNameString<true>(), dstBaseTex->getTexName(), dfmt.getNameString<true>());
 
   ImageCopy region;
   region.srcSubresource = SubresourceIndex::make(src_subres_idx);
@@ -1411,24 +1419,25 @@ int BaseTex::updateSubRegion(BaseTexture *src, int src_subres_idx, int src_x, in
     .width = static_cast<uint32_t>(src_w), .height = static_cast<uint32_t>(src_h), .depth = static_cast<uint32_t>(src_d)};
 
   const auto srcExt = stex->image->getMipExtents(stex->image->stateIndexToMipIndex(region.srcSubresource));
-  const auto dstExt = image->getMipExtents(image->stateIndexToMipIndex(region.dstSubresource));
+  const auto dstExt = dstBaseTex->image->getMipExtents(dstBaseTex->image->stateIndexToMipIndex(region.dstSubresource));
 
   const bool srcIsFullResourceRegion = copyExtent == srcExt;
   const bool dstIsFullResourceRegion = copyExtent == dstExt;
 
-  if (sfmt.isDepth() || dfmt.isDepth() || (0 != (TEXCF_SAMPLECOUNT_MASK & (cflg | stex->cflg))))
+  if (sfmt.isDepth() || dfmt.isDepth() || (0 != (TEXCF_SAMPLECOUNT_MASK & (dstBaseTex->cflg | stex->cflg))))
   {
     // for multi sample the sample count has be identical
-    if ((cflg & TEXCF_SAMPLECOUNT_MASK) != (stex->cflg & TEXCF_SAMPLECOUNT_MASK))
+    if ((dstBaseTex->cflg & TEXCF_SAMPLECOUNT_MASK) != (stex->cflg & TEXCF_SAMPLECOUNT_MASK))
     {
-      D3D_CONTRACT_ERROR("DX12: updateSubRegion for multisampled textures requires same sample count, src=<%s> %08X, dst=<%s> %08X",
-        src->getTexName(), (stex->cflg & TEXCF_SAMPLECOUNT_MASK), getTexName(), (cflg & TEXCF_SAMPLECOUNT_MASK));
+      D3D_CONTRACT_ERROR("DX12: update_sub_region for multisampled textures requires same sample count, src=<%s> %08X, dst=<%s> %08X",
+        src->getTexName(), (stex->cflg & TEXCF_SAMPLECOUNT_MASK), dstBaseTex->getTexName(),
+        (dstBaseTex->cflg & TEXCF_SAMPLECOUNT_MASK));
       return 0;
     }
 
     if (0 != src_x || 0 != src_y || 0 != src_z)
     {
-      D3D_CONTRACT_ERROR("DX12: updateSubRegion for multisampled or depth/stencil only entire sub resource is allowed, but src "
+      D3D_CONTRACT_ERROR("DX12: update_sub_region for multisampled or depth/stencil only entire sub resource is allowed, but src "
                          "offsets where not 0 (%u, %u, %u)",
         src_x, src_y, src_z);
       return 0;
@@ -1436,14 +1445,14 @@ int BaseTex::updateSubRegion(BaseTexture *src, int src_subres_idx, int src_x, in
 
     if (0 != dest_x || 0 != dest_y || 0 != dest_z)
     {
-      D3D_CONTRACT_ERROR("DX12: updateSubRegion for multisampled or depth/stencil only entire sub resource is allowed, but dst "
+      D3D_CONTRACT_ERROR("DX12: update_sub_region for multisampled or depth/stencil only entire sub resource is allowed, but dst "
                          "offsets where not 0 (%u, %u, %u)",
         dest_x, dest_y, dest_z);
       return 0;
     }
     if (!srcIsFullResourceRegion)
     {
-      D3D_CONTRACT_ERROR("DX12: updateSubRegion for multisampled or depth/stencil copy region has to match mip map extents of src "
+      D3D_CONTRACT_ERROR("DX12: update_sub_region for multisampled or depth/stencil copy region has to match mip map extents of src "
                          "(%u, %u, %u) != (%u, %u, %u)",
         copyExtent.width, copyExtent.height, copyExtent.depth, srcExt.width, srcExt.height, srcExt.depth);
       return 0;
@@ -1451,7 +1460,7 @@ int BaseTex::updateSubRegion(BaseTexture *src, int src_subres_idx, int src_x, in
 
     if (!dstIsFullResourceRegion)
     {
-      D3D_CONTRACT_ERROR("DX12: updateSubRegion for multisampled or depth/stencil copy region has to match mip map extents of dst "
+      D3D_CONTRACT_ERROR("DX12: update_sub_region for multisampled or depth/stencil copy region has to match mip map extents of dst "
                          "(%u, %u, %u) != (%u, %u, %u)",
         copyExtent.width, copyExtent.height, copyExtent.depth, dstExt.width, dstExt.height, dstExt.depth);
       return 0;
@@ -1502,12 +1511,19 @@ int BaseTex::updateSubRegion(BaseTexture *src, int src_subres_idx, int src_x, in
   }
 
   ScopedCommitLock ctxLock{get_device().getContext()};
-  get_device().getContext().copyImage(stex->image, image, region);
+  get_device().getContext().copyImage(stex->image, dstBaseTex->image, region);
 #if DAGOR_DBGLEVEL > 0
   stex->setWasUsed();
 #endif
 
   return 1;
+}
+
+int d3d::update_sub_region_no_order(BaseTexture *src, int src_subres_idx, int src_x, int src_y, int src_z, int src_w, int src_h,
+  int src_d, BaseTexture *dst, int dst_subres_idx, int dst_x, int dst_y, int dst_z)
+{
+  return d3d::update_sub_region(src, src_subres_idx, src_x, src_y, src_z, src_w, src_h, src_d, dst, dst_subres_idx, dst_x, dst_y,
+    dst_z);
 }
 
 void BaseTex::destroy()
@@ -2592,6 +2608,8 @@ BaseTexture *d3d::alloc_ddsx_tex(const ddsx::Header &hdr, int flg, int q_id, int
   G_ASSERT_RETURN(bt, nullptr);
   G_ASSERT_RETURN(w > 0 && h > 0 && d > 0, nullptr);
   G_ASSERT_RETURN(levels > 0 && levels < MAX_MIPMAPS, nullptr);
+  if (stub_tex_idx >= (int)tql::texStub.size())
+    stub_tex_idx = -1; // texStreaming off: initTexStubs made no stubs
   bt->setParams(w, h, d, levels, stat_name);
   bt->stubTexIdx = stub_tex_idx;
   bt->setIsPreallocBeforeLoad(true);

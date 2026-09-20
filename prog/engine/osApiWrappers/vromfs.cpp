@@ -4,6 +4,9 @@
 #include <osApiWrappers/dag_localConv.h>
 #include <osApiWrappers/dag_direct.h>
 #include <osApiWrappers/dag_critSec.h>
+#include <osApiWrappers/dag_miscApi.h>
+#include <osApiWrappers/dag_atomic.h>
+#include <osApiWrappers/dag_rwLock.h>
 #include <util/dag_globDef.h>
 #include <osApiWrappers/basePath.h>
 #include <stdio.h>
@@ -62,6 +65,23 @@ ReadWriteLock VromReadHandle::lock;
 typedef ScopedLockReadTemplate<ReadWriteLock> LockForRead;
 typedef ScopedLockWriteTemplate<ReadWriteLock> LockForWrite;
 
+// set by the web-backed vromfs module (webvromfs) to cpujobs::release_done_jobs so a
+// main-thread unmount can drive pending download completions; keeps this lib off cpujobs
+static void (*backed_resolve_pump)() = nullptr;
+void set_vromfs_backed_resolve_pump(void (*pump)()) { backed_resolve_pump = pump; }
+static void wait_backed_resolves_done(VirtualRomFsData *fs)
+{
+  VirtualRomFsPack::BackedData *bd = static_cast<VirtualRomFsPack *>(fs)->getBackedData();
+  if (!bd)
+    return;
+  while (interlocked_acquire_load(bd->resolvesInFlight) > 0)
+  {
+    if (is_main_thread() && backed_resolve_pump)
+      backed_resolve_pump(); // deliver the completion an off-main resolve waits on
+    sleep_msec(1);
+  }
+}
+
 void add_vromfs(VirtualRomFsData *fs, bool insert_first, char *mount_path)
 {
   LockForWrite lock(VromReadHandle::lock);
@@ -103,43 +123,53 @@ char *remove_vromfs(VirtualRomFsData *fs)
 {
   if (!fs)
     return NULL;
-  LockForWrite lock(VromReadHandle::lock);
-  for (int i = 0; i < MAX_VROMFS_NUM; i++)
+  char *mp = NULL;
+  bool found = false;
   {
-    if (vromfs[i] == fs)
-    {
-      char *mp = (char *)vromfsMp[i];
-      vromfs[i] = NULL;
-      vromfsMp[i] = NULL;
-      if (i + 1 < MAX_VROMFS_NUM)
+    LockForWrite lock(VromReadHandle::lock);
+    for (int i = 0; i < MAX_VROMFS_NUM; i++)
+      if (vromfs[i] == fs)
       {
-        memmove(&vromfs[i], &vromfs[i + 1], sizeof(vromfs[0]) * (MAX_VROMFS_NUM - i - 1));
-        memmove(&vromfsMp[i], &vromfsMp[i + 1], sizeof(vromfsMp[0]) * (MAX_VROMFS_NUM - i - 1));
-        memmove(&vromfsMpLen[i], &vromfsMpLen[i + 1], sizeof(vromfsMpLen[0]) * (MAX_VROMFS_NUM - i - 1));
-        memmove(&vromfsSp[i], &vromfsSp[i + 1], sizeof(vromfsSp[0]) * (MAX_VROMFS_NUM - i - 1));
+        mp = (char *)vromfsMp[i];
+        vromfs[i] = NULL;
+        vromfsMp[i] = NULL;
+        if (i + 1 < MAX_VROMFS_NUM)
+        {
+          memmove(&vromfs[i], &vromfs[i + 1], sizeof(vromfs[0]) * (MAX_VROMFS_NUM - i - 1));
+          memmove(&vromfsMp[i], &vromfsMp[i + 1], sizeof(vromfsMp[0]) * (MAX_VROMFS_NUM - i - 1));
+          memmove(&vromfsMpLen[i], &vromfsMpLen[i + 1], sizeof(vromfsMpLen[0]) * (MAX_VROMFS_NUM - i - 1));
+          memmove(&vromfsSp[i], &vromfsSp[i + 1], sizeof(vromfsSp[0]) * (MAX_VROMFS_NUM - i - 1));
+        }
+        rebuild_basepath_vrom_mounted();
+        if (vromfsinternal::on_vromfs_unmounted)
+          vromfsinternal::on_vromfs_unmounted(fs);
+        found = true;
+        break;
       }
-      rebuild_basepath_vrom_mounted();
-      if (vromfsinternal::on_vromfs_unmounted)
-        vromfsinternal::on_vromfs_unmounted(fs);
-      return mp;
-    }
   }
-  VromReadHandle::lock.unlockWrite();
-  G_ASSERT(0 && "try to remove fs which not added");
-  VromReadHandle::lock.lockWrite();
-  return NULL;
+  // fires outside the write lock: an assertion handler may take the vromfs read lock (df_open)
+  G_ASSERTF(found, "try to remove fs which not added");
+  // a lock-dropped backed resolve may still be using fs; let it finish before the caller frees it
+  if (found)
+    wait_backed_resolves_done(fs);
+  return mp;
 }
 VirtualRomFsData *replace_vromfs(int idx, VirtualRomFsData *fs)
 {
   if (!fs || idx < 0 || idx >= MAX_VROMFS_NUM)
     return NULL;
-  LockForWrite lock(VromReadHandle::lock);
-  VirtualRomFsData *old_fs = vromfs[idx];
-  if (!old_fs)
-    return NULL;
-  vromfs[idx] = fs;
-  if (vromfsinternal::on_vromfs_unmounted)
-    vromfsinternal::on_vromfs_unmounted(old_fs);
+  VirtualRomFsData *old_fs;
+  {
+    LockForWrite lock(VromReadHandle::lock);
+    old_fs = vromfs[idx];
+    if (!old_fs)
+      return NULL;
+    vromfs[idx] = fs;
+    if (vromfsinternal::on_vromfs_unmounted)
+      vromfsinternal::on_vromfs_unmounted(old_fs);
+  }
+  // a lock-dropped backed resolve may still be using old_fs; let it finish before the caller frees it
+  wait_backed_resolves_done(old_fs);
   return old_fs;
 }
 
@@ -233,6 +263,43 @@ bool set_vromfs_strip_prefixes_str(VirtualRomFsData *fs, const char *strip_prefi
   return false;
 }
 
+// Resolves a backed entry, dropping the read lock across the (blocking) web download off the
+// main thread so a waiting add_vromfs writer and the main thread proceed, then re-acquiring and
+// re-checking the mount. The read lock is held on entry and exit; thread-safety analysis cannot
+// follow the temporary unlock, so this one helper opts out.
+static VromReadHandle::data_type resolve_backed_locked(VirtualRomFsData *fs, VirtualRomFsPack::BackedData *bd, int idx,
+  const char *mnt, VirtualRomFsData **out_vrom) DAG_TS_NO_THREAD_SAFETY_ANALYSIS
+{
+  int entry = idx;
+  const bool dropReadLock = !is_main_thread();
+  if (dropReadLock)
+  {
+    interlocked_increment(bd->resolvesInFlight);
+    VromReadHandle::lock.unlockRead();
+  }
+  VirtualRomFsData *v = VirtualRomFsPack::resolve_backed_entry(fs, entry, true, false, mnt);
+  if (dropReadLock)
+  {
+    VromReadHandle::lock.lockRead();
+    // an unmount may have raced the resolve: fs is gone from the table and its pack is about to
+    // be freed, so drop it
+    bool stillMounted = false;
+    for (int k = 0; k < MAX_VROMFS_NUM && vromfs[k]; k++)
+      if (vromfs[k] == fs)
+      {
+        stillMounted = true;
+        break;
+      }
+    interlocked_decrement(bd->resolvesInFlight);
+    if (!stillMounted)
+      v = NULL;
+  }
+  *out_vrom = v;
+  if (v)
+    return make_span_const(v->data[entry]);
+  return {};
+}
+
 VromReadHandle vromfs_get_file_data_one(const char *fname, VirtualRomFsData **out_vrom)
 {
 #if _TARGET_PC_WIN
@@ -290,13 +357,8 @@ VromReadHandle vromfs_get_file_data_one(const char *fname, VirtualRomFsData **ou
           if (VirtualRomFsPack::resolve_backed_entry && out_vrom)
             if (VirtualRomFsPack::BackedData *bd = static_cast<VirtualRomFsPack *>(fs)->getBackedData())
             {
-              int entry = idx;
-              *out_vrom = VirtualRomFsPack::resolve_backed_entry(fs, entry, true, false, vromfsMp[i]);
-              // debug("%p,%d -> %p,%d (%p,%d)", fs, idx, *out_vrom, entry, (*out_vrom)->data[entry].data(),
-              // (*out_vrom)->data[entry].size());
-              if (*out_vrom)
-                return make_span_const((*out_vrom)->data[entry]);
-              return {};
+              // read vromfsMp[i] now, before the helper drops the lock (remove_vromfs shifts the array)
+              return resolve_backed_locked(fs, bd, idx, vromfsMp[i], out_vrom);
             }
           return make_span_const(fs->data[idx]);
         }

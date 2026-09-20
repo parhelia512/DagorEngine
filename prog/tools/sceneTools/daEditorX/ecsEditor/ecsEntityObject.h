@@ -107,7 +107,7 @@ public:
 
   static void save(DataBlock &blk, const ecs::Scene::EntityRecord &erec);
   bool hasTransform() const;
-  bool canTransformFreely() const;
+  bool canTransform() const override;
   ECSEntityObject *getParentObject();
 
   void hideObject(bool hide = true) override;
@@ -131,6 +131,7 @@ private:
     void redo() override { obj->setProps(redoProps); }
 
     size_t size() override { return sizeof(*this); }
+    UNDO_MERGE_SNAPSHOT_BY_TARGET(0xD36AC18Du, obj.get()) // ECSEntityObject_UndoPropsChange
     void accepted() override {}
     void get_description(String &s) override { s = "UndoEntityPropsChange"; }
   };

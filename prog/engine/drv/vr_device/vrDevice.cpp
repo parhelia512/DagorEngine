@@ -10,6 +10,7 @@
 #include <drv/3d/dag_resetDevice.h>
 #include <drv/3d/dag_tex3d.h>
 #include <drv/3d/dag_variableRateShading.h>
+#include <drv/3d/dag_texture.h>
 #include "shaders/dag_postFxRenderer.h"
 #include "shaders/dag_overrideStates.h"
 #include "shaders/dag_shaders.h"
@@ -641,21 +642,22 @@ void VRDevice::prepareVrsMask(FrameData &frameData)
     vrs_mask_textures[2] = dag::create_tex(nullptr, targetWidth, targetHeight, TEXFMT_R8UI | TEXCF_UPDATE_DESTINATION, 1,
       "vrs_mask_texture_target", RESTAG_VR);
 
-    vrs_mask_textures[2]->updateSubRegion(vrs_mask_textures[0].getTex2D(), 0, 0, 0, 0, viewWidth, viewHeight, 1, 0, 0, 0, 0);
+    d3d::update_sub_region(vrs_mask_textures[0].getTex2D(), 0, 0, 0, 0, viewWidth, viewHeight, 1, vrs_mask_textures[2].getBaseTex(), 0,
+      0, 0, 0);
     switch (getStereoMode())
     {
       case VRDevice::StereoMode::SideBySideHorizontal:
       {
         bool left = remX >= vrsTileSize / 2;
-        vrs_mask_textures[2]->updateSubRegion(vrs_mask_textures[1].getTex2D(), 0, 0, 0, 0, viewWidth, viewHeight, 1, 0,
-          left ? viewWidth - 1 : viewWidth, 0, 0);
+        d3d::update_sub_region(vrs_mask_textures[1].getTex2D(), 0, 0, 0, 0, viewWidth, viewHeight, 1,
+          vrs_mask_textures[2].getBaseTex(), 0, left ? viewWidth - 1 : viewWidth, 0, 0);
         break;
       }
       case VRDevice::StereoMode::SideBySideVertical:
       {
         bool up = remY >= vrsTileSize / 2;
-        vrs_mask_textures[2]->updateSubRegion(vrs_mask_textures[1].getTex2D(), 0, 0, 0, 0, viewWidth, viewHeight, 1, 0, 0,
-          up ? viewHeight - 1 : viewHeight, 0);
+        d3d::update_sub_region(vrs_mask_textures[1].getTex2D(), 0, 0, 0, 0, viewWidth, viewHeight, 1,
+          vrs_mask_textures[2].getBaseTex(), 0, 0, up ? viewHeight - 1 : viewHeight, 0);
         break;
       }
       default: break;

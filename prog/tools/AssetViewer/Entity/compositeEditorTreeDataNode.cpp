@@ -131,6 +131,15 @@ bool CompositeEditorTreeDataNode::hasChildNode(unsigned dataBlockId) const
   return false;
 }
 
+bool CompositeEditorTreeDataNode::hasChildTreeDataNode(const CompositeEditorTreeDataNode *node) const
+{
+  for (int i = 0; i < nodes.size(); ++i)
+    if (nodes[i].get() == node)
+      return true;
+
+  return false;
+}
+
 bool CompositeEditorTreeDataNode::isAncestorOfNode(unsigned dataBlockId) const
 {
   for (int i = 0; i < nodes.size(); ++i)

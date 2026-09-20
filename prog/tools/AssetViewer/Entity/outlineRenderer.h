@@ -2,7 +2,6 @@
 #pragma once
 
 #include <3d/dag_resPtr.h>
-#include <3d/dag_textureIDHolder.h>
 #include <generic/dag_span.h>
 #include <shaders/dag_postFxRenderer.h>
 #include <EASTL/vector_multimap.h>
@@ -31,15 +30,14 @@ private:
   int width = 0;
   int height = 0;
   PostFxRenderer finalRender;
-  TextureIDHolderWithVar colorRt;
+  UniqueTexWithShaderVar colorRt;
 
-  TextureIDHolderWithVar depthRt;
+  UniqueTex depthRt;
 
   RiGenVisibility *globalVisibility = nullptr;
   RiGenVisibility *filteredVisibility = nullptr;
 
   static int simple_outline_colorVarId;
-  static int simple_outline_color_rtVarId;
   static int simple_outline_widthVarId;
   static int global_frame_block_id;
   static int rendinst_scene_block_id;

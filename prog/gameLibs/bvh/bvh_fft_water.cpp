@@ -7,11 +7,6 @@
 #include <math/integer/dag_IBBox2.h>
 #include <3d/dag_lockSbuffer.h>
 
-namespace bvh
-{
-Sbuffer *alloc_scratch_buffer(uint32_t size, uint32_t &offset);
-}
-
 namespace bvh::fftwater
 {
 static const auto blas_flags = RaytraceBuildFlags::FAST_TRACE | RaytraceBuildFlags::LOW_MEMORY;

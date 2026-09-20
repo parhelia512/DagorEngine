@@ -14,7 +14,6 @@ bool forceRiExtra = false;
 bool enableRiExtra = true;
 #endif
 bool persistentRiExtraInstances = true;
-bool allowOptimizeCollResOnLoad = true;
 } // namespace rendinst
 
 // TODO: eliminate these globals, e.g. by extracting them into a struct and passing it explicitly.

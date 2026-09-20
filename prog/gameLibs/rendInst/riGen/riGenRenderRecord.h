@@ -21,12 +21,7 @@ struct RiGenRenderRecord
     PER_CELL,
   };
   const ShaderElement *curShader;
-  uint32_t prog;
-  shaders::RenderStateId rstate;
-  ShaderStateBlockId state;
-  shaders::TexStateIdx tstate;
-  shaders::ConstStateIdx cstate;
-  uint16_t variant;
+  shaders::CombinedDynVariantState dvState;
   uint16_t poolOrder;
   uint16_t vstride;
   uint32_t offset;
@@ -45,18 +40,12 @@ struct RiGenRenderRecord
   Visibility visibility;
   uint8_t instanceLod;
   uint8_t isSWVertexFetch : 1;
-  RiGenRenderRecord(const ShaderElement *cur_shader, int variant, uint32_t prog, ShaderStateBlockId state,
-    shaders::RenderStateId rstate, shaders::TexStateIdx tstate, shaders::ConstStateIdx cstate, uint16_t pool_order,
+  RiGenRenderRecord(const ShaderElement *cur_shader, const shaders::CombinedDynVariantState &dv_state, uint16_t pool_order,
     PackedDrawOrder draw_order, uint8_t stage, uint16_t vstride, uint8_t vb_idx, uint32_t offset, uint32_t count, int pool_idx,
     int start_index, int num_faces, int base_vertex, int num_vertex, int start_vertex, uint8_t primitive, Visibility visibility,
     uint8_t instance_lod, uint8_t mesh_debug_value, bool sw_vertex_fetch) :
     curShader(cur_shader),
-    variant(variant < 0 ? ~0 : variant),
-    prog(prog),
-    state(state),
-    rstate(rstate),
-    tstate(tstate),
-    cstate(cstate),
+    dvState(dv_state),
     poolOrder(pool_order),
     vstride(vstride),
     vbIdx(vb_idx),

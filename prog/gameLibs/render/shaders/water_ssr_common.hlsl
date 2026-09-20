@@ -46,7 +46,7 @@ float4 hierarchRayMarch(float2 rayStart_uv, float3 R, float linear_roughness, fl
   float3 rayStepScreen = rayEndScreen - rayStartScreen;
 
   // calculate border of screen
-  float3 screenBorder = (rayStepScreen >= 0) ? float3(1, 1, 1) : float3(-1, -1, 0);
+  float3 screenBorder = select(rayStepScreen >= 0, float3(1, 1, 1), float3(-1, -1, 0));
   float3 bScale = (screenBorder - rayStartScreen) / rayStepScreen;
   float borderScale = min3(bScale.x, bScale.y, bScale.z);
   rayStepScreen *= borderScale;
@@ -83,7 +83,7 @@ float4 hierarchRayMarch(float2 rayStart_uv, float3 R, float linear_roughness, fl
 
     bool4 toleranceUpResult = bool4(depthDiff > compareToleranceUp);
 
-    bool4 hasHit = bool4(depthDiff < 0) && toleranceUpResult;
+    bool4 hasHit = and(bool4(depthDiff < 0), toleranceUpResult);
 
     useHitHack = useHitHack || any(!toleranceUpResult);
 

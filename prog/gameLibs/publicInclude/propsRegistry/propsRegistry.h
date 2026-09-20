@@ -26,6 +26,7 @@ int register_props(const char *filename, const char *class_name);
 void register_props_list(const DataBlock *blk, const char *class_name);
 int register_net_props(const char *blk_name, const char *class_name);
 int get_props_id(const char *name, const char *class_name);
+int get_props_count(const char *class_name);
 bool is_props_valid(int props_id, int prop_class_id);
 bool is_props_valid(int props_id, const char *class_name);
 void clear_props(const char *class_name);

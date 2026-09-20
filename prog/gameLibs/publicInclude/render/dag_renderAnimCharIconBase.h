@@ -10,6 +10,7 @@
 #include <EASTL/vector.h>
 #include <EASTL/vector_map.h>
 
+#include <daECS/core/componentTypes.h>
 #include <osApiWrappers/dag_critSec.h>
 #include <gameRes/dag_gameResources.h>
 #include <gameRes/dag_stdGameResId.h>
@@ -69,6 +70,7 @@ struct IconAnimchar
   int parentIndex = 0;
   eastl::vector<SharedTex> managedTextures;
   eastl::vector<eastl::string> hideNodeNames;
+  ecs::Point4List additionalData;
 };
 
 class DeferredRenderTarget;

@@ -38,7 +38,6 @@ static void attempt_to_enable_water_flowmap_obstacles_es(const ecs::Event &, ecs
   }
   if (manager.getSingletonEntity(ECS_HASH("water_flowmap_obstacles")))
     return;
-  ecs::ComponentsInitializer init;
   manager.createEntityAsync("water_flowmap_obstacles");
 }
 

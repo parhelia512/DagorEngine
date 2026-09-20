@@ -24,6 +24,11 @@ public:
 
   bool allowOnShutdown = false;
 
+  // ElementRef instance. When set, the handler is skipped if that element was
+  // detached before the call (see Element::releaseRef). Only for handlers whose
+  // sole input is the element itself; deletion side effects belong in onDetach.
+  Sqrat::Object requiredElem;
+
 #if DA_PROFILER_ENABLED
   uint32_t dapDescription = 0;
 #endif

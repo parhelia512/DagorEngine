@@ -86,7 +86,7 @@ struct FindFilesAsyncJob : public cpujobs::IJob
   carray<Tab<alefind_t>, 2> foundFiles;
 
   FindFilesAsyncJob(FileBackend *fback) : back(fback) {}
-  const char *getJobName(bool &) const override { return "FindFilesAsyncJob"; }
+  const char *getJobName(bool &) const override { return DAPROFILER_STRING("FindFilesAsyncJob"); }
   virtual void doJob()
   {
     char tmpPath[DAGOR_MAX_PATH];

@@ -18,8 +18,6 @@
 #include <drv/3d/dag_shader.h>
 #include <drv/3d/dag_renderStates.h>
 #include <drv/3d/dag_rwResource.h>
-#include <3d/dag_resPtr.h>
-#include <3d/dag_lockSbuffer.h>
 #include <math/dag_TMatrix.h>
 #include <math/dag_TMatrix4more.h>
 #include <generic/dag_smallTab.h>
@@ -29,7 +27,6 @@
 #include "shStateBlock.h"
 #include <generic/dag_tab.h>
 #include <EASTL/array.h>
-#include <generic/dag_relocatableFixedVector.h>
 #include <generic/dag_sort.h>
 #include <generic/dag_enumerate.h>
 #include <util/dag_oaHashNameMap.h>
@@ -38,7 +35,6 @@
 #include "profileStcode.h"
 
 static OAHashNameMap<false> g_sh_block_name_map;
-static UniqueBuf global_const_buffer;
 
 void ScriptedShadersGlobalData::initBlockIndexMap()
 {
@@ -67,52 +63,9 @@ public:
   }
 };
 
-class ArrayConstSetter : public shaders_internal::ConstSetter
-{
-public:
-  dag::RelocatableFixedVector<Color4, 4, true, framemem_allocator, uint32_t, false> consts;
-
-  virtual bool setConst(ShaderStage, unsigned reg_base, const void *data, unsigned num_regs) final
-  {
-    if (consts.size() < reg_base + num_regs)
-      consts.resize(reg_base + num_regs);
-    memcpy(&consts[reg_base], data, sizeof(Color4) * num_regs);
-    return true;
-  }
-
-  void upload()
-  {
-    if (consts.empty())
-      return;
-    const int bufferSize = consts.size();
-    if (!global_const_buffer)
-      global_const_buffer = dag::buffers::create_one_frame_cb(bufferSize, "global_const_buf", RESTAG_ENGINE);
-    if (auto destinationData = lock_sbuffer<Color4>(global_const_buffer.getBuf(), 0, bufferSize, VBLOCK_DISCARD | VBLOCK_WRITEONLY))
-      destinationData.updateDataRange(0, consts.data(), consts.size());
-    for (int stage = STAGE_CS; stage <= STAGE_VS; ++stage)
-      d3d::set_const_buffer(stage, 2, global_const_buffer.getBuf());
-  }
-
-  void dump()
-  {
-    debug("consts (%d)", consts.size());
-    dump_consts();
-  }
-
-private:
-  void dump_consts()
-  {
-    for (const Color4 &reg : consts)
-      debug("  REG: {%f}, {%f}, {%f}, {%f}\n", reg.r, reg.g, reg.b, reg.a);
-  }
-};
-
 static void exec_stcode(dag::ConstSpan<int> cod, int block_id, shaders_internal::ConstSetter *const_setter);
 
 static eastl::array<ShaderBlockIds, ShaderGlobal::LAYER_OBJECT + 1> current_blocks{};
-static ShaderBlockIds current_global_const{};
-
-void shaders_internal::close_global_constbuffers() { global_const_buffer.close(); }
 
 static ShaderBlockIds get_block_ids_private(const char *block_name, int layer)
 {
@@ -212,87 +165,56 @@ static void set_block_private(ShaderBlockIds block_ids, int layer)
   while (0)
 #endif
 
-  if (layer == ShaderGlobal::LAYER_GLOBAL_CONST)
+  G_ASSERTF_RETURN(layer >= 0 && layer < shaderbindump::MAX_BLOCK_LAYERS, , "shader block layer is invalid = %d", layer);
+  if (block_ids.internalBlockId == -1)
   {
-    if (block_ids.internalBlockId == -1)
+    G_ASSERT(nullBlock[layer]);
+    current_blocks[layer] = {};
+    for (; layer < shaderbindump::MAX_BLOCK_LAYERS; layer++)
     {
-      current_global_const = {};
-      global_const_buffer.close();
-    }
-    else
-    {
-      const shaderbindump::ShaderBlock &b = shBinDump().blocks[block_ids.internalBlockId];
-#if DAGOR_DBGLEVEL > 0
-      const char *bName = (const char *)shBinDump().blockNameMap[b.nameId];
-      if (strcmp(bName, "global_const_block") != 0)
-        LOGERR("block <%s> is not the 'global_const_block'!\n", bName);
-#endif
-      if (b.stcodeId != -1)
-      {
-        ArrayConstSetter setter;
-        execute_chosen_stcode(b.stcodeId, b.cppStcodeId, block_ids.internalBlockId, &setter);
-        setter.upload();
-      }
-      current_global_const = block_ids;
+      current_blocks[layer] = {};
+      blockStateWord = nullBlock[layer]->modifyBlockStateWord(blockStateWord);
     }
   }
   else
   {
-    if (block_ids.internalBlockId == -1)
-    {
-      G_ASSERT(layer >= 0 && layer < shaderbindump::MAX_BLOCK_LAYERS);
-      G_ASSERT(nullBlock[layer]);
-      current_blocks[layer] = {};
-      for (; layer < shaderbindump::MAX_BLOCK_LAYERS; layer++)
-      {
-        current_blocks[layer] = {};
-        blockStateWord = nullBlock[layer]->modifyBlockStateWord(blockStateWord);
-      }
-    }
-    else
-    {
-      const shaderbindump::ShaderBlock &b = shBinDump().blocks[block_ids.internalBlockId];
+    const shaderbindump::ShaderBlock &b = shBinDump().blocks[block_ids.internalBlockId];
 
 #if DAGOR_DBGLEVEL > 0 || DAGOR_FORCE_LOGS
-      if (!b.isBlockSupported(blockStateWord))
-      {
-        int b_frame = decodeBlock(shaderbindump::blockStateWord, ShaderGlobal::LAYER_FRAME);
-        int b_scene = decodeBlock(shaderbindump::blockStateWord, ShaderGlobal::LAYER_SCENE);
-        int b_obj = decodeBlock(shaderbindump::blockStateWord, ShaderGlobal::LAYER_OBJECT);
-        LOGERR("block <%s> cannot be set when stateWord=%04X\n\ncurrent blocks=(%s:%s:%s)\n",
-          (const char *)shBinDump().blockNameMap[b.nameId], blockStateWord,
-          b_frame >= 0 ? (const char *)shBinDump().blockNameMap[b_frame] : "NULL",
-          b_scene >= 0 ? (const char *)shBinDump().blockNameMap[b_scene] : "NULL",
-          b_obj >= 0 ? (const char *)shBinDump().blockNameMap[b_obj] : "NULL");
-      }
+    if (!b.isBlockSupported(blockStateWord))
+    {
+      int b_frame = decodeBlock(shaderbindump::blockStateWord, ShaderGlobal::LAYER_FRAME);
+      int b_scene = decodeBlock(shaderbindump::blockStateWord, ShaderGlobal::LAYER_SCENE);
+      int b_obj = decodeBlock(shaderbindump::blockStateWord, ShaderGlobal::LAYER_OBJECT);
+      LOGERR("block <%s> cannot be set when stateWord=%04X\n\ncurrent blocks=(%s:%s:%s)\n",
+        (const char *)shBinDump().blockNameMap[b.nameId], blockStateWord,
+        b_frame >= 0 ? (const char *)shBinDump().blockNameMap[b_frame] : "NULL",
+        b_scene >= 0 ? (const char *)shBinDump().blockNameMap[b_scene] : "NULL",
+        b_obj >= 0 ? (const char *)shBinDump().blockNameMap[b_obj] : "NULL");
+    }
 #endif
 
-      blockStateWord = b.modifyBlockStateWord(blockStateWord);
-      if (b.stcodeId != -1)
-      {
-        D3dConstSetter setter;
-        execute_chosen_stcode(b.stcodeId, b.cppStcodeId, block_ids.internalBlockId, &setter);
-      }
-      current_blocks[layer] = block_ids;
+    blockStateWord = b.modifyBlockStateWord(blockStateWord);
+    if (b.stcodeId != -1)
+    {
+      D3dConstSetter setter;
+      execute_chosen_stcode(b.stcodeId, b.cppStcodeId, block_ids.internalBlockId, &setter);
+    }
+    current_blocks[layer] = block_ids;
 
 #if DAGOR_DBGLEVEL > 0 || DAGOR_FORCE_LOGS
-      for (int i = 0; i < shaderbindump::MAX_BLOCK_LAYERS; i++)
-        if (nullBlock[i] && nullBlock[i]->uidMask > b.uidMask)
-          blockStateWord |= nullBlock[i]->uidMask;
+    for (int i = 0; i < shaderbindump::MAX_BLOCK_LAYERS; i++)
+      if (nullBlock[i] && nullBlock[i]->uidMask > b.uidMask)
+        blockStateWord |= nullBlock[i]->uidMask;
 
-      if (layer != -1)
-      {
-        if (!(layer >= 0 && layer < shaderbindump::MAX_BLOCK_LAYERS))
-          LOGERR("shader block layer is invalid = %d", layer);
-        else if (!nullBlock[layer])
-          LOGERR("shader block no nullblock in layer = %d", layer);
-        else if (nullBlock[layer]->uidMask != b.uidMask)
-          LOGERR("block <%s> doesn't belong to layer #%d, block mask=%04X, required=%04X",
-            (const char *)shBinDump().blockNameMap[b.nameId], layer, b.uidMask, nullBlock[layer]->uidMask);
-      }
+    if (!nullBlock[layer])
+      LOGERR("shader block no nullblock in layer = %d", layer);
+    else if (nullBlock[layer]->uidMask != b.uidMask)
+      LOGERR("block <%s> doesn't belong to layer #%d, block mask=%04X, required=%04X",
+        (const char *)shBinDump().blockNameMap[b.nameId], layer, b.uidMask, nullBlock[layer]->uidMask);
 #endif
-    }
   }
+
 #undef LOGERR
 }
 
@@ -301,10 +223,7 @@ static ShaderBlockIds get_block_private(int layer)
   if (!shBinDump().blocks.size())
     return {};
 
-  if (layer == ShaderGlobal::LAYER_GLOBAL_CONST)
-    return current_global_const;
-  else
-    return current_blocks[layer];
+  return current_blocks[layer];
 }
 
 int ShaderGlobal::getBlock(int layer) { return get_block_private(layer).blockId; }
@@ -314,7 +233,7 @@ void ShaderGlobal::setBlock(int block_id, int layer, bool invalidate_cached_stbl
   if (shBinDump().blocks.empty())
     return;
 
-  if (layer < LAYER_GLOBAL_CONST && invalidate_cached_stblk)
+  if (invalidate_cached_stblk)
   {
     d3d::set_program(BAD_PROGRAM); // hot fix crashes on RX5700XT
     ShaderElement::invalidate_cached_state_block();

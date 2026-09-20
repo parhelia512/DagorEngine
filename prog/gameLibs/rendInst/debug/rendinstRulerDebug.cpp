@@ -6,8 +6,11 @@
 #include <gameRes/dag_collisionResource.h>
 #include "../riGen/riGenData.h"
 #include "../riGen/riGenExtra.h"
+#include "../riGen/riRotationPalette.h"
+#include "../riGen/riUtil.h"
 #include <debug/dag_debug3d.h>
 #include <debug/dag_textMarks.h>
+#include <math/dag_mathBase.h>
 #include <cstdio>
 
 void rendinst::draw_rendinst_info(const Point3 &intersection_pos, const TMatrix &cam_tm, const rendinst::RendInstDesc &desc,
@@ -75,10 +78,10 @@ void rendinst::draw_rendinst_info(const Point3 &intersection_pos, const TMatrix 
     {
       addLine("Pool=%i Idx=%i PoolRef=%i PoolRefLayer=%i", desc.pool, desc.idx, riPoolRef, riPoolRefLayer);
       addLine("riExtra.handle = %llx", desc.getRiExtraHandle());
-      addLine(" bsphXYZR: (%.1f %.1f %.1f) r=%.1f", V4D(rxPool->bsphXYZR));
-      addLine(" posInst: %i; isTree %i; isWalls: %i", rxPool->posInst, rxPool->isTree, rxPool->isWalls);
-      addLine(" hp: %.1f/%.1f; immortal: %i", rxPool->getHp(desc.idx), rxPool->initialHP, rxPool->immortal);
-      addLine(" DYNAMIC_SCENE: %i; tsIndex: %i", rxPool->tsIndex == DYNAMIC_SCENE, rxPool->tsIndex);
+      addLine("    bsphXYZR: (%.1f %.1f %.1f) r=%.1f", V4D(rxPool->bsphXYZR));
+      addLine("    posInst: %i; isTree %i; isWalls: %i", rxPool->posInst, rxPool->isTree, rxPool->isWalls);
+      addLine("    hp: %.1f/%.1f; immortal: %i", rxPool->getHp(desc.idx), rxPool->initialHP, rxPool->immortal);
+      addLine("    DYNAMIC_SCENE: %i; tsIndex: %i", rxPool->tsIndex == DYNAMIC_SCENE, rxPool->tsIndex);
     }
     else
     {
@@ -86,7 +89,23 @@ void rendinst::draw_rendinst_info(const Point3 &intersection_pos, const TMatrix 
       const bool posInst = rendinst::isRIGenOnlyPosInst(riPoolRefLayer, riPoolRef);
       const bool paletteRot = posInst && hasGenData && (uint32_t)riPoolRef < rgl->rtData->riPaletteRotation.size() &&
                               rgl->rtData->riPaletteRotation[riPoolRef];
-      addLine(" storage type: %s%s", posInst ? "pos" : "tm", paletteRot ? " (palette rot)" : "");
+      addLine("    storage type: %s%s", posInst ? "pos" : "tm", paletteRot ? " (palette rot)" : "");
+      if (paletteRot)
+      {
+        RendInstGenData::Cell *cell = nullptr;
+        mat44f tm44;
+        uint32_t palId = 0;
+        const int16_t *data = riutil::get_data_by_desc(desc, cell);
+        if (data && riutil::get_rendinst_matrix(desc, const_cast<RendInstGenData *>(rgl), data, cell, tm44, palId))
+        {
+          const auto palette = rendinst::gen::get_rotation_palette_manager()->getPalette({riPoolRefLayer, riPoolRef});
+          if (palId < palette.count)
+            addLine("    palette: id=%u of %u, yaw=%.1f deg", palId, unsigned(palette.count),
+              RadToDeg(palette.rotations[palId].rotationY));
+          else
+            addLine("    palette: id=%u is out of range for %u entries, identity yaw", palId, unsigned(palette.count));
+        }
+      }
     }
     if (const CollisionResource *collRes = rendinst::getRiGenCollisionResource(desc))
       addLine("collision: %d nodes", (int)collRes->getAllNodes().size());
@@ -95,13 +114,13 @@ void rendinst::draw_rendinst_info(const Point3 &intersection_pos, const TMatrix 
     if (riProp)
     {
       addLine("riProperties[%i]", riPoolRef);
-      addLine(" immortal: %i", riProp->immortal);
-      addLine(" damageable: %i", riProp->damageable);
-      addLine(" stopsBullets: %i", riProp->stopsBullets);
-      addLine(" treeBehaviour: %i; bushBehaviour %i", riProp->treeBehaviour, riProp->bushBehaviour);
-      addLine(" overrideMaterialForTraces: %i", riProp->overrideMaterialForTraces);
+      addLine("    immortal: %i", riProp->immortal);
+      addLine("    damageable: %i", riProp->damageable);
+      addLine("    stopsBullets: %i", riProp->stopsBullets);
+      addLine("    treeBehaviour: %i; bushBehaviour %i", riProp->treeBehaviour, riProp->bushBehaviour);
+      addLine("    overrideMaterialForTraces: %i", riProp->overrideMaterialForTraces);
       const PhysMat::MaterialData &riPropMat = PhysMat::getMaterial(riProp->matId);
-      addLine(" rendinst_dmg matId: %i (%s)", riProp->matId, riPropMat.name.c_str());
+      addLine("    rendinst_dmg matId: %i (%s)", riProp->matId, riPropMat.name.c_str());
     }
     else
       addLine("riProperties[%i]: <none>", riPoolRef);

@@ -6,6 +6,8 @@ float4 imgui_mvp_2;
 float4 imgui_mvp_3;
 texture imgui_tex;
 texture imgui_tex_diff;
+sampler imgui_tex_samplerstate;
+sampler imgui_tex_diff_samplerstate;
 
 float4 imgui_cube_view_dir;
 float4 imgui_cube_view_up;
@@ -90,15 +92,19 @@ shader imgui
   else if (imgui_tex_type == array)
   {
     (ps) {
-      tex@smpArray = imgui_tex;
-      diff@smpArray = imgui_tex_diff;
+      tex@texArray = imgui_tex;
+      tex_samplerstate@sampler = imgui_tex_samplerstate;
+      diff@texArray = imgui_tex_diff;
+      diff_samplerstate@sampler = imgui_tex_diff_samplerstate;
     }
   }
   else if (imgui_tex_type == cube)
   {
     (ps) {
-      tex@smpCube = imgui_tex;
-      diff@smpCube = imgui_tex_diff;
+      tex@texCube = imgui_tex;
+      tex_samplerstate@sampler = imgui_tex_samplerstate;
+      diff@texCube = imgui_tex_diff;
+      diff_samplerstate@sampler = imgui_tex_diff_samplerstate;
       cube_view_dir@f3 = imgui_cube_view_dir;
       cube_view_up@f3 = imgui_cube_view_up;
       cube_view_right@f3 = imgui_cube_view_right;

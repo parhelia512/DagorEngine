@@ -27,26 +27,18 @@ public:
   /// Minimum (0) and maximum (1) limits for the box.
   Point3 lim[2];
 
-  INLINE BBox3() { setempty(); }
-  INLINE BBox3(const Point3 &min, const Point3 &max)
-  {
-    lim[0] = min;
-    lim[1] = max;
-  }
-  INLINE BBox3(Point3 p, real s) { makecube(p, s); }
-  INLINE BBox3(const BSphere3 &s);
-  INLINE BBox3 &operator=(const BSphere3 &s);
+  constexpr INLINE BBox3() : lim{Point3(MAX_REAL / 4, MAX_REAL / 4, MAX_REAL / 4), Point3(MIN_REAL / 4, MIN_REAL / 4, MIN_REAL / 4)} {}
+  constexpr INLINE BBox3(const Point3 &min, const Point3 &max) : lim{min, max} {}
+  constexpr INLINE BBox3(Point3 p, real s) { makecube(p, s); }
+  constexpr INLINE BBox3(const BSphere3 &s);
+  constexpr INLINE BBox3 &operator=(const BSphere3 &s);
 
-  INLINE void setempty()
-  {
-    lim[0] = Point3(MAX_REAL / 4, MAX_REAL / 4, MAX_REAL / 4);
-    lim[1] = Point3(MIN_REAL / 4, MIN_REAL / 4, MIN_REAL / 4);
-  }
+  constexpr INLINE void setempty() { *this = BBox3(); }
   INLINE bool isempty() const { return lim[0].x > lim[1].x || lim[0].y > lim[1].y || lim[0].z > lim[1].z; }
   // isempty() is only true if the bbox is invalid (maybe should be renamed to isvalid()).
   // On completely flat test levels we have zero sized boxes, which we need to detect
   INLINE bool isempty_or_zerosize() const { return lim[0].x >= lim[1].x || lim[0].y >= lim[1].y || lim[0].z >= lim[1].z; }
-  INLINE void makecube(const Point3 &p, real s)
+  constexpr INLINE void makecube(const Point3 &p, real s)
   {
     Point3 d(s / 2, s / 2, s / 2);
     lim[0] = p - d;
@@ -182,6 +174,8 @@ public:
   static const BBox3 IDENT;
 };
 
+inline constexpr BBox3 BBox3::IDENT(Point3(), 1.f);
+
 INLINE float non_empty_boxes_not_intersect(const BBox3 &a, const BBox3 &b)
 {
   return fsel(a.lim[1].x - b.lim[0].x, 0.0f, 1.0f) + fsel(b.lim[1].x - a.lim[0].x, 0.0f, 1.0f) +
@@ -212,13 +206,8 @@ class BSphere3
 public:
   Point3 c;
   real r, r2;
-  INLINE BSphere3() { setempty(); }
-  INLINE BSphere3(const Point3 &p, real s)
-  {
-    c = p;
-    r = s;
-    r2 = r * r;
-  }
+  constexpr INLINE BSphere3() : c(0, 0, 0), r(-1), r2(-1) {}
+  constexpr INLINE BSphere3(const Point3 &p, real s) : c(p), r(s), r2(s * s) {}
   INLINE BSphere3 &operator=(const BBox3 &a)
   {
     if (a.lim[1].x < a.lim[0].x)
@@ -232,12 +221,7 @@ public:
     return *this;
   }
 
-  INLINE void setempty()
-  {
-    c.zero();
-    r = -1;
-    r2 = -1;
-  }
+  constexpr INLINE void setempty() { *this = BSphere3(); }
   INLINE bool isempty() const { return r < 0; }
 
   INLINE BSphere3 &operator+=(const Point3 &p)
@@ -316,7 +300,7 @@ public:
   }
 };
 
-INLINE BBox3::BBox3(const BSphere3 &s)
+constexpr INLINE BBox3::BBox3(const BSphere3 &s)
 {
   if (s.r >= 0)
   {
@@ -326,7 +310,7 @@ INLINE BBox3::BBox3(const BSphere3 &s)
     setempty();
 }
 
-INLINE BBox3 &BBox3::operator=(const BSphere3 &s)
+constexpr INLINE BBox3 &BBox3::operator=(const BSphere3 &s)
 {
   if (s.r >= 0)
   {

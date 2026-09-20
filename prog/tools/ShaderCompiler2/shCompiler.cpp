@@ -573,8 +573,8 @@ bool buildShaderBinDump(const char *bindump_fn, const char *sh_fn, bool forceReb
             }
             else
             {
-              sh_debug(SHLOG_NORMAL, "[INFO] Outdated blk hash '%s' in header of %sdump '%s'",
-                blk_hash_string(hdr.buildBlkHash).c_str(), minidump ? "mini" : "", bindump_fn);
+              sh_debug(SHLOG_NORMAL, "[INFO] Outdated blk hash '%s' in header of %sdump '%s'", hash_string(hdr.buildBlkHash).c_str(),
+                minidump ? "mini" : "", bindump_fn);
             }
           }
         }

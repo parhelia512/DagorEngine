@@ -31,6 +31,7 @@ class ICascadeShadowsClient
 {
 public:
   // The returned point is used as an origin for shadow pixel-wise alignment.
+  // Should be in camera relative space.
   // If .w > 0.0, then it is treated as a sphere around which to render the cascade.
   // If .w <= 0.0 for cascade i, then it must be <= 0 for all the subsequent cascades.
   virtual Point4 getCascadeShadowAnchor(int cascade_no) = 0;
@@ -100,6 +101,7 @@ public:
     float overrideZNearForCascadeDistribution;
     float cameraFov = -1;
     bool useFixedShadowCascade;
+    bool snapAnchorToHero = false;
     float cascadeTransitionZoneWidth = 0.0f;
 
     bool operator==(const ModeSettings &rhs) const = default;

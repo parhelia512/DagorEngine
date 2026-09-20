@@ -51,7 +51,8 @@ class DaNetPeerInterface : public DaThread
 public:
   static constexpr int DEF_BLOCK_DURATION = 600;
 
-  DaNetPeerInterface(_ENetHost *ehost = nullptr, bool is_threaded = false);
+  // is_manual: caller drives updates (no danet_thread). false = own DaThread worker.
+  DaNetPeerInterface(_ENetHost *ehost = nullptr, bool is_manual = false);
   ~DaNetPeerInterface();
 
   static DaNetPeerInterface *create(size_t asz = 0, void **outp = nullptr);
@@ -154,7 +155,7 @@ private:
   _ENetHost *host; // client or server host actually
   int sleep_time;  // how often wake up in thread for handling network events
   uint32_t maximumIncomingConnections;
-  bool is_threaded;
+  bool is_manual;
   WinCritSec packetsCrit; // guard send queue, receive queue & packets pool
   SystemIndex relayPeerIdx = UNASSIGNED_SYSTEM_INDEX;
   void (*relayStatusHandler)(bool isActive) = NULL;

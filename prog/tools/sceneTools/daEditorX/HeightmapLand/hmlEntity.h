@@ -72,6 +72,12 @@ public:
   int getEditLayerIdx() const { return editLayerIdx; }
   int lpIndex() const { return EditLayerProps::ENT; };
 
+  int getRenderLayerIdx() const;
+
+  // Moves the internal entity to the appropriate layer.
+  // Call it after creating the entity, and after anything that changes isHidden().
+  void applyLayerIdxToEntity(bool use_render_layer = true);
+
   struct Props
   {
     enum
@@ -206,6 +212,8 @@ protected:
   void fillMaterialProps(PropPanel::ContainerPropertyControl &panel);
   void setIgnoreRiExtraCollisionInEntity();
 
+  // No merge key: UndoPropsChange rebuilds the entity from these colliders, so folding a restore away
+  // would change what it reads.
   class UndoStaticPropsChange : public UndoRedoObject
   {
     LandscapeEntityObject::CollidersData oldData, redoData;
@@ -235,7 +243,7 @@ protected:
     LandscapeEntityObject::Props oldProps, redoProps;
 
   protected:
-    LandscapeEntityObject *getObj() { return obj; }
+    LandscapeEntityObject *getObj() const { return obj; }
 
   public:
     UndoPropsChange(LandscapeEntityObject *o) : obj(o) { oldProps = redoProps = obj->props; }
@@ -250,6 +258,9 @@ protected:
     void redo() override { obj->setProps(redoProps); }
 
     size_t size() override { return sizeof(*this); }
+    // setProps rebuilds the entity from perInstSeed and the static colliders, so UndoPerInstSeedChange
+    // and UndoStaticPropsChange have to restore before this one.
+    UNDO_MERGE_SNAPSHOT_BY_TARGET(0x065BBE83u, obj.get()) // LandscapeEntityObject_UndoPropsChange
     void accepted() override {}
     void get_description(String &s) override { s = "UndoEntityPropsChange"; }
   };
@@ -257,6 +268,7 @@ protected:
   // perInstSeed lives outside Props, so UndoPropsChange does not cover it. An edit that generates a pinned
   // seed has to put this too, or its undo would restore the props and leave the object pinned - and
   // propsChanged() would hand the pin straight back to the rebuilt entity.
+  // No merge key either, same reason as UndoStaticPropsChange.
   class UndoPerInstSeedChange : public UndoRedoObject
   {
     Ptr<LandscapeEntityObject> obj;

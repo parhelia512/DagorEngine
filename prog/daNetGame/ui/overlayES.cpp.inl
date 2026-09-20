@@ -2,6 +2,7 @@
 
 #include "camera/sceneCam.h"
 #include "overlay.h"
+#include "uiShared.h"
 #include "input/inputControls.h"
 #include "input/uiInput.h"
 #include "main/app.h"
@@ -136,6 +137,7 @@ static struct GuiSceneCb : public darg::IGuiSceneCallback
 
   virtual void onShutdownScript(HSQUIRRELVM vm) override
   {
+    uishared::set_visuallog_logerrs(-1);
     if (async_runtime)
       async_runtime->shutdown();
     sq::cleanup_unreg_native_api(vm);
@@ -144,6 +146,7 @@ static struct GuiSceneCb : public darg::IGuiSceneCallback
     // so the VM is unregistered from ECS only here, right before sq_close.
     shutdown_ecs_sq_script(vm);
     ecscomputed::shutdown_vm(vm); // clear_vm_entity_systems only removes squirrel ES
+    ::unregister_editor_script(vm);
   }
 
   virtual void onToggleInteractive(int iflags)

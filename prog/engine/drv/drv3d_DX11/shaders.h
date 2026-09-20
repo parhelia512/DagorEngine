@@ -51,7 +51,6 @@ struct ConstantBuffers
   int csCurrentBuffer;
 
   uint32_t vsConstsUsed, psConstsUsed, csConstsUsed;
-  carray<uint32_t, STAGE_MAX> constsRequired;
 
   carray<bool, STAGE_MAX_EXT> constantsModified;
   carray<uint32_t, STAGE_MAX_EXT> constantsBufferChanged;
@@ -82,7 +81,6 @@ struct ConstantBuffers
     mem_set_0(constantsBufferChanged);
     for (auto &c : constantsModified)
       c = true;
-    mem_set_0(constsRequired);
   }
   void create();
   void destroy();
@@ -131,11 +129,16 @@ struct InputLayout
 
 struct ShaderData
 {
-  ShaderSource source;
+  ShaderSource source = {};
 
   // have to keep this too because we use d3d::create_vertex_shader_hlsl in tools
   eastl::unique_ptr<uint8_t[]> shaderBytecode;
   size_t shaderBytecodeSize = 0;
+
+#if DAGOR_DBGLEVEL > 0
+  // save 8 bytes on length, we don't care, so not a string
+  eastl::unique_ptr<char[]> shaderDebugName;
+#endif
 
   uint32_t constsUsed = 0;
 

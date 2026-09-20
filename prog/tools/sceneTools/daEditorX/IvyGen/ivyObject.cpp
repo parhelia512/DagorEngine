@@ -691,9 +691,13 @@ void IvyObject::putMoveUndo()
       if (v)
         v->reGrow();
     }
+
+    // Its own key, or it shares UndoMove's and folds into the one a rotate or scale puts for the same
+    // object, which would drop the reGrow() above.
+    UNDO_MERGE_SNAPSHOT_BY_TARGET(0x17DBAF59u, obj.get()) // ReGrowUndo
   };
 
-  getObjEditor()->getUndoSystem()->put(new ReGrowUndo(this));
+  getObjEditor()->getUndoSystem()->put<ReGrowUndo>(this);
 }
 
 

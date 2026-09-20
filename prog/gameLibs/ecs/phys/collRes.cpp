@@ -5,7 +5,7 @@
 #include <daECS/core/componentTypes.h>
 #include <daECS/core/coreEvents.h>
 #include <daECS/core/dataComponent.h>
-#include <gameRes/dag_collisionResource.h>
+#include <gameRes/collisionResourceBuilder.h>
 #include <gameRes/dag_gameResources.h>
 #include <ecs/anim/anim.h>
 #include <ecs/phys/collRes.h>
@@ -14,7 +14,7 @@
 
 CollisionResource *get_collres_from_riextra(ecs::EntityManager &mgr, ecs::EntityId eid);
 CollisionResource *create_collres_from_ecs_object(ecs::EntityManager &mgr, ecs::EntityId eid);
-void add_collres_nodes_from_ecs_object(CollisionResource *collres, const ecs::Array &desc);
+CollisionResource *build_collres_from_ecs_object(CollisionResourceBuilder &builder, const ecs::Array &desc, const char *res_name);
 
 
 // Owned CollisionResource copies we deep-copied for per-entity mutation or created
@@ -49,8 +49,7 @@ static void clear_owned_collres()
 
 static void apply_flag_rules_to_nodes(CollisionResource &coll_res, const ecs::Array &rules, ecs::EntityId eid, const char *templ_name)
 {
-  auto allNodes = coll_res.getAllNodes();
-  const int totalNodes = int(allNodes.size());
+  const int totalNodes = int(coll_res.getAllNodes().size());
   for (const auto &ruleIt : rules)
   {
     const ecs::Object &rule = ruleIt.get<ecs::Object>();
@@ -65,14 +64,23 @@ static void apply_flag_rules_to_nodes(CollisionResource &coll_res, const ecs::Ar
     auto applyToNode = [&](int nodeId) {
       if (nodeId < 0 || nodeId >= totalNodes)
         return;
-      uint16_t &f = allNodes[nodeId].behaviorFlags;
+      uint16_t f = coll_res.getNodeBehaviorFlags(nodeId); // the LIVE base: chained rules on one node compose
       if (absFlags)
         f = uint16_t(*absFlags);
       if (clrFlags)
         f &= ~uint16_t(*clrFlags);
       if (setFlags)
         f |= uint16_t(*setFlags);
-      appliedCount++;
+      // a rule may clear PHYS_COLLIDABLE but never add it: the node's chunk layout (the edge flags
+      // words a Jolt shape reads) was stamped from the authored bit at build
+      if ((f & CollisionNode::PHYS_COLLIDABLE) && !(coll_res.getAllNodes()[nodeId].behaviorFlags & CollisionNode::PHYS_COLLIDABLE))
+      {
+        logerr("entity %d<%s>: collres__nodeFlagRules adds PHYS_COLLIDABLE to node %d <%s>: refused, author the flag instead",
+          (ecs::entity_id_t)eid, templ_name, nodeId, coll_res.getNodeName(nodeId));
+        f &= ~uint16_t(CollisionNode::PHYS_COLLIDABLE);
+      }
+      if (coll_res.setNodeBehaviorFlags(nodeId, f)) // false only on a bad node id (silent)
+        appliedCount++;
     };
     if (!exclude)
     {
@@ -104,6 +112,7 @@ bool clone_collres(ecs::EntityManager &mgr, ecs::EntityId eid)
     return false;
   if (is_owned_collres(*storage))
     return false;
+  // The live flags live outside the shared Data block, so the per-entity copy can share it.
   CollisionResource *originalPtr = *storage;
   track_owned_collres(*storage = originalPtr->deepCopy());
   originalPtr->delRef();
@@ -120,7 +129,7 @@ bool apply_collres_node_flag_rules(ecs::EntityManager &mgr, ecs::EntityId eid, c
   if (!is_owned_collres(coll_res))
   {
     logerr("apply_collres_node_flag_rules: entity %d<%s> does not own its collres; add "
-           "collres__performCopy:b=true to its template",
+           "collres__performCopy:b=true to its template, or call clone_collres first (das)",
       (ecs::entity_id_t)eid, mgr.getEntityTemplateName(eid));
     return false;
   }
@@ -177,7 +186,9 @@ public:
       }
     }
 
-    CollisionResource *originalPtr = collRes;
+    // The shared reference this entity took (a game resource or the riextra's), released below
+    // when a copy replaces it; a desc-built base is owned and never refcounted.
+    CollisionResource *sharedRef = owned ? nullptr : collRes;
     if (!owned && mgr.getOr(eid, ECS_HASH("collres__performCopy"), false))
     {
       track_owned_collres(collRes = collRes->deepCopy());
@@ -189,12 +200,20 @@ public:
     const bool modifyCollres = rules || addDesc;
     if (owned)
     {
-      // Rules first, then desc_add. add_collres_nodes_from_ecs_object ends with
-      // sortNodesList(), which can shift the node ids which the rules reference.
+      // Rules first, then desc_add: the rules reference the node ids before the sort of the
+      // rebuild, and the rebuild carries the live flags as its bind flags.
       if (rules && !rules->empty())
         apply_flag_rules_to_nodes(*collRes, *rules, eid, mgr.getEntityTemplateName(eid));
       if (addDesc)
-        add_collres_nodes_from_ecs_object(collRes, *addDesc);
+      {
+        CollisionResourceBuilder builder;
+        builder.fromResource(*collRes);
+        CollisionResource *grown = build_collres_from_ecs_object(builder, *addDesc, mgr.getEntityTemplateName(eid));
+        untrack_owned_collres(collRes);
+        collRes->~CollisionResource();
+        midmem->free(collRes);
+        track_owned_collres(collRes = grown);
+      }
     }
     else if (modifyCollres)
     {
@@ -203,8 +222,8 @@ public:
         (ecs::entity_id_t)eid, mgr.getEntityTemplateName(eid));
     }
 
-    if (originalPtr != collRes)
-      originalPtr->delRef();
+    if (sharedRef && sharedRef != collRes)
+      sharedRef->delRef();
 
     *(ecs::PtrComponentType<CollisionResource>::ptr_type(d)) = collRes;
     if (auto animChar = mgr.getNullable<AnimV20::AnimcharBaseComponent>(eid, ECS_HASH("animchar")))

@@ -362,8 +362,8 @@ void BcCompressor::copyToMip(Texture *dest_tex, int dest_mip, int dest_x, int de
   width = width < 0 ? (bufferWidth >> src_mip) : width;
   height = height < 0 ? (bufferHeight >> src_mip) : height;
   G_ASSERT(width + src_x <= max(1U, bufferWidth >> src_mip) && height + src_y <= max(1U, bufferHeight >> src_mip));
-  dest_tex->updateSubRegion(buffer, src_mip, src_x / 4, src_y / 4, 0, max(1, width / 4), max(1, height / 4), 1, dest_mip, dest_x,
-    dest_y, 0);
+  d3d::update_sub_region(buffer, src_mip, src_x / 4, src_y / 4, 0, max(1, width / 4), max(1, height / 4), 1, dest_tex, dest_mip,
+    dest_x, dest_y, 0);
 }
 
 BcCompressor::ECompressionType BcCompressor::getCompressionType() const

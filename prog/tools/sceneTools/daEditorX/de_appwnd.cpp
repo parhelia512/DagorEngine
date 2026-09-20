@@ -311,7 +311,6 @@ void send_event_error(const char *s, const char *callstack)
 static void set_colliders_to_default_state()
 {
   restore_editor_colliders();
-  enable_all_custom_shadows();
 
   const int colliderCount = get_custom_colliders_count();
   for (int i = 0; i < colliderCount; ++i)
@@ -330,6 +329,21 @@ static String get_global_de_hotkey_settings_file_path()
 static String get_heightmap_debug_shading_gradient_settings_file_path()
 {
   return make_full_path(sgg::get_exe_path_full(), "../.local/color_presets_heightmap_debug_shading.blk");
+}
+
+// Finds the workspace that uses app_blk_path, registering a new one when none does.
+// Naming the path is consent to register it, so the new workspace stays listed even if this startup is then aborted.
+// Returns an empty name in case of an error, and puts the reason in error_message.
+static String resolve_workspace_for_app_blk_path(EditorWorkspace &wsp, const char *app_blk_path, String &error_message)
+{
+  const eastl::optional<String> foundWspName = wsp.getWspNameByAppBlkPathIfOnlyOneMatches(app_blk_path, error_message);
+  if (!foundWspName.has_value())
+    return String();
+
+  if (!foundWspName->empty())
+    return *foundWspName;
+
+  return wsp.addWspForAppBlkPath(app_blk_path, error_message);
 }
 
 //==============================================================================
@@ -491,8 +505,9 @@ DagorEdAppWindow::~DagorEdAppWindow()
   }
   else // If no project has been loaded then only update the last selected workspace in the settings.
   {
+    // A startup that ended before any workspace loaded has no name to remember, and must keep the stored one.
     DataBlock editorBlk;
-    if (wsp && editorBlk.load(editorBlkPathName))
+    if (wsp && *wsp->getName() && editorBlk.load(editorBlkPathName))
     {
       editorBlk.addBlock("workspace")->setStr("currentName", wsp->getName());
       editorBlk.saveToTextFile(editorBlkPathName);
@@ -2189,8 +2204,15 @@ void DagorEdAppWindow::initDllPlugins(const char *plug_dir)
 
 
 //==============================================================================
-void DagorEdAppWindow::startWithWorkspace(const char *wspName)
+void DagorEdAppWindow::startWithWorkspace(const char *wspName, const char *app_blk_path, const char *refused_arguments)
 {
+  // We report the refused command line arguments here, where the splash screen is no longer shown.
+  if (refused_arguments && *refused_arguments)
+  {
+    logerr("Command line error.%s", refused_arguments);
+    wingw::message_box(wingw::MBS_EXCL | wingw::MBS_OK, "Command line error", "Ignored command line arguments:%s", refused_arguments);
+  }
+
   String settingsPath = ::make_full_path(sgg::get_exe_path_full(), "../.local/de3_settings.blk");
   DataBlock settingsBlk(settingsPath);
 
@@ -2199,7 +2221,52 @@ void DagorEdAppWindow::startWithWorkspace(const char *wspName)
   developerToolsEnabled = settingsBlk.getBool("DeveloperToolsEnabled", developerToolsEnabled);
   GizmoSettings::load(settingsBlk);
 
-  if (!wspName)
+  String errorMessage;
+  String wspNameForBlkPath;
+
+  if (wspName && app_blk_path)
+  {
+    errorMessage.printf(0,
+      "Both a path to application.blk and a workspace name have been specified on the command line:\n"
+      "\"%s\"\nand \"-ws:%s\"\n\n"
+      "Specify only one of them.",
+      app_blk_path, wspName);
+  }
+  else if (app_blk_path)
+  {
+    if (getWorkspace()->initWorkspaceBlk(WSP_FILE_PATH))
+    {
+      wspNameForBlkPath = resolve_workspace_for_app_blk_path(*getWorkspace(), app_blk_path, errorMessage);
+      if (!wspNameForBlkPath.empty())
+        wspName = wspNameForBlkPath;
+    }
+    else
+    {
+      errorMessage.printf(0, "Cannot open the workspace file\n\"%s\"", WSP_FILE_PATH);
+    }
+  }
+
+  if (!errorMessage.empty())
+  {
+    wspName = nullptr;
+    app_blk_path = nullptr;
+
+    // Drop the level specified on the command line, so the shutdown does not mistake the run for a started editor and
+    // overwrite de3_settings.blk, losing the stored workspace and the plugin settings.
+    sceneFname[0] = 0;
+    shouldLoadFile = false;
+
+    logerr("%s", errorMessage);
+    wingw::message_box(wingw::MBS_EXCL | wingw::MBS_OK, "Workspace error", "%s", errorMessage);
+
+    // The workspace selector would block the unattended run.
+    if (dgs_execute_quiet)
+      quit_game(-2);
+  }
+
+  // An application.blk argument has resolved into wspName by now, or been refused and cleared it, so wspName covers both.
+  const bool wspGivenExplicitly = wspName != nullptr;
+  if (!wspGivenExplicitly)
     wspName = settingsBlk.getBlockByNameEx("workspace")->getStr("currentName", NULL);
 
   // Asset Viewer and daEditorX work differently, if daEditorX does not find the specified workspace then
@@ -2212,9 +2279,31 @@ void DagorEdAppWindow::startWithWorkspace(const char *wspName)
     StartupDlg dlg("DaEditorX start", *getWorkspace(), WSP_FILE_PATH, wspName, shouldLoadFile);
 
     int result = PropPanel::DIALOG_ID_OK;
-    int sel = ID_RECENT_FIRST;
-    if (!shouldLoadFile || dlg.getWorkspaceIndex(wspName) < 0 || !dd_file_exist(DAGORED2->getWorkspace().getAppBlkPath()))
+    // Nothing else sets sel when the dialog below is skipped, so it must already hold the level from command line.
+    int sel = ID_OPEN_FROM_COMMAND_LINE;
+    if (!wspGivenExplicitly || !shouldLoadFile || dlg.getWorkspaceIndex(wspName) < 0 || !dlg.isSelectedWorkspaceValid())
     {
+      if (dgs_execute_quiet)
+      {
+        // Name every unmet condition and the input behind it, this log is all an unattended run leaves.
+        String reasons;
+        if (!wspGivenExplicitly)
+          reasons.aprintf(0, "\n- No usable workspace is given on the command line. Use \"-ws:<name>\" or a path to application.blk.");
+        else if (dlg.getWorkspaceIndex(wspName) < 0)
+          reasons.aprintf(0, "\n- There is no workspace named \"%s\" in \"%s\".", wspName, WSP_FILE_PATH);
+        else if (!dd_file_exist(DAGORED2->getWorkspace().getAppBlkPath()))
+          reasons.aprintf(0, "\n- The workspace \"%s\" uses \"%s\", which does not exist.", wspName,
+            DAGORED2->getWorkspace().getAppBlkPath());
+        else if (!dlg.isSelectedWorkspaceValid())
+          reasons.aprintf(0, "\n- The workspace \"%s\" did not load. Check \"%s\".", wspName,
+            DAGORED2->getWorkspace().getAppBlkPath());
+        if (!shouldLoadFile)
+          reasons.aprintf(0, "\n- No existing level is given. Use a path to a *.level.blk file.");
+
+        logerr("Cannot show the workspace selector in quiet mode.%s", reasons);
+        quit_game(-1);
+      }
+
       startupDlgShown = &dlg;
       result = dlg.showDialog();
       sel = dlg.getSelected();
@@ -2341,9 +2430,13 @@ void DagorEdAppWindow::startWithWorkspace(const char *wspName)
 
       case ID_OPEN_FROM_COMMAND_LINE:
       default: // load recent
-        if (recents.size() || shouldLoadFile)
+      {
+        const int recentIndex = sel - ID_RECENT_FIRST;
+        const bool fromCommandLine = sel == ID_OPEN_FROM_COMMAND_LINE && shouldLoadFile;
+        const bool fromRecent = recentIndex >= 0 && recentIndex < recents.size();
+        if (fromCommandLine || fromRecent)
         {
-          String fileName = ::make_full_path(wsp->getSdkDir(), shouldLoadFile ? sceneFname : recents[sel - ID_RECENT_FIRST]);
+          String fileName = ::make_full_path(wsp->getSdkDir(), fromCommandLine ? sceneFname : recents[recentIndex]);
           ::strcpy(sceneFname, fileName);
 
           addToRecentList(sceneFname);
@@ -2360,7 +2453,8 @@ void DagorEdAppWindow::startWithWorkspace(const char *wspName)
             quit_game(-1);
           }
         }
-        break;
+      }
+      break;
     }
     if (!handled) //== we init d3d for workspace only once!
       quit_game(-2);
@@ -2836,7 +2930,6 @@ bool DagorEdAppWindow::handleNewProject(bool)
     return false;
   }
 
-  String projectDir(260, "%s/%s/", dlg.getLocation(), dlg.getName());
 
   DagorEdAppWindow::setDocTitle();
 
@@ -2909,6 +3002,9 @@ bool DagorEdAppWindow::createNewProject(const char *filename)
   String basePath, projectName;
   splitProjectFilename(filename, basePath, projectName);
 
+  IDynRenderService *dynRender = queryEditorInterface<IDynRenderService>();
+  const bool enableRendererAfter = !d3d::is_stub_driver();
+  dynRender->enableRender(false);
 
   for (int i = 0; i < plugin.size(); ++i)
     if (plugin[i].p)
@@ -2930,6 +3026,9 @@ bool DagorEdAppWindow::createNewProject(const char *filename)
 
       plugin[i].p->onNewProject();
     }
+
+  if (dynRender->getRenderType() == IDynRenderService::RTYPE_DNG_BASED)
+    dynRender->updateEditorLandmesh();
 
   //== reset editor project settings
   lastUniqueId = 1;
@@ -2955,7 +3054,9 @@ bool DagorEdAppWindow::createNewProject(const char *filename)
     }
   }
 
-  return saveProject(filename);
+  const bool result = saveProject(filename);
+  dynRender->enableRender(enableRendererAfter);
+  return result;
 }
 
 
@@ -3073,7 +3174,7 @@ bool DagorEdAppWindow::loadProject(const char *filename)
     }
   undoSystem->clear();
 
-  DataBlock blk, b1, b2;
+  DataBlock blk;
   DataBlock localBlk;
 
   {
@@ -3627,8 +3728,6 @@ bool DagorEdAppWindow::saveProject(const char *filename)
 
         dd_mkdir(String(256, "%s/%s", (const char *)basePath, name));
 
-        String path(256, "%s/%s/", (const char *)basePath, name);
-
         DataBlock blk;
 
         plugin[i].p->saveObjects(blk, locBlk, getPluginFilePath(plugin[i].p, "."));
@@ -3846,6 +3945,12 @@ void DagorEdAppWindow::zoomAndCenter()
   IGenEditorPlugin *current = curPlugin();
   ViewportWindow *curVP = NULL;
   BBox3 bounds;
+
+  // A plugin with no 3D scene (GraphEditor) frames its own view instead of the viewports.
+  if (current && current->catchEvent(HUID_ZoomAndCenter, nullptr))
+  {
+    return;
+  }
 
   if (current && current->getSelectionBox(bounds))
   {
@@ -4368,8 +4473,9 @@ void DagorEdAppWindow::updateImgui()
   // renderUI (that calls ImGui's NewFrame that updates ImGui's key states), and onMenuItemClick could fire more than
   // once.
 
+  const ViewportWindow *activeViewport = ged.getActiveViewport();
   bool viewportAccelerator = false;
-  unsigned commandId = mManager->processImguiAccelerator(ged.getActiveViewport() != nullptr, viewportAccelerator);
+  unsigned commandId = mManager->processImguiAccelerator(activeViewport ? activeViewport->getImguiCanvasId() : 0, viewportAccelerator);
   if (commandId != 0)
   {
     G_ASSERT((commandId & DELAYED_CALLBACK_VIEWPORT_COMMAND_BIT) == 0);

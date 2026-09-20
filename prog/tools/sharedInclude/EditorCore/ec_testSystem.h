@@ -71,6 +71,7 @@ public:
 
   // Direct input event control
   void mouseClick(int button);
+  void mouseClickModifier(int button, int modifier);
   void mousePosition(Point2 at);
   void mouseMove(Point2 from, Point2 to, float over_seconds = 1.0f);
   void keyPress(int key);
@@ -97,6 +98,7 @@ public:
   ~TestScriptModule();
 
   bool bindScript(const char *script_filename);
+  bool reloadScript();
 
   const String &getScriptFilename() const { return scriptFilename; }
 
@@ -135,8 +137,11 @@ private:
   String filterText;
   bool textInputFocused = false;
 
+  String runStatusText;
+
   String scriptFilenameText;
   bool scriptInputFocused = false;
+  String currentScriptText;
 };
 
 class TestRuntime
@@ -158,8 +163,16 @@ public:
   TestCase &registerTest(const char *name, TestCallback::TestFunc test_func);
   TestCase &registerTestEx(const char *name, const eastl::shared_ptr<TestCallback> &test_callback);
 
+  int testCount() const { return registry.size(); }
+
+  // Both assert and do nothing if tests are running (queue holds raw pointers into the registry).
+  bool deleteTest(const char *name);
+  void deleteAllTests();
+
   bool enqueue(const char *name);
   void enqueueAll(TestFilter state, const char *name);
+  // Removes all pending tests from the queue (currently running test finishes naturally).
+  void clearQueue();
 
   // Snapshot of every registered test's name and current state. Thread-safe.
   Tab<TestInfo> testInfos() const;
@@ -183,6 +196,8 @@ public:
 
   bool testsRunning() const { return interlocked_acquire_load(anyTestRunning); }
   TestCase *currentlyRunningTest() { return interlocked_acquire_load_ptr(runningTest); }
+  int getRemainingCount();
+  int getTotalEnqueued() const { return interlocked_acquire_load(totalEnqueued); }
 
   ImGuiTestRuntimeOptions &options() { return debugOptions; }
 
@@ -221,7 +236,10 @@ private:
 
   volatile bool running = false;
 
+  // Written under queueMutex; read lock-free via interlocked_acquire_load.
+  // runningTest is also cleared without the mutex after a test finishes (single writer).
   volatile bool anyTestRunning = false;
+  volatile int totalEnqueued = 0;
   TestCase *volatile runningTest = nullptr;
 
   ImGuiTestRuntimeOptions debugOptions{this, false, 0, false};

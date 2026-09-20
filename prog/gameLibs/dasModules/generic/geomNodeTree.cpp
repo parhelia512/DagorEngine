@@ -85,12 +85,16 @@ public:
     das::addExtern<DAS_BIND_FUN(GeomNodeTree::mat44f_to_TMatrix)>(*this, lib, "mat44f_to_TMatrix", das::SideEffects::modifyArgument,
       "GeomNodeTree::mat44f_to_TMatrix");
 
-    using method_calcWorldBox = das::das_call_member<void (GeomNodeTree::*)(bbox3f &) const, &GeomNodeTree::calcWorldBox>;
-    das::addExtern<DAS_CALL_METHOD(method_calcWorldBox)>(*this, lib, "geomtree_calcWorldBox", das::SideEffects::modifyArgument,
-      "das_call_member<void(GeomNodeTree::*)(bbox3f &) const, &GeomNodeTree::calcWorldBox>::invoke");
-    using method_calcWorldBox2 = das::das_call_member<void (GeomNodeTree::*)(BBox3 &) const, &GeomNodeTree::calcWorldBox>;
-    das::addExtern<DAS_CALL_METHOD(method_calcWorldBox2)>(*this, lib, "geomtree_calcWorldBox", das::SideEffects::modifyArgument,
-      "das_call_member<void(GeomNodeTree::*)(BBox3 &) const, &GeomNodeTree::calcWorldBox>::invoke");
+    using method_calcWorldBoxFromImportantNodes =
+      das::das_call_member<void (GeomNodeTree::*)(bbox3f &) const, &GeomNodeTree::calcWorldBoxFromImportantNodes>;
+    das::addExtern<DAS_CALL_METHOD(method_calcWorldBoxFromImportantNodes)>(*this, lib, "geomtree_calcWorldBoxFromImportantNodes",
+      das::SideEffects::modifyArgument,
+      "das_call_member<void(GeomNodeTree::*)(bbox3f &) const, &GeomNodeTree::calcWorldBoxFromImportantNodes>::invoke");
+    using method_calcWorldBoxFromImportantNodes2 =
+      das::das_call_member<void (GeomNodeTree::*)(BBox3 &) const, &GeomNodeTree::calcWorldBoxFromImportantNodes>;
+    das::addExtern<DAS_CALL_METHOD(method_calcWorldBoxFromImportantNodes2)>(*this, lib, "geomtree_calcWorldBoxFromImportantNodes",
+      das::SideEffects::modifyArgument,
+      "das_call_member<void(GeomNodeTree::*)(BBox3 &) const, &GeomNodeTree::calcWorldBoxFromImportantNodes>::invoke");
 
     das::addExtern<DAS_BIND_FUN(geomtree_recalc_tm)>(*this, lib, "geomtree_recalcTm", das::SideEffects::modifyArgument,
       "bind_dascript::geomtree_recalc_tm");

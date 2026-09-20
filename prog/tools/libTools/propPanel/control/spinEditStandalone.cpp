@@ -1,6 +1,7 @@
 // Copyright (C) Gaijin Games KFT.  All rights reserved.
 
 #include "../tooltipHelper.h"
+#include <propPanel/control/propertyControlBase.h>
 #include <propPanel/control/spinEditStandalone.h>
 #include <propPanel/mathExprEval.h>
 #include <propPanel/c_window_event_handler.h>
@@ -173,6 +174,9 @@ bool SpinEditControlStandalone::spinButton(SpinnerButtonId button, float &step_m
   const ImGuiDir dir = button == SpinnerButtonId::Up ? ImGuiDir_Up : ImGuiDir_Down;
   const ImVec2 buttonSize = getSpinButtonsSize();
   const float arrowSize = ImMax(1.0f, buttonSize.y - 4.0f); // Two pixel padding on both sides. Style.FramePadding.y is too much.
+
+  ImguiHelper::deactivateItemIfActiveAndDisabled(buttonId);
+
   ImGui::PushItemFlag(ImGuiItemFlags_NoTabStop, true);
   const bool spinButtonPressed = ImguiHelper::arrowButtonExWithSize(buttonId, dir, buttonSize, ImVec2(arrowSize, arrowSize));
   ImGui::PopItemFlag();
@@ -242,7 +246,8 @@ bool SpinEditControlStandalone::spinButtons(float &step_multiplier, const String
   return upSpinnerPressed || downSpinnerPressed;
 }
 
-void SpinEditControlStandalone::updateImgui(WindowControlEventHandler &event_handler, const String *tooltip, const void *tooltip_owner)
+void SpinEditControlStandalone::updateImgui(WindowControlEventHandler &event_handler, const String *tooltip, const void *tooltip_owner,
+  const PropertyControlBase *test_info_owner, const char *test_info_subcomponent_name)
 {
   if (tooltip_owner == nullptr)
     tooltip_owner = this;
@@ -280,9 +285,16 @@ void SpinEditControlStandalone::updateImgui(WindowControlEventHandler &event_han
     ImGui::PushStyleColor(ImGuiCol_FrameBg, successColor);
   }
 
+  const bool deactivatedByDisabling = ImguiHelper::deactivateItemIfActiveAndDisabled(inputLabel);
   const bool textChanged = ImguiHelper::inputTextWithEnterWorkaround(inputLabel, nullptr, &textValue, textInputWasFocused);
-  textInputFocused = ImGui::IsItemFocused();
+
+  // A disabled item keeps ImGui's navigation focus, so IsItemFocused() alone would let the Enter and the arrow key
+  // handlers below edit the value of a disabled control.
+  textInputFocused = ImGui::IsItemFocused() && (ImGui::GetCurrentContext()->CurrentItemFlags & ImGuiItemFlags_Disabled) == 0;
   textInputActive = ImGui::IsItemActive();
+
+  if (test_info_owner)
+    test_info_owner->setImguiTestItemInfo(test_info_subcomponent_name);
 
   if (pushFrameBg)
     ImGui::PopStyleColor();
@@ -352,16 +364,21 @@ void SpinEditControlStandalone::updateImgui(WindowControlEventHandler &event_han
     const bool lostFocus = (textInputWasFocused && !textInputFocused) || (textInputWasActive && !textInputActive);
 
     // Evaluate on commit only. While typing, keep the raw text and just drop any stale error
-    // highlight; on focus loss evaluate and revert the display if the expression is invalid.
-    if (lostFocus)
-      commitText(/*revert_display_on_error*/ true);
-    else if (textChanged)
-      mathExprError = false;
-
-    if (lostFocus)
+    // highlight; on focus loss evaluate and revert the display if the expression is invalid. Disabling
+    // the control is not a commit, so it discards the typed text instead of evaluating it.
+    if (deactivatedByDisabling)
     {
+      setValueInternal(internalValue);
+    }
+    else if (lostFocus)
+    {
+      commitText(/*revert_display_on_error*/ true);
       sendWcChangeIfVarChanged(event_handler);
       sendWcChangeFinishedIfPending(event_handler);
+    }
+    else if (textChanged)
+    {
+      mathExprError = false;
     }
   }
 

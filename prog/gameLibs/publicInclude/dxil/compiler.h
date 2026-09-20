@@ -29,6 +29,12 @@ enum class PDBMode
   SMALL,
   FULL
 };
+enum class BlobDebugParts
+{
+  STRIP,
+  KEEP,
+  EMBED
+};
 enum class DXCVersion
 {
   // Limitations dictated by found version
@@ -61,11 +67,11 @@ struct DXCSettings
   bool pipelineIsMesh = false;
   bool pipelineHasAmplification = false;
   bool scarlettWaveSize32 = false;
-  bool saveHlslToBlob = false;
   bool hlsl2021 = false;
   // 0 (disable) - 3 (best)
   uint32_t optimizeLevel = 3;
   PDBMode pdbMode = PDBMode::NONE;
+  BlobDebugParts blobDebugParts = BlobDebugParts::STRIP;
   eastl::wstring_view PDBBasePath;
   eastl::wstring_view PDBNameOverride;
   eastl::wstring_view rootSignatureDefine;

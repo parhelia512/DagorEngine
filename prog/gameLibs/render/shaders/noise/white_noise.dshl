@@ -1,0 +1,12 @@
+macro USE_WHITE_NOISE(stage)
+  hlsl(stage)
+  {
+    #include "pcg_hash.hlsl"
+
+    float2 GetWhiteNoise(uint2 screenPosition, uint frameNumber)
+    {
+      uint2 r = pcg3d_hash_32bit(uint3(screenPosition, frameNumber)).xy;
+      return float2(r >> 8) * (1.0 / 16777216.0);
+    }
+  }
+endmacro

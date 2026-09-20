@@ -4,6 +4,74 @@
 #include "laserSightCoreES.cpp.inl"
 ECS_DEF_PULL_VAR(laserSightCore);
 #include <daECS/core/internal/performQuery.h>
+static constexpr ecs::ComponentDesc update_lasers_es_comps[] =
+{
+//start of 2 rw components at [0]
+  {ECS_HASH("laserBeamTracerId"), ecs::ComponentTypeInfo<int>()},
+  {ECS_HASH("laserDecalId"), ecs::ComponentTypeInfo<int>()},
+//start of 19 ro components at [2]
+  {ECS_HASH("laserBeamColor"), ecs::ComponentTypeInfo<Point3>()},
+  {ECS_HASH("laserBeamMaxLength"), ecs::ComponentTypeInfo<float>()},
+  {ECS_HASH("laserStartSize"), ecs::ComponentTypeInfo<float>()},
+  {ECS_HASH("laserMaxSize"), ecs::ComponentTypeInfo<float>()},
+  {ECS_HASH("laserMaxIntensity"), ecs::ComponentTypeInfo<float>()},
+  {ECS_HASH("laserScrollingSpeed"), ecs::ComponentTypeInfo<float>()},
+  {ECS_HASH("laserActive"), ecs::ComponentTypeInfo<bool>()},
+  {ECS_HASH("laserAvailable"), ecs::ComponentTypeInfo<bool>()},
+  {ECS_HASH("laserVisible"), ecs::ComponentTypeInfo<bool>()},
+  {ECS_HASH("laser_data__rayHit"), ecs::ComponentTypeInfo<Point3>()},
+  {ECS_HASH("laser_data__fxPos"), ecs::ComponentTypeInfo<Point3>()},
+  {ECS_HASH("laser_data__fxDir"), ecs::ComponentTypeInfo<Point3>()},
+  {ECS_HASH("laser_data__laserLen"), ecs::ComponentTypeInfo<float>()},
+  {ECS_HASH("laser_data__gunOwner"), ecs::ComponentTypeInfo<ecs::EntityId>()},
+  {ECS_HASH("laser_data__playerId"), ecs::ComponentTypeInfo<ecs::EntityId>()},
+  {ECS_HASH("laser_sight__is_compatible"), ecs::ComponentTypeInfo<bool>()},
+  {ECS_HASH("laser_data__dotIntensity"), ecs::ComponentTypeInfo<float>()},
+  {ECS_HASH("laserBeamDotColor"), ecs::ComponentTypeInfo<Point3>()},
+  {ECS_HASH("laserBeamFadeDistPercentage"), ecs::ComponentTypeInfo<float>()}
+};
+static void update_lasers_es_all(const ecs::UpdateStageInfo &__restrict info, const ecs::QueryView & __restrict components)
+{
+  auto comp = components.begin(), compE = components.end(); G_ASSERT(comp!=compE);
+  do
+    update_lasers_es(*info.cast<ecs::UpdateStageInfoAct>()
+    , components.manager()
+    , ECS_RW_COMP(update_lasers_es_comps, "laserBeamTracerId", int)
+    , ECS_RW_COMP(update_lasers_es_comps, "laserDecalId", int)
+    , ECS_RO_COMP(update_lasers_es_comps, "laserBeamColor", Point3)
+    , ECS_RO_COMP(update_lasers_es_comps, "laserBeamMaxLength", float)
+    , ECS_RO_COMP(update_lasers_es_comps, "laserStartSize", float)
+    , ECS_RO_COMP(update_lasers_es_comps, "laserMaxSize", float)
+    , ECS_RO_COMP(update_lasers_es_comps, "laserMaxIntensity", float)
+    , ECS_RO_COMP(update_lasers_es_comps, "laserScrollingSpeed", float)
+    , ECS_RO_COMP(update_lasers_es_comps, "laserActive", bool)
+    , ECS_RO_COMP(update_lasers_es_comps, "laserAvailable", bool)
+    , ECS_RO_COMP(update_lasers_es_comps, "laserVisible", bool)
+    , ECS_RO_COMP(update_lasers_es_comps, "laser_data__rayHit", Point3)
+    , ECS_RO_COMP(update_lasers_es_comps, "laser_data__fxPos", Point3)
+    , ECS_RO_COMP(update_lasers_es_comps, "laser_data__fxDir", Point3)
+    , ECS_RO_COMP(update_lasers_es_comps, "laser_data__laserLen", float)
+    , ECS_RO_COMP(update_lasers_es_comps, "laser_data__gunOwner", ecs::EntityId)
+    , ECS_RO_COMP(update_lasers_es_comps, "laser_data__playerId", ecs::EntityId)
+    , ECS_RO_COMP(update_lasers_es_comps, "laser_sight__is_compatible", bool)
+    , ECS_RO_COMP(update_lasers_es_comps, "laser_data__dotIntensity", float)
+    , ECS_RO_COMP(update_lasers_es_comps, "laserBeamDotColor", Point3)
+    , ECS_RO_COMP(update_lasers_es_comps, "laserBeamFadeDistPercentage", float)
+    );
+  while (++comp != compE);
+}
+static ecs::EntitySystemDesc update_lasers_es_es_desc
+(
+  "update_lasers_es",
+  "prog/gameLibs/render/laserSightCore/laserSightCoreES.cpp.inl",
+  ecs::EntitySystemOps(update_lasers_es_all),
+  make_span(update_lasers_es_comps+0, 2)/*rw*/,
+  make_span(update_lasers_es_comps+2, 19)/*ro*/,
+  empty_span(),
+  empty_span(),
+  ecs::EventSetBuilder<>::build(),
+  (1<<ecs::UpdateStageInfoAct::STAGE)
+,"render",nullptr,"*");
 static constexpr ecs::ComponentDesc create_laser_screen_spot_buffer_es_comps[] =
 {
 //start of 1 rw components at [0]
@@ -197,74 +265,6 @@ static ecs::EntitySystemDesc disable_laser_es_es_desc
   ecs::EventSetBuilder<>::build(),
   0
 ,"render","laserActive,laserAvailable,laserVisible");
-static constexpr ecs::ComponentDesc update_lasers_es_comps[] =
-{
-//start of 2 rw components at [0]
-  {ECS_HASH("laserBeamTracerId"), ecs::ComponentTypeInfo<int>()},
-  {ECS_HASH("laserDecalId"), ecs::ComponentTypeInfo<int>()},
-//start of 19 ro components at [2]
-  {ECS_HASH("laserBeamColor"), ecs::ComponentTypeInfo<Point3>()},
-  {ECS_HASH("laserBeamMaxLength"), ecs::ComponentTypeInfo<float>()},
-  {ECS_HASH("laserStartSize"), ecs::ComponentTypeInfo<float>()},
-  {ECS_HASH("laserMaxSize"), ecs::ComponentTypeInfo<float>()},
-  {ECS_HASH("laserMaxIntensity"), ecs::ComponentTypeInfo<float>()},
-  {ECS_HASH("laserScrollingSpeed"), ecs::ComponentTypeInfo<float>()},
-  {ECS_HASH("laserActive"), ecs::ComponentTypeInfo<bool>()},
-  {ECS_HASH("laserAvailable"), ecs::ComponentTypeInfo<bool>()},
-  {ECS_HASH("laserVisible"), ecs::ComponentTypeInfo<bool>()},
-  {ECS_HASH("laser_data__rayHit"), ecs::ComponentTypeInfo<Point3>()},
-  {ECS_HASH("laser_data__fxPos"), ecs::ComponentTypeInfo<Point3>()},
-  {ECS_HASH("laser_data__fxDir"), ecs::ComponentTypeInfo<Point3>()},
-  {ECS_HASH("laser_data__laserLen"), ecs::ComponentTypeInfo<float>()},
-  {ECS_HASH("laser_data__gunOwner"), ecs::ComponentTypeInfo<ecs::EntityId>()},
-  {ECS_HASH("laser_data__playerId"), ecs::ComponentTypeInfo<ecs::EntityId>()},
-  {ECS_HASH("laser_sight__is_compatible"), ecs::ComponentTypeInfo<bool>()},
-  {ECS_HASH("laser_data__dotIntensity"), ecs::ComponentTypeInfo<float>()},
-  {ECS_HASH("laserBeamDotColor"), ecs::ComponentTypeInfo<Point3>()},
-  {ECS_HASH("laserBeamFadeDistPercentage"), ecs::ComponentTypeInfo<float>()}
-};
-static void update_lasers_es_all_events(const ecs::Event &__restrict evt, const ecs::QueryView &__restrict components)
-{
-  G_FAST_ASSERT(evt.is<ParallelUpdateFrameDelayed>());
-  auto comp = components.begin(), compE = components.end(); G_ASSERT(comp!=compE); do
-    update_lasers_es(static_cast<const ParallelUpdateFrameDelayed&>(evt)
-        , components.manager()
-    , ECS_RW_COMP(update_lasers_es_comps, "laserBeamTracerId", int)
-    , ECS_RW_COMP(update_lasers_es_comps, "laserDecalId", int)
-    , ECS_RO_COMP(update_lasers_es_comps, "laserBeamColor", Point3)
-    , ECS_RO_COMP(update_lasers_es_comps, "laserBeamMaxLength", float)
-    , ECS_RO_COMP(update_lasers_es_comps, "laserStartSize", float)
-    , ECS_RO_COMP(update_lasers_es_comps, "laserMaxSize", float)
-    , ECS_RO_COMP(update_lasers_es_comps, "laserMaxIntensity", float)
-    , ECS_RO_COMP(update_lasers_es_comps, "laserScrollingSpeed", float)
-    , ECS_RO_COMP(update_lasers_es_comps, "laserActive", bool)
-    , ECS_RO_COMP(update_lasers_es_comps, "laserAvailable", bool)
-    , ECS_RO_COMP(update_lasers_es_comps, "laserVisible", bool)
-    , ECS_RO_COMP(update_lasers_es_comps, "laser_data__rayHit", Point3)
-    , ECS_RO_COMP(update_lasers_es_comps, "laser_data__fxPos", Point3)
-    , ECS_RO_COMP(update_lasers_es_comps, "laser_data__fxDir", Point3)
-    , ECS_RO_COMP(update_lasers_es_comps, "laser_data__laserLen", float)
-    , ECS_RO_COMP(update_lasers_es_comps, "laser_data__gunOwner", ecs::EntityId)
-    , ECS_RO_COMP(update_lasers_es_comps, "laser_data__playerId", ecs::EntityId)
-    , ECS_RO_COMP(update_lasers_es_comps, "laser_sight__is_compatible", bool)
-    , ECS_RO_COMP(update_lasers_es_comps, "laser_data__dotIntensity", float)
-    , ECS_RO_COMP(update_lasers_es_comps, "laserBeamDotColor", Point3)
-    , ECS_RO_COMP(update_lasers_es_comps, "laserBeamFadeDistPercentage", float)
-    );
-  while (++comp != compE);
-}
-static ecs::EntitySystemDesc update_lasers_es_es_desc
-(
-  "update_lasers_es",
-  "prog/gameLibs/render/laserSightCore/laserSightCoreES.cpp.inl",
-  ecs::EntitySystemOps(nullptr, update_lasers_es_all_events),
-  make_span(update_lasers_es_comps+0, 2)/*rw*/,
-  make_span(update_lasers_es_comps+2, 19)/*ro*/,
-  empty_span(),
-  empty_span(),
-  ecs::EventSetBuilder<ParallelUpdateFrameDelayed>::build(),
-  0
-,"render",nullptr,"*");
 static constexpr ecs::ComponentDesc get_laser_manager_ecs_query_comps[] =
 {
 //start of 1 rw components at [0]

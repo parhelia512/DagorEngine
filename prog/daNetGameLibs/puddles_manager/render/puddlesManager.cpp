@@ -39,7 +39,7 @@
 
 #include "puddlesManagerEvents.h"
 #include <render/world/frameGraphHelpers.h>
-#include <render/world/cameraParams.h>
+#include <render/cameraParams.h>
 
 #include <render/world/wrDispatcher.h>
 #include <render/world/depthAOAbove.h>

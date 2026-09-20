@@ -14,11 +14,18 @@ namespace dafg
 {
 
 struct ResourceProvider;
+struct InternalRegistry;
+
+namespace jsondump
+{
+void dump_registry_to_json(const InternalRegistry &);
+} // namespace jsondump
 
 namespace visualization::usergraph
 {
 class Visualizer;
 } // namespace visualization::usergraph
+
 
 namespace detail
 {
@@ -63,7 +70,9 @@ class AutoResolutionRequest
   friend class NameSpaceRequest;
   friend struct detail::VirtualResourceRequestBase;
   friend struct detail::DispatchRequestBase;
+
   friend class visualization::usergraph::Visualizer;
+  friend void jsondump::dump_registry_to_json(const InternalRegistry &);
 
   AutoResolutionRequest(AutoResTypeNameId id, float mult, const ResourceProvider *p) : autoResTypeId{id}, multiplier{mult}, provider{p}
   {}

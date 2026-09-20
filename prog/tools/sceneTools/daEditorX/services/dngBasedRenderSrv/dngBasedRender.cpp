@@ -61,7 +61,7 @@
 #include "game/gameEvents.h"
 #include "game/gameScripts.h"
 #include "game/riDestr.h"
-#include "render/animatedSplashScreen.h"
+#include <animated_splash_screen_api.h>
 #include "render/renderer.h"
 #include "render/renderEvent.h"
 #include "render/skies.h"
@@ -141,7 +141,7 @@ extern Tab<IRenderingService *> rendSrv;
 
 static SimpleString main_vromfs_fpath_str, main_vromfs_mount_dir_str;
 static SimpleString dng_scene_fname, dng_template_fname, dng_game_params_fname;
-static bool dng_init_ui_fonts = true;
+static bool dng_init_ui_fonts = false;
 static SimpleString dng_empty_scene_fname;
 static IPoint2 pendingRes = {0, 0};
 static bool empty_world_created = false;
@@ -156,8 +156,14 @@ static int32_t suppress_motion_blur_count = 0;
 static SimpleString saved_aa_setting;
 
 static int32_t suppress_cinematic_fx_count = 0;
-static int saved_post_bloom_effects = 0;
-static float saved_flare_halo_mul = 0.f, saved_flare_ghosts_mul = 0.f;
+constexpr int CINEMATIC_SUPPRESS_PRIORITY = 128;
+static struct SavedPostFXParams
+{
+  float flareHaloMul = 0.f;
+  float flareGhostsMul = 0.f;
+  int postBloomEffects = 0;
+} saved_postfx;
+
 
 static void init_dng_framework();
 static void term_dng_framework();
@@ -190,6 +196,22 @@ static bool prevIsOrtho = false;
 static bool skip_next_frame = true;
 
 static DataBlock app_ecs_blk;
+static DataBlock level_blk;
+
+static void load_level_blk_from_scene(const char *scene_fname, DataBlock &out_level_blk)
+{
+  DataBlock sceneBlk;
+  if (!dblk::load(sceneBlk, scene_fname, dblk::ReadFlag::ROBUST))
+    return;
+  const int entityNid = sceneBlk.getNameId("entity");
+  for (int i = 0, e = sceneBlk.blockCount(); i < e; i++)
+    if (const DataBlock *entityBlk = sceneBlk.getBlock(i); entityBlk->getBlockNameId() == entityNid)
+      if (const char *levelPath = entityBlk->getStr("level__blk", nullptr))
+      {
+        dblk::load(out_level_blk, levelPath, dblk::ReadFlag::ROBUST);
+        return;
+      }
+}
 
 class DngBasedRenderScene : public DagorGameScene
 {
@@ -639,16 +661,22 @@ public:
     dng_based_render::main_vromfs_fpath_str = appblk.getBlockByNameEx("game")->getStr("main_vromfs", "");
     dng_based_render::main_vromfs_mount_dir_str = appblk.getBlockByNameEx("game")->getStr("main_vromfs_mnt", "");
     if (const char *emptyScn = appblk.getBlockByNameEx("game")->getStr("empty_scene", nullptr))
+    {
       dng_based_render::dng_empty_scene_fname = String::mk_str_cat(app_dir, emptyScn);
+      load_level_blk_from_scene(dng_based_render::dng_empty_scene_fname, level_blk);
+    }
     if (const char *scn = appblk.getBlockByNameEx("game")->getStr("scene", nullptr))
+    {
       dng_based_render::dng_scene_fname = make_eff_app_relative_path(scn);
+      load_level_blk_from_scene(dng_based_render::dng_scene_fname, level_blk);
+    }
     if (const char *templ = appblk.getBlockByNameEx("game")->getStr("entities", nullptr))
       dng_based_render::dng_template_fname = make_eff_app_relative_path(templ);
     if (const char *params = appblk.getBlockByNameEx("game")->getStr("params", nullptr))
       dng_based_render::dng_game_params_fname = make_eff_app_relative_path(params);
     app_ecs_blk = *appblk.getBlockByNameEx("ecs");
 
-    dng_based_render::dng_init_ui_fonts = appblk.getBool("initUiFonts", true);
+    dng_based_render::dng_init_ui_fonts = appblk.getBool("initUiFonts", false);
 
     bool useAddonVromSrc = false;
     if (const DataBlock *debugBlk = dgs_get_settings()->getBlockByName("debug"))
@@ -734,19 +762,32 @@ public:
 
   void setupEditorLandmesh()
   {
-    if (auto landmesh = EDITORCORE->getInterfaceEx<ILandmesh>())
+    auto *wr = get_world_renderer();
+
+    if (!wr)
+      return;
+
+    ILandmesh *landmesh = EDITORCORE->getInterfaceEx<ILandmesh>();
+
+    LandMeshManager *landmeshMgr = landmesh ? landmesh->getLandMeshManager() : nullptr;
+    LandMeshRenderer *landmeshRenderer = landmesh ? landmesh->getLandMeshRenderer() : nullptr;
+
+    if (!landmeshMgr || !landmeshRenderer)
     {
-      LandMeshManager *landmeshMgr = landmesh->getLandMeshManager();
-      LandMeshRenderer *landmeshRenderer = landmesh->getLandMeshRenderer();
-      auto wr = get_world_renderer();
-      if (wr && landmeshMgr && landmeshRenderer)
-      {
-        IHmapService *hmlService = EDITORCORE->queryEditorInterface<IHmapService>();
-        const auto decalsCb = hmlService ? hmlService->getDecalsRenderCb() : nullptr;
-        wr->setLandmesh(landmeshMgr, landmeshRenderer, decalsCb);
-        dng_based_render::setup_editor_heightmap(*landmesh, *landmeshMgr);
-      }
+      wr->setLandmesh(nullptr, nullptr, nullptr);
+      return;
     }
+
+    if (landmesh == nullptr)
+    {
+      G_ASSERT(false);
+      return;
+    }
+
+    IHmapService *hmlService = EDITORCORE->queryEditorInterface<IHmapService>();
+    const auto decalsCb = hmlService ? hmlService->getDecalsRenderCb() : nullptr;
+    wr->setLandmesh(landmeshMgr, landmeshRenderer, decalsCb);
+    dng_based_render::setup_editor_heightmap(*landmesh, *landmeshMgr);
   }
 
   void selectAsGameScene() override
@@ -787,6 +828,14 @@ public:
   }
 
   void updateEditorLandmesh() override { setupEditorLandmesh(); }
+
+  void setEditorHmapMirroring(bool mirror) override
+  {
+    if (ILandmesh *landmesh = EDITORCORE->getInterfaceEx<ILandmesh>())
+      if (LandMeshManager *landmeshMgr = landmesh->getLandMeshManager())
+        if (HeightmapHandler *hmapHdlr = landmeshMgr->getHmapHandler())
+          hmapHdlr->setMirroring(mirror);
+  }
 
   void beforeD3DReset(bool full_reset) override
   {
@@ -915,6 +964,7 @@ public:
   D3DRESID getDepthBufferId() override { return BAD_TEXTUREID; }
 
   const ManagedTex &getDownsampledFarDepth() override { return nullTex; }
+  const ManagedTex &getPrevDownsampledFarDepth() override { return nullTex; }
   void toggleVrMode() override {}
 
   void renderOneDynModelInstance(DynamicRenderableSceneInstance *sceneInstance, Stage stage, int *optional_inst_seed,
@@ -1068,9 +1118,9 @@ static void dng_create_world()
   auto *wr = create_world_renderer();
   dng_based_render::empty_world_created = true;
 
-  wr->beforeLoadLevel(DataBlock::emptyBlock);
+  wr->beforeLoadLevel(level_blk);
   wr->preloadLevelTextures(); // this will at least wait for character_micro_details arr-tex to be loaded
-  wr->onLevelLoaded(DataBlock::emptyBlock);
+  wr->onLevelLoaded(level_blk);
   g_entity_mgr->broadcastEventImmediate(EventDoFinishLocationDataLoad());
   wr->onSceneLoaded(nullptr);
 
@@ -1285,12 +1335,15 @@ static void dng_based_render::set_cinematic_mode_enabled(bool enabled)
   {
     if (++suppress_cinematic_fx_count == 1)
     {
-      saved_post_bloom_effects = enable_post_bloom_effectsVarId.get_int();
-      saved_flare_halo_mul = flare_halo_space_mulVarId.get_float();
-      saved_flare_ghosts_mul = flare_ghosts_space_mulVarId.get_float();
-      PriorityShadervar::set_float4(chromatic_aberration_paramsVarId.get_var_id(), CinematicMode::CHROMATIC_ABERRATION_PRIORITY,
-        Point4(0, 0, 0, 0));
-      PriorityShadervar::set_float(vignette_strengthVarId.get_var_id(), CinematicMode::VIGNETTE_PRIORITY, 0.f);
+      saved_postfx = SavedPostFXParams{
+        .flareHaloMul = flare_halo_space_mulVarId.get_float(),
+        .flareGhostsMul = flare_ghosts_space_mulVarId.get_float(),
+        .postBloomEffects = enable_post_bloom_effectsVarId.get_int(),
+      };
+
+      PriorityShadervar::set_float4(chromatic_aberration_paramsVarId.get_var_id(), CINEMATIC_SUPPRESS_PRIORITY,
+        Point4{0.f, 0.f, 0.f, 0.f});
+      PriorityShadervar::set_float(vignette_strengthVarId.get_var_id(), CINEMATIC_SUPPRESS_PRIORITY, 0.f);
       flare_halo_space_mulVarId.set_float(0.f);
       flare_ghosts_space_mulVarId.set_float(0.f);
       enable_post_bloom_effectsVarId.set_int(0);
@@ -1298,11 +1351,11 @@ static void dng_based_render::set_cinematic_mode_enabled(bool enabled)
   }
   else if (suppress_cinematic_fx_count > 0 && --suppress_cinematic_fx_count == 0)
   {
-    PriorityShadervar::clear(chromatic_aberration_paramsVarId.get_var_id(), CinematicMode::CHROMATIC_ABERRATION_PRIORITY);
-    PriorityShadervar::clear(vignette_strengthVarId.get_var_id(), CinematicMode::VIGNETTE_PRIORITY);
-    flare_halo_space_mulVarId.set_float(saved_flare_halo_mul);
-    flare_ghosts_space_mulVarId.set_float(saved_flare_ghosts_mul);
-    enable_post_bloom_effectsVarId.set_int(saved_post_bloom_effects);
+    PriorityShadervar::clear(chromatic_aberration_paramsVarId.get_var_id(), CINEMATIC_SUPPRESS_PRIORITY);
+    PriorityShadervar::clear(vignette_strengthVarId.get_var_id(), CINEMATIC_SUPPRESS_PRIORITY);
+    flare_halo_space_mulVarId.set_float(saved_postfx.flareHaloMul);
+    flare_ghosts_space_mulVarId.set_float(saved_postfx.flareGhostsMul);
+    enable_post_bloom_effectsVarId.set_int(saved_postfx.postBloomEffects);
   }
 }
 
@@ -1417,6 +1470,9 @@ static void dng_based_render::init_dng_framework()
 }
 static void dng_based_render::term_dng_framework()
 {
+  PriorityShadervar::clear(chromatic_aberration_paramsVarId.get_var_id(), CINEMATIC_SUPPRESS_PRIORITY);
+  PriorityShadervar::clear(vignette_strengthVarId.get_var_id(), CINEMATIC_SUPPRESS_PRIORITY);
+
   sceneload::unload_current_game();
   game_scene::on_scene_deselected();
   destroy_world_renderer();
@@ -1443,7 +1499,7 @@ static void dng_based_render::setup_editor_heightmap(ILandmesh &landmesh, LandMe
   if (!h)
     return;
 
-  h->initMetrics(HeightmapHeightCulling::NO_WATER_ON_LEVEL);
+  h->initRender(!info.mirrorHmap, HeightmapHeightCulling::NO_WATER_ON_LEVEL);
 
   static ShaderVariableInfo world_to_hmap_high("world_to_hmap_high", true);
   static ShaderVariableInfo tex_hmap_high("tex_hmap_high", true);

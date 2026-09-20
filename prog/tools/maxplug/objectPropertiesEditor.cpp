@@ -84,6 +84,7 @@ void ObjectPropertiesEditor::Destroy()
   }
   m_pInterface->UnRegisterRedrawViewsCallback(&object_properties_editor_redraw_views_callback);
   m_pInterface->UnRegisterDlgWnd(m_hPanel);
+  DestroyWindow(m_hPanel);
   m_hPanel = NULL;
 }
 
@@ -145,7 +146,6 @@ INT_PTR CALLBACK ObjectPropertiesEditor::DialogProc(HWND hWnd, UINT msg, WPARAM 
 
     case WM_CLOSE:
     {
-      EndDialog(pThis->m_hPanel, FALSE);
       pThis->Destroy();
     }
     break;
@@ -165,7 +165,7 @@ public:
   {
     if (i < selectedNodes.Count())
     {
-      selectedNodes.Resize(i);
+      selectedNodes.SetCount(i);
       needUpdate = true;
     }
   }

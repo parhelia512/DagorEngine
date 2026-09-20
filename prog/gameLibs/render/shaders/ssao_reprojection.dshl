@@ -8,7 +8,8 @@ texture prev_downsampled_motion_vectors_tex;
 
 float ssao_reprojection_neighborhood_bias_tight = 0.0;
 float ssao_reprojection_neighborhood_bias_wide = 0.05;
-float ssao_dissocclusion_depth_threshold = 0.05;
+float ssao_disocclusion_depth_threshold = 0.05;
+float ssao_disocclusion_history_reject_scale = 4.0;
 float ssao_reprojection_neighborhood_velocity_difference_scale = 100;
 texture prev_downsampled_close_depth_tex;
 
@@ -19,7 +20,8 @@ local float4 prev_downsampled_close_depth_tex_dim = get_dimensions(prev_downsamp
   prev_downsampled_close_depth_tex@smp2d = prev_downsampled_close_depth_tex;
   prev_downsampled_motion_vectors_tex@smp2d = prev_downsampled_motion_vectors_tex;
 
-  ssao_dissocclusion_depth_threshold@f1 = ssao_dissocclusion_depth_threshold;
+  ssao_disocclusion_depth_threshold@f1 = ssao_disocclusion_depth_threshold;
+  disocclusion_history_reject_scale@f1 = ssao_disocclusion_history_reject_scale;
   prev_downsampled_close_depth_tex_target_size@f4 = (prev_downsampled_close_depth_tex_dim.x, prev_downsampled_close_depth_tex_dim.y, 1/max(1, prev_downsampled_close_depth_tex_dim.x), 1/max(1, prev_downsampled_close_depth_tex_dim.y));
   neighborhood_params@f3 = (ssao_reprojection_neighborhood_bias_tight,
                             ssao_reprojection_neighborhood_bias_wide,
@@ -62,12 +64,17 @@ hlsl(stage) {
     float4 depths = prev_downsampled_close_depth_tex.GatherRed(prev_downsampled_close_depth_tex_samplerstate, gatherUV).wzxy;
     float4 linearDepths = linearize_z4(depths, prev_zn_zfar.zw);
     float4 depthDiff = abs(linearDepths - historyUVZ.z);
-    float threshold = ssao_dissocclusion_depth_threshold*historyUVZ.z;
+    float threshold = ssao_disocclusion_depth_threshold*historyUVZ.z;
 
     float4 bil = float4(fractCrd, 1 - fractCrd);
     float4 upsampleWeights = float4(bil.zx * bil.w, bil.zx * bil.y);
     float4 spatialWeights = exp(-depthDiff * (5.0 / threshold));
-    float4 weights = (spatialWeights * upsampleWeights + 1e-4);
+    float4 weights = spatialWeights * upsampleWeights;
+
+    // Increase new frame weight if the weights are too low: this hides artifacts from disocclusion
+    newFrameWeight = max(newFrameWeight, 1.0 - dot(weights, 1.0) * disocclusion_history_reject_scale);
+
+    weights = weights + 1e-4;
     weights /= dot(weights, 1.0);
 
     //float2 uv = (floor(historyCrdf) + 0.5)*prev_downsampled_close_depth_tex_target_size.zw;//todo: one madd
@@ -98,7 +105,7 @@ hlsl(stage) {
 
     //if previous history is invalid or current pixel is inside safe margin (filter) and previous was not
     newFrameWeight = any(abs(historyUVZ.xy * 2 - 1) >= 1) ? 1 : newFrameWeight;
-    newFrameWeight = any(abs(screenTC * 2 - 1) < 0.99 && abs(historyUVZ.xy * 2 - 1) >= 0.99) ? saturate(newFrameWeight + 0.5) : newFrameWeight;
+    newFrameWeight = any(and(abs(screenTC * 2 - 1) < 0.99, abs(historyUVZ.xy * 2 - 1) >= 0.99)) ? saturate(newFrameWeight + 0.5) : newFrameWeight;
 
 
 #if DIFFERENCE_CLAMPING
@@ -138,7 +145,7 @@ hlsl(stage) {
     get_ssao_disocclusion_weight(historyUVZ, ssaoHistory, newFrameWeight);
 
     newFrameWeight = any(abs(historyUVZ.xy * 2 - 1) >= 1) ? 1 : newFrameWeight;
-    newFrameWeight = any(abs(uv * 2 - 1) < 0.99 && abs(historyUVZ.xy * 2 - 1) >= 0.99) ? saturate(newFrameWeight + 0.5) : newFrameWeight;
+    newFrameWeight = any(and(abs(uv * 2 - 1) < 0.99, abs(historyUVZ.xy * 2 - 1) >= 0.99)) ? saturate(newFrameWeight + 0.5) : newFrameWeight;
 
     // Neighborhood clamp
     {

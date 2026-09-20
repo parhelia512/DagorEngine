@@ -366,19 +366,20 @@ bool GPGPUData::fillBuffers(const NVWaveWorks_FFT_CPU_Simulation *fft, int numCa
 
       // kStep = 2PI/L; norm = kStep * sqrt(1/2)
       float norm0 = 2 * PI * 0.7071068 / (fft_period0), norm1 = 2 * PI * 0.7071068 / (fft_period1);
-      vertices[0].pos = Point2(-1 + i * quad_width, +1);
-      vertices[1].pos = Point2(vertices[0].pos.x + quad_width, +1);
-      vertices[2].pos = Point2(vertices[0].pos.x, -1);
-      vertices[3].pos = Point2(vertices[0].pos.x + quad_width, -1);
+      const float leftX = -1 + i * quad_width;
+      vertices[0].pos = Point2(leftX, +1);
+      vertices[1].pos = Point2(leftX + quad_width, +1);
+      vertices[2].pos = Point2(leftX, -1);
+      vertices[3].pos = Point2(leftX + quad_width, -1);
 
-      vertices[0].tc = Point2(-N / 2 - halfTexelOffsetX, -N / 2 - halfTexelOffsetY);
-      vertices[1].tc = Point2(+N / 2 + halfTexelOffsetX, -N / 2 - halfTexelOffsetY);
-      vertices[2].tc = Point2(-N / 2 - halfTexelOffsetX, +N / 2 + halfTexelOffsetY);
-      vertices[3].tc = Point2(+N / 2 + halfTexelOffsetX, +N / 2 + halfTexelOffsetY);
+      const Point2 tc[4] = {Point2(-N / 2 - halfTexelOffsetX, -N / 2 - halfTexelOffsetY),
+        Point2(+N / 2 + halfTexelOffsetX, -N / 2 - halfTexelOffsetY), Point2(-N / 2 - halfTexelOffsetX, +N / 2 + halfTexelOffsetY),
+        Point2(+N / 2 + halfTexelOffsetX, +N / 2 + halfTexelOffsetY)};
       for (int j = 0; j < 4; ++j)
       {
-        vertices[j].fft_tc = Point4(vertices[j].tc.x * TWOPI / fft_period0, vertices[j].tc.y * TWOPI / fft_period0,
-          vertices[j].tc.x * TWOPI / fft_period1, vertices[j].tc.y * TWOPI / fft_period1);
+        vertices[j].tc = tc[j];
+        vertices[j].fft_tc = Point4(tc[j].x * TWOPI / fft_period0, tc[j].y * TWOPI / fft_period0, tc[j].x * TWOPI / fft_period1,
+          tc[j].y * TWOPI / fft_period1);
       }
 
       vertices[0].gaussTc__norm = Point4(gauss_corner0, gauss_corner0, norm0, norm1);

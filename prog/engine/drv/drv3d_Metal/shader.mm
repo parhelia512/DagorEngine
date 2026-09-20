@@ -182,7 +182,7 @@ namespace drv3d_metal
     if (!binary)
       src = [[NSString alloc] initWithCString:source encoding : NSASCIIStringEncoding];
 #endif
-    if (!binary)
+    if (!binary && name.empty())
       name = getName(source);
 
     if (shd_type == 3)

@@ -17,14 +17,15 @@ public:
   void setEditMode(int mode);
   int getAvailableTypes() override;
 
-  void refreshEffectedNodes(const dag::Vector<CompositeEditorTreeDataNode *> &selected_nodes);
+  void refreshAffectedNodes(const dag::Vector<CompositeEditorTreeDataNode *> &selected_nodes);
   bool hasAnyTransformableNode() const;
 
 private:
-  struct EffectedNode
+  struct AffectedNode
   {
     CompositeEditorTreeDataNode *node = nullptr;
     bool canTransform = false;
+    bool movesExpectedPosition = false;
     TMatrix originalWorldTm;
     TMatrix parentWorldTm;
   };
@@ -46,7 +47,7 @@ private:
   void scaleNode(TMatrix &tm, const TMatrix &original_world_tm, const TMatrix &scale_mtx);
 
   IObjEntity *entity = nullptr;
-  dag::Vector<EffectedNode> effectedNodes;
+  dag::Vector<AffectedNode> affectedNodes;
   // Reused across changed() calls to avoid per-frame allocations.
   dag::Vector<CompositeEditorTreeDataNode *> pendingNodes;
   dag::Vector<TMatrix> pendingLocalTms;

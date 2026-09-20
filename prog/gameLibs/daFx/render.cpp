@@ -449,8 +449,17 @@ bool prepare_render_queue(Context &ctx, CullingState *cull, uint32_t tag, DrawQu
     queue.drawCalls.push_back({(int)queue.states.size() - 1, state.aliveCount});
 
     if constexpr (INST_RENDERABLE_TRIS >= 0)
-      stat_add(ctx.stats.renderedTriangles[*stream.getOpt<INST_STAT_GROUP, uint8_t>(sid)],
-        *stream.getOpt<INST_RENDERABLE_TRIS, uint>(sid) * 2);
+    {
+      int renderedPart = (flags & SYS_CULL_FETCHED) ? *stream.getOpt<INST_RENDERABLE_TRIS, uint>(sid) : state.aliveCount;
+      if (sid >= (int)ctx.statParticlesCounted.size())
+        ctx.statParticlesCounted.resize(sid + 1, false);
+      if (!ctx.statParticlesCounted[sid])
+      {
+        ctx.statParticlesCounted[sid] = true;
+        stat_add(ctx.stats.totalParticles, renderedPart);
+      }
+      stat_add(ctx.stats.renderedTriangles[*stream.getOpt<INST_STAT_GROUP, uint8_t>(sid)], renderedPart * 2);
+    }
   }
 
   return queue.drawCalls.size() > 0;

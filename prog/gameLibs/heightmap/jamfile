@@ -10,6 +10,7 @@ Sources =
   simpleHeightmapRenderer.cpp
   heightmapRenderer.cpp
   heightmapPhysHandler.cpp
+  heightmapMaxDelta.cpp
   heightmapMetricsCalc.cpp
   heightmapMetricsCulling.cpp
   heightmapCulling.cpp

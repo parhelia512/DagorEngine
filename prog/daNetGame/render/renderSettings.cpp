@@ -11,6 +11,9 @@
 #include <shaders/dag_atlasBlockManager.h>
 #include <shaders/dag_rendInstRes.h>
 #include <shaders/dag_dynSceneRes.h>
+#include <osApiWrappers/dag_miscApi.h>
+#include <util/dag_console.h>
+#include <climits>
 
 ECS_REGISTER_EVENT(OnRenderSettingsReady)
 
@@ -166,6 +169,57 @@ void prepare_voxel_atlas_setup(const DataBlock *level_blk)
   prepare_united_vdata_setup(voxeldata::rgbaAtlasManager, level_blk, "blockAtlas.rgba", "blockAtlas.rgba.def");
   prepare_united_vdata_setup(voxeldata::normAtlasManager, level_blk, "blockAtlas.norm", "blockAtlas.norm.def");
 }
+
+void apply_united_vdata_allocation_limits(bool apply_rt_limits)
+{
+  auto prepare_united_vdata_limits = [&](auto &unitedVdata, const char *type_nm) {
+    int ibLimitsKb = INT_MAX;
+    int vbLimitsKb = INT_MAX;
+    int blasLimitsKb = 0;
+    const DataBlock *streamingBlk = dgs_get_settings()->getBlockByNameEx(type_nm);
+    if (apply_rt_limits || streamingBlk->getBool("applyLimitsWithoutRT", false))
+    {
+      const DataBlock *limitsBlk = nullptr;
+
+#if _TARGET_SCARLETT || _TARGET_C2
+      switch (get_console_model())
+      {
+        case ConsoleModel::XBOX_ANACONDA: limitsBlk = streamingBlk->getBlockByNameEx("scarlettXRTLimits"); break;
+        case ConsoleModel::XBOX_LOCKHART: limitsBlk = streamingBlk->getBlockByNameEx("scarlettSRTLimits"); break;
+        case ConsoleModel::PS5: limitsBlk = streamingBlk->getBlockByNameEx("ps5RTLimits"); break;
+        case ConsoleModel::PS5_PRO: limitsBlk = streamingBlk->getBlockByNameEx("ps5proRTLimits"); break;
+        default: break;
+      }
+#elif _TARGET_PC
+      limitsBlk = streamingBlk->getBlockByNameEx("pcRTLimits");
+#endif
+
+      if (limitsBlk) //-V547
+      {
+        ibLimitsKb = limitsBlk->getInt("ibLimitsKb", INT_MAX);
+        vbLimitsKb = limitsBlk->getInt("vbLimitsKb", INT_MAX);
+        blasLimitsKb = limitsBlk->getInt("blasLimitsKb", 0);
+      }
+    }
+
+    debug("Setting %s limits to ib: %d kb, vb: %d kb, blas: %d kb", type_nm, ibLimitsKb, vbLimitsKb, blasLimitsKb);
+
+    unitedVdata.setAllocationLimits(ibLimitsKb, vbLimitsKb);
+    unitedVdata.setBlasAllocationLimit(blasLimitsKb);
+  };
+
+  prepare_united_vdata_limits(unitedvdata::dmUnitedVdata, "unitedVdata.dynModel");
+  prepare_united_vdata_limits(unitedvdata::riUnitedVdata, "unitedVdata.rendInst");
+}
+
+static bool mesh_streaming_console_handler(const char *argv[], int argc)
+{
+  // to make non-RT use the same limits, used for testing
+  int found = 0;
+  CONSOLE_CHECK_NAME("mesh_streaming", "apply_rt_limits", 1, 1) { apply_united_vdata_allocation_limits(true); }
+  return found;
+}
+REGISTER_CONSOLE_HANDLER(mesh_streaming_console_handler);
 
 void apply_united_vdata_settings(const DataBlock *scene_blk)
 {

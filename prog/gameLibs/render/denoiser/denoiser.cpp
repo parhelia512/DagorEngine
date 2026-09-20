@@ -1340,6 +1340,7 @@ void prepare(const FrameParams &params)
   ShaderGlobal::set_texture(denoiser_half_motion_vectors_rtrVarId, nullptr);
   ShaderGlobal::set_texture(denoiser_half_nr_rtrVarId, nullptr);
   ShaderGlobal::set_texture(denoiser_half_view_z_rtrVarId, nullptr);
+  ShaderGlobal::set_texture(half_selected_depth_rtrVarId, nullptr);
 }
 
 static float randuf() { return rand() / float(RAND_MAX); }
@@ -1367,30 +1368,43 @@ static eastl::tuple<Texture *, Texture *, Texture *> get_denoiser_textures(const
 
 #define ACQUIRE_TEXTURE(name) ACQUIRE_DENOISER_TEXTURE(params, name, )
 
-void denoise_shadow(const ShadowDenoiser &params)
+void set_shadow_maps_bindless(Texture *csm_texture, d3d::SamplerHandle csm_sampler, Texture *vsm_texture,
+  d3d::SamplerHandle vsm_sampler)
 {
-  if (params.csmTexture)
+  if (csm_texture)
   {
-    d3d::update_bindless_resource(D3DResourceType::TEX, bindless_range + csm_bindless_index, params.csmTexture);
+    d3d::update_bindless_resource(D3DResourceType::TEX, bindless_range + csm_bindless_index, csm_texture);
     ShaderGlobal::set_int(csm_bindless_slotVarId, bindless_range + csm_bindless_index);
-    auto samplerIx = d3d::register_bindless_sampler(params.csmSampler);
+    auto samplerIx = d3d::register_bindless_sampler(csm_sampler);
     ShaderGlobal::set_int(csm_sampler_bindless_slotVarId, samplerIx);
   }
 
-  if (params.vsmTexture)
+  if (vsm_texture)
   {
-    d3d::update_bindless_resource(D3DResourceType::TEX, bindless_range + vsm_bindless_index, params.vsmTexture);
+    d3d::update_bindless_resource(D3DResourceType::TEX, bindless_range + vsm_bindless_index, vsm_texture);
     ShaderGlobal::set_int(vsm_bindless_slotVarId, bindless_range + vsm_bindless_index);
-    auto samplerIx = d3d::register_bindless_sampler(params.vsmSampler);
+    auto samplerIx = d3d::register_bindless_sampler(vsm_sampler);
     ShaderGlobal::set_int(vsm_sampler_bindless_slotVarId, samplerIx);
   }
+}
+
+void set_shadow_output_bindless(Texture *shadow_texture, bool translucent)
+{
+  if (!shadow_texture)
+    return;
+  d3d::update_bindless_resource(D3DResourceType::TEX, bindless_range + rtsm_bindless_index, shadow_texture);
+  ShaderGlobal::set_int(rtsm_bindless_slotVarId, bindless_range + rtsm_bindless_index);
+  ShaderGlobal::set_int(rtsm_is_translucentVarId, translucent ? 1 : 0);
+}
+
+void denoise_shadow(const ShadowDenoiser &params)
+{
+  set_shadow_maps_bindless(params.csmTexture, params.csmSampler, params.vsmTexture, params.vsmSampler);
 
   if (resolution_config.useRayReconstruction)
   {
     ACQUIRE_TEXTURE(rtsm_value);
-    d3d::update_bindless_resource(D3DResourceType::TEX, bindless_range + rtsm_bindless_index, rtsm_value);
-    ShaderGlobal::set_int(rtsm_bindless_slotVarId, bindless_range + rtsm_bindless_index);
-    ShaderGlobal::set_int(rtsm_is_translucentVarId, 0);
+    set_shadow_output_bindless(rtsm_value);
 
     d3d::resource_barrier(ResourceBarrierDesc(rtsm_value, RB_STAGE_ALL_SHADERS | RB_RO_SRV, 0, 0));
 
@@ -1416,9 +1430,7 @@ void denoise_shadow(const ShadowDenoiser &params)
 
   GET_DENOISER_TEXTURES(params, false);
 
-  d3d::update_bindless_resource(D3DResourceType::TEX, bindless_range + rtsm_bindless_index, rtsm_shadows_denoised);
-  ShaderGlobal::set_int(rtsm_bindless_slotVarId, bindless_range + rtsm_bindless_index);
-  ShaderGlobal::set_int(rtsm_is_translucentVarId, rtsm_translucency ? 1 : 0);
+  set_shadow_output_bindless(rtsm_shadows_denoised, rtsm_translucency);
 
   if (reset_history)
     clear_texture(rtsm_shadows_denoised);

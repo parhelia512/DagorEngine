@@ -1,16 +1,16 @@
 echo off
-rem use the release csq built from this repo (jam -sConfig=rel in the consoleSq tool)
-set CSQ=..\..\..\..\..\..\tools\dagor_cdk\windows-x86_64\csq.exe
-%CSQ% version.nut
-%CSQ% fib_recursive.nut
-%CSQ% fib_loop.nut
-%CSQ% primes.nut
-%CSQ% particles.nut
-%CSQ% dict.nut
-%CSQ% exp.nut
-%CSQ% nbodies.nut
-%CSQ% f2i.nut
-%CSQ% f2s.nut
-%CSQ% queen.nut
-%CSQ% spectral-norm.nut
-%CSQ% table-sort.nut
+@rem use the release sq built from this repo (jam -sConfig=rel in prog/tools/sq)
+set SQ=%~dp0..\..\..\..\..\..\tools\util\sq-64.exe
+%SQ% version.nut
+%SQ% fib_recursive.nut
+%SQ% fib_loop.nut
+%SQ% primes.nut
+%SQ% particles.nut
+%SQ% dict.nut
+%SQ% exp.nut
+%SQ% nbodies.nut
+%SQ% f2i.nut
+%SQ% f2s.nut
+%SQ% queen.nut
+%SQ% spectral-norm.nut
+%SQ% table-sort.nut

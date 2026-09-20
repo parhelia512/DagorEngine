@@ -87,7 +87,7 @@ struct FilterVisibilityJob : public cpujobs::IJob
     rendinst::filterVisibility(*globalVis, *frameVis, [this](vec4f min, vec4f max) { return frustum.testBox(min, max); });
   }
   void releaseJob() override {}
-  const char *getJobName(bool &) const override { return "grassify_filter_visibility"; }
+  const char *getJobName(bool &) const override { return DAPROFILER_STRING("grassify_filter_visibility"); }
 
 private:
   RiGenVisibility *globalVis = nullptr;

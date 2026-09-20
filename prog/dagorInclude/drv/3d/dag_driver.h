@@ -10,6 +10,7 @@
 #include <drv/3d/dag_consts.h>
 #include <drv/3d/dag_resource.h>
 #include <drv/3d/dag_tex3d.h>
+#include <drv/3d/dag_multi_interface.h>
 #include <util/dag_globDef.h>
 #include <vecmath/dag_vecMathDecl.h>
 #include <EASTL/initializer_list.h>
@@ -67,7 +68,11 @@ enum
 void update_window_mode();
 
 static constexpr int RENDER_TO_WHOLE_ARRAY = 1023;
+} // namespace d3d
+
 #if !_TARGET_D3D_MULTI
+namespace d3d _MULTI_INTERFACE
+{
 // Driver initialization API
 
 /// initalizes 3d device driver
@@ -188,8 +193,6 @@ bool get_vrr_supported();
 bool get_vsync_enabled();
 bool enable_vsync(bool enable);
 
-#include "rayTrace/rayTracedrv3d.inl.h"
-
 // See ResourceBarrierDesc and
 // https://dagor.rtd.gaijin.lan/en/latest/api-references/dagor-render/index/resource_and_execution_barriers.html
 void resource_barrier(const ResourceBarrierDesc &desc, GpuPipeline gpu_pipeline = GpuPipeline::GRAPHICS);
@@ -197,9 +200,13 @@ void enhanced_texture_barrier(const TextureBarrier &barrier, BaseTexture *textur
 void enhanced_buffer_barrier(const BufferBarrier &barrier, Sbuffer *buffer);
 void enhanced_barrier_batch(dag::ConstSpan<TextureBarrierBatchItem> texture_barriers,
   dag::ConstSpan<BufferBarrierBatchItem> buffer_barriers);
+} // namespace d3d _MULTI_INTERFACE
 
+#include "rayTrace/rayTracedrv3d.inl.h"
 #endif
 
+namespace d3d
+{
 #if _TARGET_XBOX || _TARGET_C1 || _TARGET_C2
 void resummarize_htile(BaseTexture *tex);
 #else

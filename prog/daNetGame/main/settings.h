@@ -4,8 +4,14 @@
 #include <EASTL/functional.h>
 #include <startup/dag_loadSettings.h>
 #include <util/dag_oaHashNameMap.h>
+#include <daECS/core/event.h>
 
 class DataBlock;
+
+// Fired synchronously on every settings [re]load right after the game defaults blk is loaded,
+// but before user config / command line are applied: overrides merged here (dgs_apply_config_blk)
+// become defaults that explicit user settings still win over.
+ECS_BROADCAST_EVENT_TYPE(EventOnSettingsLoaded)
 
 String get_config_filename();
 

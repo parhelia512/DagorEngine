@@ -34,6 +34,7 @@ protected:
   AliasMap mAliases;
   key_t currentKey = 0;
   resid_t lastMResId = Helper<ManagedTex>::BAD_ID;
+  uint32_t lastResetGeneration = 0;
   BaseTexture *originalTexture = nullptr;
 
   void swap(ResizableManagedTex &other)
@@ -42,11 +43,13 @@ protected:
     eastl::swap(mAliases, other.mAliases);
     eastl::swap(currentKey, other.currentKey);
     eastl::swap(lastMResId, other.lastMResId);
+    eastl::swap(lastResetGeneration, other.lastResetGeneration);
     eastl::swap(originalTexture, other.originalTexture);
   }
   ResizableManagedTex() = default;
 
   void alias(int width, int height, int depth, int flags, int levels);
+  void resetAliasCacheIfStale();
 
 public:
   void calcKey();

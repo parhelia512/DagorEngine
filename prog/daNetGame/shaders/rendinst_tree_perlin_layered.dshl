@@ -17,10 +17,6 @@ include "taa_inc.dshl"
 include "tree_gradient_inc.dshl"
 include "unpack_unit_vector_inc.dshl"
 
-// trees above only requires albedo and ao for gbuffer
-int gbuffer_for_treesabove = 0;
-interval gbuffer_for_treesabove : off < 1, on;
-
 float4 prev_world_view_pos;
 
 int has_motion_vectors = 0;
@@ -32,7 +28,6 @@ endmacro
 
 shader rendinst_tree_perlin_layered, rendinst_tree_gradient
 {
-  supports global_const_block;
 
   static int material_pn_triangulation = 0 no_warnings;
   interval material_pn_triangulation : off < 1, displacement < 2, smoothing_only;
@@ -200,7 +195,10 @@ shader rendinst_tree_perlin_layered, rendinst_tree_gradient
 
 
   macro FILL_CURRENT_GBUFFER_LAYERED()
-    USE_CHARACTER_MICRODETAIL()
+    if (shader == rendinst_tree_perlin_layered)
+    {
+      USE_CHARACTER_MICRODETAIL()
+    }
     if (shader == rendinst_tree_gradient)
     {
       USE_TREE_GRADIENT(ps)
@@ -261,7 +259,7 @@ shader rendinst_tree_perlin_layered, rendinst_tree_gradient
           float detail1 = get_diffuse_tex1().SampleLevel(smp, tc, mipLevel).a;
           float detail2 = get_diffuse_tex2().SampleLevel(smp, tc, mipLevel).a;
           float3 initialHeight = float3(detail0, detail1, detail2);
-          float3 invertedHeight = get_invert_heights().xyz ? 1 - initialHeight : initialHeight;
+          float3 invertedHeight = select(get_invert_heights().xyz != 0, 1 - initialHeight, initialHeight);
           float3 weights = get_blending_weights_for_parallax(userData.startWeights, invertedHeight);
           return dot(initialHeight, weights * userData.influence);
         }
@@ -321,7 +319,7 @@ shader rendinst_tree_perlin_layered, rendinst_tree_gradient
         ##else
           half3 initialHeight = half3(height, height, height);
         ##endif
-        initialHeight = get_invert_heights().xyz ? 1-initialHeight : initialHeight;
+        initialHeight = select(get_invert_heights().xyz != 0, 1-initialHeight, initialHeight);
         height14 = initialHeight*weights+weights*0.0001;
         half invHeightsSum;
         //height14 = initialHeight+weights*1.5;
@@ -797,14 +795,7 @@ shader rendinst_tree_perlin_layered, rendinst_tree_gradient
   else
   {
     USE_PIXEL_TANGENT_SPACE()
-    if (gbuffer_for_treesabove == off)
-    {
-      WRITE_GBUFFER()
-    }
-    else
-    {
-      WRITE_GBUFFER_ALBEDO_AO()
-    }
+    WRITE_GBUFFER()
     DEFAULT_VERTEX_SHADER_LAYERED()
 
     if (rendinst_render_pass != rendinst_render_pass_depth)
@@ -980,7 +971,7 @@ shader rendinst_tree_perlin_layered, rendinst_tree_gradient
           half3 initialHeight = half3(packedNormalTexture.b, packedNormalTexture.b, packedNormalTexture.b);
           ##endif
 
-          half3 invertedHeight = get_invert_heights().xyz ? 1 - initialHeight : initialHeight;
+          half3 invertedHeight = select(get_invert_heights().xyz != 0, 1 - initialHeight, initialHeight);
           weights = get_blending_weights_for_height(weights, invertedHeight);
 
           half3 heightInMeters = rendinst_displacement_mul * initialHeight + rendinst_displacement_offset;

@@ -40,7 +40,7 @@
 
 #include <heightmap/heightmapHandler.h>
 #include "lmeshCulling.inc.cpp"
-#include <gameMath/traceUtils.h>
+#include <rendInst/traceUtils.h>
 #include <EASTL/string.h>
 #include <EASTL/hash_map.h>
 #include <EASTL/type_traits.h>
@@ -94,7 +94,47 @@ static bool read_cell_record(IGenLoad &cb, Tab<uint8_t> &raw)
   DAGOR_CATCH(const IGenLoad::LoadException &exc) { return false; }
 }
 
-// GPU conversion: the entries follow from each cell's landclass count, and the
+G_STATIC_ASSERT(LandMeshManager::DET_TEX_NUM == LAND_WEIGHT_DET_NUM); // the records carry the cell's landclass ids
+
+// The atlas as the exporter packed it: the records, then the texture as a ddsx
+// the driver takes as is - nothing is converted at load. The landclass ids
+// come out of the records for every reader; the texture is only made where
+// something renders it.
+static void load_packed_weight_atlas(IGenLoad &cb, int cells_x, int cells_y, int elem_size, dag::Span<LoadElement> cells,
+  LandWeightAtlas **out_atlas, unsigned weight_tex_cflg)
+{
+  int pagesPerRow = 0, pageCount = 0;
+  SmallTab<uint32_t> records;
+  Tab<uint8_t> ddsx(tmpmem);
+  bool valid = false;
+  DAGOR_TRY
+  {
+    valid = LandWeightAtlas::readPacked(cb, cells_x * cells_y, pagesPerRow, pageCount, records, out_atlas ? &ddsx : nullptr);
+  }
+  DAGOR_CATCH(const IGenLoad::LoadException &exc) { valid = false; }
+  if (!valid) // the cells keep their no-landclass default: nothing of the stream is trusted
+  {
+    logerr("land weight atlas: the level's packed atlas is unreadable, terrain renders without landclass blending");
+    return;
+  }
+  for (int i = 0; i < cells.size(); i++)
+    memcpy(cells[i].detTexIds.data(), LandWeightAtlas::recordLandclassIds(&records[i * LandWeightAtlas::WORDS_PER_CELL]),
+      LandMeshManager::DET_TEX_NUM);
+  if (!out_atlas)
+    return;
+  InPlaceMemLoadCB mcrd(ddsx.data(), ddsx.size());
+  Texture *tex = d3d::create_ddsx_tex(mcrd, TEXCF_RGB | weight_tex_cflg, 0, 1, "land_weight_atlas");
+  if (!tex)
+    logerr("land weight atlas: this driver cannot create the level's atlas texture, terrain renders without landclass blending");
+  *out_atlas =
+    tex ? LandWeightAtlas::createLoaded(cells_x, cells_y, elem_size, pagesPerRow, pageCount, eastl::move(records), tex) : nullptr;
+  if (*out_atlas)
+  {
+    int w = 0, h = 0;
+    (*out_atlas)->getAtlasSize(w, h);
+    debug("land weight atlas: %dx%d cells, %d pages in %dx%d, shipped packed (no conversion)", cells_x, cells_y, pageCount, w, h);
+  }
+}
 
 void LandMeshManager::DetailMap::load(IGenLoad &cb, int base_ofs, bool tools_internal, LandWeightAtlas **out_atlas,
   unsigned weight_tex_cflg)
@@ -120,6 +160,13 @@ void LandMeshManager::DetailMap::load(IGenLoad &cb, int base_ofs, bool tools_int
     return;
   }
 
+  if (texSize == LandWeightAtlas::PACKED_TEX_SIZE) // the level ships the atlas packed, no per-cell weight textures
+  {
+    load_packed_weight_atlas(cb, sizeX, sizeY, texElemSize, make_span(cells), out_atlas, weight_tex_cflg);
+    return;
+  }
+
+  // legacy per-cell weight textures, converted here until every location is re-exported
   SmallTab<int, MidmemAlloc> offsets;
   clear_and_resize(offsets, sizeX * sizeY);
   cb.readTabData(offsets);
@@ -1218,11 +1265,15 @@ bool LandMeshManager::loadDump(IGenLoad &loadCb, IMemAlloc *rayTracerAllocator, 
         if (zcrd_p)
         {
           landTracer = new land_tracer_t;
+          const int64_t reft = ref_time_ticks();
           // non-fatal decoders report an error the same way as a clean end: require the explicit
           // completion state (last zstd frame hit its end marker / oodle delivered exactly src_sz)
           if (
             landTracer->load(*zcrd_p) && (!zstd_p || zstd_p->isFrameFinished()) && (!oodle_p || oodle_p->decodedBytes() == oodleSrcSz))
+          {
             ltLoaded = true;
+            debug("loaded LTS4 land tracer in %d us: %dK", get_time_usec(reft), int(landTracer->dataSize() >> 10));
+          }
           else
           {
             logwarn("failed to load LTS4 land tracer from '%s', level continues without a land tracer", loadCb.getTargetName());
@@ -1329,13 +1380,14 @@ void LandMeshManager::initHmapCullingState()
   debug("load hmapHandler %@ %@", cullingState.exclBox, getCellOrigin());
 }
 
-bool LandMeshManager::loadHeightmapDump(IGenLoad &loadCb, bool load_render_data, float water_level, float shore_error_meters)
+bool LandMeshManager::loadHeightmapDump(IGenLoad &loadCb, bool load_render_data, float water_level, float shore_error_meters,
+  int metrics_min_calc_level, int metrics_max_calc_level)
 {
   del_it(hmapHandler);
   auto h = new HeightmapHandler;
   if (load_render_data)
     h->init();
-  if (!h->loadDump(loadCb, load_render_data, water_level, shore_error_meters))
+  if (!h->loadDump(loadCb, load_render_data, water_level, shore_error_meters, metrics_min_calc_level, metrics_max_calc_level))
   {
     del_it(h);
     return false;

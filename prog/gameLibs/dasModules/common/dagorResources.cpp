@@ -44,6 +44,12 @@ public:
     das::addConstant(*this, "AnimBnlGameResClassId", AnimBnlGameResClassId);
     das::addConstant(*this, "AnimGraphGameResClassId", AnimGraphGameResClassId);
 
+    das::addExtern<DAS_BIND_FUN(bind_dascript::get_game_resource_ex)>(*this, lib, "get_game_resource_ex",
+      das::SideEffects::invokeAndAccessExternal, "bind_dascript::get_game_resource_ex");
+    das::addExtern<DAS_BIND_FUN(release_game_resource_ex)>(*this, lib, "release_game_resource_ex", das::SideEffects::accessExternal,
+      "release_game_resource_ex");
+    das::addExtern<DAS_BIND_FUN(bind_dascript::iterate_gameres_names_by_class)>(*this, lib, "iterate_gameres_names_by_class",
+      das::SideEffects::accessExternal, "bind_dascript::iterate_gameres_names_by_class");
     das::addExtern<DAS_BIND_FUN(bind_dascript::get_game_resource_name)>(*this, lib, "get_game_resource_name",
       das::SideEffects::accessExternal, "bind_dascript::get_game_resource_name");
     das::addExtern<DAS_BIND_FUN(find_gameres_factory)>(*this, lib, "find_gameres_factory", das::SideEffects::accessExternal,

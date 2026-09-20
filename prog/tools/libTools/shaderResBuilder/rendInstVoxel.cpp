@@ -20,6 +20,7 @@
 #include <gameMath/quantization.h>
 #include <dag_noise/dag_uint_noise.h>
 #include <osApiWrappers/dag_files.h>
+#include <libTools/voxel/voxelBitmap.h>
 
 
 extern bool shadermeshbuilder_strip_d3dres;
@@ -175,7 +176,7 @@ bool RenderableInstanceLodsResSrc::addVoxelLod(int first_mip, int num_mips, real
   lod.range = range;
   lod.firstVoxelMip = first_mip;
   lod.numVoxelMips = num_mips;
-  addMeshNode(lod, &node, &node, mat_gather, nullptr);
+  addMeshNode(lodId, lod, &node, &node, mat_gather);
   if (shadermeshbuilder_strip_d3dres)
     return true;
 
@@ -792,7 +793,7 @@ bool RenderableInstanceLodsResSrc::buildVoxelMips(const DataBlock &blk, const Da
   for (int iterations = 32; iterations > 0; iterations--)
   {
     const double srcScale = voxelSize / cache->voxelSize;
-    const IPoint3 rawSize = ipoint3(ceil(point3(DPoint3::xyz(cache->ibbox.width()) / srcScale)));
+    const IPoint3 rawSize = max(ipoint3(ceil(point3(DPoint3::xyz(cache->ibbox.width()) / srcScale))), IPoint3::ONE);
     if (!voxelMips.empty() and max(rawSize.x, max(rawSize.y, rawSize.z)) < 4)
       break;
 
@@ -928,6 +929,32 @@ bool RenderableInstanceLodsResSrc::buildVoxelMips(const DataBlock &blk, const Da
       }
       debug("%d semi-solid voxels, %.2f total coverage, added %d solid voxels", semiVoxels.size(), double(totalCover) / srcPerVoxelSq,
         numSolidAdded);
+    }
+
+    // fill fully enclosed voxels
+    {
+      static_assert(sizeof(Bitarraybits) == 4);
+      VoxelBitmap bitmap(numBlocks << 2);
+      for (uint32_t y = 0, i = 0; y < bitmap.size.y; y++)
+        for (uint32_t z = 0; z < bitmap.size.z; z++)
+          for (uint32_t x = 0; x < bitmap.size.x; x++, i++)
+            bitmap.map.set(i, !mip.isSolid(IPoint3(x, y, z)));
+
+      bitmap.clearOutside();
+
+      for (uint32_t by = 0, bi = 0; by < numBlocks.y; by++)
+        for (uint32_t bz = 0; bz < numBlocks.z; bz++)
+          for (uint32_t bx = 0; bx < numBlocks.x; bx++, bi++)
+          {
+            uint64_t bits = 0;
+            uint64_t mask = 1;
+            for (uint32_t ly = 0; ly < 4; ly++)
+              for (uint32_t lz = 0; lz < 4; lz++)
+                for (uint32_t lx = 0; lx < 4; lx++, mask <<= 1)
+                  if (bitmap.get((bx << 2) | lx, (by << 2) | ly, (bz << 2) | lz))
+                    bits |= mask;
+            mip.bitmap[bi] |= bits;
+          }
     }
 
     // build surface blocks

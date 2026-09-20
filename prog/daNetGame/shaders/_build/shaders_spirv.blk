@@ -15,6 +15,7 @@ source
   file:t = "../resolve_thin_g_buffer.dshl"
 
   include "../../../gameLibs/daGI2/shaders/shadersList.blk"
+  include "../../../gameLibs/voxelizedMedia/_shaders.blk"
   include "../../../gameLibs/daSDF/shaders/daSDFList.blk"
   include shadersList.blk
   include shadersListForTools.blk

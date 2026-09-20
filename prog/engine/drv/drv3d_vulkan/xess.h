@@ -97,7 +97,6 @@ public:
   void enableFrameGeneration(bool enable);
   void suppressFrameGeneration(bool suppress);
   void doScheduleGeneratedFrames(const XessFgParamsVulkan &fgArgs, const XessFgParamsVulkanResourceStates &resourceStates);
-  int getPresentedFrameCount();
   uint64_t getMemoryUsage() const;
 
   const eastl::vector<eastl::string> &getRequiredDeviceExtensions() const;

@@ -135,7 +135,7 @@ static ecs::EntitySystemDesc adaptation_after_device_reset_es_es_desc
   empty_span(),
   empty_span(),
   empty_span(),
-  ecs::EventSetBuilder<AfterDeviceReset>::build(),
+  ecs::EventSetBuilder<EventAfterDeviceReset>::build(),
   0
 ,"render");
 static constexpr ecs::ComponentDesc adaptation_update_time_es_comps[] =
@@ -252,7 +252,7 @@ inline void get_adaptation_center_weight_override_ecs_query(ecs::EntityManager &
 }
 static constexpr ecs::ComponentDesc adaptation_node_init_ecs_query_comps[] =
 {
-//start of 8 rw components at [0]
+//start of 9 rw components at [0]
   {ECS_HASH("adaptation__manager"), ecs::ComponentTypeInfo<AdaptationManager>()},
   {ECS_HASH("adaptation__update_readback_exposure_node"), ecs::ComponentTypeInfo<dafg::NodeHandle>()},
   {ECS_HASH("adaptation__create_histogram_node"), ecs::ComponentTypeInfo<dafg::NodeHandle>()},
@@ -260,12 +260,13 @@ static constexpr ecs::ComponentDesc adaptation_node_init_ecs_query_comps[] =
   {ECS_HASH("adaptation__gen_histogram_node"), ecs::ComponentTypeInfo<resource_slot::NodeHandleWithSlotsAccess>()},
   {ECS_HASH("adaptation__accumulate_histogram"), ecs::ComponentTypeInfo<dafg::NodeHandle>()},
   {ECS_HASH("adaptation__adapt_exposure_node"), ecs::ComponentTypeInfo<dafg::NodeHandle>()},
-  {ECS_HASH("adaptation__set_exposure_node"), ecs::ComponentTypeInfo<dafg::NodeHandle>()}
+  {ECS_HASH("adaptation__set_exposure_node"), ecs::ComponentTypeInfo<dafg::NodeHandle>()},
+  {ECS_HASH("adaptation__register_exposure_node"), ecs::ComponentTypeInfo<dafg::NodeHandle>()}
 };
 static ecs::CompileTimeQueryDesc adaptation_node_init_ecs_query_desc
 (
   "adaptation_node_init_ecs_query",
-  make_span(adaptation_node_init_ecs_query_comps+0, 8)/*rw*/,
+  make_span(adaptation_node_init_ecs_query_comps+0, 9)/*rw*/,
   empty_span(),
   empty_span(),
   empty_span());
@@ -286,6 +287,7 @@ inline void adaptation_node_init_ecs_query(ecs::EntityManager &manager, ecs::Ent
             , ECS_RW_COMP(adaptation_node_init_ecs_query_comps, "adaptation__accumulate_histogram", dafg::NodeHandle)
             , ECS_RW_COMP(adaptation_node_init_ecs_query_comps, "adaptation__adapt_exposure_node", dafg::NodeHandle)
             , ECS_RW_COMP(adaptation_node_init_ecs_query_comps, "adaptation__set_exposure_node", dafg::NodeHandle)
+            , ECS_RW_COMP(adaptation_node_init_ecs_query_comps, "adaptation__register_exposure_node", dafg::NodeHandle)
             );
 
         }

@@ -34,6 +34,13 @@ typedef eastl::fixed_function<64, UpdateGiQualityStatus(int clip_no, const BBox3
   rasterize_sdf_radiance_cb;
 typedef eastl::fixed_function<64, UpdateGiQualityStatus(const BBox3 &box, float voxelSize, uintptr_t &handle)> rasterize_albedo_cb;
 
+// called once per media scene refill region so the project can fill the region's initial
+// media (dagi_get_project_initial_media samples it in the refill cs). daGI2 stays unaware of
+// what fills it; a project sourcing baked media volumes forwards to DaGIMediaVolumes.
+// the box is half open, [min, max): it comes from a voxel coord range whose width the refill
+// dispatches, so the max corner is not sampled. covering more than the box is safe, less is not
+typedef eastl::fixed_function<64, void(const BBox3 &region, float voxelSize)> prepare_initial_media_cb;
+
 struct DaGISettings
 {
   struct VolumetricGISettings
@@ -177,10 +184,22 @@ public:
   virtual void requestUpdatePosition(const request_sdf_radiance_data_cb &sdf_cb, const cancel_sdf_radiance_data_cb &cancel_sdf_cb,
     const request_albedo_data_cb &albedo_cb, const cancel_albedo_data_cb &cancel_albedo_cb) = 0;
   virtual bool requiresUpdate() const = 0;
-  virtual void updatePosition(const rasterize_sdf_radiance_cb &sdf_cb, const rasterize_albedo_cb &albedo_cb) = 0;
   virtual void updateConstants() = 0;
+  virtual void updatePosition(const rasterize_sdf_radiance_cb &sdf_cb, const rasterize_albedo_cb &albedo_cb,
+    const prepare_initial_media_cb &prepare_media_cb = {}) = 0;
+  // the project's initial media settled on new content (a baked media volume wave finished):
+  // this dirties every media scene clip. updatePosition then refills at most one clip per
+  // frame, coarsest first, so the finest camera near clip lands several frames later (3 clips
+  // by default). unlike invalidateAll it does not make requiresUpdate true by itself, so it
+  // belongs on the frame path that already drives updatePosition. when it settled is the
+  // source's business
+  virtual void invalidateInitialMedia() = 0;
   virtual void invalidateBox(const BBox3 &box) = 0;
   virtual void invalidateRadianceFrustum(const Frustum &frustum) = 0;
+  // full GI history invalidation (teleport, level milestone): every scene refills. daGI2 owns
+  // no baked content, so this and afterReset reset the same history; a project keeping its own
+  // GPU content (baked media volumes) restores it on afterReset, where texture contents are lost
+  virtual void invalidateAll() = 0;
   enum class RadianceUpdate
   {
     Off,

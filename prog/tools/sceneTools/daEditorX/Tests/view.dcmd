@@ -57,4 +57,4 @@ wait.time 500
 editor.command Main.ToggleTheme
 wait.time 500
 
-app.terminate 0
+exit no

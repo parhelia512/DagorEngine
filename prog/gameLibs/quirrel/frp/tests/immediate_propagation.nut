@@ -2,9 +2,9 @@ from "frp" import Watched, Computed, update_deferred
 
 // Test 1: Immediate Watched -> Computed updates immediately
 let w = Watched(1)
-w.setDeferred(false)
+w.setImmediate(true)
 let c = Computed(@() w.get() * 2)
-c.setDeferred(false)
+c.setImmediate(true)
 update_deferred()
 println($"initial: {c.get()}")
 
@@ -24,11 +24,11 @@ println($"imm sub count: {immSubCount}")
 
 // Test 3: Chained immediate
 let x = Watched(1)
-x.setDeferred(false)
+x.setImmediate(true)
 let step1 = Computed(@() x.get() + 1)
-step1.setDeferred(false)
+step1.setImmediate(true)
 let step2 = Computed(@() step1.get() * 2)
-step2.setDeferred(false)
+step2.setImmediate(true)
 update_deferred()
 println($"chain initial: {step2.get()}")
 
@@ -37,7 +37,7 @@ println($"chain after x=4: {step2.get()}")
 
 // Test 4: Mix immediate watched with deferred computed
 let iw = Watched(1)
-iw.setDeferred(false)
+iw.setImmediate(true)
 let dc = Computed(@() iw.get() * 3)
 // dc is deferred by default
 update_deferred()

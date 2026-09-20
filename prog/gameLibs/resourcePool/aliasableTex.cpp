@@ -1,6 +1,7 @@
 // Copyright (C) Gaijin Games KFT.  All rights reserved.
 
 #include <drv/3d/dag_driverDesc.h>
+#include <drv/3d/dag_resetDevice.h>
 #include <resourcePool/aliasableTex.h>
 #include <debug/dag_debug.h>
 #include <EASTL/fixed_string.h>
@@ -49,6 +50,21 @@ void AliasableManagedTex2D::recreate(int width, int height, int flags, int level
   del_d3dres(previous);
 }
 
+// the alias cache is only valid for the device generation it was built on: a device
+// recovery recreates every texture independently, so old aliases no longer share memory.
+// The counter also advances on mode resets, where dropping the cache only costs a re-alias
+void AliasableManagedTex2D::resetAliasCacheIfStale()
+{
+  const uint32_t generation = get_d3d_reset_counter();
+  if (lastResId == mResId && lastResetGeneration == generation)
+    return;
+
+  aliasesMap.clear();
+  calcKey();
+  originalTexture = mResource;
+  lastResetGeneration = generation;
+}
+
 using namespace aliasable_detail;
 
 static UniqueBaseTex extract_existing(key_t key, AliasableManagedTex2D::AliasMap &aliases)
@@ -66,12 +82,7 @@ static UniqueBaseTex extract_existing(key_t key, AliasableManagedTex2D::AliasMap
 
 void AliasableManagedTex2D::alias(int width, int height, int flags, int levels)
 {
-  if (lastResId != mResId)
-  {
-    aliasesMap.clear();
-    calcKey();
-    originalTexture = mResource;
-  }
+  resetAliasCacheIfStale();
 
   const key_t newKey = make_key(width, height, flags, levels);
   if (currentKey == newKey)
@@ -116,12 +127,7 @@ void AliasableManagedTex2D::alias(int width, int height, int flags, int levels)
 
 void AliasableManagedTex2D::resize(int width, int height)
 {
-  if (lastResId != mResId)
-  {
-    aliasesMap.clear();
-    calcKey();
-    originalTexture = mResource;
-  }
+  resetAliasCacheIfStale();
 
   TextureInfo tex_info;
   originalTexture->getinfo(tex_info);

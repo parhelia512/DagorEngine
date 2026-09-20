@@ -3,7 +3,6 @@
 
 #include "shaderSave.h"
 #include "shlexterm.h"
-#include "variablesMerger.h"
 #include <generic/dag_tab.h>
 #include "nameMap.h"
 #include "hlslRegisters.h"
@@ -83,7 +82,6 @@ struct NamedConstBlock
 
   BINDUMP_BEGIN_NON_SERIALIZABLE();
   RegisterProperties pixelProps, vertexProps;
-  ShaderStateBlock *globConstBlk = nullptr;
   const shc::RefinedBlockLayout *mRefinedBlockLayout = nullptr;
   bool multidrawCbuf = false;
 
@@ -92,7 +90,7 @@ struct NamedConstBlock
   eastl::array<HlslRegAllocator, HLSL_RSPACE_COUNT> pixelOrComputeRegAllocators =
     make_default_hlsl_reg_allocators(shc::config().hlslMaximumPsfAllowed);
 
-  // Either for global const block (for LEV_GLOBAL_CONST), or static cbuf (for LEV_SHADER)
+  // For static cbuf (for LEV_SHADER)
   HlslRegAllocator bufferedConstsRegAllocator = make_default_cbuf_reg_allocator();
   RegisterProperties bufferedConstProps{};
 
@@ -113,10 +111,6 @@ struct NamedConstBlock
   // Cached bottom-up at block construction: does this block's HLSL decl subtree contain an @bindless* const, per stage group?
   eastl::bitset<size_t(StageGroup::Count)> explicitBindlessSubtree;
 
-  // Same idea for the global-const-block role: does this block's bufferedConstProps (the cbuffer
-  // emitted by buildGlobalConstBufHlslDecl) contain an @bindless* const? Read off globConstBlk.
-  bool bufferedConstsHaveExplicitBindless = false;
-
   BINDUMP_END_NON_SERIALIZABLE();
 
   SerializableTab<bindump::Address<ShaderStateBlock>> suppBlk;
@@ -124,7 +118,7 @@ struct NamedConstBlock
   NamedConstBlock() : suppBlk(midmem) {}
 
   CstHandle addConst(int stage, const char *name, Terminal *decl_term, Lexer &lexer, HlslRegisterSpace reg_space, int sz,
-    int hardcoded_reg, bool is_dynamic, bool is_global_const_block);
+    int hardcoded_reg, bool is_dynamic);
 
   // @TODO: error message
   bool initSlotTextureSuballocators(int vs_tex_count, int vs_smp_count, int ps_tex_count, int ps_smp_count, Lexer &lexer);
@@ -138,14 +132,13 @@ struct NamedConstBlock
 
   void addHlslDecl(CstHandle hnd, String &&hlsl_decl, String &&hlsl_postfix);
 
-  void patchHlsl(String &src, ShaderStage stage, const CompiledPreshader &preshader, Lexer &lexer, int &max_const_no_used,
+  void patchHlsl(String &src, ShaderStage stage, const CompiledPreshader &preshader, Lexer &lexer, int &implicit_cbuf_size,
     eastl::string_view hw_defines, bool uses_dual_source_blending);
 
   CryptoHash getDigest(ShaderStage stage, const CompiledPreshader &preshader) const;
 
   void buildDrawcallIdHlslDecl(String &out_text) const;
   void buildStaticConstBufHlslDecl(String &out_text, const CompiledPreshader &preshader) const;
-  void buildGlobalConstBufHlslDecl(String &out_text) const;
   void buildRefinedBlockBufHlslDecl(String &out_text, ShaderStage stage) const;
   void buildHlslDeclText(String &out_text, ShaderStage stage) const;
 
@@ -193,7 +186,6 @@ enum class ShaderBlockLevel
   SCENE,
   OBJECT,
   SHADER,
-  GLOBAL_CONST,
 
   UNDEFINED = -1
 };
@@ -303,8 +295,6 @@ inline auto NamedConstBlock::makeInfoProvider(const RegisterProperties NamedCons
     auto getInfoForBlockRecursive = [&](const ShaderStateBlock *blk, auto &&self) -> eastl::optional<AllocatedRegInfo> {
       if (!blk)
         return eastl::nullopt;
-      if (auto info = self(blk->shConst.globConstBlk, self))
-        return eastl::move(*info);
       for (const auto &sblk : blk->shConst.suppBlk)
         if (auto info = self(sblk, self))
           return eastl::move(*info);

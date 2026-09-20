@@ -9,11 +9,12 @@
 #include <osApiWrappers/dag_localConv.h>
 #include <string.h>
 #include <util/dag_stdint.h>
+#include <util/dag_compilerDefs.h>
 
 
 /// Fast string map (add string/strId, get strId by string)
 template <typename T, intptr_t invalidId = -1>
-class FastStrMapT
+class DAGOR_WARN_IF_UNUSED FastStrMapT
 {
 public:
   typedef T IdType;

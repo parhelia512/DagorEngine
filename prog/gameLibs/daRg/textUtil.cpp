@@ -186,6 +186,7 @@ void fill_textarea_format_params(const Element *elem, const Point2 &elem_size, t
   params.parSpacing = props.getFloat(elem->csk->parSpacing, 0);
   params.indent = props.getFloat(elem->csk->indent, 0);
   params.hangingIndent = props.getFloat(elem->csk->hangingIndent, 0);
+  params.breakLongWords = props.getBool(elem->csk->breakLongWords, true);
   params.maxWidth = calc_textarea_max_width(elem, elem_size);
 }
 

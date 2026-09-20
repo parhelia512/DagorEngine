@@ -9,6 +9,7 @@
 #include <imgui/implot.h>
 #include <imgui/misc/freetype/imgui_freetype.h>
 
+#include <EASTL/string.h>
 #include <EASTL/unique_ptr.h>
 #include <EASTL/vector.h>
 
@@ -46,6 +47,7 @@ struct CustomFont
   String fontFilePath;
   ImFont *font;
   int fontSize;
+  unsigned int extraLoaderFlags;
   eastl::unique_ptr<ImFontConfig> fontConfig;
 };
 
@@ -124,9 +126,6 @@ static float get_default_scale()
 
 void imgui_apply_fonts_from_blk()
 {
-  float imguiScale = imgui_blk->getReal("imgui_scale", get_default_scale());
-  imguiScale = clamp(imguiScale, MIN_SCALE, MAX_SCALE);
-
   unsigned int fontBuilderFlags = 0;
   if (imgui_blk->getBool("imgui_light_font_hinting", false))
     fontBuilderFlags = ImGuiFreeTypeLoaderFlags_LightHinting;
@@ -134,19 +133,19 @@ void imgui_apply_fonts_from_blk()
   requested_font_cfg = eastl::make_unique<ImFontConfig>();
   requested_font_cfg->OversampleH = requested_font_cfg->OversampleV = 1;
   requested_font_cfg->PixelSnapH = true; // some fonts are blurry without this
-  requested_font_cfg->SizePixels = floor(imgui_blk->getReal("imgui_font_size", 13.0f) * imguiScale);
+  requested_font_cfg->SizePixels = floor(imgui_blk->getReal("imgui_font_size", 13.0f));
   requested_font_cfg->FontLoaderFlags = fontBuilderFlags;
 
   requested_bold_font_cfg = eastl::make_unique<ImFontConfig>();
   requested_bold_font_cfg->OversampleH = requested_bold_font_cfg->OversampleV = 1;
   requested_bold_font_cfg->PixelSnapH = true; // some fonts are blurry without this
-  requested_bold_font_cfg->SizePixels = floor(imgui_blk->getReal("imgui_bold_font_size", 13.0f) * imguiScale);
+  requested_bold_font_cfg->SizePixels = floor(imgui_blk->getReal("imgui_bold_font_size", 13.0f));
   requested_bold_font_cfg->FontLoaderFlags = fontBuilderFlags;
 
   requested_mono_font_cfg = eastl::make_unique<ImFontConfig>();
   requested_mono_font_cfg->OversampleH = requested_mono_font_cfg->OversampleV = 1;
   requested_mono_font_cfg->PixelSnapH = true; // some fonts are blurry without this
-  requested_mono_font_cfg->SizePixels = floor(imgui_blk->getReal("imgui_mono_font_size", 15.0f) * imguiScale);
+  requested_mono_font_cfg->SizePixels = floor(imgui_blk->getReal("imgui_mono_font_size", 15.0f));
   requested_mono_font_cfg->FontLoaderFlags = fontBuilderFlags;
 
   for (CustomFont &customFont : custom_fonts)
@@ -154,8 +153,8 @@ void imgui_apply_fonts_from_blk()
     customFont.fontConfig = eastl::make_unique<ImFontConfig>();
     customFont.fontConfig->OversampleH = customFont.fontConfig->OversampleV = 1;
     customFont.fontConfig->PixelSnapH = true; // some fonts are blurry without this
-    customFont.fontConfig->SizePixels = floor(customFont.fontSize * imguiScale);
-    customFont.fontConfig->FontLoaderFlags = fontBuilderFlags;
+    customFont.fontConfig->SizePixels = floor(customFont.fontSize);
+    customFont.fontConfig->FontLoaderFlags = fontBuilderFlags | customFont.extraLoaderFlags;
   }
 }
 
@@ -166,6 +165,7 @@ void imgui_apply_style_from_blk()
 
   ImGuiStyle scaledStyle;
   scaledStyle.ScaleAllSizes(imguiScale);
+  scaledStyle.FontScaleMain = imguiScale;
   ImGui::GetStyle() = scaledStyle;
   ImGui::StyleColorsDark(); // TODO: Apply custom style here if we ever wish to support it. Right now we use Dark style,
                             //       which is also the default.
@@ -175,7 +175,7 @@ void imgui_apply_style_from_blk()
   imgui_apply_fonts_from_blk();
 }
 
-void imgui_add_custom_font(const char *name, const char *font_file_path, int font_size)
+void imgui_add_custom_font(const char *name, const char *font_file_path, int font_size, unsigned int extra_loader_flags)
 {
   G_ASSERT(name);
   G_ASSERT(font_file_path);
@@ -187,6 +187,7 @@ void imgui_add_custom_font(const char *name, const char *font_file_path, int fon
   customFont.name = name;
   customFont.fontFilePath = font_file_path;
   customFont.fontSize = font_size;
+  customFont.extraLoaderFlags = extra_loader_flags;
 }
 
 ImFont *imgui_get_custom_font(const char *name)
@@ -640,6 +641,25 @@ void imgui_window_set_visible(const char *, const char *name, const bool visible
     save_window_opened(name, visible);
 }
 
+// Deferred focus for ImGuiFunctionQueue windows: SetNextWindowFocus before Begin.
+// Mid-draw callers (after the target already began this pass) arm the next pass only.
+// Main thread only: request_focus writers and perform_registered reader/clear; no lock.
+static eastl::string imgui_window_focus_name;
+static int imgui_window_focus_pass = 0;
+static int imgui_window_focus_arm_pass = -1;
+static bool imgui_window_focus_in_perform = false;
+
+void imgui_window_request_focus(const char *group, const char *name)
+{
+  if (!name || !*name)
+    return;
+  // Skip save_blk when already open; focus still arms below.
+  if (!imgui_window_is_visible(group, name))
+    imgui_window_set_visible(group, name, true);
+  imgui_window_focus_name = name;
+  imgui_window_focus_arm_pass = imgui_window_focus_in_perform ? imgui_window_focus_pass + 1 : imgui_window_focus_pass;
+}
+
 void imgui_cascade_windows()
 {
   if (!imgui_init_on_demand())
@@ -1031,6 +1051,9 @@ void imgui_perform_registered(bool with_menu_bar)
 
   ImGui::DockSpaceOverViewport(0, nullptr, ImGuiDockNodeFlags_PassthruCentralNode);
 
+  imgui_window_focus_in_perform = true;
+  const int focusPass = imgui_window_focus_pass;
+
   // Execute window functions
   for (ImGuiFunctionQueue *q = ImGuiFunctionQueue::windowHead; q; q = q->next)
   {
@@ -1039,6 +1062,13 @@ void imgui_perform_registered(bool with_menu_bar)
     {
       G_ASSERTF_CONTINUE(q->function, "Registered ImGui window function is null: %s/%s", q->group, q->name);
       bool oldOpened = true; // q->opened == true here
+      if (!imgui_window_focus_name.empty() && focusPass >= imgui_window_focus_arm_pass && imgui_window_focus_name == q->name)
+      {
+        ImGui::SetNextWindowFocus();
+        ImGui::SetNextWindowCollapsed(false);
+        imgui_window_focus_name.clear();
+        imgui_window_focus_arm_pass = -1;
+      }
       const bool renderContents = ImGui::Begin(q->name, &q->opened, q->flags);
       if (q->opened != oldOpened)
         save_window_opened(q->name, q->opened);
@@ -1047,6 +1077,15 @@ void imgui_perform_registered(bool with_menu_bar)
       ImGui::End();
     }
   }
+
+  // Drop if the eligible pass finished without a matching opened window.
+  if (!imgui_window_focus_name.empty() && focusPass >= imgui_window_focus_arm_pass)
+  {
+    imgui_window_focus_name.clear();
+    imgui_window_focus_arm_pass = -1;
+  }
+  ++imgui_window_focus_pass;
+  imgui_window_focus_in_perform = false;
 }
 
 ImGuiFunctionQueue *ImGuiFunctionQueue::windowHead = nullptr;

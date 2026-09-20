@@ -261,7 +261,7 @@ public:
 
   void initEmpty()
   {
-    header.maxConstantCount = 0;
+    header.implicitCbufRegCount = 0;
     header.tRegisterUseMask = 0;
     header.uRegisterUseMask = 0;
     header.bRegisterUseMask = 0;

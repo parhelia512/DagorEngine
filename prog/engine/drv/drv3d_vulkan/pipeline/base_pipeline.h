@@ -17,6 +17,9 @@
 namespace drv3d_vulkan
 {
 
+// the VS/FS push constant range split below is the spirv ABI value baked by the shader compiler
+static_assert(MAX_IMMEDIATE_CONST_WORDS == spirv::MAX_IMMEDIATE_CONST_WORDS);
+
 template <template <typename> class BaseShaderSet, typename ShaderConfig>
 class BasePipelineLayout
 {

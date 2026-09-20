@@ -1246,10 +1246,11 @@ namespace das {
             auto & [fileName, fileMtime, program, thisModule] = parsedModule; // parsedModule is tuple<string, int64_t, ProgramPtr, Module *>
             *serializer_write << fileMtime;
             *serializer_write << const_cast<string &>(fileName);
-            if ( program->thisModule && program->thisModule->name.empty() )  {
+            if ( program->thisModule ) {
+                // the program owns its module (entry script) - write as is, never mutate it
                 serializer_write->serializeProgram(program, libGroup);
             } else {
-                // set thisModule to program
+                // module was moved into the group by addNewModules - reattach for the write
                 program->thisModule.reset(thisModule);
                 serializer_write->serializeProgram(program, libGroup);
                 program->thisModule.release();

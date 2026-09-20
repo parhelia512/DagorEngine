@@ -190,7 +190,7 @@ protected:
     const uint8_t *store = nullptr;
     if (countValue > 0)
     {
-      data_handler(store, countValue, [this](auto count) { return allocateExtraStore<uint8_t>(count); });
+      data_handler(store, countValue, [this](auto count) { return this->allocateExtraStore<uint8_t>(count); });
     }
     mem = store;
     count = static_cast<U>(countValue);
@@ -432,7 +432,7 @@ public:
   void serializeData(D3D12_VIEW_INSTANCING_DESC &desc)
   {
     serializeData(desc.Flags);
-    serializeArray(desc.pViewInstanceLocations, desc.ViewInstanceCount, [this](auto &target) { serializeData(target); });
+    serializeArray(desc.pViewInstanceLocations, desc.ViewInstanceCount, [this](auto &target) { this->serializeData(target); });
   }
 
   void serializeData(D3D12_CACHED_PIPELINE_STATE &cache_state)
@@ -442,13 +442,13 @@ public:
 
   void serializeData(D3D12_INPUT_LAYOUT_DESC &desc)
   {
-    serializeArray(desc.pInputElementDescs, desc.NumElements, [this](auto &target) { serializeData(target); });
+    serializeArray(desc.pInputElementDescs, desc.NumElements, [this](auto &target) { this->serializeData(target); });
   }
 
   void serializeData(D3D12_STREAM_OUTPUT_DESC &desc)
   {
-    serializeArray(desc.pSODeclaration, desc.NumEntries, [this](auto &target) { serializeData(target); });
-    serializeArray(desc.pBufferStrides, desc.NumStrides, [this](auto &target) { serializeData(target); });
+    serializeArray(desc.pSODeclaration, desc.NumEntries, [this](auto &target) { this->serializeData(target); });
+    serializeArray(desc.pBufferStrides, desc.NumStrides, [this](auto &target) { this->serializeData(target); });
     serializeData(desc.RasterizedStream);
   }
 

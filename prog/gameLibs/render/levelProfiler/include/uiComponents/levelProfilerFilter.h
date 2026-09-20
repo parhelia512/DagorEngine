@@ -12,6 +12,7 @@ namespace levelprofiler
 using FilterDrawCallback = eastl::function<void()>;
 
 class RIModule;
+class TextureModule;
 struct TextureData;
 
 
@@ -181,6 +182,25 @@ public:
       absoluteMax = default_max_value;
   }
 
+  // Moves the bounds onto freshly collected data. Each side the user did not set follows its new
+  // bound, so no thumb is left off the slider track; a side they did set is kept, because pass()
+  // works against a range wider than the data and clamping would collapse a partly overlapping
+  // range with no way back. Inverted input means nothing in the data is selectable, so it does
+  // nothing at all.
+  void rebind(T new_min_value, T new_max_value)
+  {
+    if (new_min_value > new_max_value)
+      return;
+
+    defaultMin = absoluteMin = new_min_value;
+    defaultMax = absoluteMax = new_max_value;
+
+    if (!useMin)
+      minValue = new_min_value;
+    if (!useMax)
+      maxValue = new_max_value;
+  }
+
   void setRange(T new_min_value, T new_max_value)
   {
     minValue = new_min_value;
@@ -283,12 +303,27 @@ public:
   bool passesAllFilters(const ProfilerString &texture_name, const TextureData &texture_data, const TextureUsage *texture_usage_ptr);
 
   void resetAllFilters();
+  // Recollect counterpart of resetAllFilters: moves the data-derived bounds onto the new data and
+  // keeps every user setting. resetAllFilters stays the explicit "reset filters" action.
+  void rebindFiltersToData();
+
+  // Which filters take their bounds from collected data, and from where. Both resetAllFilters
+  // and rebindFiltersToData drive the same four, so the choice lives in one place.
+  struct DataBounds
+  {
+    int mipMin = 0, mipMax = 0;
+    float sizeMin = 0.0f, sizeMax = 0.0f;
+    int usageMin = 0, usageMax = 0;
+    int instMin = 0, instMax = 0;
+  };
+  DataBounds gatherDataBounds() const;
   void applyFilters();
   bool isColumnFilterActive(ColumnIndex column_index) const;
 
 
-  // Call in UI right after filter creation
-  void setRIModule(RIModule *module_instance);
+  // Both modules come from the owning TextureProfilerUI, which holds them. Call in UI right
+  // after filter creation: every filter path reads one or the other.
+  void setModules(TextureModule *texture_module, RIModule *ri_module);
 
   CheckFilter<ProfilerString> &getFormatFilter() { return formatFilter; }
   CheckFilter<int> &getWidthFilter() { return widthFilter; }
@@ -371,6 +406,9 @@ public:
   LpIncludeExcludeFilter &getTextureUsageFilterComponent() { return textureUsageFilter; }
 
 private:
+  // Both are set once by setModules and stay non-null for the manager's lifetime, so the
+  // filter paths dereference them without checking.
+  TextureModule *textureModule = nullptr;
   RIModule *riModule = nullptr;
   LpIncludeExcludeFilter nameFilter;
   LpIncludeExcludeFilter textureUsageFilter;

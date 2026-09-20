@@ -9,6 +9,7 @@ source
   includePath:t="../"
 
   include "../../../../prog/gameLibs/daGI2/shaders/shadersList.blk"
+  include "../../../../prog/gameLibs/voxelizedMedia/_shaders.blk"
   include shadersList.blk
   include "../../../../prog/samples/commonShaders/shadersList.blk"
 

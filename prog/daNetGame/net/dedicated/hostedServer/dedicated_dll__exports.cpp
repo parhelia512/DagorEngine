@@ -2,6 +2,8 @@
 
 #include "net/dedicated.h"
 #include "net/dedicated/matching_state_data.h"
+#include "net/netEvents.h"
+#include "net/net.h"
 #include <daECS/core/entitySystem.h>
 #include <daECS/core/componentTypes.h>
 #include <daECS/core/internal/performQuery.h>
@@ -13,64 +15,118 @@
 #include <startup/dag_globalSettings.h>
 #include <ioSys/dag_dataBlock.h>
 #include <util/dag_string.h>
-#include <memory/dag_framemem.h>
+#include <memory/dag_memBase.h>
 #include <atomic>
+#include <EASTL/string.h>
+#include "main/hostedServerLauncher.h"
 
 static std::atomic<void (*)()> on_server_loaded_callback{nullptr};
-static std::atomic<bool> auto_fire_server_ready{true};
+// DNG default: scene entities alone. Eden sets Scripts (+ Entities for main-thread net).
+static std::atomic<uint32_t> hosted_ready_required{uint32_t(HostedReadyFlags::Entities)};
+static std::atomic<uint32_t> hosted_ready_got{0};
 
-typedef void(__cdecl *hosted_server_log_forwarder_t)(int level, const char *message, const char *filename, int code_line);
-static std::atomic<hosted_server_log_forwarder_t> log_forwarder{nullptr};
-static debug_log_callback_t prev_hosted_debug_log_cb = nullptr;
-static bool hosted_debug_log_installed = false;
+static std::atomic<void *> log_forwarder{nullptr};
+static std::atomic<bool> expect_dll_override{false};
+static eastl::string dll_his_uid;
 
-static int hosted_server_debug_log_cb(int lev_tag, const char *fmt, const void *arg, int anum, const char *ctx_file, int ctx_line)
+void hosted_server_store_instance_uid(const char *uid) { dll_his_uid = uid ? uid : ""; }
+
+DAG_DLL_EXPORT const char *hosted_server_get_uid()
 {
-  if (hosted_server_log_forwarder_t fwd = log_forwarder.load(std::memory_order_acquire))
+  if (const char *s = ::dgs_get_argv(TEST_LOG_UID_ARG))
+    return s;
+  return dll_his_uid.c_str();
+}
+static debug_log_callback_t prev_log_callback = nullptr;
+static std::atomic<bool> log_callback_armed{false};
+
+void *hosted_server_get_log_forwarder() { return log_forwarder.load(std::memory_order_acquire); }
+
+// Default HIS path: chain prev, then host forwarder (default signature, no Eden).
+static int hosted_server_log_callback(int lev_tag, const char *fmt, const void *arg, int anum, const char *ctx_file, int ctx_line)
+{
+  const int r = prev_log_callback ? prev_log_callback(lev_tag, fmt, arg, anum, ctx_file, ctx_line) : 1;
+  if (r > 0)
   {
-    // Host sink owns console display for the HIS lifetime; do not chain to the
-    // previous callback (would double-emit ERR into logsBuff via console_output_listener).
-    String buf(framemem_ptr());
+    // Logging can arrive from threads without framemem; strmem is always safe.
+    String buf(strmem);
     buf.avprintf(0, fmt, (const DagorSafeArg *)arg, anum);
-    fwd(lev_tag, buf.c_str(), ctx_file ? ctx_file : "", ctx_line);
-    return 1;
+    if (HostedServerLogForwarder fwd = (HostedServerLogForwarder)log_forwarder.load(std::memory_order_acquire))
+      fwd(lev_tag, buf.c_str(), ctx_file, ctx_line);
   }
-  if (prev_hosted_debug_log_cb)
-    return prev_hosted_debug_log_cb(lev_tag, fmt, arg, anum, ctx_file, ctx_line);
-  return 1;
+  return r;
 }
 
-void hosted_server_install_debug_log_forward()
+static void arm_default_log_callback()
 {
-  if (hosted_debug_log_installed)
+  if (log_callback_armed.exchange(true, std::memory_order_acq_rel))
     return;
-  hosted_debug_log_installed = true;
-  prev_hosted_debug_log_cb = debug_set_log_callback(hosted_server_debug_log_cb);
+  prev_log_callback = debug_set_log_callback(&hosted_server_log_callback);
 }
 
-void hosted_server_uninstall_debug_log_forward()
+static void disarm_log_callback()
 {
-  if (!hosted_debug_log_installed)
+  if (!log_callback_armed.exchange(false, std::memory_order_acq_rel))
     return;
-  hosted_debug_log_installed = false;
-  debug_set_log_callback(prev_hosted_debug_log_cb);
-  prev_hosted_debug_log_cb = nullptr;
+  debug_set_log_callback(prev_log_callback);
+  prev_log_callback = nullptr;
 }
 
-DAG_DLL_EXPORT void hosted_server_set_log_forwarder(hosted_server_log_forwarder_t cb)
+void hosted_server_arm_log_mirror_callback()
 {
-  log_forwarder.store(cb, std::memory_order_release);
+  if (!log_forwarder.load(std::memory_order_acquire))
+    return;
+  // Eden (expect_later): skip default arm; dedic Eden forwards from its own on_log.
+  if (expect_dll_override.load(std::memory_order_acquire))
+    return;
+  arm_default_log_callback();
 }
 
-DAG_DLL_EXPORT hosted_server_log_forwarder_t hosted_server_get_log_forwarder()
+DAG_DLL_EXPORT void hosted_server_set_log_forwarder(void *cb, bool dll_side_override_expect_later)
 {
-  return log_forwarder.load(std::memory_order_acquire);
+  // Host must clear (nullptr) before os_dll_close so the callback cannot outlive the DLL.
+  // Store only; default arm is hosted_server_arm_log_mirror_callback after visual_err_log_setup.
+  if (cb)
+  {
+    expect_dll_override.store(dll_side_override_expect_later, std::memory_order_release);
+    log_forwarder.store(cb, std::memory_order_release);
+  }
+  else
+  {
+    disarm_log_callback();
+    log_forwarder.store(nullptr, std::memory_order_release);
+    expect_dll_override.store(false, std::memory_order_release);
+  }
 }
+
 
 static void fire_server_loaded_once()
 {
   if (void (*cb)() = on_server_loaded_callback.exchange(nullptr, std::memory_order_acq_rel))
     cb();
+}
+
+static void hosted_ready_try_fire()
+{
+  const uint32_t req = hosted_ready_required.load(std::memory_order_acquire);
+  const uint32_t got = hosted_ready_got.load(std::memory_order_acquire);
+  if (req == 0 || (got & req) != req)
+    return;
+  debug("hosted_server: ready latch satisfied got=0x%x required=0x%x (callback=%p)", got, req,
+    (void *)on_server_loaded_callback.load(std::memory_order_acquire));
+  fire_server_loaded_once();
+}
+
+void hosted_server_set_ready_required(HostedReadyFlags mask)
+{
+  hosted_ready_required.store(uint32_t(mask), std::memory_order_release);
+  hosted_ready_try_fire();
+}
+
+void hosted_server_signal_ready(HostedReadyFlags flags)
+{
+  hosted_ready_got.fetch_or(uint32_t(flags), std::memory_order_acq_rel);
+  hosted_ready_try_fire();
 }
 
 DAG_DLL_EXPORT
@@ -81,11 +137,12 @@ const char *local_server_connection_url(eastl::string &str)
 }
 
 DAG_DLL_EXPORT
-void hosted_server_on_loaded(void *callback) { on_server_loaded_callback.store((void (*)())callback, std::memory_order_release); }
-
-void hosted_server_signal_ready() { fire_server_loaded_once(); }
-
-void hosted_server_disable_auto_ready() { auto_fire_server_ready.store(false, std::memory_order_release); }
+void hosted_server_on_loaded(void *callback)
+{
+  hosted_ready_got.store(0, std::memory_order_release);
+  on_server_loaded_callback.store((void (*)())callback, std::memory_order_release);
+  hosted_ready_try_fire();
+}
 
 DAG_DLL_EXPORT
 void try_start_relay_and_subscribe(void(__cdecl *relay_status_subscribe)(bool enabled))
@@ -101,13 +158,8 @@ void try_start_relay_and_subscribe(void(__cdecl *relay_status_subscribe)(bool en
 
 static void hosted_server_tracking_loaded_local_scene_entities_es(const ecs::Event &__restrict, const ecs::QueryView &__restrict)
 {
-  debug("hosted_server_tracking_loaded_local_scene_entities: on_server_loaded_callback=%p, auto_fire=%d",
-    (void *)on_server_loaded_callback.load(std::memory_order_acquire), (int)auto_fire_server_ready.load(std::memory_order_acquire));
-  if (!auto_fire_server_ready.load(std::memory_order_acquire))
-    return;
-  if (dgs_get_settings()->getBlockByNameEx("debug")->getBool("hostedServerManualReady", false))
-    return;
-  fire_server_loaded_once();
+  debug("hosted_server: signal Entities (EventOnLocalSceneEntitiesCreated)");
+  hosted_server_signal_ready(HostedReadyFlags::Entities);
 }
 static ecs::EntitySystemDesc hosted_server_tracking_loaded_local_scene_entities_es_es_desc(
   "hosted_server_tracking_loaded_local_scene_entities_es",
@@ -118,4 +170,19 @@ static ecs::EntitySystemDesc hosted_server_tracking_loaded_local_scene_entities_
   empty_span(),
   empty_span(),
   ecs::EventSetBuilder<ecs::EventOnLocalSceneEntitiesCreated>::build(),
+  0);
+
+static void hosted_server_ready_on_scripts_initialized_es(const ecs::Event &__restrict, const ecs::QueryView &__restrict)
+{
+  debug("hosted_server: signal Scripts (OnEdenScriptsInitialized)");
+  hosted_server_signal_ready(HostedReadyFlags::Scripts);
+}
+static ecs::EntitySystemDesc hosted_server_ready_on_scripts_initialized_es_es_desc("hosted_server_ready_on_scripts_initialized_es",
+  "prog/daNetGame/net/dedicated/dedicated_dll__exports.inc.cpp",
+  ecs::EntitySystemOps(nullptr, hosted_server_ready_on_scripts_initialized_es),
+  empty_span(),
+  empty_span(),
+  empty_span(),
+  empty_span(),
+  ecs::EventSetBuilder<OnEdenScriptsInitialized>::build(),
   0);

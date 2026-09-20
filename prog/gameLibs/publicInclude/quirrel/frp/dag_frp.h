@@ -9,7 +9,7 @@
 FRP (Functional Reactive Programming) for Quirrel and daRg
 
 Graph-owned node architecture:
-  All node data lives in graph-owned NodeSlot pool with generational indices.
+  All node data lives in graph-owned parallel pools (hot NodeSlot, cold NodeSlotData) with generational indices.
   Script observables (WatchedHandle/ComputedHandle) are lightweight {NodeId, graph*}.
   Handle destruction calls destroyNode() which frees the node immediately.
   Stale generational IDs are safely handled by resolve() returning nullptr.
@@ -28,6 +28,7 @@ Uses a version-based push-pull propagation model:
 #include <generic/dag_tab.h>
 #include <generic/dag_fixedVectorSet.h>
 #include <generic/dag_carray.h>
+#include <generic/dag_staticTab.h>
 #include <EASTL/vector_map.h>
 #include <EASTL/vector_set.h>
 #include <EASTL/string.h>
@@ -104,24 +105,6 @@ struct SubscriberCall
 };
 
 
-// Records nodes and script subscriptions made while active on a graph, so a
-// single owner (e.g. a UI component instance) can release them all at once.
-struct OwnerScope
-{
-  struct SubEntry
-  {
-    NodeId node;
-    Sqrat::Object func;
-  };
-
-  dag::Vector<NodeId> ownedNodes;
-  dag::Vector<SubEntry> subscriptions;
-  // Make created source nodes (Watched) non-deferred and eager-pulling;
-  // Computeds stay deferred so shared upstream observables are not marked.
-  bool sourcesImmediate = false;
-};
-
-
 struct SourceEntry
 {
   NodeId id;
@@ -130,7 +113,36 @@ struct SourceEntry
 };
 
 
+// Hot part of a node, kept apart from NodeSlotData so per-frame walks over all slots stay cache friendly
 struct NodeSlot
+{
+  union
+  {
+    struct
+    {
+      bool alive : 1;
+      bool isComputed : 1;
+      bool computedHasActiveConsumers : 1;
+      NodeState nodeState : 2;
+      bool isImmediate : 1;         // input: node's own timing preference (deferred is the default)
+      bool propagatesImmediate : 1; // derived: node is on a synchronous path (isImmediate, or feeds one)
+      bool eagerPull : 1;           // writes pull all dirty consumed dependents, not only immediate ones
+      bool isInTrigger : 1;
+      bool isIteratingWatchers : 1;
+      bool isPulling : 1;
+      bool isMarked : 1;
+      bool funcAcceptsCurVal : 1;
+      bool isNativeComputed : 1; // stays set after detachNativeComputed clears the pointer
+    };
+    uint32_t flags = 0;
+  };
+  uint32_t generation = 0; // generational index for stale-ID detection
+};
+static_assert(sizeof(NodeSlot) == 8);
+
+
+// Cold part of a node, same index as its NodeSlot
+struct NodeSlotData
 {
   // Value (all nodes)
   HSQOBJECT value;
@@ -146,31 +158,7 @@ struct NodeSlot
   dag::Vector<Sqrat::Function> scriptSubscribers;
   uint8_t numNoCheckSubscribers = 0; // no-check subscribers occupy indices [0, numNoCheckSubscribers)
 
-  // State
   uint32_t version = 0;
-  uint32_t generation = 0; // generational index for stale-ID detection
-  NodeState nodeState = NodeState::CLEAN;
-
-  // Flags (packed bitfield)
-  union
-  {
-    struct
-    {
-      bool alive : 1;
-      bool isComputed : 1;
-      bool isDeferred : 1;
-      bool needImmediate : 1;
-      bool eagerPull : 1; // writes pull all dirty consumed dependents, not only immediate ones
-      bool computedHasActiveConsumers : 1;
-      bool isInTrigger : 1;
-      bool isIteratingWatchers : 1;
-      bool isPulling : 1;
-      bool isMarked : 1;
-      bool funcAcceptsCurVal : 1;
-      bool isNativeComputed : 1; // stays set after detachNativeComputed clears the pointer
-    };
-    uint32_t flags = 0;
-  };
 
   // Diagnostics
   eastl::unique_ptr<ScriptSourceInfo> initInfo;
@@ -181,7 +169,7 @@ struct NodeSlot
   int timeChangeReq = 0;
   int timeChanged = 0;
 
-  NodeSlot()
+  NodeSlotData()
   {
     sq_resetobject(&value);
     sq_resetobject(&func);
@@ -203,23 +191,32 @@ public:
   // The source must outlive the node, or call detachNativeComputed before dying
   NodeId createNativeComputed(INativeComputedSource *src);
 
-  // Cuts the script subscriptions, keeps the nodes. Idempotent.
-  void unsubscribeOwnerScope(OwnerScope &scope);
-  void disposeOwnerScope(OwnerScope &scope);
   bool nodeHasConsumers(NodeId id) const; // any dependent, watcher or script subscriber
+
+  // Script subscriber management by (node, func); shared by the script
+  // bindings and external owners (e.g. daRg stateful scopes).
+  enum class SubscribeResult
+  {
+    Added,
+    Duplicate, // already subscribed with this function; no-op
+    StaleNode,
+    TooManyNoCheck,
+  };
+  SubscribeResult addScriptSubscriber(NodeId id, HSQOBJECT func, bool check_behavior);
+  void removeScriptSubscriber(NodeId id, HSQOBJECT func); // no-op when the node or entry is gone
 
   // Node access (inline for cross-TU inlining -- these are tiny and hot)
   inline NodeSlot &node(NodeId id)
   {
     G_ASSERT(id.index < slots.size());
-    NodeSlot &s = slots[id.index];
+    NodeSlot &s = slots.data()[id.index];
     G_ASSERT(s.alive && s.generation == id.generation);
     return s;
   }
   inline const NodeSlot &node(NodeId id) const
   {
     G_ASSERT(id.index < slots.size());
-    const NodeSlot &s = slots[id.index];
+    const NodeSlot &s = slots.data()[id.index];
     G_ASSERT(s.alive && s.generation == id.generation);
     return s;
   }
@@ -227,7 +224,7 @@ public:
   {
     if (id.index >= slots.size())
       return nullptr;
-    NodeSlot &s = slots[id.index];
+    NodeSlot &s = slots.data()[id.index];
     if (!s.alive || s.generation != id.generation)
       return nullptr;
     return &s;
@@ -236,11 +233,19 @@ public:
   {
     if (id.index >= slots.size())
       return nullptr;
-    const NodeSlot &s = slots[id.index];
+    const NodeSlot &s = slots.data()[id.index];
     if (!s.alive || s.generation != id.generation)
       return nullptr;
     return &s;
   }
+  NodeSlotData &nodeData(NodeId id)
+  {
+    G_ASSERT(resolve(id));
+    return slotsData.data()[id.index];
+  }
+  const NodeSlotData &nodeData(NodeId id) const { return const_cast<ObservablesGraph *>(this)->nodeData(id); }
+  NodeSlotData *resolveData(NodeId id) { return resolve(id) ? &slotsData.data()[id.index] : nullptr; }
+  const NodeSlotData *resolveData(NodeId id) const { return resolve(id) ? &slotsData.data()[id.index] : nullptr; }
 
   // Value access
   Sqrat::Object getValue(NodeId id);
@@ -330,14 +335,14 @@ private:
   bool pull(NodeId id, NodeIdVec &changed_nodes);
   bool recalculate(NodeId id, bool &ok);
   void ensureUpToDate(NodeId id);
-  void markImmediate(NodeId id);
-  void updateNeedImmediate(NodeId id);
+  void markPropagatesImmediate(NodeId id);
+  void updatePropagatesImmediate(NodeId id);
   void markComputedConsumed(NodeId id);
   void updateComputedConsumed(NodeId id);
-  void registerInOwnerScope(NodeId id, NodeSlot &s);
   void onNodeGraphShutdown(NodeId id, bool exiting, Tab<Sqrat::Object> &cleared_storage);
 
   dag::Vector<NodeSlot> slots;
+  dag::Vector<NodeSlotData> slotsData; // same size as slots
   dag::Vector<uint32_t> freeList;
   dag::Vector<HSQOBJECT> pendingRelease;
   eastl::vector_map<uint32_t, dag::Vector<HSQOBJECT>> mutatorWhiteLists;
@@ -347,8 +352,7 @@ public:
   HSQUIRRELVM vm = nullptr;
   SimpleString graphName;
 
-  // Use the RAII guards below rather than assigning these directly.
-  OwnerScope *currentOwnerScope = nullptr;
+  // Use ConstructionLockGuard rather than assigning this directly.
   const char *constructionLockMsg = nullptr; // non-null: locked, and this is the error text thrown to script
 
   OSSpinlock slotsLock; //< for external access to slots
@@ -367,7 +371,7 @@ public:
   };
 #if DAGOR_DBGLEVEL > 0
   carray<SubscriberTiming, 8> slowestSubscribersAllTime;
-  carray<SubscriberTiming, 8> slowestSubscribersLastEpisode;
+  StaticTab<SubscriberTiming, 8> slowestSubscribersLastEpisode;
 #endif
 
   void resetPerfTimers()
@@ -452,8 +456,8 @@ public:
 
   Sqrat::Object getValue();
   Sqrat::Object getValueDeprecated();
-  bool getDeferred() const;
-  void setDeferred(bool v);
+  bool getImmediate() const;
+  void setImmediate(bool v);
   int getTimeChangeReq() const;
   int getTimeChanged() const;
   Sqrat::Object trace();
@@ -525,30 +529,6 @@ struct ConstructionLockGuard
   }
   ConstructionLockGuard(const ConstructionLockGuard &) = delete;
   ConstructionLockGuard &operator=(const ConstructionLockGuard &) = delete;
-};
-
-
-// Scoped activation of an owner scope on a graph. No-op on a null graph.
-struct OwnerScopeGuard
-{
-  ObservablesGraph *graph;
-  OwnerScope *prev = nullptr;
-
-  OwnerScopeGuard(ObservablesGraph *g, OwnerScope *scope) : graph(g)
-  {
-    if (graph)
-    {
-      prev = graph->currentOwnerScope;
-      graph->currentOwnerScope = scope;
-    }
-  }
-  ~OwnerScopeGuard()
-  {
-    if (graph)
-      graph->currentOwnerScope = prev;
-  }
-  OwnerScopeGuard(const OwnerScopeGuard &) = delete;
-  OwnerScopeGuard &operator=(const OwnerScopeGuard &) = delete;
 };
 
 

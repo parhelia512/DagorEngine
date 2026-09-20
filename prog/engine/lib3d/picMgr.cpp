@@ -31,6 +31,9 @@
 #include <util/dag_oaHashNameMap.h>
 #include <util/dag_fastIntList.h>
 #include <util/dag_texMetaData.h>
+#include <osApiWrappers/dag_spinlock.h>
+#include <util/dag_hash.h>
+#include <EASTL/vector_set.h>
 #include <util/dag_delayedAction.h>
 #include <math/dag_adjpow2.h>
 #include <stdio.h>
@@ -180,7 +183,7 @@ struct TexRec
     G_ASSERT_LOG(refCount <= 1, "refCount(%s)=%d{%d}", getName(), refCount, get_managed_texture_refcount(texId));
     if (ad)
       debug("PM: termAtlas(%s) refCount=%d{%d}", getName(), refCount, get_managed_texture_refcount(texId));
-    while (refCount > 0)
+    while (refCount > 0) //-V776 delRef() decrements refCount
       delRef();
     delete ad;
     if (ownedTex)
@@ -310,7 +313,7 @@ struct AsyncPicLoadJob : public cpujobs::IJob
     interlocked_increment(texRec[getTexRecIdx(picId)]->refCount);
   }
 
-  const char *getJobName(bool &) const override { return "AsyncPicLoadJob"; }
+  const char *getJobName(bool &) const override { return DAPROFILER_STRING("AsyncPicLoadJob"); }
 
   virtual void doJob()
   {
@@ -820,9 +823,9 @@ static void copy_vert_line(Texture *t, int x0, int y0, int len, int m, unsigned 
   _len2 = len;
 #endif
   for (; len > LINE_TEX_LEN; len -= LINE_TEX_LEN, y0 += LINE_TEX_LEN)
-    if (!t->updateSubRegion(tt, 0, 0, 0, 0, m, LINE_TEX_LEN, 1, 0, x0, y0, 0))
+    if (!d3d::update_sub_region(tt, 0, 0, 0, 0, m, LINE_TEX_LEN, 1, t, 0, x0, y0, 0))
       upd_ok = false;
-  if (!t->updateSubRegion(tt, 0, 0, 0, 0, m, len, 1, 0, x0, y0, 0))
+  if (!d3d::update_sub_region(tt, 0, 0, 0, 0, m, len, 1, t, 0, x0, y0, 0))
     upd_ok = false;
 #if DAGOR_DBGLEVEL > 0
   if (!upd_ok)
@@ -857,9 +860,9 @@ static void copy_hor_line(Texture *t, int x0, int y0, int len, int m, unsigned f
 #endif
   Texture *tt = texTransp[fmt * 2 + 1];
   for (; len > LINE_TEX_LEN; len -= LINE_TEX_LEN, x0 += LINE_TEX_LEN)
-    if (!t->updateSubRegion(tt, 0, 0, 0, 0, LINE_TEX_LEN, m, 1, 0, x0, y0, 0))
+    if (!d3d::update_sub_region(tt, 0, 0, 0, 0, LINE_TEX_LEN, m, 1, t, 0, x0, y0, 0))
       upd_ok = false;
-  if (!t->updateSubRegion(tt, 0, 0, 0, 0, len, m, 1, 0, x0, y0, 0))
+  if (!d3d::update_sub_region(tt, 0, 0, 0, 0, len, m, 1, t, 0, x0, y0, 0))
     upd_ok = false;
 #if DAGOR_DBGLEVEL > 0
   if (!upd_ok)
@@ -936,6 +939,35 @@ static const char *extract_pic_name(PICTUREID pid, uint8_t gen)
 static const char *extract_pic_name(PICTUREID, uint8_t) { return nullptr; }
 #endif
 
+// a factory picture is named by its whole multi-line render blk: full text once per distinct
+// name in dev builds, only a one-line head in a force-logs release
+static const char *pic_name_to_log(const char *name, String &stor)
+{
+#if DAGOR_DBGLEVEL > 0 || DAGOR_FORCE_LOGS
+  if (!name || !strchr(name, '\n'))
+    return name;
+#if DAGOR_DBGLEVEL > 0
+  static eastl::vector_set<uint64_t> loggedNames;
+  static OSSpinlock loggedNamesSl;
+  {
+    OSSpinlockScopedLock lock(loggedNamesSl);
+    if (loggedNames.insert(str_hash_fnv1<64>(name)).second)
+      return name;
+  }
+#endif
+  stor.printf(0, "%.90s", name);
+  if (stor.length() >= 90 && name[90])
+    stor += "...";
+  for (int i = 0; i < stor.length(); i++)
+    if (stor[i] == '\n' || stor[i] == '\r')
+      stor[i] = ' ';
+  return stor.str();
+#else
+  G_UNUSED(stor);
+  return name;
+#endif
+}
+
 const char *PictureRenderContext::extractPicName() const { return extract_pic_name(pid, gen); }
 
 static void discard_canceled_atlas_picture(PictureRenderContext &ctx)
@@ -946,8 +978,9 @@ static void discard_canceled_atlas_picture(PictureRenderContext &ctx)
   int texIdx = getTexRecIdx(ctx.pid);
   rbp::Rect rect;
   texRec[texIdx]->ad->atlas.discardItem(atlasItemIdx, rect);
+  String stor;
   debug("PM: atlas pic=%08X(%s) at (%d,%d) was discarded because pictures load is not allowed for now", ctx.pid,
-    extract_pic_name(ctx.pid, ctx.gen), ctx.x0, ctx.y0);
+    pic_name_to_log(extract_pic_name(ctx.pid, ctx.gen), stor), ctx.x0, ctx.y0);
 }
 
 AsyncPicState process_pic_before_render(PictureRenderContext &ctx)
@@ -991,10 +1024,13 @@ static void retry_render_pic_with_factory_imm(void *arg)
       add_delayed_callback_buffered(retry_render_pic_with_factory_imm, arg);
       return;
     }
-    debug("PM: render succeed at last for pic=%08X(%s) at %d,%d", ctx.pid, extract_pic_name(ctx.pid, ctx.gen), ctx.x0, ctx.y0);
+    debug("PM: render succeed at last for pic=%08X at %d,%d", ctx.pid, ctx.x0, ctx.y0);
   }
   else
-    logwarn("PM: pic=%08X(%s) was discarded, render retry ceased", ctx.pid, extract_pic_name(ctx.pid, ctx.gen));
+  {
+    String stor;
+    logwarn("PM: pic=%08X(%s) was discarded, render retry ceased", ctx.pid, pic_name_to_log(extract_pic_name(ctx.pid, ctx.gen), stor));
+  }
   delete &ctx;
 }
 static void render_pic_with_factory_imm(PictureRenderContext &ctx)
@@ -1003,7 +1039,11 @@ static void render_pic_with_factory_imm(PictureRenderContext &ctx)
   if (picState != AsyncPicState::ReadyToRender)
   {
     if (picState == AsyncPicState::Discarded)
-      logwarn("PM: pic=%08X(%s) was discarded, render retry ceased", ctx.pid, extract_pic_name(ctx.pid, ctx.gen));
+    {
+      String stor;
+      logwarn("PM: pic=%08X(%s) was discarded, render retry ceased", ctx.pid,
+        pic_name_to_log(extract_pic_name(ctx.pid, ctx.gen), stor));
+    }
     return;
   }
 
@@ -1013,8 +1053,11 @@ static void render_pic_with_factory_imm(PictureRenderContext &ctx)
   if (!prf->doRender(ctx))
   {
     if ((++ctx.failedAttempt % 5) == 0)
-      debug("PM: render failed for pic=%08X(%s), will retry later[failed attempt:%d]", ctx.pid, extract_pic_name(ctx.pid, ctx.gen),
-        ctx.failedAttempt);
+    {
+      String stor;
+      debug("PM: render failed for pic=%08X(%s), will retry later[failed attempt:%d]", ctx.pid,
+        pic_name_to_log(extract_pic_name(ctx.pid, ctx.gen), stor), ctx.failedAttempt);
+    }
 
     ctx.triedAtFrame = dagor_frame_no();
     add_delayed_callback_buffered(retry_render_pic_with_factory_imm, new PictureRenderContext(ctx));
@@ -1964,8 +2007,11 @@ void PictureManager::AsyncPicLoadJob::loadPicInAtlas()
         tmd.flags |= tmd.FLG_PREMUL_A;
       else
         tmd.flags &= ~tmd.FLG_PREMUL_A;
-      pic_tex.reset(create_texture_via_factories(dec_name, TEXCF_SYSMEM | TEXCF_DYNAMIC | TEXCF_LINEAR_LAYOUT, 1,
-        dd_get_fname_ext(dec_name), tmd, NULL));
+      int flags = TEXCF_SYSMEM | TEXCF_DYNAMIC | TEXCF_LINEAR_LAYOUT;
+#if _TARGET_C1
+
+#endif
+      pic_tex.reset(create_texture_via_factories(dec_name, flags, 1, dd_get_fname_ext(dec_name), tmd, NULL));
     }
   }
 
@@ -2062,7 +2108,8 @@ void PictureManager::AsyncPicLoadJob::loadPicInAtlas()
     }
     else
     {
-      bool upd_ok = tr.ad->atlas.tex.first.getTex2D()->updateSubRegion(pic_tex.get(), 0, 0, 0, 0, ti.w, ti.h, 1, 0, d->x0, d->y0, 0);
+      bool upd_ok =
+        d3d::update_sub_region(pic_tex.get(), 0, 0, 0, 0, ti.w, ti.h, 1, tr.ad->atlas.tex.first.getTex2D(), 0, d->x0, d->y0, 0);
 #if DAGOR_DBGLEVEL > 0
       if (!upd_ok)
         logerr("PM: failed to copy pic '%s' %dx%d to atlas '%s' at (%d,%d)", name, ti.w, ti.h, tr.getName(), d->x0, d->y0);
@@ -2102,8 +2149,11 @@ void PictureManager::AsyncPicLoadJob::loadPicInAtlas()
     d->discard();
     finalizePic(d, tr);
     if (!skipAtlasPic)
+    {
+      String stor;
       logwarn("PM: failed to alloc item #%d hash=%08X sz=%dx%d, name='%s', pic=%08X", tr.ad->atlas.getItemIdx(d), pic_hash, ti.w, ti.h,
-        name, picId);
+        pic_name_to_log(name, stor), picId);
+    }
   }
 }
 void PictureManager::AsyncPicLoadJob::loadTexPic()

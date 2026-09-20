@@ -27,6 +27,7 @@ shader trace_shadow_depth_region
     };
 
     TraceLightInfo lights[50] : register(c1);
+    float4 lightsLastreg : register(c251);
     VsOutput trace_shadow_depth_region_vs(uint vertexId : SV_VertexID)
     {
       uint inst = vertexId/6;

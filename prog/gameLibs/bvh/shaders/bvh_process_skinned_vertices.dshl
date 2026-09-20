@@ -154,7 +154,7 @@ shader bvh_process_skinned_vertices
       ##endif
 
       // Seems inverse-transpose skinnedTm not used elsewhere for normals, so I assume non-uniform scaling is not an issue
-      float3 worldNormal = mul_bone3(input.normal.xyz * 2.f - 1.f, skinnedTm);
+      float3 worldNormal = mul_bone3(input.normal.xyz, skinnedTm);
       float4 modelNormal = float4(normalize(mul(worldNormal, float3x3(inv_wtm[0].xyz, inv_wtm[1].xyz, inv_wtm[2].xyz))), input.normal.w);
 
       storeBuffer(output, target_offset + vertexId * processed_vertex_stride + offset, pack_normal4(modelNormal));

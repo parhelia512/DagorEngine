@@ -241,6 +241,10 @@ def es_function_from_parsed_function(fun):
     elif optional is False:
       i = {"name": name, "type": type_name, "param_type": "rq", "optional": False}
       esFun.rq_params.append(i)
+    else:
+      print(f"[E] {fun.funcName} in {global_input_file_name}: ECS_REQUIRE({type_name} {name} = ...) - default argument is not supported for {type_name}")
+      exit(1)
+
   for reqs in esFun.annotatedRequirementNots:
     optional = False
     if reqs.rfind('=') != -1:
@@ -259,9 +263,16 @@ def es_function_from_parsed_function(fun):
       name = name[1:]
     while (type_name.endswith('&') or type_name.endswith(' ')):
       type_name = type_name[:len(type_name) - 1]
-    if optional is False:
-      i = {"name": name, "type": type_name, "param_type": "no", "optional": False}
-      esFun.no_params.append(i)
+
+    if is_flag_type(type_name):
+      print(f"[E] {fun.funcName} in {global_input_file_name}: ECS_REQUIRE_NOT({type_name} {name}) is not supported - use ECS_REQUIRE(...) instead")
+      exit(1)
+    if optional:
+      print(f"[E] {fun.funcName} in {global_input_file_name}: ECS_REQUIRE_NOT({type_name} {name} = ...) - default argument is not supported for ECS_REQUIRE_NOT")
+      exit(1)
+
+    i = {"name": name, "type": type_name, "param_type": "no", "optional": False}
+    esFun.no_params.append(i)
 
   for noParam in esFun.no_params:
     checkForPresenceAndRemoveOptional(noParam, esFun.rw_params, "RW")

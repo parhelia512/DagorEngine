@@ -6,8 +6,9 @@
 
 #include <generic/dag_tab.h>
 #include <osApiWrappers/dag_critSec.h>
+#include <util/dag_compilerDefs.h>
 template <class T>
-class TabWithLock : public Tab<T>
+class DAGOR_WARN_IF_UNUSED TabWithLock : public Tab<T>
 {
 protected:
   CritSecStorage critSec;

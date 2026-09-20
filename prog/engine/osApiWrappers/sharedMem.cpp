@@ -32,7 +32,7 @@ void *create_global_map_shared_mem(const char *shared_mem_fname, void *base_addr
   void *p = MapViewOfFileEx(hMapFile, FILE_MAP_WRITE, 0, 0, sz, base_addr);
   if (resv)
     VirtualFree(resv, 0, MEM_RELEASE);
-  return p;
+  return p; //-V1020
 #elif _TARGET_APPLE | _TARGET_PC_LINUX
   char name[255];
   G_ASSERT(strchr(shared_mem_fname, '/') == NULL);

@@ -1,28 +1,15 @@
 // Copyright (C) Gaijin Games KFT.  All rights reserved.
 
-#include <landMesh/lmeshWeightAtlas.h>
-#include <3d/ddsxTex.h>
-#include <3d/ddsFormat.h>
-#include <drv/3d/dag_texture.h>
+// The driver-free half of the atlas: the records, the page packing and the
+// packed form the level ships, which is what the exporter links; the GPU
+// residency lives in lmeshWeightAtlasGpu.cpp (the link rule sits in
+// lmeshWeightAtlasInternal.h).
+
+#include "lmeshWeightAtlasInternal.h"
 #include <drv/3d/dag_tex3d.h>
-#include <drv/3d/dag_driver.h>
-#include <drv/3d/dag_info.h>
-#include <drv/3d/dag_driverDesc.h>
-#include <shaders/dag_shaderVariableInfo.h>
-#include <startup/dag_globalSettings.h>
-#include <ioSys/dag_dataBlock.h>
-#include <shaders/dag_postFxRenderer.h>
-#include <drv/3d/dag_renderTarget.h>
-#include <drv/3d/dag_matricesAndPerspective.h>
-#include <drv/3d/dag_viewScissor.h>
-#include <drv/3d/dag_buffers.h>
-#include <drv/3d/dag_shaderConstants.h>
-#include <ioSys/dag_memIo.h>
-#include <loadDDSx/uniTexCrd.h>
-#include <math/dag_mathBase.h>
-#include <math/dag_mathUtils.h> // saturate
-#include <math/dag_color.h>
+#include <ioSys/dag_genIo.h>
 #include <image/dag_dxtCompress.h>
+#include <image/dag_texPixel.h>
 #include <generic/dag_tab.h>
 #include <memory/dag_framemem.h>
 #include <debug/dag_debug.h>
@@ -31,49 +18,16 @@
 #include <EASTL/unique_ptr.h>
 
 static constexpr int DET_NUM = LandWeightAtlas::DET_NUM;
-
-#define GLOBAL_VARS_LIST          \
-  VAR(land_weight_cells_const_no) \
-  VAR(land_weight_uv_const_no)    \
-  VAR(land_weight_ofs_const_no)   \
-  VAR(land_weight_cell_const_no)  \
-  VAR(land_weight_fold_const_no)  \
-  VAR(land_weight_src_const_no)   \
-  VAR(land_weight_src2_const_no)  \
-  VAR(land_weight_pack_tc)        \
-  VAR(land_weight_pack_ch)        \
-  VAR(land_weight_pack_num_tex)
-
-#define VAR(a) static ShaderVariableInfo a##VarId(#a, true);
-GLOBAL_VARS_LIST
-#undef VAR
-
-// The layout constants sit at hardcoded ps registers (see land_weight_inc.dshl),
-// so they are written straight there rather than through the shader var system.
-static void set_ps_const4(const ShaderVariableInfo &slot, float x, float y, float z, float w)
-{
-  const Color4 v(x, y, z, w);
-  if (slot.get_var_id() >= 0)
-    d3d::set_ps_const(slot.get_int(), &v.r, 1);
-}
-
-bool land_weight_atlas_cpu_pack()
-{
-  return d3d::check_texformat(TEXFMT_DXT1) &&
-         !dgs_get_settings()->getBlockByNameEx("graphics")->getBool("landWeightAtlasForceGpu", false);
-}
-
-// what the exported pair of weight textures holds: four channels in the first,
-// two of the second's; any channel a cell blends past those is not stored
-static constexpr int LEGACY_TEX1_CHANNELS = 4, LEGACY_TEX2_CHANNELS = 2;
-G_STATIC_ASSERT(LEGACY_TEX1_CHANNELS + LEGACY_TEX2_CHANNELS < DET_NUM);
+static constexpr int RAW_TEXEL_BYTES = LAND_WEIGHT_CHANNELS_PER_PAGE; // a Raw page keeps just the three weights
 
 // ---- atlas -------------------------------------------------------------------
 
-LandWeightAtlas::LandWeightAtlas(int cells_x, int cells_y, int elem_size, unsigned tex_cflg, bool reserve_for_edit) :
+LandWeightAtlas::LandWeightAtlas(Pages pages_kind, int cells_x, int cells_y, int elem_size, unsigned tex_cflg, bool reserve_for_edit,
+  int page_capacity) :
   cellsX(cells_x),
   cellsY(cells_y),
   elemW(elem_size),
+  kind(pages_kind),
   pages(midmem),
   pageScratch(midmem),
   freePages(midmem),
@@ -84,55 +38,34 @@ LandWeightAtlas::LandWeightAtlas(int cells_x, int cells_y, int elem_size, unsign
   // reaches one texel out on each side, which the border covers - so the page
   // is exactly data plus borders, block aligned
   pageW = (elem_size + 2 * LAND_WEIGHT_BORDER + 3) & ~3;
-  // where DXT1 exists the CPU packs into it; where it does not, the pages are
-  // drawn into an uncompressed target instead
-  texFmt = land_weight_atlas_cpu_pack() ? TEXFMT_DXT1 : (TEXFMT_A8R8G8B8 | TEXCF_RTARGET);
-  pageBytes = (pageW / 4) * (pageW / 4) * 8; // DXT1, the only thing the CPU packs
+  pageBytes = kind == Pages::Raw ? pageW * pageW * RAW_TEXEL_BYTES : (pageW / 4) * (pageW / 4) * 8;
   records.resize(cells_x * cells_y * WORDS_PER_CELL);
   mem_set_0(records);
-  if (packedOnCpu()) // otherwise the pages are rendered straight into the atlas
+  if (kind == Pages::Dxt1 || kind == Pages::Raw) // otherwise the pages are rendered into the atlas or shipped in it
   {
-    pages.resize(cells_x * cells_y * LAND_WEIGHT_PAGES_PER_CELL * pageBytes);
+    // a reserve past the budget would size an atlas that never uploads, and then nothing paints at all
+    const int capacity = page_capacity > 0 ? page_capacity : min(cells_x * cells_y * LAND_WEIGHT_PAGES_PER_CELL, pageBudget(pageW));
+    pages.resize(capacity * pageBytes);
     mem_set_0(pages);
-    pageScratch.resize(pageW * pageW * 4);
+    if (kind == Pages::Dxt1)
+      pageScratch.resize(pageW * pageW * 4);
   }
 }
-
-// A device reset recreates the buffer empty. The records are the one thing we
-// always keep on the CPU (the pages are not), so this is free; the atlas
-// texture comes back from its system copy or from a reload of the level.
-// The atlas owns the callback: a driver that takes it only calls destroySelf()
-// when a second one replaces it, so handing ownership over would leak it.
-struct LandWeightAtlas::CellsReload final : public Sbuffer::IReloadData
-{
-  const LandWeightAtlas &atlas;
-  CellsReload(const LandWeightAtlas &a) : atlas(a) {}
-  void reloadD3dRes(Sbuffer *sb) override { sb->updateData(0, data_size(atlas.records), atlas.records.data(), VBLOCK_WRITEONLY); }
-  void destroySelf() override {}
-};
-
-bool LandWeightAtlas::packedOnCpu() const { return (texFmt & TEXFMT_MASK) == TEXFMT_DXT1; }
 
 LandWeightAtlas::~LandWeightAtlas()
 {
   del_d3dres(tex);
   del_d3dres(cellsBuf);
   delete cellsReload; // the buffer only hands it back when another one replaces it
-  delete packRenderer;
 }
 
-// A raw bind, like the landmesh textures: the slot is above the samplers the
-// renderer nulls per cell, so nothing in a land pass overwrites it. The atlas
-// layout is published from here rather than at upload, so that the atlas being
-// rendered from owns the globals even while another one is built (the editor
-// rebuilding a map, a test packing its own).
-void LandWeightAtlas::bindCells() const
+int LandWeightAtlas::pageBudget(int page_w)
 {
-  setShaderVars();
-  if (cellsBuf && land_weight_cells_const_noVarId.get_var_id() >= 0)
-    d3d::set_buffer(STAGE_PS, land_weight_cells_const_noVarId.get_int(), cellsBuf);
+  const int perSide = page_w > 0 ? MAX_TEX_SIDE / page_w : 0;
+  return min(perSide * perSide, int(LAND_WEIGHT_PAGE_MASK) + 1); // a cell record holds a page number in 14 bits
 }
 
+// -1 past the CPU pages or the record's page range; not logged here, writeRecord() counts the cell for upload() to report
 int LandWeightAtlas::allocPage()
 {
   if (freePages.size())
@@ -142,15 +75,9 @@ int LandWeightAtlas::allocPage()
     return page;
   }
   if (pages.size() && (pageCount + 1) * pageBytes > pages.size())
-  {
-    logerr("land weight atlas: out of pages (%d)", pageCount);
     return -1;
-  }
-  if (pageCount > LAND_WEIGHT_PAGE_MASK) // a cell record holds a page number in 12 bits
-  {
-    logerr("land weight atlas: more than %d pages, the map has too many blended cells", LAND_WEIGHT_PAGE_MASK + 1);
+  if (pageCount > LAND_WEIGHT_PAGE_MASK)
     return -1;
-  }
   return pageCount++;
 }
 
@@ -160,6 +87,14 @@ int LandWeightAtlas::addPage(const uint8_t *const planes[DET_NUM], int first_ch,
   if (page < 0) // a page every failing cell shares would be worse than none
     return page;
 
+  if (kind == Pages::Raw)
+  {
+    uint8_t *d = &pages[page * pageBytes];
+    for (int t = 0; t < pageW * pageW; t++, d += RAW_TEXEL_BYTES)
+      for (int c = 0; c < LAND_WEIGHT_CHANNELS_PER_PAGE; c++)
+        d[c] = c < used ? planes[first_ch + c][t] : 0;
+    return page;
+  }
   for (int t = 0; t < pageW * pageW; t++)
   {
     uint8_t *d = &pageScratch[t * 4]; // rygDXT wants BGRA bytes
@@ -173,6 +108,13 @@ int LandWeightAtlas::addPage(const uint8_t *const planes[DET_NUM], int first_ch,
 
 void LandWeightAtlas::pageTexel(int page, int x, int y, float rgb[LAND_WEIGHT_CHANNELS_PER_PAGE]) const
 {
+  if (kind == Pages::Raw)
+  {
+    const uint8_t *t = &pages[page * pageBytes + (y * pageW + x) * RAW_TEXEL_BYTES];
+    for (int c = 0; c < LAND_WEIGHT_CHANNELS_PER_PAGE; c++)
+      rgb[c] = t[c] / 255.f;
+    return;
+  }
   uint8_t bgra[4 * 16];
   decompress_dxt(bgra, 4, 4, 4 * 4, (unsigned char *)&pages[page * pageBytes + ((y / 4) * (pageW / 4) + x / 4) * 8], true);
   const uint8_t *t = &bgra[((y & 3) * 4 + (x & 3)) * 4];
@@ -242,36 +184,26 @@ void LandWeightAtlas::writeRecord(int index, const uint8_t *det_tex_ids, int num
       for (int r = 0; r < p; r++) // give back what this record already claimed
         freePages.push_back((*rec >> (r * LAND_WEIGHT_PAGE1_SHIFT)) & LAND_WEIGHT_PAGE_MASK);
       *rec = 0;
+      cellsPastBudget++;
       break;
     }
     *rec |= uint32_t(page) << (p * LAND_WEIGHT_PAGE1_SHIFT);
   }
-  // the ids the shader will bind the landclass textures with once it does so
-  // itself; nothing reads them yet
+  // the packed-level loader reads these for the cells' landclass lists; the
+  // shader will bind the landclass textures with them once it does so itself
   for (int ch = 0; ch < DET_NUM; ch++)
-    ((uint8_t *)(rec + 1))[ch] = ch < count && det_tex_ids ? det_tex_ids[ch] : 0xFF;
+    recordLandclassIds(rec)[ch] = ch < count && det_tex_ids ? det_tex_ids[ch] : 0xFF;
 }
 
-bool LandWeightAtlas::upload()
+// Any row length under the caps can hold the pages, so the row length is free
+// to be chosen for packing: the tail of the last row is the only waste, and a
+// row longer than needed only grows it (at 16K wide a tail can strand a whole
+// megabyte). Take the length that packs n pages tightest.
+int land_weight_choose_pages_per_row(int n, int page_w, int max_w, int max_h)
 {
-  if (packedOnCpu() && !pages.size()) // published already, the CPU copy is gone
-    return false;
-  // reserved atlases are sized for the worst case up front, so painting never
-  // has to recreate the texture (and invalidate the renderer's cell states)
-  const int n = max(reserved && pages.size() ? (int)pages.size() / pageBytes : pageCount, 1);
-  // Any row length the driver allows can hold the format's 4096 pages in the
-  // height it allows, so the row length is free to be chosen for packing: the
-  // tail of the last row is the only waste, and a row longer than needed only
-  // grows it (at 16K wide a tail can strand a whole megabyte). 8192 caps the
-  // search; below it, take the length that packs n pages tightest. The same
-  // cap on the height keeps the atlas valid when the desc overstates the
-  // device limit.
-  G_ASSERT_RETURN(pageW <= min(d3d::get_driver_desc().maxtexw, d3d::get_driver_desc().maxtexh), false);
-  const int maxW = clamp(d3d::get_driver_desc().maxtexw, pageW, max(pageW, 8192)),
-            maxH = clamp(d3d::get_driver_desc().maxtexh, pageW, max(pageW, 8192));
-  const int maxPpr = clamp(maxW / pageW, 1, n);
-  const int minPpr = clamp((n + maxH / pageW - 1) / (maxH / pageW), 1, maxPpr); // rows must fit the height
-  pagesPerRow = maxPpr;
+  const int maxPpr = clamp(max_w / page_w, 1, n);
+  const int minPpr = clamp((n + max_h / page_w - 1) / (max_h / page_w), 1, maxPpr); // rows must fit the height
+  int pagesPerRow = maxPpr;
   for (int c = maxPpr, best = maxPpr * ((n + maxPpr - 1) / maxPpr); c >= minPpr && best > n; c--)
   {
     const int cap = c * ((n + c - 1) / c);
@@ -281,72 +213,82 @@ bool LandWeightAtlas::upload()
       pagesPerRow = c;
     }
   }
-  const int rows = (n + pagesPerRow - 1) / pagesPerRow;
-  const int w = pagesPerRow * pageW, h = rows * pageW;
-  if (h > maxH)
-  {
-    logerr("land weight atlas: %d pages need %dx%d, more than the driver's %dx%d", n, w, h, maxW, maxH);
-    return false;
-  }
-  if (!tex)
-  {
-    // the rendered path can carry no system copy, so the owner's flags apply
-    // only where the CPU packs
-    tex = d3d::create_tex(nullptr, w, h, texFmt | (packedOnCpu() ? extraTexCflg : 0), 1, "land_weight_atlas");
-  }
-  if (!tex)
-    return false;
-  if (!cellsBuf)
-  {
-    cellsBuf = d3d::buffers::create_persistent_sr_byte_address(records.size(), "land_weight_cells");
-    if (!cellsBuf) // nothing would bind the slot the shader reads its cell from
-      return false;
-    if (!cellsReload)
-      cellsReload = new CellsReload(*this);
-    cellsBuf->setReloadCallback(cellsReload);
-  }
-  cellsBuf->updateData(0, data_size(records), records.data(), VBLOCK_WRITEONLY);
+  return pagesPerRow;
+}
 
-  atlasW = w;
-  atlasH = h;
-  if (!packedOnCpu()) // renderCell() draws into it, there is nothing to copy up
-    return true;
-
-  uint8_t *dst = nullptr;
-  int stride = 0;
-  if (!tex->lockimg((void **)&dst, stride, 0, TEXLOCK_WRITE) || !dst)
+bool LandWeightAtlas::chooseLayout(int max_tex)
+{
+  G_ASSERT_RETURN(kind == Pages::Raw, false); // export staging only: a resident atlas's layout is its texture's
+  const int n = max(pageCount, 1);
+  if (pageW > max_tex)
     return false;
-  const int rowsPerPage = pageW / 4;
-  const int rowBytes = pageBytes / rowsPerPage;
+  pagesPerRow = land_weight_choose_pages_per_row(n, pageW, max_tex, max_tex);
+  atlasW = pagesPerRow * pageW;
+  atlasH = ((n + pagesPerRow - 1) / pagesPerRow) * pageW;
+  return atlasH <= max_tex;
+}
+
+void LandWeightAtlas::composeRawImage(Tab<TexPixel32> &dst) const
+{
+  G_ASSERT_RETURN(kind == Pages::Raw && pagesPerRow > 0, );
+  dst.resize(atlasW * atlasH);
+  mem_set_0(dst); // past the last page nothing is read, but ship deterministic
   for (int p = 0; p < pageCount; p++)
   {
-    const int gx = (p % pagesPerRow) * rowBytes, gy = (p / pagesPerRow) * rowsPerPage;
+    const int gx = (p % pagesPerRow) * pageW, gy = (p / pagesPerRow) * pageW;
     const uint8_t *src = &pages[p * pageBytes];
-    for (int row = 0; row < rowsPerPage; row++)
-      memcpy(dst + (gy + row) * stride + gx, src + row * rowBytes, rowBytes);
+    for (int y = 0; y < pageW; y++)
+      for (int x = 0; x < pageW; x++, src += RAW_TEXEL_BYTES)
+      {
+        TexPixel32 &d = dst[(gy + y) * atlasW + gx + x];
+        d.r = src[0];
+        d.g = src[1];
+        d.b = src[2];
+        d.a = 255;
+      }
   }
-  tex->unlockimg();
-  return true;
 }
 
-void LandWeightAtlas::setCellMapping(float cell_size, float grid_cell_size, const Point3 &mesh_offset,
-  const IPoint2 &cell_origin) const
+void LandWeightAtlas::savePacked(IGenSave &cwr, int base_ofs, dag::ConstSpan<uint8_t> ddsx) const
 {
-  const float invCell = cell_size > 0 ? 1.f / cell_size : 0.f;
-  set_ps_const4(land_weight_cell_const_noVarId, invCell, -(mesh_offset.x * invCell + cell_origin.x),
-    -(mesh_offset.z * invCell + cell_origin.y), (float)cellsX);
-  // mirroring reflects about 0 and about half a grid cell inside the far edge,
-  // which one triangle wave of this period does for any number of reflections
-  const Point2 period(2 * (cellsX - 0.5f * grid_cell_size * invCell), 2 * (cellsY - 0.5f * grid_cell_size * invCell));
-  set_ps_const4(land_weight_fold_const_noVarId, period.x, period.y, safeinv(period.x), safeinv(period.y));
+  G_ASSERT(pagesPerRow > 0 && atlasH > 0); // finishForExport() chose the layout the ddsx was composed in
+  // the legacy table first: a loader from before the packed form seeks every
+  // cell to the one empty record behind it and, at a zero source texture
+  // size, packs no atlas - the level loads without blending, and says so
+  const int cells = cellsX * cellsY, stubOfs = cwr.tell() + cells * (int)sizeof(int) - base_ofs;
+  for (int i = 0; i < cells; i++)
+    cwr.writeInt(stubOfs);
+  uint8_t stub[LEGACY_CELL_HDR];
+  memset(stub, 0xFF, DET_NUM);                       // no landclass in any slot
+  memset(stub + DET_NUM, 0, sizeof(stub) - DET_NUM); // and no texture bytes
+  cwr.write(stub, sizeof(stub));
+  cwr.writeInt(pagesPerRow);
+  cwr.writeInt(pageCount);
+  cwr.write(records.data(), data_size(records)); // the byte image the shader loads, see land_weight_atlas.hlsli
+  cwr.writeInt(ddsx.size());
+  cwr.write(ddsx.data(), ddsx.size());
 }
 
-void LandWeightAtlas::setShaderVars() const
+bool LandWeightAtlas::readPacked(IGenLoad &crd, int cells, int &pages_per_row, int &page_count, SmallTab<uint32_t> &packed_records,
+  Tab<uint8_t> *ddsx)
 {
-  set_ps_const4(land_weight_uv_const_noVarId, (float)elemW / atlasW, (float)elemW / atlasH, (float)pageW / atlasW,
-    (float)pageW / atlasH);
-  set_ps_const4(land_weight_ofs_const_noVarId, (float)LAND_WEIGHT_BORDER / atlasW, (float)LAND_WEIGHT_BORDER / atlasH,
-    (float)pagesPerRow, 0);
+  crd.seekrel(cells * (int)sizeof(int) + LEGACY_CELL_HDR); // the legacy table, see savePacked()
+  crd.readInt(pages_per_row);
+  crd.readInt(page_count);
+  clear_and_resize(packed_records, cells * WORDS_PER_CELL);
+  crd.read(packed_records.data(), data_size(packed_records));
+  const int len = crd.readInt();
+  // a corrupt length must fail like a short read, not as a giant allocation
+  if (len < 0 || (crd.getTargetDataSize() >= 0 && len > crd.getTargetDataSize() - crd.tell()))
+    return false;
+  if (ddsx)
+  {
+    ddsx->resize(len);
+    crd.read(ddsx->data(), len);
+  }
+  else
+    crd.seekrel(len);
+  return pages_per_row > 0 && page_count >= 0 && page_count <= LAND_WEIGHT_PAGE_MASK + 1;
 }
 
 void LandWeightAtlas::dropCpuPages()
@@ -354,4 +296,165 @@ void LandWeightAtlas::dropCpuPages()
   clear_and_shrink(pages);
   clear_and_shrink(pageScratch);
   clear_and_shrink(freePages);
+}
+
+// ---- packing cells with borders from their neighbours -------------------------
+
+LandWeightAtlasBuilder::LandWeightAtlasBuilder(int cells_x, int cells_y, int tex_size, int elem_size, unsigned tex_cflg) :
+  cells(tmpmem), cellsX(cells_x), cellsY(cells_y), texSize(tex_size), elemSize(elem_size), texCflg(tex_cflg)
+{
+  cells.resize(cells_x * cells_y);
+  for (auto &c : cells)
+    memset(c.detTexIds, 0xFF, sizeof(c.detTexIds));
+}
+
+LandWeightAtlasBuilder::~LandWeightAtlasBuilder() {}
+
+bool LandWeightAtlasBuilder::addCellWeights(int index, const uint8_t *det_tex_ids, const uint8_t *const planes[DET_NUM])
+{
+  G_ASSERT_RETURN(texSize == elemSize, false); // the export constructor: a plane is exactly the cell's texels
+  if (uint32_t(index) >= uint32_t(cells.size()))
+    return false;
+  Cell &c = cells[index];
+  memcpy(c.detTexIds, det_tex_ids, sizeof(c.detTexIds));
+  int numTex = 0;
+  for (int i = 0; i < DET_NUM; i++)
+    if (c.detTexIds[i] != 0xFF)
+      numTex++;
+  for (int ch = 0; ch < numTex; ch++)
+  {
+    c.chan[ch].resize(texSize * texSize);
+    memcpy(c.chan[ch].data(), planes[ch], texSize * texSize);
+  }
+  return true;
+}
+
+// derived weight of landclass lc_id at texel (x, y) of cell (cx, cy);
+// null when the cell is out of the map or does not blend that landclass
+const uint8_t *LandWeightAtlasBuilder::cellTexel(int cx, int cy, int lc_id, int x, int y) const
+{
+  if (uint32_t(cx) >= uint32_t(cellsX) || uint32_t(cy) >= uint32_t(cellsY))
+    return nullptr;
+  const Cell &c = cells[cy * cellsX + cx];
+  for (int ch = 0; ch < DET_NUM; ch++)
+    if (c.detTexIds[ch] == lc_id && c.chan[ch].size())
+      return &c.chan[ch][clamp(y, 0, texSize - 1) * texSize + clamp(x, 0, texSize - 1)];
+  return nullptr;
+}
+
+void LandWeightAtlasBuilder::packCells(LandWeightAtlas &a) const
+{
+  const int pageW = a.getCellTexSize();
+  // border texels come from the neighbor cell blending the same landclass;
+  // a neighbor without it means the landclass genuinely fades to 0 there
+  auto fetch = [&](int ci, int ch, int px, int py) -> uint8_t {
+    int cx = ci % cellsX, cy = ci / cellsX;
+    int k[2] = {px - LAND_WEIGHT_BORDER, py - LAND_WEIGHT_BORDER}, cc[2] = {cx, cy};
+    for (int axis = 0; axis < 2; axis++)
+    {
+      // a cell owns elemSize texels; the exported texture is that rounded up to
+      // a power of two, so anything past the cell belongs to the neighbour even
+      // where the texture still has rows of its own
+      if (k[axis] < 0)
+        cc[axis]--, k[axis] += elemSize;
+      else if (k[axis] >= elemSize)
+        cc[axis]++, k[axis] -= elemSize;
+    }
+    if (cc[0] == cx && cc[1] == cy)
+      return cells[ci].chan[ch][k[1] * texSize + k[0]];
+    if (uint32_t(cc[0]) >= uint32_t(cellsX) || uint32_t(cc[1]) >= uint32_t(cellsY)) // map edge: clamp own cell
+      return cells[ci]
+        .chan[ch][clamp(py - LAND_WEIGHT_BORDER, 0, elemSize - 1) * texSize + clamp(px - LAND_WEIGHT_BORDER, 0, elemSize - 1)];
+    const uint8_t *t = cellTexel(cc[0], cc[1], cells[ci].detTexIds[ch], k[0], k[1]);
+    return t ? *t : 0;
+  };
+
+  Tab<uint8_t> planeBuf(framemem_ptr());
+  planeBuf.resize(DET_NUM * pageW * pageW);
+  for (int ci = 0; ci < cells.size(); ci++)
+  {
+    const uint8_t *planes[DET_NUM];
+    int numTex = 0;
+    for (int ch = 0; ch < DET_NUM; ch++)
+    {
+      uint8_t *p = planeBuf.data() + ch * pageW * pageW;
+      planes[ch] = p;
+      if (!cells[ci].chan[ch].size())
+      {
+        memset(p, 0, pageW * pageW);
+        continue;
+      }
+      numTex = ch + 1;
+      for (int py = 0; py < pageW; py++)
+        for (int px = 0; px < pageW; px++)
+          p[py * pageW + px] = fetch(ci, ch, px, py);
+    }
+    a.setCellWeights(ci, planes, cells[ci].detTexIds, numTex);
+  }
+}
+
+void LandWeightAtlasBuilder::selfCheck(const LandWeightAtlas &a) const
+{
+  // read every cell back the way the shader will: a change to how pages are
+  // packed then shows up here, not as weights in the game. The error is what
+  // DXT1 costs on three independent weight channels sharing a page - a cell
+  // blending two landclasses packs about three times better than one blending
+  // four, and the level's mix decides the number.
+  double sse = 0, maxErr = 0;
+  int64_t n = 0;
+  for (int ci = 0; ci < cells.size(); ci++)
+    for (int y = 0; y < elemSize; y += 5)
+      for (int x = 0; x < elemSize; x += 5)
+      {
+        float w[DET_NUM];
+        if (!a.sampleCell(ci, x, y, w))
+          continue;
+        for (int ch = 0; ch < DET_NUM; ch++)
+        {
+          const float ref = cells[ci].chan[ch].size() ? cells[ci].chan[ch][y * texSize + x] / 255.f : 0.f;
+          const double err = fabsf(w[ch] - ref);
+          sse += err * err;
+          maxErr = max(maxErr, err);
+          n++;
+        }
+      }
+  debug("land weight atlas selfcheck: rmse %.5f max %.4f over %d samples", sqrt(sse / max<int64_t>(n, 1)), maxErr, (int)n);
+}
+
+LandWeightAtlas *LandWeightAtlasBuilder::finishForExport(int max_tex)
+{
+  int64_t reft = ref_time_ticks();
+  if (texSize < 1 || elemSize < 1)
+    return nullptr;
+  int pagesWanted = 0;
+  for (const Cell &c : cells)
+  {
+    int numTex = 0;
+    while (numTex < DET_NUM && c.chan[numTex].size())
+      numTex++;
+    pagesWanted += LandWeightAtlas::pagesFor(numTex);
+  }
+  // exactly the pages the cells blend; a flat map still takes one, or no record is written
+  eastl::unique_ptr<LandWeightAtlas> a(
+    new LandWeightAtlas(LandWeightAtlas::Pages::Raw, cellsX, cellsY, elemSize, 0, false, max(pagesWanted, 1)));
+  packCells(*a);
+  clear_and_shrink(cells); // the planes live on in the pages; the image the exporter composes next is as large again
+  // a cell past the record's page range keeps a single landclass; a load
+  // degrades that way and reports, an export must refuse rather than ship it
+  if (a->getPageCount() < pagesWanted)
+  {
+    logerr("land weight atlas: the map needs %d pages, a record addresses %d; export refused", pagesWanted, LAND_WEIGHT_PAGE_MASK + 1);
+    return nullptr;
+  }
+  if (!a->chooseLayout(max_tex))
+  {
+    logerr("land weight atlas: %d pages of %d texels do not fit a %dx%d texture; export refused", a->getPageCount(),
+      a->getCellTexSize(), max_tex, max_tex);
+    return nullptr;
+  }
+  int w = 0, h = 0;
+  a->getAtlasSize(w, h);
+  debug("land weight atlas: %dx%d cells, page %d (elem %d + border), %d pages in %dx%d, packed for export in %d us", cellsX, cellsY,
+    a->getCellTexSize(), elemSize, a->getPageCount(), w, h, (int)get_time_usec(reft));
+  return a.release();
 }

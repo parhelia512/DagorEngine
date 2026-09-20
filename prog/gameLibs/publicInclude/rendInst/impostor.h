@@ -32,12 +32,7 @@ private:
   struct Record final
   {
     ShaderElement *curShader;
-    int curVar;
-    uint32_t prog;
-    ShaderStateBlockId state;
-    shaders::RenderStateId rstate;
-    shaders::TexStateIdx tstate;
-    shaders::ConstStateIdx cstate;
+    shaders::CombinedDynVariantState dvState;
     GlobalVertexData *vData;
     int si, numf, bv;
   };
@@ -57,7 +52,9 @@ private:
   void coalesce_packed_drawcalls();
 
 public:
-  void render(dag::Span<const ShaderMesh::RElem> elems);
+  // returns the submitted elem count: an elem without a variant for the pass or a failed
+  // multidraw fill leaves elems out
+  uint32_t render(dag::Span<const ShaderMesh::RElem> elems, uint32_t instance_count = 1);
   void close();
 };
 

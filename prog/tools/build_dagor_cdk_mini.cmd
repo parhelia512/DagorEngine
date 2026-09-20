@@ -48,8 +48,6 @@ jam -s Root=../.. -f shaderCompiler2/jamfile-dx12
   if errorlevel 1 goto error
 jam -s Root=../.. -f shaderCompiler2/jamfile-stub
   if errorlevel 1 goto error
-jam -s Root=../.. -f shaderCompiler2/hlslCompiler/jamfile
-  if errorlevel 1 goto error
 jam -s Root=../.. -f shaderCompiler2/nodeBased/jamfile
   if errorlevel 1 goto error
 jam -s Root=../.. -f shaderInfo/jamfile

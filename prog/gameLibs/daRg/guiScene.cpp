@@ -2275,6 +2275,15 @@ void GuiScene::trySetXmbFocus(Element *target)
 }
 
 
+void GuiScene::queueXmbNodeHandler(Element *elem, const Sqrat::Object &key)
+{
+  const Sqrat::Table &nodeDesc = elem->xmb->nodeDesc;
+  Sqrat::Function f(sqvm, nodeDesc.GetObject(), nodeDesc.RawGetSlot(key).GetObject());
+  if (!f.IsNull())
+    queueScriptHandler(new ScriptHandlerSqFunc<>(f));
+}
+
+
 void GuiScene::doSetXmbFocus(Element *elem)
 {
   if (xmbFocus == elem)
@@ -2283,22 +2292,27 @@ void GuiScene::doSetXmbFocus(Element *elem)
   if (DAGOR_UNLIKELY(elem && elem->etree->screen != focusedScreen))
   {
     G_ASSERT(!"Setting XMB focus to non-focused screen");
-    xmbFocus = nullptr;
+    elem = nullptr;
   }
   else if (DAGOR_UNLIKELY(elem && elem->isDetached()))
   {
     G_ASSERT(!"Setting XMB focus to detached element");
-    xmbFocus = nullptr;
+    elem = nullptr;
   }
   else if (DAGOR_UNLIKELY(elem && !elem->xmb))
   {
     G_ASSERT(!"Setting XMB focus to non-XMB element");
-    xmbFocus = nullptr;
+    elem = nullptr;
   }
-  else
-  {
-    xmbFocus = elem;
-  }
+
+  // The previous focus may be mid-detach, but its XmbData is still alive here.
+  if (xmbFocus)
+    queueXmbNodeHandler(xmbFocus, stringKeys->onBlur);
+
+  xmbFocus = elem;
+
+  if (xmbFocus)
+    queueXmbNodeHandler(xmbFocus, stringKeys->onFocus);
 
   isXmbModeOn.setValue(Sqrat::Object(xmbFocus != nullptr, sqvm));
 }
@@ -2629,11 +2643,18 @@ void GuiScene::callScriptHandlers(bool is_shutdown)
 
   for (BaseScriptHandler *handler : queue)
   {
-    if (!is_shutdown || handler->allowOnShutdown)
+    if (is_shutdown && !handler->allowOnShutdown)
+      continue;
+
+    if (!handler->requiredElem.IsNull())
     {
-      DA_PROFILE_EVENT_DESC(handler->dapDescription);
-      handler->call();
+      ElementRef *ref = ElementRef::cast_from_sqrat_obj(handler->requiredElem);
+      if (!ref || !ref->elem)
+        continue;
     }
+
+    DA_PROFILE_EVENT_DESC(handler->dapDescription);
+    handler->call();
   }
 
   clear_all_ptr_items(queue);
@@ -3162,12 +3183,16 @@ void GuiScene::onElementDetached(Element *elem)
   if (it != invalidatedElements.end())
     invalidatedElements.erase(it);
 
+  deferredRecalcLayout.erase(elem);
+}
+
+
+void GuiScene::onXmbNodeRemoved(Element *elem)
+{
   if (elem == xmbFocus)
     doSetXmbFocus(nullptr);
 
   erase_item_by_value(keptXmbFocus, elem);
-
-  deferredRecalcLayout.erase(elem);
 }
 
 

@@ -9,6 +9,7 @@ local function dict(tab, src)
   return max
 end
 
+local PASSES = 10
 local tab = {}
 local src = {}
 local n = 500000
@@ -30,4 +31,4 @@ function profile_it(profiles, fn)
   return res
 end
 
-print(string.format("\"dictionary\", %.8f, 20", profile_it(20, function () dict(tab, src); end)))
+print(string.format("\"dictionary\", %.8f, 20", profile_it(20, function () for r = 1, PASSES do dict(tab, src) end end)))

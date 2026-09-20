@@ -18,4 +18,4 @@ function profile_it(profiles, fn)
 end
 
 
-print(string.format("\"exp loop\", %.8f, 20", profile_it(20, function () expLoop(1000000) end)))
+print(string.format("\"exp loop\", %.8f, 20", profile_it(20, function () expLoop(10000000) end)))

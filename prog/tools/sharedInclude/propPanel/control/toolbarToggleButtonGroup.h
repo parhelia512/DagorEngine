@@ -32,6 +32,8 @@ public:
 
   void setButtonPictureValues(const char *fname) override;
 
+  const char *getImguiTypeName() const override { return "ToolbarToggleButtonGroup"; }
+
   void updateImgui() override;
 
 private:

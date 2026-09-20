@@ -37,6 +37,6 @@ struct AnimcharRenderMainJob final : public cpujobs::IJob
     const Occlusion *occlusion_,
     const Frustum *fg_cam_blob_frustum,
     const TexStreamingContext tex_ctx);
-  const char *getJobName(bool &) const override { return "AnimcharRenderMainJob"; }
+  const char *getJobName(bool &) const override { return DAPROFILER_STRING("AnimcharRenderMainJob"); }
   void doJob() override;
 };

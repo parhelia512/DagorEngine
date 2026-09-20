@@ -91,6 +91,8 @@ public:
 
   void setDefaultValue(Variant var) override { defaultValue = var.convert<int>(); }
 
+  const char *getImguiTypeName() const override { return "ComboBox"; }
+
   void updateImgui() override
   {
     ScopedImguiBeginDisabled scopedDisabled(!controlEnabled);
@@ -108,6 +110,7 @@ public:
 
     const char *selectedText = selectedDisplayIndex >= 0 ? values[displayIndexToIndex[selectedDisplayIndex]].c_str() : "";
     const bool dropdownOpen = filteredComboBox.beginCombo("##bc", selectedText, selectedDisplayIndex);
+    setImguiTestItemInfo();
 
     if (valueHighlightColorSet)
       ImGui::PopStyleColor();

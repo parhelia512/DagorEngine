@@ -71,7 +71,7 @@ static struct GatherPhysmapPatchUpdatedRegionsJob final : public cpujobs::IJob
   Point2 patchOrigin;
   bool patchNeedsUpdate = false;
 
-  const char *getJobName(bool &) const override { return "gather_physmap_patch_updated_regions"; }
+  const char *getJobName(bool &) const override { return DAPROFILER_STRING("gather_physmap_patch_updated_regions"); }
 
   void doJob() override
   {
@@ -114,7 +114,7 @@ static struct GatherPhysmapPatchUpdatedRegionsJob final : public cpujobs::IJob
 } gather_physmap_patch_updated_regions_job;
 
 ECS_TAG(render)
-ECS_ON_EVENT(AfterDeviceReset)
+ECS_ON_EVENT(EventAfterDeviceReset)
 static void physmap_patch_after_device_reset_es_event_handler(const ecs::Event &, Point2 &physmap_patch_last_update_pos)
 {
   toroidal_helper.curOrigin = IPoint2{-100000, -100000};

@@ -1,8 +1,8 @@
 #ifndef SSR_COMMON_USE_INCLUDED
 #define SSR_COMMON_USE_INCLUDED 1
   // below CALC_SSR_ROUGHNESS_THRESHOLD there is no SSR calculation
-  #define CALC_SSR_ROUGHNESS_THRESHOLD 0.7
-  #define CALC_SSR_SMOOTHNESS_THRESHOLD (1-0.7)
+  #define CALC_SSR_ROUGHNESS_THRESHOLD 0.6
+  #define CALC_SSR_SMOOTHNESS_THRESHOLD (1-0.6)
   // between CALC_SSR_ROUGHNESS_THRESHOLD and MAX_LERP_SSR_ROUGHNESS_THRESHOLD there will be blending with rough specular
   #define MAX_LERP_SSR_ROUGHNESS_THRESHOLD 0.4
   half get_roughness_fade(half linear_roughness)

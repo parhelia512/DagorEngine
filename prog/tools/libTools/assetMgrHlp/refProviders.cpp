@@ -33,7 +33,7 @@ static bool loadSingleExporterPlugin(const DataBlock &appblk, DagorAssetMgr &mgr
     if (get_plugin)
     {
       p = get_plugin();
-      if (p && p->init(appblk))
+      if (p && dabuild_plugin_init(*p, appblk))
       {
         DaBuildPluginState &st = plugins.push_back();
         st.p = p;

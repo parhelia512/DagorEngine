@@ -188,7 +188,7 @@ bool RendererConsole::processCommand(const char *argv[], int argc)
     struct debugRILoadAsyncJob final : public cpujobs::IJob
     {
       int riToLoad, loaded = 0;
-      const char *getJobName(bool &) const override { return "debugRILoadAsyncJob"; }
+      const char *getJobName(bool &) const override { return DAPROFILER_STRING("debugRILoadAsyncJob"); }
       void doJob() override
       {
         DataBlock riBlk;
@@ -367,10 +367,8 @@ bool RendererConsole::processCommand(const char *argv[], int argc)
   }
   CONSOLE_CHECK_NAME("app", "prerun_fx", 1, 1) { ((WorldRenderer *)get_world_renderer())->prerunFx(); }
   CONSOLE_CHECK_NAME("render", "invalidate_light_probes", 1, 1) { ((WorldRenderer *)get_world_renderer())->invalidateLightProbes(); }
-  CONSOLE_CHECK_NAME("render", "invalidate_gi", 1, 2)
-  {
-    ((WorldRenderer *)get_world_renderer())->invalidateGI(argc > 1 ? to_bool(argv[1]) : false);
-  }
+  CONSOLE_CHECK_NAME("render", "invalidate_gi", 1, 1) { ((WorldRenderer *)get_world_renderer())->invalidateAllGI(); }
+  CONSOLE_CHECK_NAME("render", "invalidate_ri_collision", 1, 1) { ((WorldRenderer *)get_world_renderer())->invalidateRiCollision(); }
   CONSOLE_CHECK_NAME("render", "invalidate_volumelight", 1, 1) { ((WorldRenderer *)get_world_renderer())->invalidateVolumeLight(); }
   CONSOLE_CHECK_NAME("render", "show_boxes", 1, 4)
   {

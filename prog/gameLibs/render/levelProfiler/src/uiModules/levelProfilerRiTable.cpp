@@ -129,7 +129,15 @@ ProfilerString LpRiNameColumn::getCellTextForItem(const RiTableItem *item) const
 
 void LpRiNameColumn::drawCellForItem(const RiTableItem *item) const
 {
+  const float nameX = ImGui::GetCursorScreenPos().x;
   ImGui::Selectable(item->data->name.c_str(), item->isSelected, ImGuiSelectableFlags_SpanAllColumns);
+  if (!item->isUpdating)
+    return;
+
+  // Row selection and the row context menu both query the last submitted item, so the marker is
+  // painted rather than submitted: any widget here would take that role from the Selectable.
+  const ImVec2 markerPos(nameX + ImGui::CalcTextSize(item->data->name.c_str()).x + 6.0f, ImGui::GetItemRectMin().y);
+  ImGui::GetWindowDrawList()->AddText(markerPos, ImGui::GetColorU32(ImGuiCol_TextDisabled), "(updating)");
 }
 
 LpRiCountColumn::LpRiCountColumn(float width, ImGuiTableColumnFlags flags) :
@@ -550,8 +558,12 @@ void LpRiTable::drawContent()
 
   const auto &riData = riModule->getRiData();
 
-  if (!rangeFiltersInitialized)
-    initRangeFilters();
+  unsigned dataGeneration = riModule->getRiDataGeneration();
+  if (!rangeFiltersInitialized || dataGeneration != lastFiltersGeneration)
+  {
+    refreshRangeFilters();
+    lastFiltersGeneration = dataGeneration;
+  }
 
   if (sortedRiOrder.size() != riData.size())
   {
@@ -571,7 +583,7 @@ void LpRiTable::drawContent()
     if (!passesFilters(riRef))
       continue;
     bool isSelected = (selectedRiName == riRef.name);
-    tableItems.emplace_back(riRef, isSelected);
+    tableItems.emplace_back(riRef, isSelected, riModule && riModule->isCollecting());
   }
 
   filteredCount = tableItems.size();
@@ -967,7 +979,7 @@ void LpRiTable::drawHeavyShadersFilterContent(int lod_index)
   widget.Draw(uniqueList, heavyShaderFilters[filterIndex], changed);
 }
 
-void LpRiTable::initRangeFilters()
+void LpRiTable::refreshRangeFilters()
 {
   if (!riModule)
     return;
@@ -1026,9 +1038,9 @@ void LpRiTable::initRangeFilters()
         maxScreen[lodIndex] = lod.screenPercent;
     }
   }
-  countRangeFilter.reset(minCount, maxCount);
-  physTrisRangeFilter.reset(minPhys, maxPhys);
-  traceTrisRangeFilter.reset(minTrace, maxTrace);
+  countRangeFilter.rebind(minCount, maxCount);
+  physTrisRangeFilter.rebind(minPhys, maxPhys);
+  traceTrisRangeFilter.rebind(minTrace, maxTrace);
   lodDipsRangeFilters.resize(lodCount);
   lodTrisRangeFilters.resize(lodCount);
   lodDistRangeFilters.resize(lodCount);
@@ -1053,8 +1065,8 @@ void LpRiTable::initRangeFilters()
     minBSphere = 0.0f;
   if (minBBox == FLT_MAX)
     minBBox = 0.0f;
-  bSphereRadiusRangeFilter.reset(minBSphere, maxBSphere);
-  bBoxRadiusRangeFilter.reset(minBBox, maxBBox);
+  bSphereRadiusRangeFilter.rebind(minBSphere, maxBSphere);
+  bBoxRadiusRangeFilter.rebind(minBBox, maxBBox);
   for (int i = 0; i < lodCount; ++i)
   {
     int dipsMin = (minDips[i] == INT_MAX) ? 0 : minDips[i];
@@ -1063,12 +1075,12 @@ void LpRiTable::initRangeFilters()
     int trisMax = maxTris[i];
     int distMin = (minDist[i] == INT_MAX) ? 0 : minDist[i];
     int distMax = maxDist[i];
-    lodDipsRangeFilters[i].reset(dipsMin, dipsMax);
-    lodTrisRangeFilters[i].reset(trisMin, trisMax);
-    lodDistRangeFilters[i].reset(distMin, distMax);
+    lodDipsRangeFilters[i].rebind(dipsMin, dipsMax);
+    lodTrisRangeFilters[i].rebind(trisMin, trisMax);
+    lodDistRangeFilters[i].rebind(distMin, distMax);
     float scrMin = (minScreen[i] == FLT_MAX) ? 0.0f : minScreen[i];
     float scrMax = maxScreen[i];
-    lodScreenRangeFilters[i].reset(scrMin, scrMax);
+    lodScreenRangeFilters[i].rebind(scrMin, scrMax);
   }
   rangeFiltersInitialized = true;
 }

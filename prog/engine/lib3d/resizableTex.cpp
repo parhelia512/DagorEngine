@@ -1,6 +1,7 @@
 // Copyright (C) Gaijin Games KFT.  All rights reserved.
 
 #include <drv/3d/dag_driverDesc.h>
+#include <drv/3d/dag_resetDevice.h>
 #include <3d/dag_resizableTex.h>
 #include <math/dag_adjpow2.h>
 #include <debug/dag_debug.h>
@@ -31,6 +32,21 @@ void ResizableManagedTex::calcKey()
     mResource->getinfo(tex_info);
     currentKey = make_key(tex_info.w, tex_info.h, tex_info.d);
   }
+}
+
+// the alias cache is only valid for the device generation it was built on: a device
+// recovery recreates every texture independently, so old aliases no longer share memory.
+// The counter also advances on mode resets, where dropping the cache only costs a re-alias
+void ResizableManagedTex::resetAliasCacheIfStale()
+{
+  const uint32_t generation = get_d3d_reset_counter();
+  if (lastMResId == mResId && lastResetGeneration == generation)
+    return;
+
+  mAliases.clear();
+  calcKey();
+  originalTexture = mResource;
+  lastResetGeneration = generation;
 }
 
 static UniqueBaseTex try_get_existing(key_t key, ResizableManagedTex::AliasMap &aliases)
@@ -85,12 +101,7 @@ static UniqueBaseTex try_create_new(D3DResourceType res_type, int width, int hei
 
 void ResizableManagedTex::resize(int width, int height, int depth)
 {
-  if (lastMResId != mResId)
-  {
-    mAliases.clear();
-    calcKey();
-    originalTexture = mResource;
-  }
+  resetAliasCacheIfStale();
 
   const key_t newKey = make_key(width, height, depth);
   if (currentKey == newKey)

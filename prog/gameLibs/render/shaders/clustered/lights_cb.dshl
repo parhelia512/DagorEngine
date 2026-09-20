@@ -2,14 +2,28 @@ buffer omni_lights always_referenced;
 buffer spot_lights always_referenced;
 buffer common_lights_shadows always_referenced;
 texture photometry_textures_tex;
+sampler photometry_textures_tex_samplerstate
+{
+  mipmap_mode = linear;
+  filter = linear;
+  address_u = clamp;
+  address_v = clamp;
+  address_w = clamp;
+};
 texture dynamic_light_shadows;
+sampler dynamic_light_shadows_samplerstate
+{
+  comparison_func = less;
+  mipmap_mode = point;
+  address_u = clamp;
+  address_v = clamp;
+  address_w = clamp;
+};
 
 // GridLightsParams
 float depthSliceScale = 0.0;
 float depthSliceBias = 0.0;
 float4 shadowAtlasTexel = (0.0, 0.0, 0.0, 0.0);
-float shadowDistScale = 0.0;
-float shadowDistBias = 0.0;
 float shadowZBias = 0.0;
 float shadowSlopeZBias = 0.0;
 float dynamic_lights_ao_effect = 0.99;
@@ -21,7 +35,10 @@ macro INIT_POINT_LIGHTS_AO(code)
 endmacro
 
 macro INIT_PHOTOMETRY_TEXTURES(code)
-  (code) { photometry_textures_tex@smpArray = photometry_textures_tex; }
+  (code) {
+    photometry_textures_tex@texArray = photometry_textures_tex;
+    photometry_textures_tex_samplerstate@sampler = photometry_textures_tex_samplerstate;
+  }
 endmacro
 
 macro USE_PHOTOMETRY_TEXTURES(code)
@@ -188,7 +205,7 @@ endmacro
 macro INIT_CLUSTERED_LIGHTS(code)
   (code) {
     depth_slice_params__shadow_atlas_texel@f4 = (depthSliceScale, depthSliceBias, shadowAtlasTexel.x, shadowAtlasTexel.y/max(1, shadowAtlasTexel.y));
-    shadow_scale_bias_params@f4 = (shadowDistScale, shadowDistBias, shadowZBias, shadowSlopeZBias);
+    shadow_scale_bias_params@f2 = (shadowZBias, shadowSlopeZBias);
   }
 endmacro
 
@@ -201,10 +218,8 @@ macro USE_CLUSTERED_LIGHTS(code)
     #define depthSliceScale depth_slice_params__shadow_atlas_texel.x
     #define depthSliceBias depth_slice_params__shadow_atlas_texel.y
     #define shadowAtlasTexel depth_slice_params__shadow_atlas_texel.zw
-    #define shadowDistScale shadow_scale_bias_params.x
-    #define shadowDistBias shadow_scale_bias_params.y
-    #define shadowZBias shadow_scale_bias_params.z
-    #define shadowSlopeZBias shadow_scale_bias_params.w
+    #define shadowZBias shadow_scale_bias_params.x
+    #define shadowSlopeZBias shadow_scale_bias_params.y
   }
 endmacro
 
@@ -308,7 +323,8 @@ endmacro
 macro INIT_LIGHT_SHADOWS(code)
   (code)
   {
-    dynamic_light_shadows@shd = dynamic_light_shadows;
+    dynamic_light_shadows@tex2d = dynamic_light_shadows;
+    dynamic_light_shadows_cmpSampler@cmpSampler = dynamic_light_shadows_samplerstate;
     debug_disable_dynamic_pcf_center_sample@f1 = debug_disable_dynamic_pcf_center_sample;
   }
 endmacro

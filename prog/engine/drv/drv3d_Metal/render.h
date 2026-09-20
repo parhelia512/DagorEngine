@@ -76,8 +76,8 @@ struct ResourceHeap
   size_t size = 0;
   eastl::vector<Resource> resources;
 
-  void track_resource_read(drv3d_metal::HazardTracker &resource);
-  void track_resource_write(drv3d_metal::HazardTracker &resource);
+  void track_resource_read(drv3d_metal::HazardTracker &resource, bool is_from_vs);
+  void track_resource_write(drv3d_metal::HazardTracker &resource, bool is_from_vs);
 };
 
 namespace drv3d_metal
@@ -115,8 +115,8 @@ enum
 
 struct TexCopyRegion
 {
-  Texture *dst_ptr = nullptr;
-  Texture *src_ptr = nullptr;
+  HazardTracker *dst_ptr = nullptr;
+  HazardTracker *src_ptr = nullptr;
   id<MTLTexture> dst = nil;
   id<MTLTexture> src = nil;
   MTLPixelFormat src_format;
@@ -134,8 +134,8 @@ struct TexCopyRegion
 
   TexCopyRegion(Texture *dst, int dest_level, int dest_x, int dest_y, int dest_z, Texture *src, int src_level, int src_x, int src_y,
     int src_z, int src_w, int src_h, int src_d) :
-    dst_ptr(dst),
-    src_ptr(src),
+    dst_ptr(dst->apiTex),
+    src_ptr(src->apiTex),
     dst(dst->apiTex->texture),
     src(src->apiTex->texture),
     src_format(src->metal_format),
@@ -319,7 +319,7 @@ public:
 
   struct ClearTexOnCreate
   {
-    Texture *tex = nullptr;
+    HazardTracker *tracker = nullptr;
     id<MTLTexture> metalTex = nil;
     uint32_t slices = 1;
     uint32_t depth = 1;
@@ -329,9 +329,10 @@ public:
     int base_format = 0;
     bool use_dxt = false;
 
-    ClearTexOnCreate(Texture *tex) : tex(tex)
+    ClearTexOnCreate(Texture *tex)
     {
       G_ASSERT(tex);
+      tracker = tex->apiTex;
       if (tex->type == D3DResourceType::ARRTEX)
         slices = tex->depth;
       else if (tex->type == D3DResourceType::CUBETEX)
@@ -346,7 +347,6 @@ public:
       width = tex->width;
       height = tex->height;
 
-      G_ASSERT(tex->apiTex);
       metalTex = tex->apiTex->texture;
 
       base_format = tex->base_format;
@@ -455,7 +455,7 @@ public:
 
   struct UploadTex
   {
-    Texture *tex_ptr;
+    HazardTracker *tex_ptr;
     id<MTLTexture> tex;
     id<MTLBuffer> buf;
     uint32_t pitch;
@@ -495,25 +495,29 @@ public:
     {
       None = 0,
       Texture,
+      ApiTexture,
       Buffer,
       VDecl,
       Shader,
       Program,
       NativeResource,
       Heap,
-      RemoveFromResidency
+      RemoveFromResidency,
+      AccelerationStructure
     };
     Type type = Type::None;
     uint64_t submit = 0;
     union
     {
       Texture *texture;
+      Texture::ApiTexture *apiTexture;
       Buffer *buffer;
       int vdecl;
       int shader;
       int program;
       id<MTLResource> native_resource;
       id<MTLHeap> heap;
+      RaytraceAccelerationStructure *as;
     };
   };
 
@@ -643,7 +647,6 @@ public:
   }
 
   eastl::atomic<uint64_t> cur_thread;
-  uint64_t main_thread;
   eastl::atomic<int> acquire_depth;
 
   int max_commands = 0;
@@ -758,7 +761,7 @@ public:
     G_ASSERT(current_encoder);
 
     if (resource.heap)
-      resource.heap->track_resource_write(resource);
+      resource.heap->track_resource_write(resource, is_from_vs);
 
     // remove reads that are already executed and we don't care about
     resource.encoders_read_in.erase(eastl::remove_if(resource.encoders_read_in.begin(), resource.encoders_read_in.end(),
@@ -812,7 +815,7 @@ public:
       return;
 
     if (resource.heap)
-      resource.heap->track_resource_read(resource);
+      resource.heap->track_resource_read(resource, is_from_vs);
 
     // remove reads that are already executed and we don't care about
     resource.encoders_read_in.erase(eastl::remove_if(resource.encoders_read_in.begin(), resource.encoders_read_in.end(),
@@ -881,7 +884,7 @@ public:
   // vs maps to vs/ms/os
   struct StageStorage
   {
-    static constexpr uint32_t MAX_SAMPLERS = 16;
+    static constexpr uint32_t MAX_SAMPLERS = metal::MAX_S_REGISTERS;
 
     id<MTLBuffer> buffers[BUFFER_POINT_COUNT] = {};
     int buffers_offset[BUFFER_POINT_COUNT] = {};
@@ -895,7 +898,7 @@ public:
     uint32_t immediate_dword_count = 0;
     int immediate_slot = -1;
 
-    id<MTLTexture> textures[MAX_SHADER_TEXTURES] = {};
+    id<MTLTexture> textures[MAX_STAGE_TEXTURES] = {};
     uint64_t texture_dirty_mask = 0;
 
     id<MTLSamplerState> samplers[MAX_SAMPLERS];
@@ -904,7 +907,7 @@ public:
     uint8_t cbuffer[MAX_CBUFFER_SIZE];
     int cbuffer_num_bound = 0;
 
-    float sampler_biases[16 + BINDLESS_SAMPLER_COUNT] = {};
+    float sampler_biases[MAX_SAMPLERS + BINDLESS_SAMPLER_COUNT] = {};
     int samplers_bound = 0;
 
     uint32_t stage = STAGE_TOTAL;
@@ -987,14 +990,11 @@ public:
       uint8_t slice = 0;
     };
 
-    // first MAX_SHADER_TEXTURES is ordinary textures
-    // second MAX_SHADER_TEXTURES are uav textures
-    static constexpr uint32_t MAX_STAGE_TEXTURES = MAX_SHADER_TEXTURES * 2;
     TextureSlot textures[MAX_STAGE_TEXTURES];
 
     id<MTLSamplerState> samplers[MAX_STAGE_TEXTURES];
-    float sampler_biases[16] = {};
-    float sampler_biases_remapped[16 + BINDLESS_SAMPLER_COUNT] = {};
+    float sampler_biases[StageStorage::MAX_SAMPLERS] = {};
+    float sampler_biases_remapped[StageStorage::MAX_SAMPLERS + BINDLESS_SAMPLER_COUNT] = {};
 
     ConstBuffer cbuffer;
 
@@ -1019,7 +1019,7 @@ public:
 
     __forceinline void setSampler(StageStorage &storage, int slot, id<MTLSamplerState> sampler, float bias)
     {
-      if (slot >= 16)
+      if (slot >= StageStorage::MAX_SAMPLERS)
         return;
       if (sampler)
       {
@@ -1069,8 +1069,6 @@ public:
     void apply_biases(StageStorage &storage, Shader *shader, ResourceArray &resources);
 
     void reset();
-    void removeBuf(Buffer *buf);
-    void removeTex(Texture *tex);
   };
 
   struct BufferUP : public Buffer
@@ -1308,17 +1306,19 @@ public:
     {
       Resize,
       Update,
-      Null
+      Null,
+      Sampler
     };
     Op op;
     D3DResourceType type;
-    uint32_t index = 0; // new array size for Resize
+    uint32_t index = 0; // new array size for Resize, slot for Sampler
     uint32_t count = 0; // number of slots for Null
     D3dResource *res = nullptr;
+    float bias = 0;            // Sampler only
+    uint64_t samplerResId = 0; // Sampler only
   };
   std::mutex pending_bindless_lock;
   eastl::vector<PendingBindlessUpdate> pending_bindless_updates;
-  eastl::vector<PendingBindlessUpdate> pending_bindless_updates_render_acquired;
   std::atomic<uint32_t> pending_bindless_count{0};
 
   Buffer *bindlessSamplerIdBuffer = nullptr;
@@ -1328,6 +1328,8 @@ public:
   API_AVAILABLE(ios(18.0), macos(15.0)) id<MTLResidencySet> residencySet = nil;
   eastl::unordered_map<id<MTLResource>, uint32_t> resource_residency;
   uint32_t bindless_resources_bound = 0;
+  // types fenced before the vertex stage; only bits also set in bindless_resources_bound are valid
+  uint32_t bindless_resources_bound_vs = 0;
   bool residency_set_dirty = true;
 
   void removeResource(id<MTLResource> res);
@@ -1344,6 +1346,8 @@ public:
   void endFrame();
   void cleanupFrame();
   void flush(bool wait, bool present = false);
+
+  bool applyHdrModeChange();
 
   void flushTexture(Texture *tex);
 
@@ -1373,6 +1377,7 @@ public:
   void clearTex(Texture *tex, const int val[4], int level, int layer);
   void clearTex(Texture *tex, const unsigned val[4], int level, int layer);
   void clearTex(Texture *tex, const float val[4], int level, int layer);
+  void clearDepthStencil(Texture *tex, float z, uint8_t stencil, int level, int layer);
   void clearTexture(Texture *tex);
 
   bool setSrgbBackbuffer(bool set);
@@ -1381,8 +1386,8 @@ public:
   void copyBuffer(Sbuffer *src, int srcOffset, Sbuffer *dst, int dstOffset, int size);
 
   void doTexCopyRegion(const TexCopyRegion &cmd);
-  void doClear(Texture *dst, int dst_level, int dst_layer, float z, uint8_t stencil, float color[4], bool clear_int, bool color_write,
-    bool depth_write, bool stencil_write);
+  void doClear(Texture *dst_col, Texture *dst_depth, int dst_level, int dst_layer, float z, uint8_t stencil, float color[4],
+    bool clear_int, bool color_write, bool depth_write, bool stencil_write);
   void doClearTexture(uint16_t width, uint16_t height, uint8_t slices, uint8_t depth, uint8_t levels, id<MTLTexture> tex,
     int base_format, bool use_dxt);
   void doDispatch(Buffer *indirect_buffer, int offset, int tx, int ty, int tz);
@@ -1415,7 +1420,7 @@ public:
 
   void setRenderPass(bool set);
 
-  int createComputeProgram(const uint8_t *code, const uint8_t *meta = nullptr);
+  int createComputeProgram(const uint8_t *code, const uint8_t *meta = nullptr, const char *name = nullptr);
   void deleteComputeProgram(int cs);
 
   void clearBuffer(Buffer *buf, Buffer::BufTex *buff);
@@ -1437,14 +1442,16 @@ public:
   bool updateBindlessResource(D3DResourceType range_type, uint32_t index, D3dResource *res);
   int updateBindlessResourcesToNull(D3DResourceType type, uint32_t index, uint32_t count);
   void resizeBindlessArray(D3DResourceType type, uint32_t new_size);
+  void updateBindlessSampler(uint32_t slot, float bias, uint64_t sampler_res_id);
 
   bool updateBindlessResourceAnyThread(D3DResourceType type, uint32_t index, const dag::ConstSpan<D3dResource *> &resources);
   void updateBindlessResourcesToNullAnyThread(D3DResourceType type, uint32_t index, uint32_t count);
   void resizeBindlessArrayAnyThread(D3DResourceType type, uint32_t new_size);
+  void updateBindlessSamplerAnyThread(uint32_t slot, float bias, uint64_t sampler_res_id);
   void purgeQueuedBindlessUpdates(D3dResource *res);
   void applyQueuedBindlessUpdates();
 
-  void prepareBindlessResources(uint32_t requestedTypes);
+  void prepareBindlessResources(uint32_t requestedTypes, bool is_from_vs);
 
   bool updateProgram();
   void updateStates();

@@ -10,7 +10,8 @@
 #include <render/daFrameGraph/ecs/frameGraphNode.h>
 #include <ecs/render/updateStageRender.h>
 #include <ecs/render/renderEvent.h>
-#include <EASTL/vector_set.h>
+#include <EASTL/algorithm.h>
+#include <EASTL/string_view.h>
 #include <generic/dag_enumerate.h>
 #include <scene/dag_occlusion.h>
 
@@ -240,7 +241,7 @@ void LensFlareRenderer::collectAndPrepareECSFlares_DynamicLights()
 template <typename Callable>
 static void gather_flare_configs_ecs_query(ecs::EntityManager &manager, Callable);
 
-static const eastl::vector_set<eastl::string> ACCEPTED_FLARE_COMPONENT_PROPS = {"flare_component__enabled",
+static constexpr eastl::string_view ACCEPTED_FLARE_COMPONENT_PROPS[] = {"flare_component__enabled",
   "flare_component__gradient__falloff", "flare_component__gradient__gradient", "flare_component__gradient__inverted",
   "flare_component__radial_distortion__enabled", "flare_component__radial_distortion__relative_to_center",
   "flare_component__radial_distortion__distortion_curve_pow", "flare_component__radial_distortion__radial_edge_size",
@@ -248,6 +249,13 @@ static const eastl::vector_set<eastl::string> ACCEPTED_FLARE_COMPONENT_PROPS = {
   "flare_component__intensity", "flare_component__roundness", "flare_component__side_count", "flare_component__tint",
   "flare_component__use_light_color", "flare_component__texture", "flare_component__rotation_offset",
   "flare_component__pre_rotation_offset"};
+
+static bool is_accepted_flare_component_prop(const eastl::string &name)
+{
+  const eastl::string_view nameView(name.data(), name.size());
+  return eastl::find(eastl::begin(ACCEPTED_FLARE_COMPONENT_PROPS), eastl::end(ACCEPTED_FLARE_COMPONENT_PROPS), nameView) !=
+         eastl::end(ACCEPTED_FLARE_COMPONENT_PROPS);
+}
 
 void LensFlareRenderer::updateConfigsFromECS()
 {
@@ -323,7 +331,7 @@ void LensFlareRenderer::updateConfigsFromECS()
         if (componentsHandled != numComponents)
         {
           for (const auto &property : configObj)
-            if (ACCEPTED_FLARE_COMPONENT_PROPS.count(property.first) == 0)
+            if (!is_accepted_flare_component_prop(property.first))
               logerr("Unknown lens flare component (flare config / component index / component property): %s / %d / %s",
                 lens_flare_config__name, elementInd, property.first);
         }
@@ -366,5 +374,5 @@ ECS_REQUIRE(const ecs::string &lens_flare_config__name, const float &lens_flare_
   const float &lens_flare_config__exposure_reduction, const Point2 &lens_flare_config__scale,
   const float &lens_flare_config__intensity, bool lens_flare_config__use_occlusion, const float &lens_flare_config__depth_bias,
   const float &lens_flare_config__spotlight_cone_angle_deg, const ecs::Array &lens_flare_config__elements)
-ECS_ON_EVENT(AfterDeviceReset)
+ECS_ON_EVENT(EventAfterDeviceReset)
 static void lens_flare_after_device_reset_es(const ecs::Event &) { schedule_flares_update(); }

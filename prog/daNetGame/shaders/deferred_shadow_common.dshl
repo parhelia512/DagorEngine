@@ -307,9 +307,7 @@ macro USE_DEFERRED_SHADOW_PER_SAMPLE(code)
 
       float4 weights = sampleCloseUpscaleWeight(screenpos);
       SSAO_TYPE ssao = getSSAOUpscaleWeighted(weights, screenpos);
-      float4 ssrFarLin = linearize_z4(downsampled_far_depth_tex.GatherRed(downsampled_far_depth_tex_samplerstate, curViewTc), zn_zfar.zw);
-      float4 ssrWeights = sampleCloseUpscaleWeightWithDepthMatch(screenpos, ssrFarLin, w);
-      half4 ssrReflections = getSSRWeighted(gbuffer.linearRoughness, curViewTc, screenpos, half4(ssrWeights));
+      half4 ssrReflections = getSSRWeighted(gbuffer.linearRoughness, curViewTc, screenpos, weights);
 
       half cockpitFade = half(saturate(dot(float4(worldPos.xyz, 1), hero_cockpit_vec)));
 
@@ -504,18 +502,14 @@ macro USE_DEFERRED_SHADOW_PER_SAMPLE(code)
       ##endif
 
 
-      bool isTranslucent =
-        (isFoliageShader(gbuffer.material) || (isSubSurfaceShader(gbuffer.material) && gbuffer.sss_profile == SSS_PROFILE_NEUTRAL_TRANSLUCENT)) &&
-        translucencyStrength > 1.0/255;
-
       BRANCH
-      if (gbuffer.material == SHADING_SUBSURFACE && isSubSurfaceProfileValid(gbuffer.sss_profile))
+      if (gbuffer.isSkinMaterial)
       {
         ##if use_ssss != off
           result += gbuffer.diffuseColor * lightColor * ssss_get_profiled_transmittance(gbuffer.normal, lightDir, ssssTransmittance);
         ##endif
       }
-      else if (isTranslucent)
+      else if (gbuffer.isTranslucent)
       {
         if ((SSSshadow > 0))
         {

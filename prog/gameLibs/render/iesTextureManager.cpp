@@ -4,6 +4,7 @@
 
 #include <drv/3d/dag_renderTarget.h>
 #include <drv/3d/dag_driver.h>
+#include <drv/3d/dag_texture.h>
 #include <debug/dag_debug3d.h>
 #include <shaders/dag_shaderVar.h>
 #include <shaders/dag_shaders.h>
@@ -170,11 +171,6 @@ void IesTextureCollection::reloadTextures()
     photometryTexId = ::add_managed_array_texture(PHOTOMETRY_TEX_NAME, cstrVec);
   }
   ShaderGlobal::set_texture(::get_shader_variable_id(PHOTOMETRY_VAR_NAME), photometryTexId);
-  {
-    d3d::SamplerInfo smpInfo;
-    smpInfo.address_mode_u = smpInfo.address_mode_v = smpInfo.address_mode_w = d3d::AddressMode::Clamp;
-    ShaderGlobal::set_sampler(::get_shader_variable_id("photometry_textures_tex_samplerstate"), d3d::request_sampler(smpInfo));
-  }
   photometryData.reserve(usedTextures.size());
   for (uint32_t i = photometryData.size(); i < usedTextures.size(); ++i)
   {
@@ -242,8 +238,8 @@ void IesEditor::ensureTextureCreated(BaseTexture *photometry_tex_array)
     TEXCF_RTARGET | TEXCF_CLEAR_ON_CREATE | TEXCF_SRGBREAD | TEXFMT_R8, 1, "ies_editor_tex", RESTAG_LIGHTS);
   for (int i = 0; i < photometryResolution.z; ++i)
   {
-    dynamicIesTexArray.getArrayTex()->updateSubRegion(photometry_tex_array, i, 0, 0, 0, photometryResolution.x, photometryResolution.y,
-      1, i, 0, 0, 0);
+    d3d::update_sub_region(photometry_tex_array, i, 0, 0, 0, photometryResolution.x, photometryResolution.y, 1,
+      dynamicIesTexArray.getArrayTex(), i, 0, 0, 0);
   }
   d3d::resource_barrier({dynamicIesTexArray.getArrayTex(), RB_RO_SRV | RB_STAGE_PIXEL, 0, 0});
   static int photometry_textures_texVarId = get_shader_variable_id("photometry_textures_tex", true);

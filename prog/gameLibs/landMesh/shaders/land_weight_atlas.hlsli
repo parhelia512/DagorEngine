@@ -24,9 +24,9 @@
 #define LAND_WEIGHT_BORDER                 2 // texels of neighbour weights on each page side
 
 #define LAND_WEIGHT_CELL_STRIDE            12 // bytes: the pages dword, then DET_NUM landclass ids
-#define LAND_WEIGHT_PAGE_MASK              0x0FFFU
-#define LAND_WEIGHT_PAGE1_SHIFT            12
-#define LAND_WEIGHT_COUNT_SHIFT            24
+#define LAND_WEIGHT_PAGE_MASK              0x3FFFU
+#define LAND_WEIGHT_PAGE1_SHIFT            14
+#define LAND_WEIGHT_COUNT_SHIFT            28
 #define LAND_WEIGHT_COUNT_MASK             7U // blended landclasses less one: there is always one
 
 #endif

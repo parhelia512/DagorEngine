@@ -12,15 +12,16 @@
 
 #include <main/water.h>
 #include <render/antialiasing.h>
+#include <render/dynmodelRenderer.h>
 #include <render/renderEvent.h>
 #include <render/skies.h>
 #include <render/subFrameSample.h>
 #include <render/volumetricLights/volumetricLights.h>
 #include <render/world/antiAliasingMode.h>
-#include <render/world/cameraParams.h>
+#include <render/cameraParams.h>
 #include <render/world/depthBounds.h>
 #include <render/world/frameGraphHelpers.h>
-#include <render/world/reprojectionTm.h>
+#include <render/reprojectionTm.h>
 #include <render/world/sunParams.h>
 #include <render/world/waterRenderMode.h>
 #include <render/world/wrDispatcher.h>
@@ -217,14 +218,9 @@ static void create_camera_setup_nodes_es(const OnCameraNodeConstruction &evt)
       handles->antiAliasingModeHndl.ref() = static_cast<AntiAliasingMode>(WRDispatcher::getCurrentAntiAliasingMode());
       handles->sunParamsHndl.ref() = {curDirToSun, WRDispatcher::getSunColor(), panoramaDirToSun};
 
-      {
-        const float water_level = WRDispatcher::GetWaterLevel();
-        const bool belowClouds = get_daskies() ? max(camPos.y, water_level) < get_daskies()->getCloudsStartAlt() - 10.0f : true;
-        handles->waterLevelHndl.ref() = water_level;
-        handles->belowCloudHndl.ref() = belowClouds;
-
-        handles->waterRenderModeHndl.ref() = WRDispatcher::determineWaterRenderMode(handles->isUnderwaterHndl.ref(), belowClouds);
-      }
+      handles->waterLevelHndl.ref() = WRDispatcher::GetWaterLevel();
+      handles->belowCloudHndl.ref() = WRDispatcher::isCameraBelowClouds();
+      handles->waterRenderModeHndl.ref() = WRDispatcher::getWaterRenderMode();
     };
   }));
 
@@ -319,6 +315,9 @@ static void create_camera_setup_nodes_es(const OnCameraNodeConstruction &evt)
           subFrameSample = SubFrameSample::Last;
         else
           subFrameSample = SubFrameSample::Intermediate;
+
+        if (subFrameSample == SubFrameSample::Intermediate || subFrameSample == SubFrameSample::Last)
+          dynrend::reset_ring_buffers();
 
         Driver3dPerspective jitterPersp = currentFrameCamera.noJitterPersp;
         auto displayRes = displayResolution.get();

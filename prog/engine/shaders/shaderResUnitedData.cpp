@@ -4,6 +4,7 @@
 #include <shaders/dag_rendInstRes.h>
 #include <shaders/dag_dynSceneRes.h>
 #include <perfMon/dag_cpuFreq.h>
+#include <perfMon/dag_perfTimer.h>
 #include <memory/dag_framemem.h>
 #include <util/dag_delayedAction.h>
 #include <util/dag_convar.h>
@@ -1198,7 +1199,7 @@ void ShaderResUnitedVdata<RES>::reloadResList(PtrTab<RES> &&resources)
   {
     ShaderResUnitedVdata *unitedVdata;
     PtrTab<RES> resources;
-    const char *getJobName(bool &) const override { return "ReloadVdataListJob"; }
+    const char *getJobName(bool &) const override { return DAPROFILER_STRING("ReloadVdataListJob"); }
     void doJob() override
     {
       Tab<cpujobs::IJob *> jobs;
@@ -1258,7 +1259,7 @@ cpujobs::IJob *ShaderResUnitedVdata<RES>::reloadResNoLock(RES *res)
       unitedVdata = self;
       unitedVdata->initUpdateJob(*this, r);
     }
-    const char *getJobName(bool &) const override { return "UpdateModelVdataJob"; }
+    const char *getJobName(bool &) const override { return DAPROFILER_STRING("UpdateModelVdataJob"); }
     void doJob() override final { unitedVdata->doUpdateJob(*this); }
     void releaseJob() override final
     {
@@ -1421,7 +1422,7 @@ void ShaderResUnitedVdata<RES>::discardUnusedResToFreeReqMemImpl(bool lock, bool
     explicit DiscardUnusedResJob(ShaderResUnitedVdata *unitedVdata, bool is_async_job) :
       unitedVdata(unitedVdata), isAsyncJob(is_async_job)
     {}
-    const char *getJobName(bool &) const override { return "DiscardUnusedResJob"; }
+    const char *getJobName(bool &) const override { return DAPROFILER_STRING("DiscardUnusedResJob"); }
     void doJob() override
     {
       interlocked_release_store(unitedVdata->discardJobIsPending, 0);
@@ -1923,6 +1924,19 @@ static inline int calc_chunks_total_size(dag::ConstSpan<unitedvdata::BufChunk> c
   for (const auto &chunk : chunks)
     res += chunk.sz;
   return res;
+}
+
+template <class RES>
+void ShaderResUnitedVdata<RES>::buildStatusStrThrottled(String &out_str, unsigned period_usec)
+{
+  std::lock_guard<std::mutex> scopedLock(appendMutex); // reload jobs mutate the failed set under it
+  // a failed reload is the event this status exists for; it must not wait out the period
+  if (lastStatusReft && failedVdataReloadResSet.empty() && !profile_usec_passed(lastStatusReft, period_usec))
+    return;
+  lastStatusReft = profile_ref_ticks();
+  buildStatusStrNoLock(out_str, false);
+  out_str.insert(0, "\n\n", 2);
+  out_str += "\n";
 }
 
 template <class RES>

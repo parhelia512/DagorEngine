@@ -140,16 +140,6 @@ bool HmapLandPlugin::traceRay(const Point3 &pt, const Point3 &dir, real &maxt, P
   return ::trace_ray_midpoint_heightmap(*this, pt, dir, maxt, norm) || ret;
 }
 
-bool HmapLandPlugin::shadowRayHitTest(const Point3 &pt, const Point3 &dir, real maxt)
-{
-  if (!heightMap.isFileOpened() || !isVisible || exportType == EXPORT_PSEUDO_PLANE || calculating_shadows)
-    return false;
-
-  applyHmModifiers(false);
-  return ray_hit_midpoint_heightmap_approximate(*this, pt, dir, maxt);
-}
-
-
 bool HmapLandPlugin::getHeightmapCell5Pt(const IPoint2 &cell, real &h0, real &hx, real &hy, real &hxy, real &hmid) const
 {
   if (exportType == EXPORT_PSEUDO_PLANE)

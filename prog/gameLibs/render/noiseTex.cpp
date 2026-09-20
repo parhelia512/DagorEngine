@@ -315,7 +315,6 @@ static bool generate_perlin_noise_3d(SharedTexWithShaderVar &t, Point3 &min_r, P
     }
     char *data;
     int row_pitch, slice_pitch, src_row_pitch;
-    SmallTab<unsigned char, TmpmemAlloc> oneSlice;
     uint8_t *srcData = texData.data();
     int curHt = noiseW / 4;
     if (fmt == TEXFMT_DXT1)

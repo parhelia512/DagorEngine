@@ -17,7 +17,6 @@
 #include <propPanel/control/container.h>
 #include <propPanel/c_util.h>
 #include <propPanel/colors.h>
-#include <propPanel/constants.h>
 #include <propPanel/propPanel.h>
 #include <util/dag_string.h>
 #include <winGuiWrapper/wgw_dialogs.h>
@@ -25,6 +24,7 @@
 
 #include <imgui/imgui.h>
 #include <imgui/imgui_internal.h>
+#include <imgui/misc/freetype/imgui_freetype.h>
 
 static void start_non_busy();
 static void end_non_busy();
@@ -52,7 +52,7 @@ enum
 class ImguiMessageBoxDialog : public PropPanel::DialogWindow
 {
 public:
-  explicit ImguiMessageBoxDialog(const char *caption) : PropPanel::DialogWindow(nullptr, hdpi::Px::ZERO, hdpi::Px::ZERO, caption) {}
+  ImguiMessageBoxDialog(const char *caption, hdpi::Px w) : PropPanel::DialogWindow(nullptr, w, hdpi::Px::ZERO, caption) {}
 
   void setInitialFocus()
   {
@@ -93,9 +93,9 @@ public:
     return PropPanel::DIALOG_ID_NONE;
   }
 
-  void updateImguiDialog() override
+  void updateImguiDialog(const PropPanel::DialogWindow::DialogFrameSizing &sizing) override
   {
-    DialogWindow::updateImguiDialog();
+    DialogWindow::updateImguiDialog(sizing);
 
     if (ImGui::IsWindowFocused(ImGuiFocusedFlags_ChildWindows) &&
         (ImGui::Shortcut(ImGuiMod_Ctrl | ImGuiKey_C) || ImGui::Shortcut(ImGuiMod_Ctrl | ImGuiKey_Insert)))
@@ -125,16 +125,17 @@ public:
     if (ImGui::GetCurrentContext()->WithinFrameScope)
       return false;
 
-    ImguiMessageBoxDialog dlg(caption);
-
     const bool mono = (flags & wingw::MBS_MONOSPACE) != 0;
+    const int boxType = flags & 0xf;
+    const bool wideButtonRow = boxType == wingw::MBS_ABORTRETRYIGNORE || boxType == wingw::MBS_YESNOCANCEL;
+    const hdpi::Px minWidth = wideButtonRow ? hdpi::_pxScaled(320) : hdpi::_pxScaled(280);
+
+    ImguiMessageBoxDialog dlg(caption, minWidth);
 
     PropPanel::ContainerPropertyControl *panel = dlg.getPanel();
-    panel->createStatic(PID_MESSAGE, msg.c_str(), false, true, true, mono);
+    panel->createStatic(PID_MESSAGE, msg.c_str(), false, true, true, mono, 100);
 
-    hdpi::Px widthMin = hdpi::_pxScaled(280);
-    hdpi::Px widthMax = hdpi::_pxScaled(480);
-    switch (flags & 0x0F)
+    switch (boxType)
     {
       case wingw::MBS_OK:
         dlg.setCloseButtonVisible(false);
@@ -146,16 +147,12 @@ public:
         createMessageBoxButton(dlg, DIALOG_ID_ABORT);
         createMessageBoxButton(dlg, DIALOG_ID_RETRY);
         createMessageBoxButton(dlg, DIALOG_ID_IGNORE);
-        widthMin = hdpi::_pxScaled(320);
-        widthMax = hdpi::_pxScaled(600);
         break;
       case wingw::MBS_YESNOCANCEL:
         removeDefaultDialogButtons(dlg);
         createMessageBoxButton(dlg, PropPanel::DIALOG_ID_YES);
         createMessageBoxButton(dlg, PropPanel::DIALOG_ID_NO);
         createMessageBoxButton(dlg, PropPanel::DIALOG_ID_CANCEL);
-        widthMin = hdpi::_pxScaled(320);
-        widthMax = hdpi::_pxScaled(600);
         break;
       case wingw::MBS_YESNO:
         dlg.setCloseButtonVisible(false);
@@ -166,28 +163,7 @@ public:
     }
 
     dlg.setInitialFocus();
-
-    const float paddingHorizontal = hdpi::_pxS(12) * 2;
-    const float wrapMin = _px(widthMin) - paddingHorizontal;
-    const float wrapMax = _px(widthMax) - paddingHorizontal;
-    // Measure with the same font the static control will render with. The monospace
-    // glyphs are wider than the proportional ones, so sizing with the default font
-    // would under-size the box and wrap a window line away from its caret. CalcTextSizeA
-    // works without a frame scope (the dialog is shown between frames).
-    ImVec2 textSize;
-    if (mono && imgui_get_mono_font())
-      textSize = imgui_get_mono_font()->CalcTextSizeA(ImGui::GetFontSize(), FLT_MAX, wrapMax, msg.c_str());
-    else
-      textSize = ImGui::CalcTextSize(msg.c_str(), nullptr, false, wrapMax);
-    if (textSize.x >= wrapMin)
-      widthMin = widthMax;
-
-    const float fontSize = ImGui::GetFontSize();
-    hdpi::Px font = hdpi::_pxActual(fontSize * 2);
-    hdpi::Px padding = hdpi::_pxScaled(PropPanel::Constants::MODAL_WINDOW_PADDING * 4);
-    hdpi::Px spacing = hdpi::_pxScaled(PropPanel::Constants::MODAL_WINDOW_ITEM_SPACING * 4);
-
-    dlg.setWindowSize(widthMin, font + padding + hdpi::_pxActual(textSize.y) + spacing);
+    dlg.autoSize(/*auto_center = */ true, /*use_preferred_size = */ true);
 
     ret = dlg.showDialog();
     G_STATIC_ASSERT(int(PropPanel::DIALOG_ID_OK) == int(wingw::MB_ID_OK));
@@ -348,7 +324,7 @@ static void apply_imgui_style()
 
 static const char *get_imgui_style_var_name(ImGuiStyleVar idx)
 {
-  G_STATIC_ASSERT(ImGuiStyleVar_COUNT == 41);
+  G_STATIC_ASSERT(ImGuiStyleVar_COUNT == 43);
   switch (idx)
   {
     case ImGuiStyleVar_Alpha: return "Alpha";
@@ -392,6 +368,8 @@ static const char *get_imgui_style_var_name(ImGuiStyleVar idx)
     case ImGuiStyleVar_SeparatorTextAlign: return "SeparatorTextAlign";
     case ImGuiStyleVar_SeparatorTextPadding: return "SeparatorTextPadding";
     case ImGuiStyleVar_DockingSeparatorSize: return "DockingSeparatorSize";
+    case ImGuiStyleVar_MenuItemRounding: return "MenuItemRounding";
+    case ImGuiStyleVar_SelectableRounding: return "SelectableRounding";
   }
   G_ASSERT(0);
   return "Unknown";
@@ -559,6 +537,13 @@ static bool load_imgui_style() { return load_imgui_style_from(get_style_blk_path
 
 static float get_imgui_scale() { return clamp(win32_system_dpi / 96.0f, 1.0f, 5.0f); }
 
+static void apply_imgui_scale()
+{
+  const float scale = get_imgui_scale();
+  ImGui::GetStyle().FontScaleMain = scale;
+  ImGui::GetStyle().ScaleAllSizes(scale);
+}
+
 void editor_core_initialize_imgui()
 {
   DataBlock overrideBlk;
@@ -574,6 +559,10 @@ void editor_core_initialize_imgui()
   String fontPath(256, "%s%s", sgg::get_exe_path_full(), "../commonData/fonts/roboto-regular.ttf");
   simplify_fname(fontPath);
   overrideBlk.setStr("imgui_font_name", fontPath);
+
+  // A second face for callers that bake one size at several rasterizer densities and need advances
+  // that do not depend on it; every other font keeps the sharper hinted advance.
+  imgui_add_custom_font(LINEAR_METRICS_FONT_NAME, fontPath, EDITOR_CORE_DEFAULT_FONT_SIZE, ImGuiFreeTypeLoaderFlags_LinearMetrics);
 
   fontPath.printf(256, "%s%s", sgg::get_exe_path_full(), "../commonData/fonts/roboto-bold.ttf");
   simplify_fname(fontPath);
@@ -605,7 +594,7 @@ void editor_core_initialize_imgui()
 
   ImGui::GetStyle() = ImGuiStyle(); // Reset the style because it has been scaled in imgui_apply_style_from_blk.
   apply_imgui_style();
-  ImGui::GetStyle().ScaleAllSizes(scale);
+  apply_imgui_scale();
 
   ImGui::GetStyle().HoverStationaryDelay = 0.5f; // Use the default Windows tooltip hover delay.
 
@@ -753,7 +742,7 @@ void editor_core_load_imgui_theme(const char *fname)
     apply_imgui_style();
   }
 
-  ImGui::GetStyle().ScaleAllSizes(get_imgui_scale());
+  apply_imgui_scale();
 
   String iconDirPath(512, "%s../commonData/icons", sgg::get_exe_path_full());
   simplify_fname(iconDirPath);

@@ -536,7 +536,7 @@ static constexpr ecs::ComponentDesc get_aim_dof_scope_ecs_query_comps[] =
   {ECS_HASH("gunmod__focusPlaneShift"), ecs::ComponentTypeInfo<float>()},
   {ECS_HASH("gunmod__dofNearAmountPercent"), ecs::ComponentTypeInfo<float>()},
   {ECS_HASH("gunmod__dofFarAmountPercent"), ecs::ComponentTypeInfo<float>()},
-  {ECS_HASH("gunmod__realZoomDofFarAmountPercent"), ecs::ComponentTypeInfo<float>(), ecs::CDF_OPTIONAL}
+  {ECS_HASH("gunmod__dofFovInvariant"), ecs::ComponentTypeInfo<bool>(), ecs::CDF_OPTIONAL}
 };
 static ecs::CompileTimeQueryDesc get_aim_dof_scope_ecs_query_desc
 (
@@ -557,7 +557,7 @@ inline bool get_aim_dof_scope_ecs_query(ecs::EntityManager &manager, ecs::Entity
               ECS_RO_COMP(get_aim_dof_scope_ecs_query_comps, "gunmod__focusPlaneShift", float)
             , ECS_RO_COMP(get_aim_dof_scope_ecs_query_comps, "gunmod__dofNearAmountPercent", float)
             , ECS_RO_COMP(get_aim_dof_scope_ecs_query_comps, "gunmod__dofFarAmountPercent", float)
-            , ECS_RO_COMP_OR(get_aim_dof_scope_ecs_query_comps, "gunmod__realZoomDofFarAmountPercent", float(0.18))
+            , ECS_RO_COMP_OR(get_aim_dof_scope_ecs_query_comps, "gunmod__dofFovInvariant", bool(false))
             );
 
         }

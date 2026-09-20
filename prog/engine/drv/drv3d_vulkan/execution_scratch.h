@@ -111,6 +111,35 @@ struct ExecutionScratch
   dag::Vector<DebugEvent> debugEventStack;
 
   dag::Vector<Image *> mipGenList;
+
+#if VULKAN_HAS_RAYTRACING
+  // inputs of one batched acceleration structure build, kept here to reuse the allocations
+  struct RaytraceBuildBatch
+  {
+    dag::Vector<VkAccelerationStructureBuildGeometryInfoKHR> infos;
+    dag::Vector<const VkAccelerationStructureBuildRangeInfoKHR *> ranges;
+    // BLAS geometries and ranges stay in the replay stores, TLAS ones have no store and live here
+    dag::Vector<VkAccelerationStructureGeometryKHR> tlasGeometries;
+    dag::Vector<VkAccelerationStructureBuildRangeInfoKHR> tlasRanges;
+
+    // reserve keeps the pointers installed into infos valid while the batch fills up
+    void reset(uint32_t count)
+    {
+      infos.clear();
+      infos.reserve(count);
+      ranges.clear();
+      ranges.reserve(count);
+      tlasGeometries.clear();
+      tlasGeometries.reserve(count);
+      tlasRanges.clear();
+      tlasRanges.reserve(count);
+    }
+  };
+  RaytraceBuildBatch raytraceBuildBatch;
+#if VK_EXT_opacity_micromap
+  dag::Vector<VkMicromapBuildInfoEXT> micromapBuildInfos;
+#endif
+#endif
 };
 
 } // namespace drv3d_vulkan

@@ -21,7 +21,8 @@ ECS_REGISTER_EVENT(RemovePuddlesInRadius)
 ECS_REGISTER_EVENT(PreparePuddles)
 
 ECS_TAG(render)
-static void init_puddles_manager_es(const OnLevelLoaded &evt, PuddlesManager &puddles__manager, float puddles__bare_minimum_dist)
+static void init_puddles_manager_es(
+  const EventRenderSceneLoaded &evt, PuddlesManager &puddles__manager, float puddles__bare_minimum_dist)
 {
   puddles__manager.init(get_landmesh_manager(), evt.level_blk,
     renderer_has_feature(FeatureRenderFlags::HIGHRES_PUDDLES) ? -1 : puddles__bare_minimum_dist);
@@ -46,7 +47,7 @@ static void prepare_puddles_es(const PreparePuddles &evt, PuddlesManager &puddle
 }
 
 ECS_TAG(render)
-static void after_device_reset_puddles_es(const AfterDeviceReset &, PuddlesManager &puddles__manager)
+static void after_device_reset_puddles_es(const EventAfterDeviceReset &, PuddlesManager &puddles__manager)
 {
   puddles__manager.puddlesAfterDeviceReset();
 }
@@ -64,7 +65,7 @@ static void invalidate_puddles_es(const AfterHeightmapChange &, PuddlesManager &
 }
 
 ECS_TAG(render)
-static void unload_puddles_es(const UnloadLevel &, PuddlesManager &puddles__manager)
+static void unload_puddles_es(const EventRenderSceneUnload &, PuddlesManager &puddles__manager)
 {
   puddles__manager.close();
   puddles__manager.setPuddlesScene(NULL);

@@ -177,6 +177,8 @@ bool GenericBufferInterface::copyTo(Sbuffer *dst)
   auto &context = Globals::ctx;
   D3D_CONTRACT_ASSERTF(bufSize <= ref.buffer->getBlockSize(),
     "the actual backing buffer is smaller (%d bytes) than the Buffer (%d bytes)", ref.buffer->getBlockSize(), bufSize);
+  D3D_CONTRACT_ASSERTF_RETURN(dst->getSize() >= getSize(), false,
+    "vulkan: copyTo destination (%u bytes) is smaller than source (%u bytes)", dst->getSize(), getSize());
   // reorder buffer update if we running it from external thread
   if (Globals::lock.isAcquired())
     context.copyBufferDiscardReorderable(ref, dest->ref, 0, 0, bufSize);
@@ -187,6 +189,8 @@ bool GenericBufferInterface::copyTo(Sbuffer *dst)
 
 bool GenericBufferInterface::copyTo(Sbuffer *dst, uint32_t dst_offset, uint32_t src_offset, uint32_t size_bytes)
 {
+  if (size_bytes == 0)
+    return true;
   auto dest = (GenericBufferInterface *)dst;
   auto &context = Globals::ctx;
   // reorder buffer update if we running it from external thread
@@ -205,8 +209,8 @@ uint32_t GenericBufferInterface::acquireStagingBuffer()
   {
     // alloc temp with best possible memory type and smallest size only covering
     // locked area
-    stagingBuffer = Buffer::create(lockRange.size(), getTemporaryStagingBufferMemoryClass(), 1,
-      bufferLockedForRead() ? BufferMemoryFlags::NONE : BufferMemoryFlags::TEMP);
+    stagingBuffer = Buffer::create(stagingIsPersistent() ? bufSize : lockRange.size(), getTemporaryStagingBufferMemoryClass(), 1,
+      (bufferLockedForRead() || stagingIsPersistent()) ? BufferMemoryFlags::NONE : BufferMemoryFlags::TEMP);
     stagingBuffer->setStagingDebugName(ref.buffer);
   }
   return 0;
@@ -214,7 +218,7 @@ uint32_t GenericBufferInterface::acquireStagingBuffer()
 
 void GenericBufferInterface::disposeStagingBuffer()
 {
-  if (stagingBuffer)
+  if (stagingBuffer && !stagingIsPersistent())
   {
     Globals::ctx.dispatchCmd<CmdDestroyBuffer>({stagingBuffer});
     stagingBuffer = nullptr;

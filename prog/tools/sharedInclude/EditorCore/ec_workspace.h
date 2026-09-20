@@ -6,6 +6,8 @@
 
 #include <ioSys/dag_dataBlock.h>
 
+#include <EASTL/optional.h>
+
 struct WspLibData
 {
   String name;
@@ -28,6 +30,28 @@ public:
 
   // Returns worksapaces names list
   void getWspNames(Tab<String> &list) const;
+
+  // Gets the names of the workspaces that use this application.blk path, sorted by name.
+  // It must be called after initWorkspaceBlk().
+  void getWspNamesByAppBlkPath(const char *app_blk_path, Tab<String> &list) const;
+
+  // Gets the name of the workspace that uses this application.blk path.
+  // Returns:
+  //   - nullopt when several workspaces use the path, and puts the reason in error_message. (That is an error,
+  //     because only a human can say which one to use.)
+  //   - empty name when no workspace uses the path
+  //   - the workspace name when only one workspace uses the path.
+  // It must be called after initWorkspaceBlk().
+  eastl::optional<String> getWspNameByAppBlkPathIfOnlyOneMatches(const char *app_blk_path, String &error_message) const;
+
+  // Adds a workspace for this application.blk, named after its folder, and returns that name.
+  // Returns an empty name when it cannot add the workspace, and puts the reason in error_message.
+  // The instance becomes that workspace, loaded from its application.blk, and the new entry is written from that file
+  // alone. A workspace loaded before this call is discarded, recent projects and all. Every failure leaves the instance
+  // unnamed, and an unnamed instance holds no workspace: the paths a failed load left behind mean nothing until a
+  // workspace loads again.
+  // It must be called after initWorkspaceBlk().
+  String addWspForAppBlkPath(const char *app_blk_path, String &error_message);
 
   // Loads workspace from BLK. Must be called after initWorkspaceBlk()
   bool load(const char *workspace_name, bool *app_path_set = NULL);
@@ -132,4 +156,10 @@ private:
   DataBlock *findWspBlk(DataBlock &blk, const char *wsp_name, bool create_new);
 
   bool loadFromBlk(DataBlock &blk, bool *app_path_set = NULL);
+
+  // Writes this workspace's fields into wsp_blk.
+  bool writeWspBlk(DataBlock &wsp_blk);
 };
+
+// Get a suggested workspace name from the path to application.blk. It will be the name of the parent folder.
+String get_workspace_name_from_application_blk_path(const char *app_blk_path);

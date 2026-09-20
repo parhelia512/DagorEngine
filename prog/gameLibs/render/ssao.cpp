@@ -131,7 +131,7 @@ void SSAORenderer::renderSSAO(BaseTexture *depth_to_use, BaseTexture *ssaoTex, B
   d3d::set_render_target({}, DepthAccess::RW, {{ssaoTex, 0, 0}});
 
   if (clear_rt)
-    d3d::clearview(CLEAR_DISCARD, 0xFFFFFFFF, 1.0, 0);
+    d3d::clearview(DISCARD_ALL, 0xFFFFFFFF, 1.0, 0);
 
   aoRenderer->render();
   if (!useOwnTextures)

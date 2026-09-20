@@ -50,7 +50,12 @@ namespace drv3d_metal
       g_buffer_memory_used += bufsize;
 
     if (flags & SBCF_ZEROMEM)
-      render.clearBuffer(buf, this);
+    {
+      if (storage & MTLResourceStorageModePrivate)
+        render.clearBuffer(buf, this);
+      else
+        memset(buffer.contents, 0, buffer.length);
+    }
     else
       initialized = true;
 
@@ -128,14 +133,14 @@ namespace drv3d_metal
       allow_resize_ring_buffer = true;
     }
 
-    bufSize = 0;
     bufFlags = 0;
     structSize = buf_flags & SBCF_MISC_ALLOW_RAW ? 4 : ssize;
 
     locked_offset = -1;
     locked_size = -1;
 
-    bufSize = ((ssize > 0 ? bsize * ssize : bsize) + 3) & ~3;
+    bufSizeUnaligned = ssize > 0 ? bsize * ssize : bsize;
+    bufSize = (bufSizeUnaligned + 3) & ~3;
     bufFlags = buf_flags;
 
     D3D_CONTRACT_ASSERTF(set_tex_format == 0 || ((bufFlags&(SBCF_BIND_VERTEX|SBCF_BIND_INDEX|SBCF_MISC_STRUCTURED|SBCF_MISC_ALLOW_RAW)) == 0),
@@ -147,7 +152,7 @@ namespace drv3d_metal
       MTLPixelFormat metal_format = Texture::format2Metal(tex_format);
 
       alignment = [render.device minimumLinearTextureAlignmentForPixelFormat:metal_format];
-      bufSize = fmax(bufSize, alignment);
+      bufSizeUnaligned = bufSize = fmax(bufSize, alignment);
 
       int widBytes, nBytes;
       Texture::getStride(tex_format, 1, 1, 0, widBytes, nBytes);
@@ -159,13 +164,13 @@ namespace drv3d_metal
         w = 4096;
         h = DivideRoundingUp(bufSize, 4096 * widBytes);
         alignment = w * widBytes;
-        bufSize = h * alignment;
+        bufSizeUnaligned = bufSize = h * alignment;
       }
       else
       {
         if (bufSize % alignment != 0)
         {
-          bufSize = DivideRoundingUp(bufSize, alignment) * alignment;
+          bufSizeUnaligned = bufSize = DivideRoundingUp(bufSize, alignment) * alignment;
         }
 
         alignment = bufSize;
@@ -258,7 +263,7 @@ namespace drv3d_metal
 
     tex_format = 0;
     structSize = 4;
-    bufSize = buf.length;
+    bufSizeUnaligned = bufSize = buf.length;
     bufFlags = buf_flags;
     use_upload_buffer = true;
     storage = MTLResourceStorageModePrivate;
@@ -413,7 +418,24 @@ namespace drv3d_metal
 
     if (use_upload_buffer && !(flags & VBLOCK_READONLY))
     {
-      locked_size = (locked_size + 3) & ~3;
+      // if we're locking the whole buffer, its fine to align up
+      if (offset_bytes == 0 && locked_size == bufSizeUnaligned)
+        locked_size = bufSize;
+      // blit copy in unlock() needs 4 byte aligned offset and size
+      if (DAGOR_UNLIKELY((offset_bytes & 3) != 0))
+      {
+        D3D_CONTRACT_ASSERT_FAIL("unaligned lock offset %u of buffer %s", offset_bytes, getName());
+        locked_offset = -1;
+        locked_size = -1;
+        return nullptr;
+      }
+      if (DAGOR_UNLIKELY((locked_size & 3) != 0))
+      {
+        D3D_CONTRACT_ASSERT_FAIL("unaligned lock size %d of buffer %s", locked_size, getName());
+        locked_offset = -1;
+        locked_size = -1;
+        return nullptr;
+      }
       @autoreleasepool
       {
         String name;
@@ -421,9 +443,6 @@ namespace drv3d_metal
         upload_buffer = render.createBuffer(locked_size, MTLResourceCPUCacheModeWriteCombined | MTLResourceStorageModeShared, name);
         upload_buffer_offset = 0;
       }
-      D3D_CONTRACT_ASSERT((upload_buffer_offset & 3) == 0);
-      D3D_CONTRACT_ASSERT((offset_bytes & 3) == 0);
-      D3D_CONTRACT_ASSERT((locked_size & 3) == 0);
 
       return (void*)((uint8_t*)[upload_buffer contents] + upload_buffer_offset);
     }
@@ -463,6 +482,11 @@ namespace drv3d_metal
   bool Buffer::updateData(uint32_t ofs_bytes, uint32_t size_bytes, const void *__restrict src, uint32_t lockFlags)
   {
     D3D_CONTRACT_ASSERT_RETURN(size_bytes != 0, false);
+    // reject before updateDataWithLock: it retries forever when lock keeps failing
+    D3D_CONTRACT_ASSERTF_RETURN(!use_upload_buffer || (ofs_bytes & 3) == 0, false,
+        "unaligned update offset %u of buffer %s", ofs_bytes, getName());
+    D3D_CONTRACT_ASSERTF_RETURN(!use_upload_buffer || (size_bytes & 3) == 0, false,
+        "unaligned update size %u of buffer %s", size_bytes, getName());
 
     bool from_thread = !render.isRenderAcquiredInThisThread();
     if ((lockFlags & (VBLOCK_DISCARD | VBLOCK_NOOVERWRITE)) || isDynamic || fast_discard || from_thread)
@@ -474,6 +498,9 @@ namespace drv3d_metal
     D3D_CONTRACT_ASSERT(!fast_discard);
     D3D_CONTRACT_ASSERT(dynamic_offset == 0);
     D3D_CONTRACT_ASSERT(ofs_bytes + size_bytes <= bufSize);
+    // blit copy needs 4 byte aligned offset and size
+    D3D_CONTRACT_ASSERTF_RETURN((ofs_bytes & 3) == 0, false, "unaligned update offset %u of buffer %s", ofs_bytes, getName());
+    D3D_CONTRACT_ASSERTF_RETURN((size_bytes & 3) == 0, false, "unaligned update size %u of buffer %s", size_bytes, getName());
 
     id<MTLBuffer> tempBuffer = nil;
     int tempOffset = 0;
@@ -500,7 +527,11 @@ namespace drv3d_metal
 
   bool Buffer::copyTo(Sbuffer * dest)
   {
+    D3D_CONTRACT_ASSERTF_RETURN(dest->getSize() >= getSize(), false,
+      "Metal: copyTo destination (%u bytes) is smaller than source (%u bytes)", dest->getSize(), getSize());
+    render.acquireOwnership();
     render.copyBuffer(this, 0, dest, 0, 0);
+    render.releaseOwnership();
     return true;
   }
 

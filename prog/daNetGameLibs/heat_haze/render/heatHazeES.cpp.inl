@@ -12,7 +12,7 @@
 #include <render/resolution.h>
 #include <render/renderer.h>
 #include <render/world/dafgCameraRegistrator.h>
-#include <render/world/cameraParams.h>
+#include <render/cameraParams.h>
 #include <render/world/frameGraphHelpers.h>
 #include <render/world/cameraViewVisibilityManager.h>
 #include <rendInst/rendInstGenRender.h>
@@ -171,11 +171,13 @@ static dafg::NodeHandle makeHeatHazeRenderParticlesNode(
           Texture *stencil = hasStencil ? depthForTransparencyHndl.view().getTex2D() : nullptr;
           acesfx::set_dafx_globaldata(camera.jitterGlobtm, camera.viewItm, camera.viewItm.getcol(3));
 
+          // FunctionRef binds an object, so a plain function needs this wrapper
+          auto transHazeRender = []() { acesfx::renderTransHaze(); };
           heatHazeRenderer->renderHazeParticles(hazeDepthHndl.get(), hazeOffsetHndl.get(), lodDepth.getTex2D(),
-            eastl::max(heatHazeLod - 1, 0), acesfx::renderTransHaze, riHazeRender, stencil);
+            eastl::max(heatHazeLod - 1, 0), transHazeRender, riHazeRender, stencil);
 
           if (hazeColorHndl.get())
-            heatHazeRenderer->renderColorHaze(hazeColorHndl.get(), acesfx::renderTransHaze, riHazeRender, stencil);
+            heatHazeRenderer->renderColorHaze(hazeColorHndl.get(), transHazeRender, riHazeRender, stencil);
         };
       });
 }

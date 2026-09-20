@@ -217,21 +217,6 @@ bool RobjShaderParams::load(const Element *elem)
   const Properties &props = elem->props;
   const StringKeys *csk = elem->csk;
 
-  // Clean up previous state
-  if (rtProgram != BAD_PROGRAM)
-  {
-    d3d::delete_program(rtProgram);
-    rtProgram = BAD_PROGRAM;
-#if _TARGET_PC_WIN
-    rt_program_count--;
-#endif
-  }
-  material = NULL;
-  shaderElem = NULL;
-
-  shaderName = read_sq_str(props.scriptDesc.RawGetSlot(csk->shaderName));
-  shaderSource = read_sq_str(props.scriptDesc.RawGetSlot(csk->shaderSource));
-
   brightness = props.getFloat(csk->brightness, 1.0f);
 
   // Read shader params (Color4 values from table)
@@ -253,9 +238,34 @@ bool RobjShaderParams::load(const Element *elem)
     }
   }
 
-  // Resolve shader: shaderSource (dev) takes priority over shaderName (production)
+  // Keep the resolved shader while only params change: script may rebuild the element every frame
+  const char *name = read_sq_str(props.scriptDesc.RawGetSlot(csk->shaderName));
+  const char *source = read_sq_str(props.scriptDesc.RawGetSlot(csk->shaderSource));
+  if (shaderName == name && shaderSource == source)
+    return true;
+  shaderName = name;
+  shaderSource = source;
+  resolveShader();
+  return true;
+}
+
+
+void RobjShaderParams::resolveShader()
+{
+  if (rtProgram != BAD_PROGRAM)
+  {
+    d3d::delete_program(rtProgram);
+    rtProgram = BAD_PROGRAM;
 #if _TARGET_PC_WIN
-  if (shaderSource.length() > 0)
+    rt_program_count--;
+#endif
+  }
+  material = NULL;
+  shaderElem = NULL;
+
+  // shaderSource (dev) takes priority over shaderName (production)
+#if _TARGET_PC_WIN
+  if (!shaderSource.empty())
   {
     if (!d3d::get_driver_code().is(d3d::dx11) && !d3d::get_driver_code().is(d3d::dx12))
     {
@@ -269,7 +279,7 @@ bool RobjShaderParams::load(const Element *elem)
       {
         rtProgram = compile_shader_runtime(hlslBody.c_str());
         if (rtProgram != BAD_PROGRAM)
-          return true;
+          return;
         logerr("ROBJ_SHADER: runtime compilation failed for '%s', falling back to shaderName", shaderSource.c_str());
       }
       else
@@ -280,7 +290,7 @@ bool RobjShaderParams::load(const Element *elem)
   }
 #endif
 
-  if (shaderName.length() > 0)
+  if (!shaderName.empty())
   {
     material = new_shader_material_by_name_optional(shaderName.c_str());
     if (material.get())
@@ -288,8 +298,6 @@ bool RobjShaderParams::load(const Element *elem)
     if (!shaderElem.get())
       logerr("ROBJ_SHADER: shader '%s' not found in shader dump", shaderName.c_str());
   }
-
-  return true;
 }
 
 

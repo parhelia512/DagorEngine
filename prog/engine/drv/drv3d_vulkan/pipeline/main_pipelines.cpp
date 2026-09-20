@@ -55,7 +55,7 @@ void ComputePipeline::onDelayedCleanupFinish<CleanupTag::DESTROY>()
 } // namespace drv3d_vulkan
 
 ComputePipeline::ComputePipeline(ProgramID prog, VulkanPipelineCacheHandle, LayoutType *l, const CreationInfo &info) :
-  DebugAttachedPipeline(l), blob(*info.sci), prog(prog)
+  DebugAttachedPipeline(l), blob(*info.sci), program(prog)
 {
   afterDeviceReset(info.allowAsyncCompile);
 }
@@ -86,7 +86,7 @@ void ComputePipeline::afterDeviceReset(bool async)
 #if VULKAN_LOAD_SHADER_EXTENDED_DEBUG_DATA
   compileScratch->name = debugInfo.cs().name;
 #endif
-  compileScratch->progIdx = prog.get();
+  compileScratch->progIdx = program.get();
 
   if (async)
     Backend::pipelineCompiler.queue(this);

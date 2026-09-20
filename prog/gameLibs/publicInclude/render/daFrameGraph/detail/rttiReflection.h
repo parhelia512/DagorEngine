@@ -4,61 +4,206 @@
 //
 #pragma once
 
-#include <cstring>
 #include <EASTL/string_view.h>
 #include <EASTL/type_traits.h>
 #include <EASTL/tuple.h>
+#include <EASTL/numeric_limits.h>
+
+#include <util/dag_string.h>
 #include <vecmath/dag_vecMathDecl.h>
 
 
 namespace dafg::detail
 {
 
-// getting name of given struct T
+/*
+  cycling over range in compile time;
+  will generate given code with I having values from 0 to N-1;
 
-template <class T>
-struct TypeName
+  usage:
+
+  ForLoop<N>::iterate([&]<size_t I>() {
+
+    code, using parameter I
+
+  });
+*/
+template <size_t N>
+struct ForLoop
 {
-  static eastl::string_view Get()
+public:
+  template <typename Func>
+  static void iterate(Func &&lambda)
   {
-    if constexpr (eastl::is_same_v<T, vec4f>)
-      return eastl::string_view("vec4f");
+    iterateImpl(eastl::forward<Func>(lambda), eastl::make_index_sequence<N>{});
+  }
 
-    const char *begin = "";
-    const char *end = begin;
-    const char *funcName = nullptr;
-
-#if defined(__clang__) || defined(__GNUC__)
-    funcName = __PRETTY_FUNCTION__;
-
-    if (const char *typeName = strstr(funcName, "T = "); typeName != nullptr)
-    {
-      begin = typeName + 4;
-      for (end = begin; *end && (*end != ';') && (*end != ']'); ++end)
-        ;
-    }
-#elif _MSC_VER
-    funcName = __FUNCSIG__;
-
-    for (end = funcName; *end; ++end)
-      ;
-    for (--end; (end != funcName) && *end != '>'; --end)
-      ;
-    int8_t braceDepth = 1;
-    for (begin = end; (begin != funcName); --begin)
-    {
-      if (*(begin - 1) == '>')
-        ++braceDepth;
-      if (*(begin - 1) == '<')
-        --braceDepth;
-      if (braceDepth == 0)
-        break;
-    }
-#endif
-
-    return eastl::string_view(begin, end - begin);
+private:
+  template <typename Func, size_t... Is>
+  static void iterateImpl(Func &&lambda, eastl::index_sequence<Is...>)
+  {
+    (lambda.template operator()<Is>(), ...);
   }
 };
+
+
+consteval const char *ce_strstr(const char *haystack, const char *needle)
+{
+  for (; *haystack; ++haystack)
+  {
+    const char *h = haystack;
+    const char *n = needle;
+    for (; *h && *n && *h == *n; ++h, ++n)
+      ;
+    if (!*n)
+      return haystack;
+  }
+  return nullptr;
+}
+
+consteval size_t ce_strlen(const char *s)
+{
+  size_t n = 0;
+  while (*s++)
+    ++n;
+  return n;
+}
+
+// gets string `func_name`, containing template parameter T name like "...T = <name>...";
+// and string like "T = " as `parameter_header`;
+// returns string view of name of that parameter;
+// see get_type_name<T>() / get_value_name<V>() for example;
+consteval eastl::string_view get_template_parameter_name(const char *func_name, const char *parameter_header)
+{
+  const char *begin = "";
+  const char *end = begin;
+
+#if defined(__clang__) || defined(__GNUC__)
+  if (const char *typeName = ce_strstr(func_name, parameter_header); typeName != nullptr)
+  {
+    begin = typeName + ce_strlen(parameter_header);
+    for (end = begin; *end && (*end != ';') && (*end != ']'); ++end)
+      ;
+  }
+#elif _MSC_VER
+  G_UNUSED(parameter_header);
+  for (end = func_name; *end; ++end)
+    ;
+  for (--end; (end != func_name) && *end != '>'; --end)
+    ;
+  int8_t braceDepth = 1;
+  for (begin = end; (begin != func_name); --begin)
+  {
+    if (*(begin - 1) == '>')
+      ++braceDepth;
+    if (*(begin - 1) == '<')
+      --braceDepth;
+    if (braceDepth == 0)
+      break;
+  }
+#endif
+
+  return eastl::string_view(begin, end - begin);
+}
+
+
+// returns name of given struct T;
+template <class T>
+consteval eastl::string_view get_type_name()
+{
+  if constexpr (eastl::is_same_v<T, vec4f>)
+    return eastl::string_view{"vec4f"};
+
+  if constexpr (eastl::is_same_v<T, vec4i>)
+    return eastl::string_view{"vec4i"};
+
+  const char *funcName = nullptr;
+#if defined(__clang__) || defined(__GNUC__)
+  funcName = __PRETTY_FUNCTION__;
+#elif _MSC_VER
+  funcName = __FUNCSIG__;
+#endif
+  return get_template_parameter_name(funcName, "T = ");
+}
+
+// returns name of given value V;
+template <auto V>
+consteval eastl::string_view get_value_name()
+{
+  const char *funcName = nullptr;
+#if defined(__clang__) || defined(__GNUC__)
+  funcName = __PRETTY_FUNCTION__;
+#elif _MSC_VER
+  funcName = __FUNCSIG__;
+#endif
+  return get_template_parameter_name(funcName, "V = ");
+}
+
+
+// for passed "a::b::c::name" returns "name";
+constexpr eastl::string_view crop_namespaces(eastl::string_view name)
+{
+  if (name.size() == 0)
+    return eastl::string_view{};
+
+  const char *end = name.data() + name.size();
+  const char *begin = end;
+
+  for (; begin != name.data() && *begin != ':' && *begin != ')'; --begin)
+    ;
+  if (*begin == ':' || *begin == ')')
+    ++begin;
+
+  return eastl::string_view(begin, end - begin);
+}
+
+// returns name of given enum value;
+// passed enum type need to have value named MAX_VAL as max enum value;
+// do not use for bit flags, use decode_flag_names() instead;
+template <class EnumType>
+  requires requires { EnumType::MAX_VAL; }
+inline String get_enum_name(EnumType value, bool crop_ns = true)
+{
+  eastl::string_view enumName{"<out of range>"};
+  ForLoop<size_t(EnumType::MAX_VAL) + 1>::iterate([&]<size_t I>() {
+    if (size_t(value) == I)
+      enumName = get_value_name<EnumType(I)>();
+  });
+  if (crop_ns)
+    enumName = crop_namespaces(enumName);
+
+  return String(0, "%s (%lu)", String(enumName.data(), enumName.size()), static_cast<long unsigned>(value));
+}
+
+// returns string with names of given flags;
+// do not use for enums, use get_enum_name() instead;
+template <class FlagType>
+  requires requires { eastl::is_unsigned_v<eastl::underlying_type_t<FlagType>> == eastl::true_type::value; }
+inline String decode_flag_names(FlagType value, bool crop_ns = true)
+{
+  constexpr static size_t BIT_COUNT = sizeof(FlagType) * CHAR_BIT;
+
+  if (value == FlagType(0x0))
+  {
+    eastl::string_view flagName = get_value_name<FlagType(0x0)>();
+    if (crop_ns)
+      flagName = crop_namespaces(flagName);
+    return String(flagName.data(), flagName.size());
+  }
+
+  String result = {};
+  ForLoop<BIT_COUNT>::iterate([&]<size_t I>() {
+    if ((size_t(0x1) << I) & size_t(value))
+    {
+      eastl::string_view flagName = get_value_name<FlagType(size_t(0x1) << I)>();
+      if (crop_ns)
+        flagName = crop_namespaces(flagName);
+      result.aprintf(0, "%s|", String(flagName.data(), flagName.size()));
+    }
+  });
+  result.pop();
+  return result;
+}
 
 
 // counting number of fields of given struct T
@@ -85,39 +230,6 @@ constexpr size_t count_fields(eastl::index_sequence<Is...>)
 {
   return count_fields<T>(eastl::index_sequence<0, Is...>{});
 }
-
-
-/*
-  cycling over range in compile time
-  will generate given code with I having values from 0 to N-1
-
-  usage:
-
-  ForLoop<N>::iterate([&]<size_t I>() {
-    ...
-    code, using parameter I
-    ...
-  });
-*/
-
-template <size_t N>
-struct ForLoop
-{
-public:
-  template <typename Func>
-  static void iterate(Func &&lambda)
-  {
-    iterateImpl(eastl::forward<Func>(lambda), eastl::make_index_sequence<N>{});
-  }
-
-private:
-  template <typename Func, size_t... Is>
-  static void iterateImpl(Func &&lambda, eastl::index_sequence<Is...>)
-  {
-    (lambda.template operator()<Is>(), ...);
-  }
-};
-
 
 // generating tuple of field references from given struct T
 // can handle structures with up to 64 members, what sounds quite enough

@@ -54,6 +54,7 @@
 
 #include <shaders/dag_stcode.h>
 #include <shaders/stcode/stblkcodeContext.h>
+#include <shaders/shader_name_format.h>
 #include "stcode/bindlessStblkcodeContext.h"
 #include "profileStcode.h"
 #include "stcode/compareStcode.h"
@@ -99,7 +100,19 @@ void *void_ptr_cast(T val)
 }
 
 template <typename F>
-static inline VPROG get_vprog(ScriptedShadersBinDumpOwner const &dumpOwner, int i, F get_debug_info)
+static ShaderSourceExt make_shader_source(ScriptedShadersBinDumpOwner const &dumpOwner, int i, ShaderCodeType type, F &&get_debug_info)
+{
+  ShaderSourceExt src = dumpOwner.getCode(i, type);
+#if DAGOR_DBGLEVEL > 0
+  auto debugName = get_debug_info(type);
+  src.debugName = debugName.data();
+  src.debugNameLen = uint32_t(debugName.length());
+#endif
+  return src;
+}
+
+template <typename F>
+static inline VPROG get_vprog(ScriptedShadersBinDumpOwner const &dumpOwner, int i, F &&get_debug_info)
 {
   G_ASSERT(d3d::is_inited());
   if (uint32_t(i) >= dumpOwner.vprId.size())
@@ -114,40 +127,35 @@ static inline VPROG get_vprog(ScriptedShadersBinDumpOwner const &dumpOwner, int 
     d3d::driver_command(Drv3dCommand::GET_SHADER, void_ptr_cast(i), void_ptr_cast(ShaderCodeType::VERTEX), &vpr);
   if (vpr == BAD_VPROG)
   {
+    ShaderSourceExt src = make_shader_source(dumpOwner, i, ShaderCodeType::VERTEX, get_debug_info);
 #if DAGOR_DBGLEVEL > 0 && TIME_PROFILER_ENABLED
     if (DAGOR_UNLIKELY(shader_creation_perf_markers))
     {
-      TIME_PROFILE_NAME(create_vs, get_debug_info());
-      vpr = d3d::create_vertex_shader(dumpOwner.getCode(i, ShaderCodeType::VERTEX));
+      TIME_PROFILE_NAME(create_vs, src.debugName);
+      vpr = d3d::create_vertex_shader(src);
     }
     else
 #endif
-      vpr = d3d::create_vertex_shader(dumpOwner.getCode(i, ShaderCodeType::VERTEX));
+      vpr = d3d::create_vertex_shader(src);
   }
   restore_fp_exceptions_state();
 
   if (vpr != BAD_VPROG)
   {
     VPROG pvpr = interlocked_compare_exchange((VPROG volatile &)dumpOwner.vprId[i], vpr, BAD_VPROG);
-    if (DAGOR_LIKELY(pvpr == BAD_VPROG))
-    {
-#if DAGOR_DBGLEVEL > 0
-      d3d::driver_command(Drv3dCommand::SET_VS_DEBUG_INFO, (void *)&vpr, (void *)get_debug_info());
-#endif
-    }
-    else // unlikely case when other thread created and set this vprog slot first
+    if (DAGOR_UNLIKELY(pvpr != BAD_VPROG)) // unlikely case when other thread created and set this vprog slot first
     {
       d3d::delete_vertex_shader(vpr);
       vpr = pvpr;
     }
   }
   else
-    DAG_FATAL("Cant create VS #%d: %s\nDriver3d error:\n%s", i, get_debug_info(), d3d::get_last_error());
+    DAG_FATAL("Cant create VS #%d: %s\nDriver3d error:\n%s", i, get_debug_info(ShaderCodeType::VERTEX).data(), d3d::get_last_error());
   return vpr;
 }
 
 template <typename F>
-static inline FSHADER get_fshader(ScriptedShadersBinDumpOwner const &dumpOwner, int i, F get_debug_info)
+static inline FSHADER get_fshader(ScriptedShadersBinDumpOwner const &dumpOwner, int i, F &&get_debug_info)
 {
   G_ASSERT(d3d::is_inited());
   if (i < 0 || i >= dumpOwner.fshId.size())
@@ -162,41 +170,36 @@ static inline FSHADER get_fshader(ScriptedShadersBinDumpOwner const &dumpOwner, 
     d3d::driver_command(Drv3dCommand::GET_SHADER, void_ptr_cast(i), void_ptr_cast(ShaderCodeType::PIXEL), &fsh);
   if (fsh == BAD_FSHADER)
   {
+    ShaderSourceExt src = make_shader_source(dumpOwner, i, ShaderCodeType::PIXEL, get_debug_info);
 #if DAGOR_DBGLEVEL > 0 && TIME_PROFILER_ENABLED
     if (DAGOR_UNLIKELY(shader_creation_perf_markers))
     {
-      TIME_PROFILE_NAME(create_ps, get_debug_info());
-      fsh = d3d::create_pixel_shader(dumpOwner.getCode(i, ShaderCodeType::PIXEL));
+      TIME_PROFILE_NAME(create_ps, src.debugName);
+      fsh = d3d::create_pixel_shader(src);
     }
     else
 #endif
-      fsh = d3d::create_pixel_shader(dumpOwner.getCode(i, ShaderCodeType::PIXEL));
+      fsh = d3d::create_pixel_shader(src);
   }
   restore_fp_exceptions_state();
 
   if (fsh != BAD_FSHADER)
   {
     FSHADER pfsh = interlocked_compare_exchange((FSHADER volatile &)dumpOwner.fshId[i], fsh, BAD_FSHADER);
-    if (DAGOR_LIKELY(pfsh == BAD_FSHADER))
-    {
-#if DAGOR_DBGLEVEL > 0
-      d3d::driver_command(Drv3dCommand::SET_PS_DEBUG_INFO, (void *)&fsh, (void *)get_debug_info());
-#endif
-    }
-    else // unlikely case when other thread created and set this fsh slot first
+    if (DAGOR_UNLIKELY(pfsh != BAD_FSHADER)) // unlikely case when other thread created and set this fsh slot first
     {
       d3d::delete_pixel_shader(fsh);
       fsh = pfsh;
     }
   }
   else
-    DAG_FATAL("Cant create PS #%d: %s\nDriver3d error:\n%s", i, get_debug_info(), d3d::get_last_error());
+    DAG_FATAL("Cant create PS #%d: %s\nDriver3d error:\n%s", i, get_debug_info(ShaderCodeType::PIXEL).data(), d3d::get_last_error());
 
   return fsh;
 }
 
 template <typename F>
-static PROGRAM get_compute_prg(ScriptedShadersBinDumpOwner const &dumpOwner, int i, F get_debug_info)
+static PROGRAM get_compute_prg(ScriptedShadersBinDumpOwner const &dumpOwner, int i, F &&get_debug_info)
 {
   G_ASSERT(d3d::is_inited());
   if (i < 0 || i >= dumpOwner.cshId.size())
@@ -214,36 +217,31 @@ static PROGRAM get_compute_prg(ScriptedShadersBinDumpOwner const &dumpOwner, int
   if (csh == BAD_PROGRAM)
   {
     auto preload = isMainDump ? CSPreloaded::Yes : CSPreloaded::No;
+    ShaderSourceExt src = make_shader_source(dumpOwner, i, ShaderCodeType::COMPUTE, get_debug_info);
 #if DAGOR_DBGLEVEL > 0 && TIME_PROFILER_ENABLED
     // @NOTE: any shader warmups/precompilations are not applicable to late-loaded additional dumps
     if (DAGOR_UNLIKELY(shader_creation_perf_markers))
     {
-      TIME_PROFILE_NAME(create_cs, get_debug_info() ? get_debug_info() : "create_cs_unknown");
-      csh = d3d::create_program_cs(dumpOwner.getCode(i, ShaderCodeType::COMPUTE), preload);
+      TIME_PROFILE_NAME(create_cs, src.debugName ? src.debugName : "create_cs_unknown");
+      csh = d3d::create_program_cs(src, preload);
     }
     else
 #endif
-      csh = d3d::create_program_cs(dumpOwner.getCode(i, ShaderCodeType::COMPUTE), preload);
+      csh = d3d::create_program_cs(src, preload);
   }
   restore_fp_exceptions_state();
 
   if (csh != BAD_PROGRAM)
   {
     PROGRAM pcsh = interlocked_compare_exchange((PROGRAM volatile &)dumpOwner.cshId[i], csh, BAD_PROGRAM);
-    if (DAGOR_LIKELY(pcsh == BAD_PROGRAM))
-    {
-#if DAGOR_DBGLEVEL > 0
-      d3d::driver_command(Drv3dCommand::SET_CS_DEBUG_INFO, (void *)&csh, (void *)get_debug_info());
-#endif
-    }
-    else // unlikely case when other thread created and set this fsh slot first
+    if (DAGOR_UNLIKELY(pcsh != BAD_PROGRAM)) // unlikely case when other thread created and set this fsh slot first
     {
       d3d::delete_program(csh);
       csh = pcsh;
     }
   }
   else
-    DAG_FATAL("Cant create CS #%d: %s\nDriver3d error:\n%s", i, get_debug_info(), d3d::get_last_error());
+    DAG_FATAL("Cant create CS #%d: %s\nDriver3d error:\n%s", i, get_debug_info(ShaderCodeType::COMPUTE).data(), d3d::get_last_error());
 
   return csh;
 }
@@ -262,36 +260,70 @@ __forceinline void push_vec(Tab<uint8_t> &values, const real *v, int count)
 }
 
 #if DAGOR_DBGLEVEL > 0
-__forceinline static void set_debug_variant_name(ScriptedShadersBinDump const &dump, String &buf, const unsigned int variant_code,
-  const char *shclass_name, const shaderbindump::ShaderCode &code)
+static auto choose_dump_for_variant_name(ScriptedShadersBinDumpOwner const &dump_owner)
 {
-  if (buf.empty())
+  const char *dumpName = "";
+  const ScriptedShadersBinDumpV2 *intervalDump = ::shBinDumpOwner().getDumpV2();
+  if (DAGOR_UNLIKELY(dump_owner.selfHandle == SEC_EXP_BINDUMP_HANDLE))
   {
-    bool hvc = variant_code != ~0u;
-#if _TARGET_C1 || _TARGET_C2
-
-#else
-    const char *separator = "\n";
-#endif
-    buf.printf(0, "%s%s", shclass_name, hvc ? separator : "");
-    if (hvc)
-      shaderbindump::decodeVariantStr(dump, code.dynVariants.codePieces, variant_code, buf);
+    dumpName = "_exp_";
+    intervalDump = ::shBinDumpExOwner(false).getDumpV2();
   }
+  else if (dump_owner.selfHandle != MAIN_BINDUMP_HANDLE)
+  {
+    dumpName = dump_owner.name.c_str();
+  }
+  return eastl::make_pair(dumpName, intervalDump);
 }
+static void build_variant_name_for_element(const ScriptedShaderElement &self, auto &out, unsigned int variant_code, ShaderStage stage,
+  ScriptedShadersBinDumpOwner const &dump_owner)
+{
+  G_ASSERT(self.selectedStaticVariantCode != uint32_t(-1));
+  G_ASSERT(variant_code != unsigned(-1));
+  out.clear();
+  const auto [dumpName, intervalDump] = choose_dump_for_variant_name(dump_owner);
+  shader_name_format::compile_human_readable_variant_name(out,
+    shader_name_format::VariantIdentifierRef{.shClassName = self.shClass.name.data(),
+      .shDumpName = dumpName,
+      .stVarCode = int(self.selectedStaticVariantCode),
+      .dynVarCode = int(variant_code),
+      .stage = stage},
+    *dump_owner.getDump(), *intervalDump, dump_owner.shaderNameFormatSettings);
+}
+static void build_variant_name_for_shader_assert(const ScriptedShaderElement &self, auto &out, unsigned int variant_code,
+  ScriptedShadersBinDumpOwner const &dump_owner)
+{
+  G_ASSERT(self.selectedStaticVariantCode != uint32_t(-1));
+  G_ASSERT(variant_code != unsigned(-1));
+  out.clear();
+  const auto [dumpName, _] = choose_dump_for_variant_name(dump_owner);
+  shader_name_format::compile_minimal_variant_name(out,
+    shader_name_format::VariantIdentifierRef{.shClassName = self.shClass.name.data(),
+      .shDumpName = dumpName,
+      .stVarCode = int(self.selectedStaticVariantCode),
+      .dynVarCode = int(variant_code)},
+    dump_owner.shaderNameFormatSettings);
+}
+
+struct FramememDebugInfoBuilder
+{
+  FRAMEMEM_REGION;
+  eastl::basic_string<char, framemem_allocator> debugInfoStr = {};
+};
+
 #endif
 
 __forceinline void ScriptedShaderElement::prepareShaderProgram(ID_T &pass_id, int variant, unsigned int variant_code,
   ScriptedShadersBinDumpOwner const &dump_owner) const
 {
 #if DAGOR_DBGLEVEL > 0
-  FRAMEMEM_REGION;
-  String debugInfoStr(framemem_ptr());
-  auto get_debug_info = [&]() {
-    set_debug_variant_name(*dump_owner.getDump(), debugInfoStr, variant_code, (const char *)shClass.name, code);
-    return debugInfoStr.c_str();
+  auto get_debug_info = [&, builder = FramememDebugInfoBuilder()](ShaderCodeType type) mutable {
+    build_variant_name_for_element(*this, builder.debugInfoStr, variant_code, type == ShaderCodeType::VERTEX ? STAGE_VS : STAGE_PS,
+      dump_owner);
+    return eastl::string_view{builder.debugInfoStr};
   };
 #else
-  auto get_debug_info = [] { return (const char *)nullptr; };
+  auto get_debug_info = [](ShaderCodeType) { return eastl::string_view{}; };
   G_UNUSED(variant_code);
 #endif
 
@@ -344,6 +376,10 @@ ScriptedShaderElement::ScriptedShaderElement(const shaderbindump::ShaderCode &ma
 {
   stageDest = STAGE_PS;
   dumpHandle = m.props.dumpHandle;
+
+#if DAGOR_DBGLEVEL > 0
+  selectedStaticVariantCode = interlocked_relaxed_load(m.selectedStaticVariantCode);
+#endif
 
   // @NOTE: intervals & var names are always in the main dump -- additional dumps can only be linked to it.
   auto const &mainDump = ::shBinDump();
@@ -655,14 +691,6 @@ VDECL ScriptedShaderElement::initVdecl() const
   return dynrender::addShaderVdecl(csc, code.channel.size(), -1);
 }
 
-void ScriptedShaderElement::preCreateShaderPrograms()
-{
-  auto const &dumpOwner = get_shaders_dump_owner(dumpHandle);
-  for (int i = 0; i < passes.size(); i++)
-    if (passes[i].id.pr == -2)
-      prepareShaderProgram(passes[i].id, i, invalid_variant, dumpOwner);
-}
-
 void ScriptedShaderElement::detachElem()
 {
   resetShaderPrograms();
@@ -687,8 +715,22 @@ void ScriptedShaderElement::resetShaderPrograms(bool delete_programs)
 void ScriptedShaderElement::preCreateStateBlocks()
 {
   auto const &dumpOwner = get_shaders_dump_owner(dumpHandle);
+#if DAGOR_DBGLEVEL > 0
+  // If we need debug names, we need to grab a correct variant code
+  int codeIndex = int(&code - shClass.code.begin());
+  selectedStaticVariantCode = uint32_t(-1);
+  shClass.stVariants.enumerateCodesForVariant(codeIndex, [this](unsigned variant_code) { selectedStaticVariantCode = variant_code; });
+  for (int i = 0; i < passes.size(); i++)
+  {
+    auto variantCode = unsigned(-1);
+    code.dynVariants.enumerateCodesForVariant(i, [&variantCode](unsigned variant_code) { variantCode = variant_code; });
+    preparePassId(passes[i].id, i, variantCode, dumpOwner);
+  }
+#else
+  // If we do not need debug names, don't spend time walking tables
   for (int i = 0; i < passes.size(); i++)
     preparePassId(passes[i].id, i, invalid_variant, dumpOwner);
+#endif
 }
 void ScriptedShaderElement::resetStateBlocks()
 {
@@ -967,7 +1009,7 @@ bool ScriptedShaderElement::setStates() const
     preparePassIdOOL(pass_id, curPasses - passes.data(), variant_code, dumpOwner);
     v = pass_id.v.load(dag::memory_order_relaxed);
   }
-  setStatesForVariant(curVariant, pass_id.pr, v);
+  setStatesForVariant(curVariant, variant_code, pass_id.pr, v);
   return true;
 }
 
@@ -1009,15 +1051,12 @@ PROGRAM ScriptedShaderElement::getComputeProgram(const shaderbindump::ShaderCode
   auto const &dumpOwner = get_shaders_dump_owner(dumpHandle);
 
 #if DAGOR_DBGLEVEL > 0
-  FRAMEMEM_REGION;
-  String debugInfoStr(framemem_ptr());
-  auto get_debug_info = [&]() {
-    // Passing main dump, as it is used (only) for interval decoding
-    set_debug_variant_name(::shBinDump(), debugInfoStr, variant_code, (const char *)shClass.name, code);
-    return debugInfoStr.c_str();
+  auto get_debug_info = [&, builder = FramememDebugInfoBuilder()](ShaderCodeType) mutable {
+    build_variant_name_for_element(*this, builder.debugInfoStr, variant_code, STAGE_CS, dumpOwner);
+    return eastl::string_view{builder.debugInfoStr};
   };
 #else
-  auto get_debug_info = [] { return (const char *)nullptr; };
+  auto get_debug_info = [](ShaderCodeType) { return eastl::string_view{}; };
   G_UNUSED(variant_code);
 #endif
 
@@ -1039,6 +1078,18 @@ PROGRAM ScriptedShaderElement::getComputeProgram() const
   return getComputeProgram(p, variant_code);
 }
 
+PROGRAM ScriptedShaderElement::preCreateComputeProgram(int pass_id) const
+{
+  unsigned variantCode = unsigned(-1);
+#if DAGOR_DBGLEVEL > 0
+  int codeIndex = int(&code - shClass.code.begin());
+  selectedStaticVariantCode = uint32_t(-1);
+  shClass.stVariants.enumerateCodesForVariant(codeIndex, [this](unsigned variant_code) { selectedStaticVariantCode = variant_code; });
+  code.dynVariants.enumerateCodesForVariant(pass_id, [&variantCode](unsigned variant_code) { variantCode = variant_code; });
+#endif
+  return getComputeProgram(&code.passes[pass_id].rpass.get(), variantCode);
+}
+
 void copy_current_global_variables_states(GlobalVariableStates &gv)
 {
   if (DAGOR_UNLIKELY(!gv.globIntervalNormValues.size() || gv.generation != shaderbindump::get_generation()))
@@ -1049,11 +1100,10 @@ void copy_current_global_variables_states(GlobalVariableStates &gv)
   memcpy(gv.globIntervalNormValues.data(), shGlobalData().globIntervalNormValues.data(), shGlobalData().globIntervalNormValues.size());
 }
 
-int get_dynamic_variant_states(const GlobalVariableStates &global_variants_state, const ScriptedShaderElement &s, uint32_t &program,
-  ShaderStateBlockId &state_index, shaders::RenderStateId &render_state, shaders::ConstStateIdx &const_state,
-  shaders::TexStateIdx &tex_state)
+static int get_dynamic_variant_states(const GlobalVariableStates &global_variants_state, const ScriptedShaderElement &s,
+  uint32_t &program, ShaderStateBlockId &state_index, shaders::RenderStateId &render_state, shaders::ConstStateIdx &const_state,
+  shaders::TexStateIdx &tex_state, uint32_t &variant_code)
 {
-  unsigned int variant_code;
   int curVariant = s.chooseDynamicVariant(global_variants_state.globIntervalNormValues, variant_code);
   if (curVariant < 0)
     return -1;
@@ -1061,10 +1111,9 @@ int get_dynamic_variant_states(const GlobalVariableStates &global_variants_state
   return curVariant;
 }
 
-int get_dynamic_variant_states(const ScriptedShaderElement &s, uint32_t &program, ShaderStateBlockId &state_index,
-  shaders::RenderStateId &render_state, shaders::ConstStateIdx &const_state, shaders::TexStateIdx &tex_state)
+static int get_dynamic_variant_states(const ScriptedShaderElement &s, uint32_t &program, ShaderStateBlockId &state_index,
+  shaders::RenderStateId &render_state, shaders::ConstStateIdx &const_state, shaders::TexStateIdx &tex_state, uint32_t &variant_code)
 {
-  unsigned int variant_code;
   int curVariant = s.chooseDynamicVariant(variant_code);
   if (curVariant < 0)
     return -1;
@@ -1072,16 +1121,70 @@ int get_dynamic_variant_states(const ScriptedShaderElement &s, uint32_t &program
   return curVariant;
 }
 
-int get_cached_dynamic_variant_states(const ScriptedShaderElement &s, dag::ConstSpan<int> cache, uint32_t &program,
+static int get_cached_dynamic_variant_states(const ScriptedShaderElement &s, dag::ConstSpan<int> cache, uint32_t &program,
   ShaderStateBlockId &state_index, shaders::RenderStateId &render_state, shaders::ConstStateIdx &const_state,
-  shaders::TexStateIdx &tex_state)
+  shaders::TexStateIdx &tex_state, uint32_t &variant_code)
 {
-  const int variantCode = cache[s.dynVariantCollectionId];
-  int curVariant = s.chooseCachedDynamicVariant(variantCode);
+  variant_code = cache[s.dynVariantCollectionId];
+  int curVariant = s.chooseCachedDynamicVariant(variant_code);
   if (curVariant < 0)
     return -1;
-  s.getDynamicVariantStates(variantCode, curVariant, program, state_index, render_state, const_state, tex_state);
+  s.getDynamicVariantStates(variant_code, curVariant, program, state_index, render_state, const_state, tex_state);
   return curVariant;
+}
+
+shaders::CombinedDynVariantState get_dynamic_variant_states(const GlobalVariableStates &global_variants_state,
+  const ScriptedShaderElement &s)
+{
+  shaders::CombinedDynVariantState state = {};
+  uint32_t variantCode;
+  state.variant = get_dynamic_variant_states(global_variants_state, s, state.program, state.state_index, state.render_state,
+    state.const_state, state.tex_state, variantCode);
+#if DAGOR_DBGLEVEL > 0
+  state.variantCode = variantCode;
+#endif
+  return state;
+}
+
+shaders::CombinedDynVariantState get_dynamic_variant_states(const ScriptedShaderElement &s)
+{
+  shaders::CombinedDynVariantState state = {};
+  uint32_t variantCode;
+  state.variant = get_dynamic_variant_states(s, state.program, state.state_index, state.render_state, state.const_state,
+    state.tex_state, variantCode);
+#if DAGOR_DBGLEVEL > 0
+  state.variantCode = variantCode;
+#endif
+  return state;
+}
+
+shaders::CombinedDynVariantState get_cached_dynamic_variant_states(const ScriptedShaderElement &s, dag::ConstSpan<int> cache)
+{
+  shaders::CombinedDynVariantState state = {};
+  uint32_t variantCode;
+  state.variant = get_cached_dynamic_variant_states(s, cache, state.program, state.state_index, state.render_state, state.const_state,
+    state.tex_state, variantCode);
+#if DAGOR_DBGLEVEL > 0
+  state.variantCode = variantCode;
+#endif
+  return state;
+}
+
+bool dynamic_variant_depends_on_global_var(const ScriptedShaderElement &s, int var_id)
+{
+  const ScriptedShadersGlobalData &gd = shGlobalData();
+  if (unsigned(var_id) >= gd.maxShadervarCnt())
+    return false;
+  const uint32_t varNameId = gd.varIndexMap[var_id];
+  if (varNameId >= SHADERVAR_IDX_ABSENT)
+    return false;
+  for (const shaderbindump::VariantTable::IntervalBind &piece : s.code.dynVariants.codePieces)
+  {
+    const shaderbindump::Interval &interval = shBinDump().intervals[piece.intervalId];
+    if (interval.type == shaderbindump::Interval::TYPE_GLOBAL_INTERVAL && interval.nameId == varNameId)
+      return true;
+  }
+  return false;
 }
 
 uintptr_t get_static_variant(const ScriptedShaderElement &s) { return uintptr_t(&s.code); }
@@ -1127,7 +1230,22 @@ void ScriptedShaderElement::execute_chosen_stcode(uint16_t stcodeId, uint16_t ex
 #endif
 }
 
-void ScriptedShaderElement::setStatesForVariant(int curVariant, uint32_t program, ShaderStateBlockId state_index) const
+static void bind_assertion_context(const ScriptedShaderElement &self, ScriptedShadersBinDumpOwner &dump_owner, unsigned variant_code)
+{
+  int shaderClassId = (int)(&self.shClass - dump_owner.getDump()->classes.data());
+#if DAGOR_DBGLEVEL > 0
+  auto get_assertion_info = [&, builder = FramememDebugInfoBuilder()]() mutable {
+    build_variant_name_for_shader_assert(self, builder.debugInfoStr, variant_code, dump_owner);
+    return eastl::string_view{builder.debugInfoStr};
+  };
+  dump_owner.assertionCtx.bind(shaderClassId, dump_owner, get_assertion_info);
+#else
+  dump_owner.assertionCtx.bind(shaderClassId, dump_owner);
+#endif
+}
+
+void ScriptedShaderElement::setStatesForVariant(int curVariant, unsigned variant_code, uint32_t program,
+  ShaderStateBlockId state_index) const
 {
   const PackedPassId *curPass = &passes[curVariant];
   const shaderbindump::ShaderCode::Pass *codeCp = &code.passes[curVariant];
@@ -1151,7 +1269,7 @@ void ScriptedShaderElement::setStatesForVariant(int curVariant, uint32_t program
     ourBlock.reqTexLevel(tex_level);
   }
 
-  dumpOwner.assertionCtx.bind((int)(&shClass - dump.classes.data()), dumpOwner);
+  bind_assertion_context(*this, dumpOwner, variant_code);
   if (codeCp->rpass->stcodeId != 0xFFFF)
   {
     const int stcodeId = codeCp->rpass->stcodeId;
@@ -1162,9 +1280,13 @@ void ScriptedShaderElement::setStatesForVariant(int curVariant, uint32_t program
   }
 }
 
-void set_states_for_variant(const ScriptedShaderElement &s, int curVariant, uint32_t program, ShaderStateBlockId state_index)
+void set_states_for_variant(const ScriptedShaderElement &s, const shaders::CombinedDynVariantState &state)
 {
-  s.setStatesForVariant(curVariant, program, state_index);
+#if DAGOR_DBGLEVEL > 0
+  s.setStatesForVariant(state.variant, state.variantCode, state.program, state.state_index);
+#else
+  s.setStatesForVariant(state.variant, unsigned(-1), state.program, state.state_index);
+#endif
 }
 
 void ScriptedShaderElement::render(int minv, int numv, int sind, int numf, int base_vertex, int prim) const
@@ -1197,7 +1319,7 @@ bool ScriptedShaderElement::setStatesDispatch() const
   auto const &dump = *dumpOwner.getDump();
 
   d3d::set_program(getComputeProgram(p, variant_code));
-  dumpOwner.assertionCtx.bind((int)(&shClass - dump.classes.data()), dumpOwner);
+  bind_assertion_context(*this, dumpOwner, variant_code);
   if (p->stcodeId != shaderbindump::ShaderCode::INVALID_FSH_VPR_ID)
   {
     const int extStcodeId = stcode::USE_BRANCHED_DYNAMIC_ROUTINES ? code.branchedCppStcodeId : p->branchlessCppStcodeId;

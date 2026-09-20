@@ -483,10 +483,10 @@ void GridEditDialog::onSnapStepChanged()
 }
 
 
-void GridEditDialog::updateImguiDialog()
+void GridEditDialog::updateImguiDialog(const PropPanel::DialogWindow::DialogFrameSizing &sizing)
 {
   const bool enabled = !getPanel()->isDefaultValueSet();
   setDialogButtonEnabled(PropPanel::DIALOG_ID_OK, enabled);
   setDialogButtonTooltip(PropPanel::DIALOG_ID_OK, enabled ? "" : "All set to default");
-  Base::updateImguiDialog();
+  Base::updateImguiDialog(sizing);
 }

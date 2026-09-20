@@ -13,7 +13,6 @@
 const float ZOOM_SPEED = 0.1;
 const float MIN_ZOOM = 1.0;
 const float MAX_ZOOM = 5.0;
-const Point3 CAMERA_POS = Point3(0, 4, -10);
 
 //==============================================================================
 

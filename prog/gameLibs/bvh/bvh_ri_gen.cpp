@@ -14,6 +14,7 @@
 #include "bvh_ri_common.h"
 #include "bvh_tools.h"
 #include "bvh_add_instance.h"
+#include "bvh_voxel_activity.h"
 
 CONSOLE_BOOL_VAL("raytracing", bvh_ri_gen_split_enabled, true);
 CONSOLE_INT_VAL("raytracing", bvh_ri_gen_split_chunk_budget, 1000, 100, 100000);
@@ -81,7 +82,7 @@ struct DECLSPEC_ALIGN(16) IPoint4_vec4 : public IPoint4
 {
 } ATTRIBUTE_ALIGN(16);
 
-template <map_tree_fn mapper>
+template <map_rendinst_fn mapper>
 static bool handle_leaves(ContextId context_id, uint64_t object_id, int lod_ix, mat44f_cref tm, rendinst::riex_handle_t handle,
   eastl::optional<TMatrix4> &inv_world_tm, LeavesInfo &leavesInfo, MeshMetaAllocator::AllocId &metaAllocId, void *user_data)
 {
@@ -120,8 +121,7 @@ static bool handle_leaves(ContextId context_id, uint64_t object_id, int lod_ix, 
   metaAllocId = data->metaAllocId;
 
   leavesInfo.invWorldTm = inv_world_tm.value();
-  leavesInfo.transformedBuffer = &data->buffer;
-  leavesInfo.transformedBlas = &data->blas;
+  leavesInfo.transformedData = data;
 
   return true;
 }
@@ -160,6 +160,9 @@ static struct RiGenBVHJob : public cpujobs::IJob
   int riGenCount;
   int impostorCount;
 
+  uint32_t voxelConsidered;
+  uint32_t voxelCulled;
+
   unsigned counter;
 
   bbox3f treeArea;
@@ -174,12 +177,12 @@ static struct RiGenBVHJob : public cpujobs::IJob
   static ReferencedTransformData *mapTreeRiGen(ContextId context_id, uint64_t object_id, uint64_t id, int lod_ix, void *user_data,
     bool &recycled, int &anim_index)
   {
-    MapTreePointers pointers;
-    pointers.uniqueTreeBuffers = make_span(context_id->uniqueTreeBuffers, Context::maxUniqueLods);
-    pointers.newUniqueTreeBuffers = make_span(static_cast<RiGenBVHJob *>(user_data)->newUniqueTreeBuffers, Context::maxUniqueLods);
+    MapRendinstPointers pointers;
+    pointers.uniqueBuffers = make_span(context_id->uniqueTreeBuffers, Context::maxUniqueLods);
+    pointers.newUniqueBuffers = make_span(static_cast<RiGenBVHJob *>(user_data)->newUniqueTreeBuffers, Context::maxUniqueLods);
     pointers.contextId = context_id;
-    pointers.freeUniqueTreeBLASes = &context_id->freeUniqueTreeBLASes;
-    return map_tree_base<true>(object_id, id, lod_ix, recycled, anim_index, pointers);
+    pointers.freeUniqueBLASes = &context_id->freeUniqueTreeBLASes;
+    return map_rendinst_base<true>(object_id, id, lod_ix, recycled, anim_index, pointers);
   }
 
   void updateSplitBudgetHit()
@@ -194,13 +197,10 @@ static struct RiGenBVHJob : public cpujobs::IJob
     const E3DCOLOR *colors, uint32_t bvh_id, uint64_t unique_id, uint32_t palette_id)
     DAG_TS_REQUIRES_SHARED(thiz->contextId->objectsLock)
   {
-    if ((++thiz->counter & ~32) == 0)
-      bvh_yield();
-
 #if DAGOR_DBGLEVEL > 0
     if (DAGOR_UNLIKELY(bvh_ri_gen_range_enable))
     {
-      auto distSq = v_extract_x(v_length3_sq(v_sub(tm.col3, thiz->viewPosition)));
+      auto distSq = v_extract_x(v_length3_sq_x(v_sub(tm.col3, thiz->viewPosition)));
       if (sqr(bvh_ri_gen_range) < distSq)
         return;
     }
@@ -223,6 +223,14 @@ static struct RiGenBVHJob : public cpujobs::IJob
     if constexpr (filter_out_view_frustum)
       if (isInFrustum())
         return;
+
+    if (voxel_activity::culling_active(thiz->contextId))
+    {
+      const vec4f voxelCheckBsphere =
+        v_mat44_mul_bsph(tm, v_make_vec4f(riRes->bsphCenter.x, riRes->bsphCenter.y, riRes->bsphCenter.z, riRes->bsphRad));
+      if (!voxel_activity::keep_instance(thiz->contextId, voxelCheckBsphere, thiz->voxelConsidered, thiz->voxelCulled))
+        return;
+    }
 
     if (impostor)
     {
@@ -280,7 +288,7 @@ static struct RiGenBVHJob : public cpujobs::IJob
           // and also smaller bounds to check results in fewer trees animated.
           static constexpr float preciseCheckingTreshold = sqr(max_light_dist_for_bvh_shadow * 2);
 
-          float distSq = v_extract_x(v_length3_sq(v_sub(tm.col3, thiz->viewPosition)));
+          float distSq = v_extract_x(v_length3_sq_x(v_sub(tm.col3, thiz->viewPosition)));
           vec4f localBounds = v_make_vec4f(riRes->bsphCenter.x, riRes->bsphCenter.y, riRes->bsphCenter.z, riRes->bsphRad);
           vec4f worldBounds = v_mat44_mul_bsph(tm, localBounds);
           if (distSq < preciseCheckingTreshold)
@@ -309,7 +317,7 @@ static struct RiGenBVHJob : public cpujobs::IJob
 
           TreeInfo treeInfo;
           MeshMetaAllocator::AllocId metaAllocId = MeshMetaAllocator::INVALID_ALLOC_ID;
-          bool iok = isStationary ? handle_tree<map_tree_stationary, false>(thiz->contextId, elem, meshId, lod_ix, isPosInst, tm,
+          bool iok = isStationary ? handle_tree<map_rendinst_stationary, false>(thiz->contextId, elem, meshId, lod_ix, isPosInst, tm,
                                       tm.col3, colors, unique_id, invWorldTm, treeInfo, metaAllocId, thiz, true, false, palette_id)
                                   : handle_tree<mapTreeRiGen, false>(thiz->contextId, elem, meshId, lod_ix, isPosInst, tm, tm.col3,
                                       colors, unique_id, invWorldTm, treeInfo, metaAllocId, thiz, false, false, palette_id);
@@ -325,7 +333,7 @@ static struct RiGenBVHJob : public cpujobs::IJob
         {
           LeavesInfo leavesInfo;
           MeshMetaAllocator::AllocId metaAllocId = MeshMetaAllocator::INVALID_ALLOC_ID;
-          bool iok = isStationary ? handle_leaves<map_tree_stationary>(thiz->contextId, meshId, lod_ix, tm, unique_id, invWorldTm,
+          bool iok = isStationary ? handle_leaves<map_rendinst_stationary>(thiz->contextId, meshId, lod_ix, tm, unique_id, invWorldTm,
                                       leavesInfo, metaAllocId, thiz)
                                   : handle_leaves<mapTreeRiGen>(thiz->contextId, meshId, lod_ix, tm, unique_id, invWorldTm, leavesInfo,
                                       metaAllocId, thiz);
@@ -353,6 +361,8 @@ static struct RiGenBVHJob : public cpujobs::IJob
 
     riGenCount = 0;
     impostorCount = 0;
+    voxelConsidered = 0;
+    voxelCulled = 0;
 
     mesh_id_accel = -1;
     meta_alloc_id_accel = -1;
@@ -399,6 +409,9 @@ static struct RiGenBVHJob : public cpujobs::IJob
     const bool useTreeAnimMaxDist = v_test_vec_x_gt_0(ri_tree_anim_max_distance_sq_v);
     doJobWrapper(*this, filterOutViewFrustum, useMinLod, useTreeAnimMaxDist);
 
+    contextId->voxelActivity.riGenConsidered.fetch_add(voxelConsidered);
+    contextId->voxelActivity.riGenCulled.fetch_add(voxelCulled);
+
     // flip-flop scheduling: start the other pair right before this one finishes, so the parallel processing finish is consistent
     if (hitChunkBudget)
     {
@@ -411,7 +424,7 @@ static struct RiGenBVHJob : public cpujobs::IJob
     parallel_instance_processing::after_job_end(contextId);
   }
 
-  const char *getJobName(bool &) const override { return "RiGenBVHJob"; }
+  const char *getJobName(bool &) const override { return DAPROFILER_STRING("RiGenBVHJob"); }
 
 } ri_gen_bvh_job[ri_gen_thread_count][2]; // flip-flop pair
 
@@ -451,6 +464,7 @@ void update_ri_gen_instances(ContextId context_id, const dag::Vector<RiGenVisibi
 
   wait_ri_gen_instances_update(context_id);
   start_new_tree_mapping_debug_frame();
+  voxel_activity::begin_ri_gen_placement(context_id);
 
   const bool globalObjectTessellationEnabled = is_global_object_tessellation_enabled();
 
@@ -530,37 +544,39 @@ void tidy_up_rigen_trees(ContextId context_id)
       }
     }
   }
-  TidyUpTreePointers pointers;
-  pointers.uniqueTreeBuffers = make_span(context_id->uniqueTreeBuffers, Context::maxUniqueLods);
+  TidyUpRendinstPointers pointers;
+  pointers.uniqueBuffers = make_span(context_id->uniqueTreeBuffers, Context::maxUniqueLods);
   pointers.contextId = context_id;
-  pointers.freeUniqueTreeBLASes = &context_id->freeUniqueTreeBLASes;
-  tidy_up_trees_base<true>(context_id, pointers);
+  pointers.freeUniqueBLASes = &context_id->freeUniqueTreeBLASes;
+  tidy_up_rendinsts_base<true>(context_id, pointers);
 }
 void tidy_up_riex_trees(ContextId context_id);
+void tidy_up_riex_flags(ContextId context_id);
 
-static struct TidyUpTreesJob : public cpujobs::IJob
+static struct TidyUpRendinstsJob : public cpujobs::IJob
 {
   ContextId contextId;
 
-  const char *getJobName(bool &) const override { return "TidyUpTreesJob"; }
+  const char *getJobName(bool &) const override { return DAPROFILER_STRING("TidyUpRendinstsJob"); }
 
   void doJob() override
   {
     // Remove unique tree buffers that was not used for a long time
 
-    WinAutoLock lock(contextId->tidyUpTreesLock);
+    WinAutoLock lock(contextId->tidyUpRendinstsLock);
     tidy_up_rigen_trees(contextId);
     tidy_up_riex_trees(contextId);
+    tidy_up_riex_flags(contextId);
   }
-} tidy_up_trees_job;
+} tidy_up_rendinsts_job;
 
-void tidy_up_trees(ContextId context_id)
+void tidy_up_rendinsts(ContextId context_id)
 {
-  tidy_up_trees_job.contextId = context_id;
-  threadpool::add(&tidy_up_trees_job, threadpool::PRIO_HIGH);
+  tidy_up_rendinsts_job.contextId = context_id;
+  threadpool::add(&tidy_up_rendinsts_job, threadpool::PRIO_HIGH);
 }
 
-void wait_tidy_up_trees() { threadpool::wait(&tidy_up_trees_job); }
+void wait_tidy_up_rendinsts() { threadpool::wait(&tidy_up_rendinsts_job); }
 
 void teardown_ri_gen()
 {

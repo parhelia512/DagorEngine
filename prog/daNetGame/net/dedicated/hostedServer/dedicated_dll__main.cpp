@@ -1,6 +1,7 @@
 // Copyright (C) Gaijin Games KFT.  All rights reserved.
 
 #include "main/main.cpp"
+#include "main/hostedServerLauncher.h"
 #include <debug/dag_hwExcept.h>
 #include <startup/dag_winCommons.h>
 #include <startup/dag_addBasePathDef.h>
@@ -24,13 +25,6 @@ static int suppress_log_cb(int, const char *, const void *, int, const char *, i
 extern void default_crt_init_kernel_lib();
 extern void default_crt_init_core_lib();
 extern "C" const char *dagor_get_build_stamp_str(char *buf, size_t bufsz, const char *suffix);
-// C++ linkage (do not declare inside start_internal_server: that fn is extern "C").
-void hosted_server_install_debug_log_forward();
-void hosted_server_uninstall_debug_log_forward();
-namespace rendinst
-{
-extern bool allowOptimizeCollResOnLoad;
-} // namespace rendinst
 
 static GameResProxyTable gameres_proxy_table;
 static void term_res_factories_for_hosted_internal_server();
@@ -75,6 +69,12 @@ bool __cdecl start_internal_server(const DataBlock &inp, void(__cdecl *handler)(
     [&inp, &argv_storage](int idx) { argv_storage.push_back(inp.getStr(idx)); });
 
   dgs_init_argv(argv_storage.size(), (char **)argv_storage.data());
+  {
+    const char *uid = inp.getStr(TEST_LOG_UID_ARG, "");
+    if (const char *s = ::dgs_get_argv(TEST_LOG_UID_ARG))
+      uid = s;
+    hosted_server_store_instance_uid(uid);
+  }
   init_platform_specific(inp);
   if (auto *shared_mem = (GlobalSharedMemStorage *)(void *)inp.getInt64("sharedMemPtr", 0))
   {
@@ -100,8 +100,8 @@ bool __cdecl start_internal_server(const DataBlock &inp, void(__cdecl *handler)(
   debug(dagor_get_build_stamp_str(sbuf, sizeof(sbuf), "\n\n"));
   measure_cpu_freq();
 #endif
-  // After debug system init: bridge engine logs to the host console via log_forwarder.
-  hosted_server_install_debug_log_forward();
+  // Default HIS log mirror arms later in DagorWinMain (after visual_err_log_setup) so it
+  // sits above visuallog. Forwarder may already be stored from the host.
 
   if (auto *tbl = (const GameResProxyTable *)(void *)inp.getInt64("gameResProxyTablePtr", 0))
   {
@@ -139,10 +139,6 @@ bool __cdecl start_internal_server(const DataBlock &inp, void(__cdecl *handler)(
   ::dgs_argv = nullptr;
   argv_storage.clear();
   flush_debug_file();
-  // Restore host callback before DLL unload (PC and non-PC). Leaving the DLL's
-  // hosted_server_debug_log_cb installed makes the next host debug() jump into
-  // unmapped pages after os_dll_close.
-  hosted_server_uninstall_debug_log_forward();
 #if !_TARGET_PC
   debug_set_log_callback(&suppress_log_cb);
 #endif
@@ -176,8 +172,6 @@ bool init_res_factories_for_hosted_internal_server()
     {
       proxy_gameres_factories.push_back(f);
       debug("registered gameres proxy factory(0x%X, %s)", cls_id, f->getResClassName());
-      if (cls_id == CollisionGameResClassId)
-        rendinst::allowOptimizeCollResOnLoad = false;
     }
     else
       cls_id = 0;

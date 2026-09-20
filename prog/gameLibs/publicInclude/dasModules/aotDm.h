@@ -142,12 +142,21 @@ static inline const dm::effect::ActionCluster *get_damage_effect_action_cluster(
   return preset.getActionCluster(context);
 }
 
+static inline bool damage_effect_preset_has_effect(const dm::effect::Preset &preset, int eff_type)
+{
+  for (const dm::effect::Rule &rule : preset.rules)
+    for (const dm::effect::ComplexAction &action : rule.actionCluster.actionList)
+      if (int(action.type) == eff_type)
+        return true;
+  return false;
+}
+
 static inline float get_part_hp_prop_value(const dm::DamageModelData &dm_data, const dm::PartId &part_id)
 {
   return dm::get_part_hp_total(dm_data.props.parts, part_id);
 }
 
-static inline float calc_kinetic_penetration_shift(const InterpolateTabFloat &table, float residual_penetration, float distance,
+static inline float calc_kinetic_penetration_shift(const InterpolateTabMemPtrFloat &table, float residual_penetration, float distance,
   float scale, float shift)
 {
   return dm::kinetic::calc_penetration_shift(table, residual_penetration, distance, scale, shift);

@@ -59,7 +59,7 @@ shader darg_panel_frame_buffer, darg_panel_frame_buffer_no_depth, darg_panel_gbu
   GLOBAL_FRAME_CONTENT()
   INIT_HDR(ps)
 
-  if (shader == darg_panel_gbuffer)
+  if (shader == darg_panel_gbuffer || shader == darg_panel_frame_buffer || shader == darg_panel_frame_buffer_no_depth)
   {
     define_macro_if_not_defined INIT_MOTION_VECTORS()
     hlsl {
@@ -103,7 +103,6 @@ shader darg_panel_frame_buffer, darg_panel_frame_buffer_no_depth, darg_panel_gbu
     (vs) {
       panel_world@f44 = panel_world;
       panel_world_normal@f44 = panel_world_normal;
-      panel_prev_globtm@f44 = panel_prev_globtm;
     }
     (ps) {
       panel_smoothness@f1 = panel_smoothness;
@@ -112,6 +111,18 @@ shader darg_panel_frame_buffer, darg_panel_frame_buffer_no_depth, darg_panel_gbu
     }
 
     VR_MULTIVIEW_RENDERING(true, true)
+  }
+
+  if (shader == darg_panel_gbuffer || shader == darg_panel_frame_buffer || shader == darg_panel_frame_buffer_no_depth)
+  {
+    (vs) {
+      panel_prev_globtm@f44 = panel_prev_globtm;
+    }
+  }
+
+  if (shader == darg_panel_frame_buffer || shader == darg_panel_frame_buffer_no_depth)
+  {
+    VR_MULTIVIEW_RENDERING(false, true)
   }
 
   hlsl {
@@ -129,6 +140,10 @@ shader darg_panel_frame_buffer, darg_panel_frame_buffer_no_depth, darg_panel_gbu
         #endif
       ##elif shader == darg_panel_frame_buffer_no_depth || shader == darg_panel_frame_buffer
          float3 out_pos_unjittered : TEXCOORD2;
+        #ifdef MOTION_VECTORS_ENABLED
+          float3 out_pos      : TEXCOORD3;
+          float3 out_pos_prev : TEXCOORD4;
+        #endif
       ##endif
     };
   }
@@ -142,7 +157,7 @@ shader darg_panel_frame_buffer, darg_panel_frame_buffer_no_depth, darg_panel_gbu
     };
 
     VsOutput darg_panel_shader_vs(VsInput input
-      ##if shader == darg_panel_gbuffer
+      ##if shader == darg_panel_gbuffer || shader == darg_panel_frame_buffer || shader == darg_panel_frame_buffer_no_depth
         USE_VIEW_ID
       ##endif
     )
@@ -162,6 +177,10 @@ shader darg_panel_frame_buffer, darg_panel_frame_buffer_no_depth, darg_panel_gbu
           output.out_pos_unjittered = float3(output.pos.xy - panel_jitter_ndc * output.pos.w, output.pos.w);
         #endif
       ##elif shader == darg_panel_frame_buffer_no_depth || shader == darg_panel_frame_buffer
+        #ifdef MOTION_VECTORS_ENABLED
+          float4 out_pos_prev = mul(pos4, panel_prev_globtm);
+          VR_MULTIVIEW_PREPARE_MOTION_ATTRIBUTES(output, out_pos_prev);
+        #endif
         output.out_pos_unjittered = float3(output.pos.xy - panel_jitter_ndc * output.pos.w, output.pos.w);
       ##endif
 
@@ -216,7 +235,13 @@ shader darg_panel_frame_buffer, darg_panel_frame_buffer_no_depth, darg_panel_gbu
         clip_alpha(color.a);
 
         output.color = float4(pack_hdr(color.rgb), color.a);
-        output.motion = float4(encode_motion_mask_no_jitter().xy, 0, step(0, color.a));
+        #ifdef MOTION_VECTORS_ENABLED
+          float2 edgeBias = EDGE_BLEND_WIDTH*(abs(ddx(input.texcoord)) + abs(ddy(input.texcoord)));
+          bool rejectTemporalHistory = all(and(input.texcoord > 0 + edgeBias, input.texcoord < 1 - edgeBias));
+          output.motion = float4(rejectTemporalHistory ? encode_motion_mask_no_jitter().xy : encode_motion_vector(input.out_pos, input.out_pos_prev).xy, 0, step(0, color.a));
+        #else
+          output.motion = float4(encode_motion_mask_no_jitter().xy, 0, step(0, color.a));
+        #endif
 
         return output;
       }
@@ -283,7 +308,7 @@ if (shader == darg_panel_reactive_mask)
 
         #ifdef MOTION_VECTORS_ENABLED
           float2 edgeBias = EDGE_BLEND_WIDTH*(abs(ddx(input.texcoord)) + abs(ddy(input.texcoord)));
-          bool rejectTemporalHistory = all(input.texcoord > 0 + edgeBias && input.texcoord < 1 - edgeBias);
+          bool rejectTemporalHistory = all(and(input.texcoord > 0 + edgeBias, input.texcoord < 1 - edgeBias));
           init_motion_vector(result, rejectTemporalHistory ? encode_motion_mask_no_jitter() : encode_motion_vector( input.out_pos, input.out_pos_prev ));
         #endif
         return encode_gbuffer(result, input.pointToEye.xyz, GET_SCREEN_POS(input.pos));

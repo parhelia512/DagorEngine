@@ -19,6 +19,8 @@ void ConvexHullComputerProcessing::calcSelectedComputer()
 
 void ConvexHullComputerProcessing::calcComputer(const ConvexComputerSettings &settings)
 {
+  if (!collisionRes)
+    return;
   dag::Vector<Point3_vec4> verts;
   dag::ConstSpan<CollisionNode> nodes = collisionRes->getAllNodes();
   float shrink = settings.shrink;

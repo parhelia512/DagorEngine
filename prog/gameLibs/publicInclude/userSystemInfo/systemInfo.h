@@ -25,6 +25,15 @@ enum class ThermalStatus
   Shutdown,
 };
 
+enum class DiskType
+{
+  Unknown,
+  Hdd,
+  Ssd,
+  Remote,
+  RamDisk,
+};
+
 void init();
 
 bool is_64bit_os();
@@ -42,6 +51,10 @@ bool get_cpu_info(String &cpu, String &cpuFreq, String &cpuVendor, String &cpu_s
 bool get_cpu_features(String &cpu_arch, String &cpu_uarch, Tab<String> &cpu_features);
 bool get_soc_info(String &soc);
 int get_mem_page_size();
+
+bool get_disk_type(const char *path, DiskType &disk_type); // PC only
+// consoles report the storage the game writes to and ignore path; total_bytes stays 0 where no quota is known
+bool get_disk_space(const char *path, uint64_t &free_bytes, uint64_t &total_bytes);
 
 bool get_mac(String &adapter, String &mac);
 
@@ -77,6 +90,7 @@ void check_vc_redist(const DataBlock *);
 
 ThermalStatus get_thermal_state(); // From normal (0) to the worse
 const char *to_string(ThermalStatus status);
+const char *to_string(DiskType disk_type);
 int is_tablet();
 int get_battery_capacity_mah();
 float get_battery();

@@ -60,6 +60,7 @@ shader wfx_gen_emitter
 
     uint cmdCount: register(c0);
     GPUEmitterGen emitterGen[MAX_EMITTER_GEN_COMMANDS]: register(c1);
+    float4 emitterGenSentinel : register(c1009);
 
     [numthreads(EMITTER_GEN_WARP, 1, 1)]
     void main(uint3 dtId: SV_DispatchThreadID)
@@ -94,6 +95,7 @@ shader wfx_emit
 
   hlsl(cs) {
     GPUEmitterDynamic emitterDynData[MAX_EMITTER_GEN_COMMANDS]: register(c2);
+    float4 emitterDynDataSentinel : register(c380);
 
     [numthreads(EMIT_WARP, 1, 1)]
     void main(uint3 dtId: SV_DispatchThreadID)

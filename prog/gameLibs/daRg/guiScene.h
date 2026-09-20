@@ -140,6 +140,7 @@ public:
   void rebuildInvalidatedParts();
   void recalcLayoutFromRoots(dag::Span<Element *> fixed_size_roots, dag::Span<Element *> size_roots, dag::Span<Element *> flow_roots);
   void onElementDetached(Element *elem);
+  void onXmbNodeRemoved(Element *elem);
   void validateAfterRebuild(Element *elem);
 
   void rebuildStacksAndNotify(Screen *screen, bool refresh_hotkeys_nav, bool update_global_hover);
@@ -214,6 +215,7 @@ public:
   bool isInputActive() const { return isInputEnabledByHost && isInputEnabledByScript; }
 
   void doSetXmbFocus(Element *elem);
+  void queueXmbNodeHandler(Element *elem, const Sqrat::Object &key);
   void trySetXmbFocus(Element *elem);
 
   Point2 getVrStickState(int hand) const;

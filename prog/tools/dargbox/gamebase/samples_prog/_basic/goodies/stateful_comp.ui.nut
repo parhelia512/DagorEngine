@@ -14,13 +14,14 @@ gui_scene.setInterval(1.0, @() ticker.set(ticker.get() + 1))
 local nextBirthId = 0
 
 // Runs once per mounted card. `item` arrives as an observable that the
-// reconciler writes when the parent rebuilds.
-function cardCtor(item) {
+// reconciler writes when the parent rebuilds. State made through `scope`
+// is released when the card is unmounted.
+function cardCtor(scope, item) {
   nextBirthId += 1
-  let birthId = Watched(nextBirthId)
-  let isSelected = Computed(@() selectedId.get() == item.get().id)
+  let birthId = scope.Watched(nextBirthId)
+  let isSelected = scope.Computed(@() selectedId.get() == item.get().id)
   let tickAtMount = ticker.get() // deliberate bare get: mount-time snapshot
-  let ticks = Computed(@() ticker.get() - tickAtMount)
+  let ticks = scope.Computed(@() ticker.get() - tickAtMount)
   return function() {
     let sel = isSelected.get()
     return {

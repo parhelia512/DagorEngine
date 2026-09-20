@@ -1,12 +1,9 @@
 // Copyright (C) Gaijin Games KFT.  All rights reserved.
 
-#include <sceneRay/dag_sceneRayBuildable.h>
-#include <sceneRay/dag_cachedRtVecFaces.h>
-#include <daSDF/generate_sdf.h>
+#include "blasQuery.h"
 #include <dag_noise/dag_uint_noise.h>
 #include <util/dag_parallelFor.h>
 #include <stdio.h>
-#include "pointTriangle.h"
 #include <ioSys/dag_zstdIo.h>
 
 static constexpr uint32_t block_size = SDF_BLOCK_SIZE * SDF_BLOCK_SIZE * SDF_BLOCK_SIZE;
@@ -24,9 +21,9 @@ static uint32_t calc_voxel_index(IPoint3 coord, IPoint3 dim) { return (coord.z *
 class SDFBlockTask
 {
 public:
-  SDFBlockTask(StaticSceneRayTracer &tr, const dag::Span<Point3> &rayStabDirections, float maxTraceDist_, BBox3 volumeBox_,
+  SDFBlockTask(const MeshBLAS &blas, const dag::Span<Point3> &rayStabDirections, float maxTraceDist_, BBox3 volumeBox_,
     float invMaxExt_, Point2 decodeSDFMulAdd_, IPoint3 blockCoord_, IPoint3 indirectionDim_) :
-    tr(tr),
+    blas(blas),
     rayStabDirections(rayStabDirections),
     maxTraceDist(maxTraceDist_),
     volumeBox(volumeBox_),
@@ -38,7 +35,7 @@ public:
 
   void doJob();
 
-  StaticSceneRayTracer &tr;
+  const MeshBLAS &blas;
   const dag::Span<Point3> &rayStabDirections;
   float maxTraceDist;
   BBox3 volumeBox;
@@ -56,60 +53,6 @@ public:
   int negs = 0, traces = 0, hits = 0;
 };
 
-static thread_local struct GetFacesContextDistance : public StaticSceneRayTracer::GetFacesContext
-{
-  vec4f sphR;
-  __forceinline bool process_triangle_dist(int fidx, vec4f vert0, vec4f vert1, vec4f vert2)
-  {
-    vec4f sph_r = sphR;
-    G_UNUSED(fidx);
-
-    bool test = v_test_triangle_sphere_intersection(vert0, vert1, vert2, sph_r, v_splat_w(v_mul(sph_r, sph_r)));
-    if (test)
-    {
-      float distSq = v_extract_x(distToTriangleSq(sph_r, vert0, vert1, vert2));
-      if (distSq < v_extract_w(v_mul(sph_r, sph_r)))
-      {
-        float dist = sqrtf(distSq);
-        vec3f r = v_splats(dist);
-        sphR = v_perm_xyzd(sph_r, r);
-        __gf_wbox_vec.bmin = v_sub(sph_r, v_splat_w(r));
-        __gf_wbox_vec.bmax = v_add(sph_r, v_splat_w(r));
-      }
-    }
-    return true;
-  }
-  bool processFace(int fidx)
-  {
-    if (!markFace(fidx))
-      return true;
-    const auto &f = getFace(fidx);
-
-    vec3f vert0 = getVert(f.v[0]);
-    vec3f vert1 = getVert(f.v[1]);
-    vec3f vert2 = getVert(f.v[2]);
-    bbox3f facebox;
-    facebox.bmin = facebox.bmax = vert0;
-    v_bbox3_add_pt(facebox, vert1);
-    v_bbox3_add_pt(facebox, vert2);
-
-    if (v_bbox3_test_box_intersect(get_wbox(), facebox))
-      process_triangle_dist(fidx, vert0, vert1, vert2);
-    return true;
-  }
-} sdf_ctx;
-
-static float shortest_distance(GetFacesContextDistance &ctx, StaticSceneRayTracer &tr, vec4f &sph_r)
-{
-  bbox3f box;
-  box.bmin = v_sub(sph_r, v_splat_w(sph_r));
-  box.bmax = v_add(sph_r, v_splat_w(sph_r));
-  ctx.sphR = sph_r;
-  tr.getVecFacesCached(box, ctx);
-  sph_r = ctx.sphR;
-  return v_extract_w(sph_r);
-}
-
 void SDFBlockTask::doJob()
 {
   const Point3 indirectionVoxelSize = div(volumeBox.width(), point3(indirectionDim));
@@ -119,7 +62,6 @@ void SDFBlockTask::doJob()
   result.SDFData.clear();
   result.SDFData.resize(SDF_BLOCK_SIZE * SDF_BLOCK_SIZE * SDF_BLOCK_SIZE);
   auto sdf = result.SDFData.data();
-  const float getPointDist = maxTraceDist;
 
   for (int32_t zI = 0; zI < SDF_BLOCK_SIZE; zI++)
   {
@@ -132,16 +74,7 @@ void SDFBlockTask::doJob()
 
         float minDist = maxTraceDist;
 
-        {
-          vec4f sph = v_make_vec4f(P3D(voxelPos), getPointDist);
-          float closestDist = shortest_distance(sdf_ctx, tr, sph);
-          minDist = min(minDist, closestDist);
-        }
-
-        float rayStabThreshold = maxTraceDist;
-        bool rayStabbing = minDist < rayStabThreshold;
-
-        if (rayStabbing)
+        if (blas_closest_distance(blas, v_ldu_p3(&voxelPos.x), maxTraceDist, minDist))
         {
           traces++;
           int32_t hit = 0;
@@ -155,15 +88,14 @@ void SDFBlockTask::doJob()
             const float eps = 1.e-4f;
             // Pull back the starting position slightly to make sure we hit a triangle that voxelPos is exactly on.
             const Point3 rayStart = voxelPos - eps * maxTraceDist * rayDir;
-            float t = maxTraceDist + eps;
-            int face = tr.tracerayNormalized(rayStart, rayDir, t); // todo: get flags also
-            if (face != -1)
+
+            bool normalOpposes = false;
+            if (blas_ray_hit(blas, v_ldu_p3(&rayStart.x), v_ldu_p3(&rayDir.x), maxTraceDist + eps, normalOpposes))
             {
               hit++;
               hits++;
 
-              vec4f normal = tr.getNormal(face);
-              if (v_test_vec_x_lt_0(v_dot3_x(v_ldu(&rayDir.x), normal))) // check cull flags!
+              if (normalOpposes)
               {
                 if ((++hitBack) * backThreshold > totalRays) // we are already hit too much backs
                   break;
@@ -249,9 +181,9 @@ static IPoint3 mip0_indirection(const BBox3 &meshBounds, float voxel_density, in
     clamp(float2int_near(idealDim.z), 1, maxBlocksDim));
 }
 
-void generate_sdf(StaticSceneRayTracer &tr, MippedMeshSDF &meshSDF, float voxel_density, int mesh_max_res)
+void generate_sdf(const MeshBLAS &blas, MippedMeshSDF &meshSDF, float voxel_density, int mesh_max_res)
 {
-  BBox3 meshBounds = tr.getBox();
+  BBox3 meshBounds = blas.box;
   const int32_t maxBlocksDim = min(divide_and_round_up(mesh_max_res, SDF_INTERNAL_BLOCK_SIZE), SDF_MAX_INDIRECTION_DIM - 1);
 
   // Make sure the mesh bounding box has positive extents to handle thin planes
@@ -324,7 +256,7 @@ void generate_sdf(StaticSceneRayTracer &tr, MippedMeshSDF &meshSDF, float voxel_
       {
         for (int32_t xI = 0; xI < indirectionDim.x; xI++)
         {
-          blockTasks.emplace_back(tr, make_span(rayStabDirections), maxTraceDist, SDFVolume, invMaxExt, decodeSDFMulAdd,
+          blockTasks.emplace_back(blas, make_span(rayStabDirections), maxTraceDist, SDFVolume, invMaxExt, decodeSDFMulAdd,
             IPoint3(xI, yI, zI), indirectionDim);
         }
       }

@@ -126,7 +126,7 @@ void ground_holes_convar_helper_es(const UpdateStageInfoBeforeRender &, bool &sh
 }
 
 ECS_TAG(render)
-ECS_ON_EVENT(EventLevelLoaded, AfterDeviceReset)
+ECS_ON_EVENT(EventLevelLoaded, EventAfterDeviceReset)
 static void ground_holes_render_when_event_es(const ecs::Event &, bool &should_render_ground_holes)
 {
   should_render_ground_holes = true;

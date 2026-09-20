@@ -1,0 +1,53 @@
+include "shader_global.dshl"
+include "heightmap_common.dshl"
+include "optional_puddle_access.dshl"
+
+int num_puddle_points_const_no = 10 always_referenced;
+int puddle_results_offset_no = 11 always_referenced;
+int puddle_buf_const_no = 0 always_referenced;
+buffer puddle_query_input_buf;
+
+define_macro_if_not_defined INIT_PUDDLE_QUERY_SAMPLE(stage)
+endmacro
+
+define_macro_if_not_defined USE_PUDDLE_QUERY_SAMPLE(stage)
+  hlsl(stage) {
+    float puddle_query_sample(float3 worldPos)
+    {
+      return 0;
+    }
+  }
+endmacro
+
+shader puddle_query_cs
+{
+  INIT_PUDDLE_QUERY_SAMPLE(cs)
+  USE_PUDDLE_QUERY_SAMPLE(cs)
+
+  (cs) {
+    points_buf@buf = puddle_query_input_buf hlsl {
+      StructuredBuffer<float4> points_buf@buf;
+    };
+    puddle_buf@uav : register(puddle_buf_const_no) hlsl {
+      RWStructuredBuffer<float> puddle_buf@uav;
+    }
+    num_puddle_points@u1 : register(num_puddle_points_const_no);
+    resultsOffset@u1 : register(puddle_results_offset_no);
+  }
+
+  hlsl(cs) {
+    #include "puddle_query.hlsli"
+
+    [numthreads( PUDDLE_QUERY_WARP_SIZE, 1, 1 )]
+    void main(uint id : SV_DispatchThreadID)
+    {
+      if (id >= num_puddle_points)
+        return;
+
+      float3 worldPos = structuredBufferAt(points_buf, id).xyz;
+      structuredBufferAt(puddle_buf, resultsOffset+id) = puddle_query_sample(worldPos);
+    }
+  }
+
+  compile("target_cs", "main");
+}

@@ -254,21 +254,14 @@ static void addLodInstances(RendInstGenData::RtData &rt_data, const RiGenVisibil
 
       const auto &elem = elems[elemNo];
 
-      uint32_t prog;
-      ShaderStateBlockId state;
-      shaders::ConstStateIdx cstate;
-      shaders::TexStateIdx tstate;
-      shaders::RenderStateId rstate;
-
-      const auto curVar = get_dynamic_variant_states(elem.e->native(), prog, state, rstate, cstate, tstate);
-
-      if (curVar < 0)
+      shaders::CombinedDynVariantState dynVarState = get_dynamic_variant_states(elem.e->native());
+      if (!is_valid(dynVarState))
         continue;
 
       const PackedDrawOrder drawOrder{elem, (unsigned int)stage, draw_order_var_id};
-      const auto baseRecord = RiGenRenderRecord(elem.e, curVar, prog, state, rstate, tstate, cstate, INVALID, drawOrder, stage,
-        (uint16_t)elem.vertexData->getStride(), (uint8_t)elem.vertexData->getVbIdx(), INVALID, INVALID, ri_idx, elem.si, elem.numf,
-        elem.baseVertex, elem.numv, elem.numf, elem.getPrimitive(), RiGenRenderRecord::INVALID, INVALID, meshDebugValue, plodMask & 1);
+      const auto baseRecord = RiGenRenderRecord(elem.e, dynVarState, INVALID, drawOrder, stage, (uint16_t)elem.vertexData->getStride(),
+        (uint8_t)elem.vertexData->getVbIdx(), INVALID, INVALID, ri_idx, elem.si, elem.numf, elem.baseVertex, elem.numv, elem.numf,
+        elem.getPrimitive(), RiGenRenderRecord::INVALID, INVALID, meshDebugValue, plodMask & 1);
 
       add_record_cb(baseRecord);
     }
@@ -306,7 +299,7 @@ void RiGenRenderer::addInstanceVisibleObjects(RendInstGenData::RtData &rt_data, 
         record.count = visibility.perInstanceVisibilityCells[instanceLod][cell + 1].y - record.offset;
         record.visibility = record.PER_INSTANCE;
         record.instanceLod = instanceLod;
-        const auto isPacked = is_packed_material(record.cstate);
+        const auto isPacked = is_packed_material(record.dvState.const_state);
         auto recordOffset = record.offset;
         auto instancesLeft = record.count;
         G_ASSERT(!isPacked || record.startIndex != RELEM_NO_INDEX_BUFFER);
@@ -353,6 +346,9 @@ void RiGenRenderer::addCellVisibleObjects(RendInstGenData::RtData &rt_data, cons
     auto recordsCount = renderRecords.size();
     for (auto lodIdx = rt_data.riResFirstLod(riIdx), lodCount = rt_data.riResLodCount(riIdx); lodIdx <= lodCount; ++lodIdx)
     {
+      if (!visibility.hasCells(riIdx, lodIdx))
+        continue;
+
       const bool posInst = rt_data.riPosInst[riIdx] ? 1 : 0;
       const auto riCoordType = posInst ? rendinst::render::COORD_TYPE_POS : rendinst::render::COORD_TYPE_TM;
       uint32_t stride = RIGEN_STRIDE_B(posInst, rt_data.riZeroInstSeeds[riIdx], perInstDataDwords);
@@ -395,7 +391,7 @@ void RiGenRenderer::addCellVisibleObjects(RendInstGenData::RtData &rt_data, cons
             record.visibility = record.PER_CELL;
             record.instanceLod = getInstanceLod(rt_data, riIdx, lodIdx);
 
-            const auto isPacked = is_packed_material(record.cstate);
+            const auto isPacked = is_packed_material(record.dvState.const_state);
             G_ASSERT(!isPacked || record.startIndex != RELEM_NO_INDEX_BUFFER);
 
             if (isPacked)
@@ -431,19 +427,19 @@ void RiGenRenderer::sortObjects()
       return r1.vbIdx < r2.vbIdx;
     if (renderPass != RenderPass::Depth || r1.stage != ShaderMesh::STG_opaque)
     {
-      if (r1.state != r2.state)
+      if (r1.dvState.state_index != r2.dvState.state_index)
       {
-        if (r1.tstate != r2.tstate)
-          return r1.tstate < r2.tstate;
-        if (r1.rstate != r2.rstate)
-          return r1.rstate < r2.rstate;
-        return r1.state < r2.state;
+        if (r1.dvState.tex_state != r2.dvState.tex_state)
+          return r1.dvState.tex_state < r2.dvState.tex_state;
+        if (r1.dvState.render_state != r2.dvState.render_state)
+          return r1.dvState.render_state < r2.dvState.render_state;
+        return r1.dvState.state_index < r2.dvState.state_index;
       }
-      if (r1.prog != r2.prog)
-        return r1.prog < r2.prog;
+      if (r1.dvState.program != r2.dvState.program)
+        return r1.dvState.program < r2.dvState.program;
     }
-    else if (r1.rstate != r2.rstate)
-      return r1.rstate < r2.rstate;
+    else if (r1.dvState.render_state != r2.dvState.render_state)
+      return r1.dvState.render_state < r2.dvState.render_state;
     if (r1.poolOrder != r2.poolOrder)
       return r1.poolOrder < r2.poolOrder;
     return r1.offset < r2.offset;
@@ -461,27 +457,27 @@ void RiGenRenderer::sortPackedObjects()
   stlsort::sort(packedRenderRecords.begin(), firstCellRecord, [&](const auto &r1, const auto &r2) {
     if (DAGOR_UNLIKELY(r1.drawOrder != r2.drawOrder))
       return r1.drawOrder < r2.drawOrder;
-    if (get_material_id(r1.cstate) != get_material_id(r2.cstate))
-      return get_material_id(r1.cstate) > get_material_id(r2.cstate);
+    if (get_material_id(r1.dvState.const_state) != get_material_id(r2.dvState.const_state))
+      return get_material_id(r1.dvState.const_state) > get_material_id(r2.dvState.const_state);
     if (DAGOR_UNLIKELY(r1.vstride != r2.vstride))
       return r1.vstride < r2.vstride;
     if (DAGOR_UNLIKELY(r1.vbIdx != r2.vbIdx))
       return r1.vbIdx < r2.vbIdx;
     if (renderPass != RenderPass::Depth || r1.stage != ShaderMesh::STG_opaque)
     {
-      if (r1.state != r2.state)
+      if (r1.dvState.state_index != r2.dvState.state_index)
       {
-        if (r1.tstate != r2.tstate)
-          return r1.tstate < r2.tstate;
-        if (r1.rstate != r2.rstate)
-          return r1.rstate < r2.rstate;
-        return r1.state < r2.state;
+        if (r1.dvState.tex_state != r2.dvState.tex_state)
+          return r1.dvState.tex_state < r2.dvState.tex_state;
+        if (r1.dvState.render_state != r2.dvState.render_state)
+          return r1.dvState.render_state < r2.dvState.render_state;
+        return r1.dvState.state_index < r2.dvState.state_index;
       }
-      if (r1.prog != r2.prog)
-        return r1.prog < r2.prog;
+      if (r1.dvState.program != r2.dvState.program)
+        return r1.dvState.program < r2.dvState.program;
     }
-    else if (r1.rstate != r2.rstate)
-      return r1.rstate < r2.rstate;
+    else if (r1.dvState.render_state != r2.dvState.render_state)
+      return r1.dvState.render_state < r2.dvState.render_state;
     if (r1.poolOrder != r2.poolOrder)
       return r1.poolOrder < r2.poolOrder;
     return r1.offset < r2.offset;
@@ -527,7 +523,7 @@ void RiGenRenderer::renderObjects(const RendInstGenData::RtData &rt_data, const 
   uint8_t curVbIdx = INVALID;
   uint16_t curStride = INVALID;
   shaders::RenderStateId curRState = shaders::RenderStateId::Invalid;
-  uint16_t curVariant = INVALID;
+  uint32_t curVariant = INVALID;
   uint32_t curProg = INVALID;
   ShaderStateBlockId curState = ShaderStateBlockId::Invalid;
   uint32_t curPoolIdx = INVALID;
@@ -592,8 +588,8 @@ void RiGenRenderer::renderObjects(const RendInstGenData::RtData &rt_data, const 
       d3d_err(d3d::setvsrc(0, unitedvdata::riUnitedVdata.getVB(curVbIdx), curStride));
     }
 
-    if (record.stage == ShaderMesh::STG_opaque && curRState == record.rstate && record.variant == curVariant &&
-        record.prog == curProg && record.state == curState)
+    if (record.stage == ShaderMesh::STG_opaque && curRState == record.dvState.render_state && record.dvState.variant == curVariant &&
+        record.dvState.program == curProg && record.dvState.state_index == curState)
       skipApply = true;
 
     const bool isBakedImpostor = rt_data.riRes[record.poolIdx]->isBakedImpostor();
@@ -627,7 +623,7 @@ void RiGenRenderer::renderObjects(const RendInstGenData::RtData &rt_data, const 
 
     if (!skipApply)
     {
-      set_states_for_variant(record.curShader->native(), record.variant, record.prog, record.state);
+      set_states_for_variant(record.curShader->native(), record.dvState);
       if (renderPass == RenderPass::ToShadow)
       {
         d3d::settex(dynamic_impostor_texture_const_no + DYNAMIC_IMPOSTOR_TEX_SHADOW_OFFSET,
@@ -637,10 +633,10 @@ void RiGenRenderer::renderObjects(const RendInstGenData::RtData &rt_data, const 
       }
     }
 
-    curRState = record.rstate;
-    curVariant = record.variant;
-    curState = record.state;
-    curProg = record.prog;
+    curRState = record.dvState.render_state;
+    curVariant = record.dvState.variant;
+    curState = record.dvState.state_index;
+    curProg = record.dvState.program;
 
     auto instancesPerDraw = record.count;
     if (record.visibility == record.PER_INSTANCE)
@@ -700,20 +696,20 @@ RiGenRenderer::MultiDrawRenderer RiGenRenderer::getMultiDrawRenderer()
       base_vertex = static_cast<int32_t>(drawRecord.baseVertex);
       if (DAGOR_UNLIKELY(drawRecord.poolIdx >= MAX_PER_DRAW_OFFSET))
       {
-        logerr("Too big ri gen pool index %d", drawRecord.poolIdx);
+        LOGERR_ONCE("Too big ri gen pool index %d", drawRecord.poolIdx);
         instance_count = 0;
       }
-      const auto materialOffset = get_material_offset(drawRecord.cstate);
+      const auto materialOffset = get_material_offset(drawRecord.dvState.const_state);
       if (DAGOR_UNLIKELY(materialOffset >= MAX_MATERIAL_OFFSET))
       {
-        logerr("Too big material offset %d", materialOffset);
+        LOGERR_ONCE("Too big material offset %d", materialOffset);
         instance_count = 0;
       }
       params.instanceOffset = drawRecord.offset;
       if (DAGOR_UNLIKELY(drawRecord.visibility == drawRecord.PER_INSTANCE &&
                          drawRecord.offset + drawRecord.count > rendinst::render::MAX_INSTANCES))
       {
-        logwarn("RiGenRenderer per instance buffer has more than %d instances!", rendinst::render::MAX_INSTANCES);
+        LOGWARN_ONCE("RiGenRenderer per instance buffer has more than %d instances!", rendinst::render::MAX_INSTANCES);
         params.instanceOffset = 0;
       }
       params.perDrawData = drawRecord.poolIdx * (sizeof(rendinst::render::RiShaderConstBuffers) / sizeof(vec4f)) + 1;
@@ -797,7 +793,7 @@ void RiGenRenderer::renderPackedObjects(const RendInstGenData::RtData &rt_data, 
     }
 
     debug_mesh::set_debug_value(record.meshDebugValue);
-    set_states_for_variant(record.curShader->native(), record.variant, record.prog, record.state);
+    set_states_for_variant(record.curShader->native(), record.dvState);
 
     multiDrawRenderer.render(PRIM_TRILIST, drawRange.start, drawRange.count);
   }

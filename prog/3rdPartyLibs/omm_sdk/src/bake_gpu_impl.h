@@ -305,7 +305,7 @@ namespace Gpu
             if (it == _cache.end())
             {
                 const char* cpy = AllocateAndCloneString(hash, str);
-                it = _cache.insert(std::make_pair(hash, cpy)).first;
+                it = _cache.emplace(hash, cpy).first;
             }
 
             return it->second;
@@ -346,7 +346,6 @@ namespace Gpu
         , _flattenedResources(stdAllocator)
         , _bufferMappings(stdAllocator)
         , _resourceMappings(stdAllocator)
-        , _mappings(stdAllocator)
         , _binding(binding)
         , _enableValidation(enableValidation)
         {
@@ -359,7 +358,7 @@ namespace Gpu
                 OMM_ASSERT(!"*identifier* is not referenced by the shader");
             }
 
-            _bufferMappings.insert(std::make_pair(std::make_pair(const_hash(identifier), identifier), subRange.resourceRef));
+            _bufferMappings.emplace(std::make_pair(const_hash(identifier), identifier), subRange.resourceRef);
         }
 
         void Bind(const char* identifier, ommGpuResourceType type, uint32_t indexInPool)
@@ -369,7 +368,7 @@ namespace Gpu
                 OMM_ASSERT(!"*identifier* is not referenced by the shader");
             }
 
-            _resourceMappings.insert(std::make_pair(std::make_pair(const_hash(identifier), identifier), std::make_pair(type, indexInPool)));
+            _resourceMappings.emplace(std::make_pair(const_hash(identifier), identifier), std::make_pair(type, indexInPool));
         }
 
         void Finalize()
@@ -400,7 +399,7 @@ namespace Gpu
                     if (resourceIt == resourceMapping.end())
                     {
                         _flattenedBindings.push_back(std::make_pair(binding, it.second));
-                        resourceMapping.insert(std::make_pair(binding.registerIndex, it.second));
+                        resourceMapping.emplace(binding.registerIndex, it.second);
                     }
                     else
                     {
@@ -429,7 +428,7 @@ namespace Gpu
                     ResourceBinding binding = _binding.GetResourceBinding(it.first.first);
                     _flattenedResources.push_back(std::make_pair(binding, it.second));
 
-                    resourceMapping.insert(std::make_pair(binding.registerIndex, nullptr /**/));
+                    resourceMapping.emplace(binding.registerIndex, nullptr);
                 }
             }
 
@@ -449,7 +448,6 @@ namespace Gpu
         vector<std::pair<ResourceBinding, std::pair<ommGpuResourceType, uint32_t>>> _flattenedResources;
         map<std::pair<uint32_t, const char*>, const BufferResource*> _bufferMappings;
         map<std::pair<uint32_t, const char*>, std::pair<ommGpuResourceType, uint32_t>> _resourceMappings;
-        map<std::pair<uint32_t, const char*>, ommGpuResourceType> _mappings;
         const ShaderBindings& _binding;
         bool _enableValidation;
     };
@@ -460,7 +458,6 @@ namespace Gpu
         {
             PassConfig(const StdAllocator<uint8_t>& stdAllocator, ommGpuDispatchType type, const ShaderBindings& binding, bool enableValidation)
                 : m_bindingSet(stdAllocator, binding, enableValidation)
-                , m_subRange(stdAllocator)
                 , m_localCb(m_cbuffer.data()
                 , m_cbuffer.max_size())
             {
@@ -600,8 +597,6 @@ namespace Gpu
                 m_desc.drawIndexedIndirect.indirectArgByteOffset = indirectArgBuffer.GetBufferOffset() + indirectArgOffset;
                 return m_localCb;
             }
-
-            vector<std::pair<uint32_t, BufferResource::SubRange>> m_subRange;
 
             std::array<std::pair<ommGpuResource, uint32_t>, 4> m_textureRead;
             uint32_t m_textureReadCount = 0;

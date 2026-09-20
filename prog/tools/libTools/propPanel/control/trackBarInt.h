@@ -61,6 +61,8 @@ public:
 
   void setEnabled(bool enabled) override { controlEnabled = enabled; }
 
+  const char *getImguiTypeName() const override { return "TrackInt"; }
+
   void updateImgui() override
   {
     ScopedImguiBeginDisabled scopedDisabled(!controlEnabled);
@@ -74,13 +76,17 @@ public:
     {
       ImGui::SetNextItemWidth(sliderWidth);
 
-      int value = spinEdit.getValue();
-      pushTrackBarColorOverrides();
-      const bool changed =
-        ImGui::SliderInt("##s", &value, spinEdit.getMinValue(), spinEdit.getMaxValue(), "", ImGuiSliderFlags_NoInput);
-      popTrackBarColorOverrides();
-      const bool sliderDeactivatedAfterEdit = ImGui::IsItemDeactivatedAfterEdit();
+      const char *label = "##s";
+      ImguiHelper::deactivateItemIfActiveAndDisabled(label);
 
+      pushTrackBarColorOverrides();
+      int value = spinEdit.getValue();
+      const bool changed =
+        ImGui::SliderInt(label, &value, spinEdit.getMinValue(), spinEdit.getMaxValue(), "", ImGuiSliderFlags_NoInput);
+      const bool sliderDeactivatedAfterEdit = ImGui::IsItemDeactivatedAfterEdit();
+      popTrackBarColorOverrides();
+
+      setImguiTestItemInfo();
       setPreviousImguiControlTooltip();
 
       if (changed)
@@ -103,7 +109,7 @@ public:
     }
 
     setFocusToNextImGuiControlIfRequested();
-    spinEdit.updateImgui(*this, &controlTooltip, this);
+    spinEdit.updateImgui(*this, &controlTooltip, this, this, "value");
 
     if (spinEdit.isTextInputFocused())
       set_focused_immediate_focus_loss_handler(this);

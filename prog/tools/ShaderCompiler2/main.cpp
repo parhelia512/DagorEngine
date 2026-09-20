@@ -188,6 +188,8 @@ static void showUsage()
     "  -dfull | -debugfull - for Dx11 and Dx12, it produces unoptimized shaders with full debug info,\n"
     "  -embed_source - for Dx11 and Dx12, it embeds hlsl source in the binary without turning off optimization,\n"
     "   including shader source, so shader debugging will have the HLSL source. It implies -pdb.\n"
+    "  -keep_debug - for Dx11 and Dx12, it keeps debug info, reflection and root signature in the binary,\n"
+    "   without embedding the hlsl source. It does not imply -pdb, so add -pdb or -dfull to get debug info\n"
     "  -daftermath - for DX12, it produces shader binaries and pdb/cso files for detailed resolve of\n"
     "   Aftermath gpu dumps by Nsight Graphics\n"
     "  -w - show compilation warnings (hidden by default)\n"
@@ -471,8 +473,10 @@ static void compile(Tab<String> &&source_files, const char *fn, const char *bind
     additionalDirStr += "DAFTERMATH";
   if (shc::config().isDebugModeEnabled)
     additionalDirStr += "-debug";
-  if (shc::config().hlslEmbedSource)
+  if (shc::config().hlslDebugParts == DebugParts::EMBED_SOURCE)
     additionalDirStr += "-embed_src";
+  else if (shc::config().hlslDebugParts == DebugParts::KEEP)
+    additionalDirStr += "-keep_dbg";
 #if _CROSS_TARGET_SPIRV || _CROSS_TARGET_METAL
   if (shc::config().enableBindless)
     additionalDirStr += "-bindless";
@@ -553,7 +557,7 @@ static void compile(Tab<String> &&source_files, const char *fn, const char *bind
     destory_hash_computer_cb(hasher);
 
     if (!shc::config().singleCompilationShName)
-      sh_debug(SHLOG_NORMAL, "Compilation blk hash is : '%s'", blk_hash_string(blkHash).c_str());
+      sh_debug(SHLOG_NORMAL, "Compilation blk hash is : '%s'", hash_string(blkHash).c_str());
   }
   else
   {
@@ -1153,7 +1157,9 @@ int DagorWinMain(bool debugmode)
     else if (dd_stricmp(s, "-dfull") == 0 || dd_stricmp(s, "-debugfull") == 0)
       globalConfigRW.hlslDebugLevel = DebugLevel::FULL_DEBUG_INFO;
     else if (dd_stricmp(s, "-embed_source") == 0)
-      globalConfigRW.hlslEmbedSource = true;
+      globalConfigRW.hlslDebugParts = DebugParts::EMBED_SOURCE;
+    else if (dd_stricmp(s, "-keep_debug") == 0)
+      globalConfigRW.hlslDebugParts = DebugParts::KEEP;
     else if (dd_stricmp(s, "-daftermath") == 0)
       globalConfigRW.hlslDebugLevel = DebugLevel::AFTERMATH;
     else if (dd_stricmp(s, "-commentPP") == 0)
@@ -1699,7 +1705,7 @@ int DagorWinMain(bool debugmode)
       {
         if (sourceBlk->getParamNameId(paramNo) == fileParamId)
         {
-          if (shader_root)
+          if (shader_root && !path_is_abs(sourceBlk->getStr(paramNo)))
             sourceFiles.push_back(String(260, "%s/%s", shader_root, sourceBlk->getStr(paramNo)));
           else
             sourceFiles.push_back(String(sourceBlk->getStr(paramNo)));

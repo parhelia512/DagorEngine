@@ -20,6 +20,7 @@ IGenJoystickClassDrv *createGameInputJoystickClassDriver(bool should_mix_input =
 IGenJoystickClassDrv *createGameInputFlightStickClassDriver();
 CompositeJoystickClassDriver *createGameInputCompositeJoystickClassDriver(bool should_mix_input = false, bool add_flight_stick = true);
 IGenKeyboardClassDrv *createGameInputKeyboardClassDriver();
+IGenPointingClassDrv *createGameInputPointingClassDriver(bool emu_mouse = false, bool hw_mouse = false);
 IGenJoystickClassDrv *createSteamJoystickClassDriver(const char *absolute_path_to_controller_config);
 
 CompositeJoystickClassDriver *createPS4CompositeJoystickClassDriver();

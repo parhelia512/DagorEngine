@@ -14,6 +14,7 @@
 #include <util/dag_console.h>
 #include <waterDecals/waterDecalsRenderer.h>
 #include <math/dag_adjpow2.h>
+#include <math/dag_check_nan.h>
 #include <math/dag_mathUtils.h>
 #include <math/dag_hlsl_floatx.h>
 #include <generic/dag_initOnDemand.h>
@@ -1056,11 +1057,11 @@ void simulate(FFTWater *water, double time)
       water->initChopWaterGen();
       water->initPhysicsChop();
     }
-    water->getChopWaterGen()->Update(water->getLastTime(), false);
+    water->getChopWaterGen()->Update(water->getLastTime(), 0.0f, false);
   }
   water->simulateAllAt(time, chopEnabled);
 }
-void before_render(const FFTWater *water)
+void before_render(const FFTWater *water, float scaled_dt)
 {
   if (water->getRender() || water->getRenderChop())
   {
@@ -1071,7 +1072,7 @@ void before_render(const FFTWater *water)
   {
     if (water->getRenderChop()) // client-case
     {
-      water->getChopWaterGen()->Update(water->getLastTime(), water->getRenderChop()->isDetailWavesEnabled());
+      water->getChopWaterGen()->Update(water->getLastTime(), scaled_dt, water->getRenderChop()->isDetailWavesEnabled());
     }
   }
   else
@@ -1617,11 +1618,14 @@ void load_heightmap(IGenLoad &loadCb, FFTWater *water)
 
 bool WaterHeightmap::getHeightmapDataBilinear(float x, float z, float &result) const
 {
+  [[maybe_unused]] const float srcX = x, srcZ = z;
   x = (x * tcOffsetScale.z + tcOffsetScale.x) * gridSize;
   z = (z * tcOffsetScale.w + tcOffsetScale.y) * gridSize;
-  if (x < 0.0f || z < 0.0f || (int)x > gridSize - 1 || (int)z > gridSize - 1)
+  G_ASSERTF(check_finite(x) && check_finite(z) && Point2(srcX, srcZ).lengthSq() < 1e12f, "bad hmap sample (%f, %f)", srcX, srcZ);
+  const int ix = (int)floorf(x), iz = (int)floorf(z);
+  if (unsigned(ix) >= unsigned(gridSize) || unsigned(iz) >= unsigned(gridSize))
     return false;
-  uint16_t cellData = grid[((int)z) * gridSize + (int)x];
+  uint16_t cellData = grid[iz * gridSize + ix];
   if (cellData == 0xFFFF)
     return false;
   int pageSize = PAGE_SIZE_PADDED;
@@ -1698,6 +1702,7 @@ static inline IPoint2 water_page_texel_span(int sub, int k0, int k1, int cells_p
 
 bool WaterHeightmap::getHeightmapHeightMinMaxInChunk(const Point2 &pos, const real &chunk_size, real &hmin, real &hmax) const
 {
+  G_ASSERTF(check_finite(pos.x) && check_finite(pos.y) && pos.lengthSq() < 1e12f, "bad hmap chunk query (%f, %f)", pos.x, pos.y);
   const Point2 pageSize = Point2(1.f / tcOffsetScale.z, 1.f / tcOffsetScale.w) / gridSize;
   const Point2 texelSize = pageSize / HEIGHTMAP_PAGE_SIZE;
 

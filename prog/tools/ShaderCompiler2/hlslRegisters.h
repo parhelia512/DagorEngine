@@ -77,7 +77,6 @@ enum class HlslSlotSemantic : uint8_t
   RESERVED,
   RESERVED_FOR_PREDEFINES,
   RESERVED_FOR_IMPLICIT_CONST_CBUF,
-  RESERVED_FOR_GLOBAL_CONST_CBUF,
   RESERVED_FOR_REFINED_BLOCK_CBUF,
   RESERVED_FOR_MATERIAL_PARAMS_CBUF,
   RESERVED_FOR_IMMEDIATE_CBUF,
@@ -110,7 +109,6 @@ public:
     "supp blk",                  // RESERVED
     "predefined",                // RESERVED_FOR_PREDEFINES
     "implicit const buf",        // RESERVED_FOR_IMPLICIT_CONST_CBUF
-    "global const buf",          // RESERVED_FOR_GLOBAL_CONST_CBUF
     "refined block const buf",   // RESERVED_FOR_REFINED_BLOCK_CBUF
     "material params const buf", // RESERVED_FOR_MATERIAL_PARAMS_CBUF
     "immediate const buf"        // RESERVED_FOR_IMMEDIATE_CBUF

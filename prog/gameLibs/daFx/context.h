@@ -46,7 +46,7 @@ struct AsyncPrepareJob final : public cpujobs::IJob
   float dt = 0.f;
   bool gpu_fetch = false;
   bool clear_debug_lods = false;
-  const char *getJobName(bool &) const override { return "dafx_prepare"; }
+  const char *getJobName(bool &) const override { return DAPROFILER_STRING("dafx_prepare"); }
   void doJob() override;
 };
 
@@ -56,7 +56,7 @@ struct AsyncCpuComputeJob final : public cpujobs::IJob
   bool emission = false;
   int depth = 0;
   int threadId = 0;
-  const char *getJobName(bool &) const override { return "dafx_cpu_compute_tasks"; }
+  const char *getJobName(bool &) const override { return DAPROFILER_STRING("dafx_cpu_compute_tasks"); }
   void doJob() override;
 };
 
@@ -66,7 +66,7 @@ struct AsyncStartNextComputeBatchJob final : public cpujobs::IJob
   int depth;
   bool emission;
   cpujobs::IJob *prepare(ContextId cid_, int depth_, bool emi);
-  const char *getJobName(bool &) const override { return "AsyncStartNextComputeBatchJob"; }
+  const char *getJobName(bool &) const override { return DAPROFILER_STRING("AsyncStartNextComputeBatchJob"); }
   void doJob() override;
 };
 
@@ -75,14 +75,14 @@ struct AsyncCpuCullJob final : public cpujobs::IJob
   ContextId cid;
   int start = 0;
   int count = 0;
-  const char *getJobName(bool &) const override { return "AsyncCpuCullJob"; }
+  const char *getJobName(bool &) const override { return DAPROFILER_STRING("AsyncCpuCullJob"); }
   void doJob() override;
 };
 
 struct AsyncCpuDefragJob final : public cpujobs::IJob
 {
   ContextId cid;
-  const char *getJobName(bool &) const override { return "AsyncCpuDefragJob"; }
+  const char *getJobName(bool &) const override { return DAPROFILER_STRING("AsyncCpuDefragJob"); }
   void doJob() override;
 };
 
@@ -141,7 +141,6 @@ struct WorkerStats
   int allRenderWorkers = 0;
   int activeInstances = 0;
   int renderInstances = 0;
-  int totalParticles = 0;
   int genVisibilityLod = 0;
 
   // @TODO: are these supposed to be reported as well? Were not in orig code.
@@ -162,6 +161,7 @@ struct Context
   Config pendingCfg;
   Stats stats;
   AsyncStats asyncStats;
+  dag::Vector<bool> statParticlesCounted;
   dag::Vector<SystemUsageStat> systemUsageStats;
   uint32_t debugFlags = 0;
 

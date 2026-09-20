@@ -5,7 +5,7 @@
 #include <render/deferredRenderer.h>
 #include <perfMon/dag_statDrv.h>
 #include <shaders/dag_shaderBlock.h>
-#include <render/world/aimRender.h>
+#include <ecs/render/aimRender.h>
 
 #include "render/fx/fx.h"
 #include "render/fx/fxRenderTags.h"

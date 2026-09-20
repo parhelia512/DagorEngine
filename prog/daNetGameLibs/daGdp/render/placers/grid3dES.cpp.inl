@@ -78,10 +78,12 @@ static inline void grid3d_view_process_es(
         return;
       }
 
+      const float density = dagdp__density * GlobalManager::clampedGlobalDensityMul();
+
       const uint32_t placerIndex = builder.placers.size();
       auto &placer3d = builder.placers.push_back();
-      placer3d.density = dagdp__density;
-      placer3d.worldStep = powf(dagdp__density, -1.0f / 3);
+      placer3d.density = density;
+      placer3d.worldStep = powf(density, -1.0f / 3);
       placer3d.csmCascadeCount = dagdp__csm_cascade_count;
       placer3d.axis = dagdp__volume_axis;
       placer3d.axisLocal = dagdp__volume_axis_local;

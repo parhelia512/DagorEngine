@@ -133,9 +133,11 @@ LandscapeEntityObject::~LandscapeEntityObject() { destroy_it(entity); }
 
 void LandscapeEntityObject::renderBox()
 {
+  if (isHidden())
+    return;
   if (EditLayerProps::layerProps[getEditLayerIdx()].isLayerOrTypeHidden())
     return;
-  if (EditLayerProps::layerProps[getEditLayerIdx()].isLayerOrTypeLocked())
+  if (HmapLandObjectEditor::isObjectLocked(*this))
     return;
 
   if (!entity || isSelected())
@@ -659,6 +661,10 @@ void LandscapeEntityObject::changeAssset(ObjectEditor &object_editor, dag::Const
       UndoPropsChange::redo();
       on_object_entity_name_changed(*getObj());
     }
+
+    // Its own key, or it shares UndoPropsChange's and folds into one of those, which would drop the
+    // notification above.
+    UNDO_MERGE_SNAPSHOT_BY_TARGET(0x30C9098Fu, getObj()) // UndoEntityNamePropsChange
   };
 
   const char *asset = DAEDITOR3.selectAsset(initially_selected_asset_name, "Select entity", DAEDITOR3.getGenObjAssetTypes());
@@ -671,8 +677,8 @@ void LandscapeEntityObject::changeAssset(ObjectEditor &object_editor, dag::Const
     LandscapeEntityObject *p = RTTI_cast<LandscapeEntityObject>(objects[i]);
     if (p)
     {
-      object_editor.getUndoSystem()->put(new UndoEntityNamePropsChange(p));
-      object_editor.getUndoSystem()->put(new UndoPerInstSeedChange(p));
+      object_editor.getUndoSystem()->put<UndoEntityNamePropsChange>(p);
+      object_editor.getUndoSystem()->put<UndoPerInstSeedChange>(p);
       p->props.entityName = asset;
       p->propsChanged();
       p->generatePinnedPerInstSeed(); // the new asset may be the one asking for a pinned seed
@@ -718,7 +724,7 @@ void LandscapeEntityObject::onPPChange(int pid, bool edit_finished, PropPanel::C
       LandscapeEntityObject *o = RTTI_cast<LandscapeEntityObject>(objects[i]); \
       if (!o || o->pname == val)                                               \
         continue;                                                              \
-      getObjEditor()->getUndoSystem()->put(new UndoPropsChange(o));            \
+      getObjEditor()->getUndoSystem()->put<UndoPropsChange>(o);                \
       o->pname = val;                                                          \
       o->propsChanged();                                                       \
     }                                                                          \
@@ -799,7 +805,7 @@ void LandscapeEntityObject::onPPChange(int pid, bool edit_finished, PropPanel::C
   else if (pid >= PID_ENTITY_CASTER_FIRST && pid < PID_ENTITY_CASTER_LAST)
   {
     getObjEditor()->getUndoSystem()->begin();
-    getObjEditor()->getUndoSystem()->put(new UndoStaticPropsChange());
+    getObjEditor()->getUndoSystem()->put<UndoStaticPropsChange>();
     getObjEditor()->getUndoSystem()->accept("Change entity colliders");
 
     colliders.col.clear();
@@ -815,7 +821,7 @@ void LandscapeEntityObject::onPPChange(int pid, bool edit_finished, PropPanel::C
   else if (pid == PID_ENTITY_USE_FILTER)
   {
     getObjEditor()->getUndoSystem()->begin();
-    getObjEditor()->getUndoSystem()->put(new UndoStaticPropsChange());
+    getObjEditor()->getUndoSystem()->put<UndoStaticPropsChange>();
     getObjEditor()->getUndoSystem()->accept("Change entity filtering");
 
     colliders.useFilters = panel.getBool(PID_ENTITY_USE_FILTER);
@@ -832,7 +838,7 @@ void LandscapeEntityObject::onPPChange(int pid, bool edit_finished, PropPanel::C
         return;
 
       getObjEditor()->getUndoSystem()->begin();
-      getObjEditor()->getUndoSystem()->put(new UndoStaticPropsChange());
+      getObjEditor()->getUndoSystem()->put<UndoStaticPropsChange>();
       getObjEditor()->getUndoSystem()->accept("Change entity filtering");
 
       IGenEditorPlugin *plugin = DAGORED2->getPlugin(pid - PID_ENTITY_FILTER_FIRST);
@@ -878,8 +884,8 @@ void LandscapeEntityObject::onPPChange(int pid, bool edit_finished, PropPanel::C
       {
         continue;
       }
-      getObjEditor()->getUndoSystem()->put(new UndoPropsChange(p));
-      getObjEditor()->getUndoSystem()->put(new UndoPerInstSeedChange(p));
+      getObjEditor()->getUndoSystem()->put<UndoPropsChange>(p);
+      getObjEditor()->getUndoSystem()->put<UndoPerInstSeedChange>(p);
       prop = val;
       p->generatePinnedPerInstSeed();
     }
@@ -1415,8 +1421,15 @@ void LandscapeEntityObject::objectPropsChanged()
 void LandscapeEntityObject::setEditLayerIdx(int idx)
 {
   editLayerIdx = idx;
+  applyLayerIdxToEntity();
+}
+
+int LandscapeEntityObject::getRenderLayerIdx() const { return isHidden() ? IObjEntity::LAYER_INDEX_ALWAYS_HIDDEN : editLayerIdx; }
+
+void LandscapeEntityObject::applyLayerIdxToEntity(bool use_render_layer)
+{
   if (entity)
-    entity->setEditLayerIdx(editLayerIdx);
+    entity->setEditLayerIdx(use_render_layer ? getRenderLayerIdx() : getEditLayerIdx());
 }
 void LandscapeEntityObject::propsChanged(bool prevent_gen)
 {
@@ -1431,7 +1444,7 @@ void LandscapeEntityObject::propsChanged(bool prevent_gen)
       setGizmoTranformMode(true); // will be reset later in HmapLandPlugin::beforeMainLoop()
 
     entity->setSubtype(IDaEditor3Engine::get().registerEntitySubTypeId("single_ent"));
-    entity->setEditLayerIdx(editLayerIdx);
+    applyLayerIdxToEntity();
 
     IRandomSeedHolder *irsh = entity->queryInterface<IRandomSeedHolder>();
     if (irsh)

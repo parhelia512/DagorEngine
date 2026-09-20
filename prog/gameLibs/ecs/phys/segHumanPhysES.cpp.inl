@@ -5,6 +5,9 @@
 #include <daECS/core/entitySystem.h>
 #include <daECS/core/entityManager.h>
 
+ECS_UNICAST_EVENT_TYPE(EventSegPhysLoaded);
+ECS_REGISTER_EVENT(EventSegPhysLoaded);
+
 ECS_REGISTER_SHARED_TYPE(SharedSegmentedHumanPhysics, nullptr);
 ECS_AUTO_REGISTER_COMPONENT_DEPS(ecs::SharedComponent<SharedSegmentedHumanPhysics>, "human_segmented_physics", nullptr, 0,
   "human_net_phys");
@@ -15,8 +18,13 @@ static bool initSegmentedHumanPhysics(ecs::SharedComponent<SharedSegmentedHumanP
   auto &templateBlkName = (*g_entity_mgr).get<ecs::string>(eid, ECS_HASH("human_segments__template"));
   DataBlock segPhysBlk;
   if (segPhysBlk.load(templateBlkName.c_str()))
+  {
     if (human_segmented_physics->LoadFromTemplate(segPhysBlk))
+    {
       success = true;
+      g_entity_mgr->sendEventImmediate(eid, EventSegPhysLoaded());
+    }
+  }
   return success;
 }
 

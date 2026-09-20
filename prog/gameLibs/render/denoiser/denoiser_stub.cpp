@@ -29,6 +29,8 @@ void get_required_transient_texture_descriptors_for_gi(TexInfoMap &) {}
 
 void prepare(const FrameParams &) {}
 
+void set_shadow_maps_bindless(Texture *, d3d::SamplerHandle, Texture *, d3d::SamplerHandle) {}
+void set_shadow_output_bindless(Texture *, bool) {}
 void denoise_shadow(const ShadowDenoiser &) {}
 void denoise_ao(const AODenoiser &) {}
 void denoise_gi(const GIDenoiser &) {}

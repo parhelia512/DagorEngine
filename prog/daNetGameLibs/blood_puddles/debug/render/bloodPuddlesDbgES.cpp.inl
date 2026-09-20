@@ -14,7 +14,7 @@
 #include <shaders/dag_postFxRenderer.h>
 #include <util/dag_console.h>
 
-#include <render/world/cameraParams.h>
+#include <render/cameraParams.h>
 
 namespace
 {

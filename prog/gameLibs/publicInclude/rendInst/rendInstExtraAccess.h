@@ -20,11 +20,6 @@ class CollisionResource;
 namespace rendinst
 {
 
-float get_riextra_destr_time_to_live(riex_handle_t);
-float get_riextra_destr_default_time_to_live(riex_handle_t);
-float get_riextra_destr_time_to_kinematic(riex_handle_t);
-float get_riextra_destr_time_to_sink_underground(riex_handle_t);
-Point3 get_riextra_destr_disintegration_params(riex_handle_t);
 bool get_riextra_immortality(riex_handle_t);
 
 bool is_riextra_rendinst_clipmap(riex_handle_t);
@@ -35,6 +30,7 @@ void set_riextra_instance_seed(riex_handle_t, int32_t data);
 const mat43f &getRIGenExtra43(riex_handle_t id);
 const mat43f &getRIGenExtra43(riex_handle_t id, uint32_t &seed);
 void getRIGenExtra44(riex_handle_t id, mat44f &out_tm);
+void getRIGenExtra44NoLock(riex_handle_t id, mat44f &out_tm);
 
 dag::ConstSpan<mat43f> getAllRIGenExtra43FromPool(uint32_t pool);
 
@@ -52,7 +48,7 @@ Point4 getRIGenExtraBSphereByTM(uint32_t pool, const TMatrix &tm);
 int getRIGenExtraParentForDestroyedRiIdx(uint32_t pool);
 bool isRIGenExtraDestroyedPhysResExist(uint32_t pool);
 int getRIGenExtraDestroyedRiIdx(uint32_t pool);
-bool isRIGenExtraRendinstClipmap(uint32_t pool);
+bool isRIGenExtraRendinstClipmapOrLandclass(uint32_t pool);
 vec4f getRIGenExtraBSphere(riex_handle_t id);
 // special values: 0 (default HP with regen), -1 (default HP no regen), -2 (invincible)
 void setRiGenExtraHp(riex_handle_t id, float hp);

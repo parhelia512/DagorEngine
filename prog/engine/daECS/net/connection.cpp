@@ -2,6 +2,7 @@
 
 #include <daECS/net/serialize.h>
 #include <daECS/net/connection.h>
+#include <daECS/net/msgDecl.h> // for detail::write_value()/read_value()
 #include <daECS/net/object.h>
 #include <daECS/core/entityManager.h>
 #include <daECS/core/component.h>
@@ -26,7 +27,7 @@ namespace net
 {
 extern void update_dirty_component_filter_mask(ecs::EntityManager &mgr);
 
-bool write_server_eid(ecs::entity_id_t eidVal, danet::BitStream &bs)
+bool write_server_eid(ecs::entity_id_t eidVal, danet::BitStream &bs, dag::FunctionRef<eastl::string() const> ctx_err_cb)
 {
   // bs.WriteCompressed(eidVal);//unoptimized version
   // return true;
@@ -52,8 +53,18 @@ bool write_server_eid(ecs::entity_id_t eidVal, danet::BitStream &bs)
   }
   else // 4 bytes
   {
-    G_FAST_ASSERT(index < (1 << NET_EID_INDEX_BITS)); // generation occupies the bits above
-    uint32_t compressedData = 0;                      // two zeroes at the end means uncompressed + 4byte version
+    if (index >= (1 << NET_EID_INDEX_BITS)) [[unlikely]]
+    {
+      const eastl::string ctxStr = ctx_err_cb ? ctx_err_cb() : eastl::string();
+      if (!ctxStr.empty())
+        LOGERR_ONCE("net: %s holds eid 0x%x that does not fit in the wire format, sending invalid eid instead", ctxStr.c_str(),
+          eidVal);
+      else
+        LOGERR_ONCE("net: eid 0x%x does not fit in the wire format, sending invalid eid instead", eidVal);
+      write_server_eid(ecs::ECS_INVALID_ENTITY_ID_VAL, bs);
+      return false;
+    }
+    uint32_t compressedData = 0; // two zeroes at the end means uncompressed + 4byte version
     compressedData |= index << 2;
     compressedData |= generation << 22;
     bs.Write(uint16_t(compressedData));
@@ -88,7 +99,10 @@ bool read_server_eid(ecs::entity_id_t &eidVal, const danet::BitStream &bs)
   return true;
 }
 
-void write_eid(danet::BitStream &bs, ecs::EntityId eid) { write_server_eid((ecs::entity_id_t)eid, bs); }
+bool write_eid(danet::BitStream &bs, ecs::EntityId eid, dag::FunctionRef<eastl::string() const> ctx_err_cb)
+{
+  return write_server_eid((ecs::entity_id_t)eid, bs, ctx_err_cb);
+}
 
 bool read_eid(const danet::BitStream &bs, ecs::EntityId &eid)
 {
@@ -107,6 +121,12 @@ bool read_value(const danet::BitStream &, ConnectionId &cid, const IConnection &
 {
   cid = static_cast<const net::Connection &>(conn).getId();
   return true;
+}
+
+void write_value(danet::BitStream &bs, ecs::EntityId eid, const MessageClass &mcls)
+{
+  write_eid(bs, eid,
+    [&mcls] { return eastl::string(eastl::string::CtorSprintf{}, "message <%s>", mcls.debugClassName ? mcls.debugClassName : "?"); });
 }
 } // namespace detail
 
@@ -637,8 +657,6 @@ bool Connection::readReplayKeyFrame(const danet::BitStream &bs, const on_object_
   }
 
   G_ASSERT(objectKeysRepl.shared == &objectKeysLocal);
-  auto objectKeys_index = objectKeysLocal.index;
-  auto objectKeys_strings = objectKeysLocal.strings;
   objectKeysLocal.index.clear();
   objectKeysLocal.strings.clear();
 

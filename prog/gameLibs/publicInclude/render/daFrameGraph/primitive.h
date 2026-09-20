@@ -18,6 +18,8 @@ enum class DrawPrimitive : uint8_t
   TRIANGLE_LIST = PRIM_TRILIST,
   TRIANGLE_STRIP = PRIM_TRISTRIP,
   TRIANGLE_FAN = PRIM_TRIFAN,
+
+  MAX_VAL = TRIANGLE_FAN,
 };
 
 inline int get_d3d_primitive(DrawPrimitive primitive) { return eastl::to_underlying(primitive); }

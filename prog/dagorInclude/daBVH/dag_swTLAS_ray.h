@@ -215,9 +215,7 @@ struct TLASTraverse
     if constexpr (!UseHalves)
     {
       tlasPos = v_madd(d.pos, tlasScale, tlasOfs);
-      alignas(16) float tsF[4];
-      v_st(tsF, tlasScale);
-      float maxTS = max(tsF[0], max(tsF[1], tsF[2]));
+      float maxTS = v_extract_x(v_hmax3(tlasScale));
       tlasDist2Scale = maxTS * maxTS;
     }
     else

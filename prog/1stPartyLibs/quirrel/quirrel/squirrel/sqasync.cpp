@@ -896,19 +896,19 @@ void buildAndCacheFutureClass(HSQUIRRELVM v, AsyncState *st)
 
     static const SQRegFunctionFromStr kFutureMethods[] = {
         {future_constructor,    "instance.constructor()",
-            "Constructs a pending Future"},
+            SQ_DOC("Constructs a pending Future")},
         {future_getState,       "instance.getState(): string",
-            "Returns the lifecycle state: 'pending', 'fulfilled' or 'faulted'"},
+            SQ_DOC("Returns the lifecycle state: 'pending', 'fulfilled' or 'faulted'")},
         {future_resolve_method, "instance.resolve([value])",
-            "Settles a pending Future with value (default null); ignored if already settled"},
+            SQ_DOC("Settles a pending Future with value (default null); ignored if already settled")},
         {future_reject_method,  "instance.reject([value])",
-            "Faults a pending Future with value (default null); ignored if already settled"},
+            SQ_DOC("Faults a pending Future with value (default null); ignored if already settled")},
         {future_getValue_method, "instance.getValue(): any",
-            "Returns the settled value (fulfilled or fault value); throws while pending. "
-            "A pure peek: reading a fault does not acknowledge it (see markHandled)"},
+            SQ_DOC("Returns the settled value (fulfilled or fault value); throws while pending. "
+                "A pure peek: reading a fault does not acknowledge it (see markHandled)")},
         {future_markHandled_method, "instance.markHandled()",
-            "Acknowledges a faulted Future so it is not reported as unhandled; "
-            "does not consume the value (getValue still reads it)"},
+            SQ_DOC("Acknowledges a faulted Future so it is not reported as unhandled; "
+                "does not consume the value (getValue still reads it)")},
     };
     for (const auto &m : kFutureMethods)
         sq_new_closure_slot_from_decl_string(v, m.f, 0, m.declstring, m.docstring);

@@ -32,6 +32,7 @@ Sources +=
   hlsl2metal/spirv2MetalCompiler.cpp
   hlsl2metal/asmShaderHLSL2MetalDXC.cpp
   hlsl2metal/hlsl2spirvCompile.cpp
+  ver_obj_metal.cpp
 ;
 
 AddIncludes +=

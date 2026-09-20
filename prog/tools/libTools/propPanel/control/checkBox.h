@@ -54,6 +54,8 @@ public:
 
   void setDefaultValue(Variant var) override { defaultValue = var.convert<bool>(); }
 
+  const char *getImguiTypeName() const override { return "CheckBox"; }
+
   void updateImgui() override
   {
     ScopedImguiBeginDisabled scopedDisabled(!controlEnabled);
@@ -66,6 +68,7 @@ public:
       ImGui::PushStyleColor(ImGuiCol_FrameBg, getOverriddenColor(valueHighlightColor));
 
     const bool clicked = ImguiHelper::checkboxWithDragSelection(controlCaption, &controlValue);
+    setImguiTestItemInfo();
 
     if (valueHighlightColorSet)
       ImGui::PopStyleColor();

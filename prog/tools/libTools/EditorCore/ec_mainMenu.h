@@ -26,7 +26,7 @@ public:
   private:
     void onEditorCommandKeyChordChanged() override;
     void *queryInterfacePtr(unsigned huid) override;
-    bool updateImguiButton(bool is_checked, bool is_bullet) override;
+    bool updateImguiButton(bool is_checked, bool is_bullet, const PropPanel::MenuStyle &style) override;
 
     const SimpleString editorCommandId;
   };

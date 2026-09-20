@@ -1,20 +1,26 @@
+include "dagi_media_scene_common.dshl"
+
 texture swrt_shadow_target;
 int swrt_checkerboard_frame;
 int4 swrt_shadow_target_size;
+//how far the sun ray is traced through the media. 0 turns the media shadow off
+float media_shadow_dist;
 //int4 swrt_shadow_mask_res;
 define_macro_if_not_defined APPLY_ADDITIONAL_SHADOWS(code)
+  DAGI_MEDIA_SCENE_SAMPLE(code)
   (code) {
     //swrt_shadow_target@buf = swrt_shadow_target hlsl{ByteAddressBuffer swrt_shadow_target@buf;};
     swrt_shadow_target@tex2d = swrt_shadow_target;
     swrt_checkerboard_frame@u1 = swrt_checkerboard_frame;
     swrt_shadow_target_size@i2 = (swrt_shadow_target_size.z, swrt_shadow_target_size.w,0,0);
+    media_shadow_dist@f1 = media_shadow_dist;
     //swrt_checkerboard_frame@i1 = swrt_checkerboard_frame;
     //swrt_shadow_mask_res@i1 = swrt_shadow_mask_res;
   }
   hlsl(code) {
     #include <pcg_hash.hlsl>
     #define HAS_ADDITIONAL_PRE_SHADOW 1
-    float getAdditionalPreShadow(uint2 coord, float3 cameraToOrigin, float2 screenTc, float w)
+    float getSwrtShadow(uint2 coord)
     {
       if (!swrt_shadow_target_size.x)
         return 1;
@@ -32,6 +38,16 @@ define_macro_if_not_defined APPLY_ADDITIONAL_SHADOWS(code)
         coord.x = coord.x>>1;
       }
       return texelFetch(swrt_shadow_target, coord, 0).x;
+    }
+    float getAdditionalPreShadow(uint2 coord, float3 cameraToOrigin, float2 screenTc, float w)
+    {
+      float shadow = getSwrtShadow(coord);
+      //the swrt term carries no canopy (trees enter the TLAS only with rtsm on); csm still
+      //casts the near leaf shadows, and the media term adds the volumetric reach beyond them
+      BRANCH
+      if (shadow > 0 && media_shadow_dist > 0)
+        shadow *= dagi_media_scene_shadow(cameraToOrigin + world_view_pos.xyz, -from_sun_direction.xyz, media_shadow_dist);
+      return shadow;
     }
     float getAdditionalShadow(float shadow, float3 cameraToOrigin, float2 screenTc, float w)
     {

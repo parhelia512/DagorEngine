@@ -224,5 +224,7 @@ struct InitAsyncParams
 };
 
 void init_async(InitAsyncParams const &params);
+// Also registered with atexit by the first init, so a process that never calls it
+// still shuts down before the static destructors; explicit calls are idempotent
 void shutdown_async();
 } // namespace httprequests

@@ -13,6 +13,7 @@ KRNLIMP WatchedFolderMonitorData *add_folder_monitor(const char *folder_name, in
 
 // destroys handle returned by add_folder_monitor. returns false if Thread is still active, after attempts*sleep_interval_msec
 // if attempts = 0 - infinite wait amount of time
+// also returns false without any wait if the thread could not be signalled to stop
 // nullptr is allowed, will return true
 KRNLIMP bool destroy_folder_monitor(WatchedFolderMonitorData *, int attempts);
 

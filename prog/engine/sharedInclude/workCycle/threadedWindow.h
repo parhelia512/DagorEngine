@@ -11,6 +11,8 @@ void *create_threaded_window(void *hinst, const char *name, int show, void *icon
 void shutdown_threaded_window();
 
 bool process_main_thread_messages(bool input_only, bool &out_ret_val);
+#if _TARGET_PC_WIN
 RAWINPUT *get_rid();
+#endif
 unsigned long get_thread_id();
 } // namespace windows

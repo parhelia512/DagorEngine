@@ -4,6 +4,8 @@
 
 #include "command_definitions.h"
 
+#include <oldEditor/de_cm.h>
+
 #include <EditorCore/ec_editorCommandSystem.h>
 #include <EditorCore/ec_interface.h>
 
@@ -21,29 +23,38 @@ struct ShortcutRow
 
 const ShortcutRow SHORTCUT_ROWS[] = {
   {"General", SHOW_SHORTCUTS, nullptr, "Show / hide this panel"},
+  {nullptr, nullptr, "RMB", "Context menu for the node, pin, edge or empty space under the cursor"},
+  {nullptr, CANVAS_TOGGLE_AUTOUPDATE, nullptr, "Toggle auto-update"},
+  {nullptr, FORCE_REBUILD, nullptr, "Force rebuild"},
 
   {"View and Navigation", nullptr, "Mouse Wheel", "Zoom in / out"},
   {nullptr, nullptr, "Middle Mouse", "Pan the canvas (drag)"},
   {nullptr, CANVAS_ZOOM_AND_CENTER, nullptr, "Center the view on the whole graph"},
-  {nullptr, CANVAS_FRAME_SELECTED, nullptr, "Frame the selected nodes"},
-  {nullptr, CANVAS_FRAME_SELECTED_WITH_MARGIN, nullptr, "Frame the selected nodes (zoomed in)"},
+  {nullptr, EditorCommandIds::ZOOM_AND_CENTER, nullptr, "Frame the selected nodes (Zoom and center)"},
 
   {"Selection", nullptr, "LMB", "Select; drag to move; drag from a pin to connect"},
   {nullptr, nullptr, "Ctrl+LMB", "Toggle selection"},
   {nullptr, nullptr, "Double Click", "Preview the node"},
   {nullptr, CANVAS_SELECT_NODES_NO_OUTPUTS, nullptr, "Select nodes with no connected outputs"},
   {nullptr, CANVAS_SHOW_NEXT_SELECTED, nullptr, "Show the next selected node"},
+  {nullptr, EditorCommandIds::SELECT_ALL, nullptr, "Select all nodes"},
+  {nullptr, EditorCommandIds::DESELECT_ALL, nullptr, "Deselect all"},
+  {nullptr, EditorCommandIds::INVERT_SELECTION, nullptr, "Invert the node selection"},
 
   {"Editing", CANVAS_DELETE_SELECTED, nullptr, "Remove selected"},
   {nullptr, CANVAS_REMOVE_KEEP_CONNECTIONS, nullptr, "Remove but keep connections"},
   {nullptr, CANVAS_COPY, nullptr, "Copy"},
   {nullptr, CANVAS_CUT, nullptr, "Cut"},
   {nullptr, CANVAS_PASTE, nullptr, "Paste"},
+  {nullptr, CANVAS_DUPLICATE, nullptr, "Duplicate selected"},
 
   {"Connections", CANVAS_REMOVE_EDGES_AT_PIN, nullptr, "Remove edges (cursor must be over a pin)"},
   {nullptr, CANVAS_MODIFY_EDGE_AT_PIN, nullptr, "Modify edge (cursor must be over a pin)"},
-  {nullptr, CANVAS_JUMP_OPPOSITE_PIN, nullptr, "Jump to the opposite pin (cursor must be over a pin)"},
+  {nullptr, CANVAS_JUMP_OPPOSITE_PIN, nullptr, "Jump to the opposite pin, several edges open a list (cursor must be over a pin)"},
   {nullptr, CANVAS_COMMENT_PIN, nullptr, "Comment a pin (cursor must be over a pin)"},
+  {nullptr, CANVAS_ADD_NODE_AT_PIN, nullptr, "Add a connected node (cursor must be over a pin or an edge)"},
+  {nullptr, CANVAS_ADD_TRANSIT_NODE, nullptr, "Add a node into the connections (over a pin or an edge, or press and then aim)"},
+  {nullptr, nullptr, "LMB Drag", "Drag a link to empty space to add a connected node"},
 };
 
 const char *row_key_text(IEditorCommandSystem *command_system, const ShortcutRow &row)

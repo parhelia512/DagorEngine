@@ -9,7 +9,6 @@
 #include "riGen/riRotationPalette.h"
 #include "riGen/riGenData.h"
 #include "riGen/riGenRenderer.h"
-#include "riGen/riCollOptimize.h"
 
 #include <generic/dag_sort.h>
 #include <util/dag_finally.h>
@@ -84,6 +83,7 @@ static const int numHideModes = 3;
 static carray<Tab<RegExp *>, numHideModes> riHideModeNamesRE;
 static carray<Tab<RegExp *>, numHideModes> riHideModeNamesExclRE;
 static carray<float, numHideModes> riHideModeMinRad2 = {0};
+static carray<float, numHideModes> riHideModeKeepMaxDim = {0};
 static eastl::unique_ptr<rendinst::gen::RotationPaletteManager> rotationPaletteManager;
 static SimpleString rgLevelBinName[rendinst::MAX_RG_LAYERS];
 
@@ -99,10 +99,10 @@ static void checkAndAddAutoRiExtra(RenderableInstanceLodsResource *res, const ch
 
   if (riExtraSubstNames.getNameId(name) >= 0)
     return;
-  const DataBlock *b = gameres_rendinst_desc.getBlockByName(name);
+  const DataBlock *b = gameres_find_ri_desc_block(name);
   if (!b && res)
   {
-    DataBlock *bnew = gameres_rendinst_desc.addBlock(name);
+    DataBlock *bnew = gameres_add_ri_desc_block(name);
     bnew->setInt("lods", res->lods.size());
     bnew->setBool("hasImpostor", res->hasImpostor());
     bnew->setPoint3("bbox0", res->bbox[0]);
@@ -124,7 +124,7 @@ static void checkAndAddAutoRiExtra(RenderableInstanceLodsResource *res, const ch
 
 bool rendinst::is_ri_extra_for_inst_count_only(const char *name)
 {
-  const DataBlock *b = gameres_rendinst_desc.getBlockByName(name);
+  const DataBlock *b = gameres_find_ri_desc_block(name);
   if (!b)
     return false;
 
@@ -342,13 +342,37 @@ int rendinst::getPersistentPackType(RenderableInstanceLodsResource *res, int def
     intptr_t idx = rgl->rtData ? find_value_idx(rgl->rtData->riRes, res) : -1;
     if (idx >= 0)
     {
-      if (riExtraSubstNames.getNameId(rgl->rtData->riResName[idx]) >= 0)
+      if (riExtraSubstNames.getNameId(rgl->rtData->riResName[idx]) >= 0) //-V1004
         return 2;
       else
         return rgl->rtData->riPosInst[idx] ? 1 : 0;
     }
   }
   return def;
+}
+
+void rendinst::getPersistentPackTypes(dag::ConstSpan<RenderableInstanceLodsResource *> res, int def, dag::Span<uint8_t> out_types)
+{
+  G_ASSERT_RETURN(res.size() == out_types.size(), );
+  ska::flat_hash_map<const RenderableInstanceLodsResource *, uint8_t> packTypeByRes;
+  FOR_EACH_RG_LAYER_DO (rgl)
+  {
+    if (!rgl->rtData)
+      continue;
+    for (int i = 0; i < rgl->rtData->riRes.size(); i++)
+    {
+      if (!rgl->rtData->riRes[i])
+        continue;
+      const char *nm = rgl->rtData->riResName[i];
+      const uint8_t type = nm && riExtraSubstNames.getNameId(nm) >= 0 ? 2 : (rgl->rtData->riPosInst[i] ? 1 : 0);
+      packTypeByRes.emplace(rgl->rtData->riRes[i], type); // emplace: first layer and first pool wins
+    }
+  }
+  for (int i = 0; i < res.size(); i++)
+  {
+    const auto it = packTypeByRes.find(res[i]);
+    out_types[i] = it != packTypeByRes.end() ? it->second : uint8_t(def);
+  }
 }
 
 struct SortByAtest
@@ -399,6 +423,30 @@ void RendInstGenData::beforeReleaseRtData()
   rtData->entCntOldPtr = nullptr;
   clear_and_shrink(rtData->entCntForOldFmt);
 }
+
+#if RI_VERBOSE_OUTPUT
+static FastNameMap ri_verbose_dump_tags_reported;
+static bool ri_verbose_dump_do_write = true;
+static bool ri_verbose_dump_substs_reported = false;
+bool rendinst::is_ri_verbose_dump_expected() { return ri_verbose_dump_do_write; }
+
+// most of the nine LOD slots are 0 in nearly every pool, so write only up to the last set one
+static void append_lod_masks(String &s, const char *tag, const RendInstGenData::ElemMask *em,
+  uint32_t RendInstGenData::ElemMask::*field)
+{
+  int last = -1;
+  for (int lod = 0; lod < rendinst::MAX_LOD_COUNT; lod++)
+    if (em[lod].*field)
+      last = lod;
+  if (last < 0)
+    return;
+  s += tag;
+  for (int lod = 0; lod <= last; lod++)
+    s.aprintf(0, lod ? " %04X" : "(%04X", em[lod].*field);
+  s += ")";
+}
+#endif
+
 void RendInstGenData::prepareRtData(int layer_idx)
 {
   rtData = new RtData(layer_idx);
@@ -499,8 +547,8 @@ void RendInstGenData::prepareRtData(int layer_idx)
       release_game_resource_ex(collRes, CollisionGameResClassId);
       collRes = nullptr;
     }
-    if (collRes)
-      optimize_collres_on_load(collRes, [&coll_name]() { return coll_name; });
+    if (collRes && !(collRes->collisionFlags & COLLISION_RES_FLAG_OPTIMIZED))
+      logerr("collRes (%p, %s) expected to be optimized", collRes, coll_name.str());
     CollisionResData &collResData = rtData->riCollRes.push_back();
     collResData.collRes = collRes;
     collResData.handle = nullptr;
@@ -568,6 +616,16 @@ void RendInstGenData::prepareRtData(int layer_idx)
   for (int i = 0; i < landCls.size(); p += landCls[i].asset->riRes.size(), i++)
     landCls[i].riResMap = p;
 
+  rtData->riResIdxByNameId.reserve(rtData->riResName.size());
+  for (int i = 0; i < rtData->riResName.size(); i++)
+  {
+    if (!rtData->riResName[i])
+      continue;
+    // a repeated name keeps the lowest pool index
+    if (rtData->riResNameIds.addNameId(rtData->riResName[i]) == rtData->riResIdxByNameId.size())
+      rtData->riResIdxByNameId.push_back(i);
+  }
+
   rendinst::gen::RotationPaletteManager::RendintsInfo riInfo;
   riInfo.landClassCount = landCls.size();
   riInfo.landClasses = landCls.begin();
@@ -611,6 +669,46 @@ void RendInstGenData::prepareRtData(int layer_idx)
         "Rotation palettes from the level binary are not consistent with impostor types. Newly added baked impostors will not rotate."
         " Re-export current level binary to resolve this.");
   }
+#if DAGOR_DBGLEVEL > 0
+  else
+  {
+    // a renderless host has no materials to fix the flags against, so it only verifies, and against impostor_data itself:
+    // a stub that never loaded its impostor params agrees with its own palette flag, so the two flags alone prove nothing
+    const DataBlock *impostorData =
+      get_resource_type_id("impostor_data") != 0
+        ? reinterpret_cast<const DataBlock *>(get_one_game_resource_ex("impostor_data", ImpostorDataGameResClassId))
+        : nullptr;
+    for (int i = 0; i < rtData->riRes.size(); ++i)
+    {
+      const RenderableInstanceLodsResource *res = rtData->riRes[i];
+      const char *name = rtData->riResName[i];
+      if (!res || !res->hasImpostor() || !name)
+        continue;
+      if (!impostorData)
+      {
+        // a host without impostor_data is a normal configuration until a level brings impostor pools to it
+        logerr("Rotation palettes: <%s> has an impostor but impostor_data is unavailable on this host, so no baked impostor can"
+               " rotate here",
+          name);
+        break;
+      }
+      const DataBlock *b = impostorData->getBlockByName(name);
+      const bool bakedInData = b && b->getInt("horizontalSamples", 0) > 0 && b->getInt("verticalSamples", 0) > 0;
+      const bool baked = res->isBakedImpostor();
+      const bool paletteFlag = rtData->riPaletteRotation[i];
+      if (bakedInData != baked)
+        logerr("Rotation palettes: <%s> impostor_data says baked=%d but the resource reports isBakedImpostor()=%d, so the"
+               " server and the client will disagree on its yaw",
+          name, (int)bakedInData, (int)baked);
+      else if (paletteFlag != baked)
+        logerr("Rotation palettes: <%s> palette flag %d disagrees with isBakedImpostor()=%d on a renderless host, re-export the"
+               " level binary to resolve this",
+          name, (int)paletteFlag, (int)baked);
+    }
+    if (impostorData)
+      release_game_resource_ex(impostorData, ImpostorDataGameResClassId);
+  }
+#endif
 
   clear_and_resize(rtData->riResElemMask, rtData->riRes.size() * rendinst::MAX_LOD_COUNT);
   mem_set_0(rtData->riResElemMask);
@@ -768,7 +866,7 @@ void RendInstGenData::prepareRtData(int layer_idx)
       rtData->riResBb[i] = rtData->riCollResBb[i];
     else if (rtData->riResName[i])
     {
-      const DataBlock *b = gameres_rendinst_desc.getBlockByName(rtData->riResName[i]);
+      const DataBlock *b = gameres_find_ri_desc_block(rtData->riResName[i]);
       if (!b)
         goto missing;
       BBox3 init(b->getPoint3("bbox0", Point3(-1, -1, -1)), b->getPoint3("bbox1", Point3(1, 1, 1)));
@@ -784,34 +882,22 @@ void RendInstGenData::prepareRtData(int layer_idx)
       rtData->riCollResBb[i] = rtData->riResBb[i];
 
 #if RI_VERBOSE_OUTPUT
-    // clang-format off
     G_STATIC_ASSERT(rendinst::MAX_LOD_COUNT == 9);
+    if (!rendinst::is_ri_verbose_dump_expected())
+      continue;
     BBox3 riResBb, riCollResBb;
     v_stu_bbox3(riResBb, rtData->riResBb[i]);
     v_stu_bbox3(riCollResBb, rtData->riCollResBb[i]);
-    debug("ri[%d] <%s> =%p (%d) %08X-%08X (%@ %@) (%@ %@) am=(%04X %04X %04X %04X %04X %04X %04X %04X %04X) cm=(%04X %04X %04X %04X %04X %04X %04X %04X %04X) hm=%02X",
-      i, rtData->riResName[i], rtData->riRes[i], (bool)rtData->riPosInst[i], rtData->riColPair[i * 2 + 0].u,
-      rtData->riColPair[i * 2 + 1].u, riResBb.lim[0], riResBb.lim[1], riCollResBb.lim[0], riCollResBb.lim[1],
-      rtData->riResElemMask[i * rendinst::MAX_LOD_COUNT + 0].atest,
-      rtData->riResElemMask[i * rendinst::MAX_LOD_COUNT + 1].atest,
-      rtData->riResElemMask[i * rendinst::MAX_LOD_COUNT + 2].atest,
-      rtData->riResElemMask[i * rendinst::MAX_LOD_COUNT + 3].atest,
-      rtData->riResElemMask[i * rendinst::MAX_LOD_COUNT + 4].atest,
-      rtData->riResElemMask[i * rendinst::MAX_LOD_COUNT + 5].atest,
-      rtData->riResElemMask[i * rendinst::MAX_LOD_COUNT + 6].atest,
-      rtData->riResElemMask[i * rendinst::MAX_LOD_COUNT + 7].atest,
-      rtData->riResElemMask[i * rendinst::MAX_LOD_COUNT + 8].atest,
-      rtData->riResElemMask[i * rendinst::MAX_LOD_COUNT + 0].cullN,
-      rtData->riResElemMask[i * rendinst::MAX_LOD_COUNT + 1].cullN,
-      rtData->riResElemMask[i * rendinst::MAX_LOD_COUNT + 2].cullN,
-      rtData->riResElemMask[i * rendinst::MAX_LOD_COUNT + 3].cullN,
-      rtData->riResElemMask[i * rendinst::MAX_LOD_COUNT + 4].cullN,
-      rtData->riResElemMask[i * rendinst::MAX_LOD_COUNT + 5].cullN,
-      rtData->riResElemMask[i * rendinst::MAX_LOD_COUNT + 6].cullN,
-      rtData->riResElemMask[i * rendinst::MAX_LOD_COUNT + 7].cullN,
-      rtData->riResElemMask[i * rendinst::MAX_LOD_COUNT + 8].cullN,
-      rtData->riResHideMask[i]);
-    // clang-format on
+    const RendInstGenData::ElemMask *em = &rtData->riResElemMask[i * rendinst::MAX_LOD_COUNT];
+    String riStr(framemem_ptr());
+    riStr.printf(0, "ri[%d] <%s> (%d) %08X-%08X (%@ %@) (%@ %@)", i, rtData->riResName[i], (bool)rtData->riPosInst[i],
+      rtData->riColPair[i * 2 + 0].u, rtData->riColPair[i * 2 + 1].u, riResBb.lim[0], riResBb.lim[1], riCollResBb.lim[0],
+      riCollResBb.lim[1]);
+    append_lod_masks(riStr, " am=", em, &RendInstGenData::ElemMask::atest);
+    append_lod_masks(riStr, " cm=", em, &RendInstGenData::ElemMask::cullN);
+    if (rtData->riResHideMask[i])
+      riStr.aprintf(0, " hm=%02X", rtData->riResHideMask[i]);
+    debug(riStr);
 #endif
   }
   rtData->lastPoi = Point2(-1000000, 1000000);
@@ -819,18 +905,16 @@ void RendInstGenData::prepareRtData(int layer_idx)
 void RendInstGenData::addRIGenExtraSubst(const char *ri_res_name)
 {
   G_ASSERT(rtData);
-  for (int i = 0; i < rtData->riResName.size(); i++)
-    if (rtData->riResName[i] && strcmp(rtData->riResName[i], ri_res_name) == 0)
-    {
-      for (int j = 0; j < rtData->riExtraIdxPair.size(); j += 2)
-        if (rtData->riExtraIdxPair[j] == i)
-          return;
-      rtData->riExtraIdxPair.push_back(i);
-      rtData->riExtraIdxPair.push_back(
-        rendinst::addRIGenExtraResIdx(ri_res_name, i, rtData->layerIdx, rendinst::AddRIFlag::UseShadow));
-      // debug("RI-subst: added %s, riExtraIdxPair=%d", ri_res_name, rtData->riExtraIdxPair.size());
-      return;
-    }
+  const int nameId = rtData->riResNameIds.getNameId(ri_res_name);
+  if (nameId < 0)
+    return;
+  const int poolIdx = rtData->riResIdxByNameId[nameId];
+  if (poolIdx < 0)
+    return;
+  rtData->riResIdxByNameId[nameId] = -1;
+  rtData->riExtraIdxPair.push_back(poolIdx);
+  rtData->riExtraIdxPair.push_back(
+    rendinst::addRIGenExtraResIdx(ri_res_name, poolIdx, rtData->layerIdx, rendinst::AddRIFlag::UseShadow));
 }
 
 bool RendInstGenData::Cell::hasFarVisiblePregenInstances(const RendInstGenData *rgl, float thres_dist,
@@ -1891,11 +1975,6 @@ void rendinst::initRIGen(bool need_render, int cell_pool_sz, float poi_radius, r
     configurateRIGen(DataBlock::emptyBlock);
   }
 
-  rendinst::allowOptimizeCollResOnLoad =
-    ::dgs_get_game_params()->getBool("rendinstAllowOptimizeCollResOnLoad", rendinst::allowOptimizeCollResOnLoad);
-  if (!rendinst::allowOptimizeCollResOnLoad)
-    debug("RI-collres expected to be optimized in buildtime");
-
   rendinst::maxExtraRiCount = ::dgs_get_game_params()->getInt("rendinstExtraMaxCnt", 4000);
   rendinst::persistentRiExtraInstances = ::dgs_get_game_params()->getBool("persistentRiExtra", rendinst::persistentRiExtraInstances);
   if (!rendinst::persistentRiExtraInstances)
@@ -1951,6 +2030,7 @@ void rendinst::initRIGen(bool need_render, int cell_pool_sz, float poi_radius, r
     clear_all_ptr_items(riHideModeNamesRE[modeNo]);
     clear_all_ptr_items(riHideModeNamesExclRE[modeNo]);
     riHideModeMinRad2[modeNo] = 0;
+    riHideModeKeepMaxDim[modeNo] = 0;
   }
 
   if (const DataBlock *b = optBlk.getBlockByName("leaveLod0"))
@@ -2007,6 +2087,7 @@ void rendinst::initRIGen(bool need_render, int cell_pool_sz, float poi_radius, r
       rendinst::RiExtraPool::defLodLimits |= (minLod | (maxLod << 4)) << (modeNo * 8 + 8);
 
       riHideModeMinRad2[modeNo] = sqr(optBlk.getReal(String(0, "minBoundRadForMode%d", modeNo), 0));
+      riHideModeKeepMaxDim[modeNo] = optBlk.getReal(String(0, "keepMaxDimForMode%d", modeNo), 0);
 
       if (const DataBlock *b = optBlk.getBlockByName(String(0, "hideForMode%dre", modeNo)))
         for (int i = 0; i < b->paramCount(); i++)
@@ -2084,10 +2165,12 @@ uint8_t rendinst::getResHideMask(const char *res_name, const BBox3 *lbox)
   bool mode0 = true, mode1 = true, mode2 = true;
   if (lbox)
   {
-    float rad2 = lbox->width().lengthSq() / 4;
-    mode0 = rad2 > riHideModeMinRad2[0];
-    mode1 = rad2 > riHideModeMinRad2[1];
-    mode2 = rad2 > riHideModeMinRad2[2];
+    Point3 w = lbox->width();
+    float rad2 = w.lengthSq() / 4;
+    float maxDim = max(w.x, max(w.y, w.z));
+    mode0 = rad2 > riHideModeMinRad2[0] || (riHideModeKeepMaxDim[0] > 0 && maxDim > riHideModeKeepMaxDim[0]);
+    mode1 = rad2 > riHideModeMinRad2[1] || (riHideModeKeepMaxDim[1] > 0 && maxDim > riHideModeKeepMaxDim[1]);
+    mode2 = rad2 > riHideModeMinRad2[2] || (riHideModeKeepMaxDim[2] > 0 && maxDim > riHideModeKeepMaxDim[2]);
     /*
     if (!mode0)
       debug("hide(%s)[%d] due to rad2=%.3f", res_name, 0, rad2);
@@ -2311,7 +2394,7 @@ static int scheduleRIGenPrepare(RendInstGenData *rgl, dag::ConstSpan<Point3> poi
       G_FAST_ASSERT(_idx == idx);
       rgl->rtData->toUnload.addInt(_idx);
     }
-    const char *getJobName(bool &) const override { return "UnloadRiCell"; }
+    const char *getJobName(bool &) const override { return DAPROFILER_STRING("UnloadRiCell"); }
     virtual void doJob() override
     {
       // debug("unload %d,%d", idx%rgl->cellNumW, idx/rgl->cellNumW);
@@ -2376,7 +2459,7 @@ static int scheduleRIGenPrepare(RendInstGenData *rgl, dag::ConstSpan<Point3> poi
     {
       rgl->rtData->toLoad.addInt(idx);
     }
-    const char *getJobName(bool &) const override { return "RegenRiCell"; }
+    const char *getJobName(bool &) const override { return DAPROFILER_STRING("RegenRiCell"); }
     virtual void doJob() override
     {
 #if DAGOR_DBGLEVEL > 0
@@ -2631,6 +2714,16 @@ bool rendinst::loadRIGen(IGenLoad &crd, void (*add_resource_cb)(const char *resn
 {
   G_ASSERTF_RETURN(RendInstGenData::isLoading || is_main_thread(), false, "isLoading=%d mainThread=%d", RendInstGenData::isLoading,
     is_main_thread());
+#if RI_VERBOSE_OUTPUT
+  String text_tag_debug;
+  text_tag_debug.printf(0, "%s,%d (%s/%s)", crd.getTargetName(), crd.tell(), level_blk ? level_blk->resolveFilename() : "",
+    level_blk ? level_blk->getBlockName() : "");
+  ri_verbose_dump_do_write = (ri_verbose_dump_tags_reported.getNameId(text_tag_debug) == -1); // new tag added
+  debug("RIGz %s: %s (total %d tags)", text_tag_debug,
+    ri_verbose_dump_do_write ? "verbose dump will follow" : "verbose dump was before, skipped",
+    ri_verbose_dump_tags_reported.nameCount() + (ri_verbose_dump_do_write ? 1 : 0));
+#endif
+
   for (int layer = 0; layer < rendinst::rgLayer.size(); layer++)
   {
     del_it(rendinst::rgLayer[layer]);
@@ -2713,6 +2806,10 @@ bool rendinst::loadRIGen(IGenLoad &crd, void (*add_resource_cb)(const char *resn
 
   rebuildRgRenderMasks();
   debug("rgRenderMaskO=0x%04X rgRenderMaskDS=0x%04X rgRenderMaskCMS=0x%04X", rgRenderMaskO, rgRenderMaskDS, rgRenderMaskCMS);
+#if RI_VERBOSE_OUTPUT
+  if (ri_verbose_dump_do_write)
+    ri_verbose_dump_tags_reported.addNameId(text_tag_debug);
+#endif
   return true;
 }
 
@@ -2760,9 +2857,13 @@ void rendinst::prepareRIGen(bool init_sec_ri_extra_here, const DataBlock *level_
     {
       riExtraSubstNames.addNameId(b.getStr(i));
 #if RI_VERBOSE_OUTPUT
-      debug("riExtraSubst: add <%s> due to mention in BLK", b.getStr(i));
+      if (!ri_verbose_dump_substs_reported)
+        debug("riExtraSubst: add <%s> due to mention in BLK", b.getStr(i));
 #endif
     }
+#if RI_VERBOSE_OUTPUT
+  ri_verbose_dump_substs_reported = true; // dump riExtraSubst: only once since gameParams is usually invariant
+#endif
 
   rotationPaletteManager->clear();
   FOR_EACH_RG_LAYER_DO (rgl)
@@ -2805,7 +2906,7 @@ void rendinst::prepareRIGen(bool init_sec_ri_extra_here, const DataBlock *level_
   DEBUG_CP();
   FOR_EACH_RG_LAYER_DO (rgl)
   {
-    dag::Span<float> riMaxDist((float *)alloca(rgl->rtData->riRes.size() * sizeof(float)), rgl->rtData->riRes.size());
+    dag::Span<float> riMaxDist((float *)alloca(rgl->rtData->riRes.size() * sizeof(float)), rgl->rtData->riRes.size()); //-V505
     mem_set_0(riMaxDist);
     dag::ConstSpan<uint16_t> riExtraIdxPair = rgl->rtData->riExtraIdxPair;
     for (int i = 0; i < riExtraIdxPair.size(); i += 2)
@@ -2833,10 +2934,19 @@ void rendinst::prepareRIGen(bool init_sec_ri_extra_here, const DataBlock *level_
   rendinst::isRiGenLoaded.store(true, dag::memory_order_release);
 }
 
+static rendinst::RiGenPrecomputeProgressCb precompute_progress_cb = nullptr;
+void rendinst::set_ri_gen_precompute_progress_cb(RiGenPrecomputeProgressCb cb) { precompute_progress_cb = cb; }
+
 void rendinst::precomputeRIGenCellsAndPregenerateRIExtra()
 {
   debug("%s started...", __FUNCTION__);
   int ri_count = 0;
+  int cellsTotal = 0, cellsDone = 0;
+  const RiGenPrecomputeProgressCb progress_cb = precompute_progress_cb;
+  FOR_EACH_PRIMARY_RG_LAYER_DO (rgl)
+    cellsTotal += rgl->cellNumH * rgl->cellNumW;
+  if (progress_cb)
+    progress_cb(0, cellsTotal);
   FOR_EACH_PRIMARY_RG_LAYER_DO (rgl)
     for (int z = 0; z < rgl->cellNumH; z++)
       for (int x = 0; x < rgl->cellNumW; x++)
@@ -2848,6 +2958,8 @@ void rendinst::precomputeRIGenCellsAndPregenerateRIExtra()
         crt = new RendInstGenData::CellRtData(rgl->rtData->riRes.size(), rgl->rtData);
         ri_count += rgl->precomputeCell(*crt, x, z);
         cell.cellRtData = crt;
+        if (progress_cb)
+          progress_cb(++cellsDone, cellsTotal);
       }
   shrinkToFitRiEx();
   debug("%s done, ri_count=%d", __FUNCTION__, ri_count);

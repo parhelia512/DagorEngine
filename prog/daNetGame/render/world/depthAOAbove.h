@@ -43,7 +43,7 @@ private:
     Point3 viewPos;
     struct RiGenVisibility *visibility = nullptr;
 
-    const char *getJobName(bool &) const override { return "AsyncVisiblityJob"; }
+    const char *getJobName(bool &) const override { return DAPROFILER_STRING("AsyncVisiblityJob"); }
     void doJob() override;
   };
 

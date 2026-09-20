@@ -5,6 +5,7 @@ include "projectiveDecals/projective_decals_common.dshl"
 include "static_shadow.dshl"
 include "viewVecVS.dshl"
 include "gbuffer.dshl"
+include "camera_in_camera.dshl"
 
 float laser_decal_reproj_max_correction = 0.5;
 
@@ -202,6 +203,7 @@ shader laser_point_decal {
   INIT_ZNZFAR()
   INIT_HDR(ps)
   USE_HDR(ps)
+  INIT_AND_USE_ON_TOP_CAMERA_IN_CAMERA(ps)
   INIT_BRUNETON_FOG(ps)
   USE_BRUNETON_FOG()
   INIT_VOLUMETRIC_LIGHT_TRANSPARENT(ps)

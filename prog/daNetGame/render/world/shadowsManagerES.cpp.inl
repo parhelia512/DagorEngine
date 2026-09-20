@@ -56,7 +56,7 @@ void combined_shadows_bind_additional_textures(dafg::Registry &registry)
       if (!combined_shadows__use_additional_textures)
         return;
 
-      for (const ecs::string texName : combined_shadows__additional_textures)
+      for (const ecs::string &texName : combined_shadows__additional_textures)
         registry.readTexture(texName.c_str()).atStage(dafg::Stage::PS).bindToShaderVar(texName.c_str());
     });
 }
@@ -67,6 +67,10 @@ ECS_AFTER(rendinst_with_handle_move_es)
 static void update_world_bbox_es(
   const ecs::Event &, const TMatrix &transform, const Point3 &ri_extra__bboxMin, const Point3 ri_extra__bboxMax)
 {
+  // tools drive the editor scene without a WorldRenderer
+  if (!WRDispatcher::isReadyToUse())
+    return;
+
   BBox3 worldSpaceBBox = transform * BBox3(ri_extra__bboxMin, ri_extra__bboxMax);
   WRDispatcher::updateWorldBBox(worldSpaceBBox);
   WRDispatcher::getShadowsManager().markWorldBBoxDirty();
@@ -74,10 +78,11 @@ static void update_world_bbox_es(
 
 ECS_TAG(render)
 ECS_ON_EVENT(OnRenderSettingsReady)
-ECS_TRACK(render_settings__shadowsQuality, render_settings__enableRTSM, render_settings__bare_minimum)
+ECS_TRACK(render_settings__shadowsQuality, render_settings__enableRTSM, render_settings__bare_minimum, render_settings__bvhDynModels)
 ECS_REQUIRE(const ecs::string &render_settings__shadowsQuality,
   const ecs::string &render_settings__enableRTSM,
-  bool render_settings__bare_minimum)
+  bool render_settings__bare_minimum,
+  bool render_settings__bvhDynModels)
 ECS_AFTER(bvh_render_settings_changed_es)
 static void init_shadows_es(const ecs::Event &)
 {
